@@ -112,20 +112,21 @@ export async function getFirebaseContext(): Promise<FirebaseContext | null> {
 
       const useEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
 
+      // La persistencia local tiene que configurarse ANTES de la primera
+      // llamada a getFirestore: si se pide la instancia primero, Firestore
+      // queda con cache en memoria y la aplicacion pierde todo al cerrarse,
+      // que es justo lo contrario de lo que necesita quien vende en calle.
       try {
-        db = getFirestore(app)
+        db = initializeFirestore(app, {
+          localCache: useEmulator
+            ? memoryLocalCache()
+            : persistentLocalCache({
+                tabManager: persistentMultipleTabManager(),
+              }),
+        })
       } catch {
-        try {
-          db = initializeFirestore(app, {
-            localCache: useEmulator
-              ? memoryLocalCache()
-              : persistentLocalCache({
-                  tabManager: persistentMultipleTabManager(),
-                }),
-          })
-        } catch {
-          db = getFirestore(app)
-        }
+        // Ya inicializada (por ejemplo, en un hot reload): se reutiliza.
+        db = getFirestore(app)
       }
 
       const auth = getAuth(app)
