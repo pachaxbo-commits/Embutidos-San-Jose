@@ -1,12 +1,17 @@
 import { useState } from 'react'
-import { X, Sparkles, Printer, Palette, Store, Save } from 'lucide-react'
-import type { RestaurantBranding } from '../types'
+import { X, Sparkles, Printer, Palette, Store, Save, Building2 } from 'lucide-react'
+import { updateRestaurantProfile } from '../lib/firebase'
+import { getBusinessTypeDefinition } from '../config/businessTypes'
+import type { BusinessType, RestaurantBranding } from '../types'
 
 interface TenantCustomizerModalProps {
   isOpen: boolean
   onClose: () => void
   initialBranding: RestaurantBranding
   onSave: (branding: Partial<RestaurantBranding>) => Promise<void>
+  /** Necesario para cambiar el tipo de empresa del tenant */
+  restaurantId?: string | null
+  businessType?: BusinessType
 }
 
 export function TenantCustomizerModal({
@@ -14,6 +19,8 @@ export function TenantCustomizerModal({
   onClose,
   initialBranding,
   onSave,
+  restaurantId,
+  businessType = 'restaurant',
 }: TenantCustomizerModalProps) {
   const [name, setName] = useState(initialBranding.name || '')
   const [logoUrl, setLogoUrl] = useState(initialBranding.logoUrl || '')
@@ -23,8 +30,35 @@ export function TenantCustomizerModal({
   const [receiptFooter, setReceiptFooter] = useState(initialBranding.receiptFooter || '')
   const [tablesCount, setTablesCount] = useState(initialBranding.tablesCount || 12)
   const [isSaving, setIsSaving] = useState(false)
+  const [selectedBusinessType, setSelectedBusinessType] = useState<BusinessType>(businessType)
+  const [isSwitching, setIsSwitching] = useState(false)
 
   if (!isOpen) return null
+
+  // El tipo de empresa define modulos, roles y tema. Cambiarlo recarga la app
+  // para que se monte el shell correcto.
+  const applyBusinessType = async () => {
+    if (!restaurantId || selectedBusinessType === businessType) return
+    setIsSwitching(true)
+    try {
+      const definition = getBusinessTypeDefinition(selectedBusinessType)
+      await updateRestaurantProfile(restaurantId, {
+        businessType: selectedBusinessType,
+        currencyCode: definition.defaultCurrencyCode,
+        currencySymbol: definition.defaultCurrencySymbol,
+        branding: {
+          ...initialBranding,
+          name,
+          primaryColor: definition.theme.primary,
+          accentColor: definition.theme.accent,
+          surfaceColor: definition.theme.background,
+        },
+      })
+      window.location.reload()
+    } finally {
+      setIsSwitching(false)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -67,6 +101,32 @@ export function TenantCustomizerModal({
         </div>
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+          {/* Tipo de empresa: decide modulos, roles y experiencia del tenant */}
+          {restaurantId && (
+            <div className="rounded-2xl border border-panelBorder bg-white p-3">
+              <label className="mb-1.5 flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-muted">
+                <Building2 size={14} /> Tipo de empresa
+              </label>
+              <select
+                value={selectedBusinessType}
+                onChange={(event) => setSelectedBusinessType(event.target.value as BusinessType)}
+                className="min-h-[44px] w-full rounded-2xl border border-panelBorder px-3 text-sm font-bold"
+              >
+                <option value="restaurant">Restaurante / gastronomia</option>
+                <option value="mobile_distribution">Distribucion movil (rutas y distribuidores)</option>
+              </select>
+              {selectedBusinessType !== businessType && (
+                <button
+                  type="button"
+                  onClick={() => void applyBusinessType()}
+                  disabled={isSwitching}
+                  className="mt-2 min-h-[44px] w-full rounded-2xl bg-blue-600 px-4 text-xs font-extrabold text-white disabled:opacity-50"
+                >
+                  {isSwitching ? 'Aplicando...' : 'Aplicar tipo de empresa y recargar'}
+                </button>
+              )}
+            </div>
+          )}
           {/* Identity & Logo */}
           <div className="space-y-3 p-4 rounded-2xl bg-pachaxNavy/40 border border-panelBorder">
             <div className="text-xs font-bold text-pachaxCyan uppercase tracking-wider flex items-center gap-1.5">

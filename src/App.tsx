@@ -16,6 +16,7 @@ import { CashSessionView } from './components/CashSessionView'
 import { AppHeader } from './components/ui/AppHeader'
 import { MobileBottomNavigation } from './components/ui/MobileBottomNavigation'
 import { UnauthorizedView } from './components/UnauthorizedView'
+import { DistributionApp } from './modules/distribution/views/DistributionApp'
 import { notifyBotOrderConfirmed } from './lib/botApi'
 import { fetchRestaurantAccount, updateRestaurantBranding } from './lib/firebase'
 import { useBackButtonBridge } from './hooks/useBackHandler'
@@ -350,6 +351,7 @@ function MainShell({
         onClose={() => setIsCustomizerOpen(false)}
         initialBranding={branding}
         onSave={handleSaveBranding}
+        restaurantId={restaurantId}
       />
 
       {/* Printer Settings Modal */}
@@ -358,6 +360,26 @@ function MainShell({
         onClose={() => setIsPrinterSettingsOpen(false)}
       />
     </div>
+  )
+}
+
+/** Shell del tipo de empresa "distribucion movil" (Embutidos San Jose). */
+function DistributionShell(props: {
+  restaurantId: string
+  restaurantName: string
+  uid: string
+  userName: string
+  role: UserRole
+  routeId: string | null
+  onSignOut: () => Promise<void>
+}) {
+  const [isPrinterSettingsOpen, setIsPrinterSettingsOpen] = useState(false)
+
+  return (
+    <>
+      <DistributionApp {...props} onOpenPrinterSettings={() => setIsPrinterSettingsOpen(true)} />
+      <PrinterSettingsModal isOpen={isPrinterSettingsOpen} onClose={() => setIsPrinterSettingsOpen(false)} />
+    </>
   )
 }
 
@@ -421,6 +443,22 @@ function App() {
 
   if (auth.status === 'unauthorized') {
     return <UnauthorizedView email={auth.error} message={auth.error ?? 'Acceso no autorizado.'} onSignOut={auth.signOut} />
+  }
+
+  // El tipo de empresa decide la experiencia completa. Sin businessType (o con
+  // 'restaurant') se renderiza exactamente el comandero de siempre.
+  if (auth.businessType === 'mobile_distribution') {
+    return (
+      <DistributionShell
+        restaurantId={auth.restaurantId ?? ''}
+        restaurantName={auth.account?.name ?? 'Mi empresa'}
+        uid={auth.member?.uid ?? ''}
+        userName={auth.userDisplayName ?? auth.userEmail ?? 'Usuario'}
+        role={(auth.role ?? 'distributor') as UserRole}
+        routeId={auth.member?.routeId ?? null}
+        onSignOut={auth.signOut}
+      />
+    )
   }
 
   return (
