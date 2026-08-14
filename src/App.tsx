@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { App as AppPlugin } from '@capacitor/app'
 import { AdminView } from './components/AdminView'
 import { CajaView } from './components/CajaView'
 import { FloatingOrderAlert } from './components/FloatingOrderAlert'
@@ -19,6 +18,7 @@ import { MobileBottomNavigation } from './components/ui/MobileBottomNavigation'
 import { UnauthorizedView } from './components/UnauthorizedView'
 import { notifyBotOrderConfirmed } from './lib/botApi'
 import { fetchRestaurantAccount, updateRestaurantBranding } from './lib/firebase'
+import { useBackButtonBridge } from './hooks/useBackHandler'
 import { useAuthStore } from './store/authStore'
 import { useCatalogStore } from './store/catalogStore'
 import { useOrdersStore } from './store/appStore'
@@ -71,29 +71,15 @@ function MainShell({
   const [isCustomizerOpen, setIsCustomizerOpen] = useState(false)
   const [isPrinterSettingsOpen, setIsPrinterSettingsOpen] = useState(false)
 
-  // Listener para botón hardware atrás en Android (Capacitor)
-  useEffect(() => {
-    let listener: any = null
-    const setupBackButton = async () => {
-      try {
-        listener = await AppPlugin.addListener('backButton', (data) => {
-          if (!(data as any).canGoBack) {
-            AppPlugin.exitApp()
-          } else {
-            window.history.back()
-          }
-        })
-      } catch {
-        // Ignored on web
-      }
+  // El boton fisico atras pasa por la pila central: primero cierra modales /
+  // capas abiertas y solo despues vuelve de pantalla o sale de la app.
+  useBackButtonBridge(() => {
+    if (view !== availableViews[0]) {
+      setSelectedView(availableViews[0])
+      return true
     }
-    setupBackButton()
-    return () => {
-      if (listener && typeof listener.remove === 'function') {
-        listener.remove()
-      }
-    }
-  }, [])
+    return false
+  })
 
   useEffect(() => {
     if (mode !== 'firebase' || !restaurantId) return

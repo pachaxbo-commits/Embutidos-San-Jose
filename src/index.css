@@ -27,6 +27,12 @@
   --success: #16A34A;
   --warning: #D97706;
   --danger: #DC2626;
+
+  /* Safe areas (Android/iOS). Se usan en shells, navegacion inferior y modales. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Alto de la navegacion inferior movil: reserva de espacio para el contenido */
+  --bottom-nav-height: 64px;
 }
 
 * {
@@ -46,10 +52,58 @@ html, body {
 }
 
 #root {
+  /* 100dvh sigue al teclado y a las barras del navegador movil, 100vh no. */
   min-height: 100vh;
-  background-color: #F6F8FC;
+  min-height: 100dvh;
+  background-color: var(--background);
   display: flex;
   flex-direction: column;
+}
+
+/*
+ * Causa real del overflow horizontal: elementos reemplazados y contenedores
+ * que no pueden encogerse por debajo de su contenido. Se corrige de raiz en
+ * vez de esconder el sintoma con overflow-x:hidden global.
+ */
+img,
+svg,
+video,
+canvas,
+iframe {
+  max-width: 100%;
+  height: auto;
+}
+
+pre,
+code {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* Utilidades de safe area reutilizables */
+.pt-safe {
+  padding-top: var(--safe-top);
+}
+
+.pb-safe {
+  padding-bottom: var(--safe-bottom);
+}
+
+/* Espacio inferior para que la navegacion movil no tape acciones ni listas */
+.pb-bottom-nav {
+  padding-bottom: calc(var(--bottom-nav-height) + var(--safe-bottom) + 0.75rem);
+}
+
+@media (min-width: 768px) {
+  .pb-bottom-nav {
+    padding-bottom: 1.5rem;
+  }
+}
+
+/* Todo objetivo tactil primario respeta ~44px */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
 }
 
 /* Force Light Controls on Android & Browsers */
