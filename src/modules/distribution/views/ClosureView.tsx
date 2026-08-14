@@ -50,8 +50,16 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     if (existingClosure.physicalCashDeclared > 0) setDeclaredCash(String(existingClosure.physicalCashDeclared))
   }, [existingClosure])
 
+  // Solo las ventas hechas desde la ruta entran al arqueo: una venta directa
+  // de almacen sale del stock central y no la responde el distribuidor.
   const routeSales = useMemo(
-    () => data.sales.filter((sale) => (dispatch ? sale.dispatchId === dispatch.id || sale.routeId === dispatch.routeId : false)),
+    () =>
+      data.sales.filter(
+        (sale) =>
+          dispatch !== null &&
+          sale.sourceLocation !== 'centralWarehouse' &&
+          (sale.dispatchId === dispatch.id || sale.routeId === dispatch.routeId),
+      ),
     [data.sales, dispatch],
   )
   const routeCollections = useMemo(

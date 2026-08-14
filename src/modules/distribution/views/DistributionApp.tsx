@@ -102,7 +102,7 @@ export function DistributionApp({
 
   const can = useMemo(() => (permission: Permission) => hasPermission(role, permission), [role])
 
-  const modules = useMemo(() => getVisibleModules('mobile_distribution', can), [can])
+  const modules = useMemo(() => getVisibleModules('mobile_distribution', can, role), [can, role])
   const [currentModule, setCurrentModule] = useState<ModuleId>(modules[0]?.id ?? 'dist.dashboard')
   const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [dayKeys, setDayKeys] = useState<string[]>([toDayKey(new Date())])
@@ -141,9 +141,18 @@ export function DistributionApp({
 
   const syncState = useSyncStatus()
 
-  const navItems: BottomNavItem<ModuleId>[] = modules
-    .filter((module) => MODULE_ICONS[module.id])
-    .slice(0, 4)
+  // Los cuatro accesos de la barra inferior dependen del trabajo real de cada
+  // rol, no del orden del catalogo de modulos.
+  const navPriority: ModuleId[] =
+    role === 'distributor'
+      ? ['dist.dashboard', 'dist.sales', 'dist.credits', 'dist.closure']
+      : role === 'warehouse'
+        ? ['dist.dashboard', 'dist.inventory', 'dist.dispatches', 'dist.closure']
+        : ['dist.dashboard', 'dist.inventory', 'dist.dispatches', 'dist.reports']
+
+  const navItems: BottomNavItem<ModuleId>[] = navPriority
+    .map((id) => modules.find((module) => module.id === id))
+    .filter((module): module is NonNullable<typeof module> => Boolean(module && MODULE_ICONS[module.id]))
     .map((module) => ({
       id: module.id,
       label: module.label,
@@ -153,8 +162,13 @@ export function DistributionApp({
   const overflowModules = modules.filter((module) => !navItems.some((item) => item.id === module.id))
 
   const selectModule = (id: ModuleId) => {
-    setCurrentModule(id)
     setIsMoreOpen(false)
+    // Impresoras no es una pantalla del modulo: abre el ajuste compartido.
+    if (id === 'printer-settings') {
+      onOpenPrinterSettings()
+      return
+    }
+    setCurrentModule(id)
   }
 
   const viewProps: DistributionViewProps = { session, data }
@@ -287,14 +301,7 @@ export function DistributionApp({
               <button
                 key={module.id}
                 type="button"
-                onClick={() => {
-                  if (module.id === 'printer-settings') {
-                    setIsMoreOpen(false)
-                    onOpenPrinterSettings()
-                    return
-                  }
-                  selectModule(module.id)
-                }}
+                onClick={() => selectModule(module.id)}
                 className="flex min-h-[56px] items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-3 text-left text-xs font-extrabold text-slate-800"
               >
                 <span

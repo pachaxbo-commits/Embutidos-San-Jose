@@ -158,7 +158,11 @@ export function DashboardView({ session, data }: DistributionViewProps) {
     const rows = data.openDispatches.flatMap((dispatch) =>
       buildReconciliation(
         dispatch,
-        sales.filter((sale) => sale.dispatchId === dispatch.id || sale.routeId === dispatch.routeId),
+        sales.filter(
+          (sale) =>
+            sale.sourceLocation !== 'centralWarehouse' &&
+            (sale.dispatchId === dispatch.id || sale.routeId === dispatch.routeId),
+        ),
         Object.fromEntries(
           (data.closures.find((closure) => closure.dispatchId === dispatch.id)?.products ?? []).map((row) => [
             row.productId,

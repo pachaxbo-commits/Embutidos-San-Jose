@@ -39,6 +39,15 @@ export interface ModuleDefinition {
   label: string
   /** Permiso minimo requerido para ver el modulo */
   requiredPermission?: Permission
+  /** Alternativa: basta con tener alguno de estos permisos */
+  anyOfPermissions?: Permission[]
+  /**
+   * Roles que pueden navegar al modulo, cuando el permiso no alcanza para
+   * decidirlo. Ejemplo: el distribuidor puede crear clientes mientras vende
+   * (capacidad), pero su menu no incluye el directorio de clientes.
+   * Ausente = cualquier rol con el permiso.
+   */
+  navigableBy?: UserRole[]
 }
 
 export interface BusinessTypeTheme {
@@ -99,13 +108,32 @@ const MOBILE_DISTRIBUTION: BusinessTypeDefinition = {
   modules: [
     { id: 'dist.dashboard', label: 'Inicio', requiredPermission: 'dist.dashboard.view' },
     { id: 'dist.sales', label: 'Vender', requiredPermission: 'dist.sale.create' },
-    { id: 'dist.inventory', label: 'Inventario', requiredPermission: 'dist.inventory.view' },
-    { id: 'dist.dispatches', label: 'Despachos', requiredPermission: 'dist.dispatch.create' },
     { id: 'dist.credits', label: 'Creditos', requiredPermission: 'dist.credit.view' },
-    { id: 'dist.collections', label: 'Cobros', requiredPermission: 'dist.collection.create' },
-    { id: 'dist.customers', label: 'Clientes', requiredPermission: 'dist.customer.manage' },
     { id: 'dist.expenses', label: 'Gastos', requiredPermission: 'dist.expense.create' },
-    { id: 'dist.closure', label: 'Cierre', requiredPermission: 'dist.closure.money' },
+    // Almacen entra al cierre para registrar el retorno; el distribuidor y la
+    // administracion entran para cuadrar el dinero.
+    { id: 'dist.closure', label: 'Cierre', anyOfPermissions: ['dist.closure.money', 'dist.closure.warehouse'] },
+    // A partir de aqui, modulos de administracion y almacen: el distribuidor
+    // conserva las capacidades que necesita al vender, pero no navega a ellos.
+    {
+      id: 'dist.inventory',
+      label: 'Inventario',
+      requiredPermission: 'dist.inventory.view',
+      navigableBy: ['admin', 'owner', 'superadmin', 'accountant', 'warehouse'],
+    },
+    { id: 'dist.dispatches', label: 'Despachos', requiredPermission: 'dist.dispatch.create' },
+    {
+      id: 'dist.collections',
+      label: 'Cobros',
+      requiredPermission: 'dist.collection.create',
+      navigableBy: ['admin', 'owner', 'superadmin', 'accountant'],
+    },
+    {
+      id: 'dist.customers',
+      label: 'Clientes',
+      requiredPermission: 'dist.customer.manage',
+      navigableBy: ['admin', 'owner', 'superadmin', 'accountant', 'warehouse'],
+    },
     { id: 'dist.products', label: 'Productos', requiredPermission: 'dist.products.manage' },
     { id: 'dist.reports', label: 'Reportes', requiredPermission: 'dist.reports.view' },
     { id: 'dist.users', label: 'Usuarios', requiredPermission: 'dist.users.manage' },
@@ -143,8 +171,12 @@ export function getBusinessTypeDefinition(value?: BusinessType | string | null):
 export function getVisibleModules(
   businessType: BusinessType | string | null | undefined,
   can: (permission: Permission) => boolean,
+  role?: UserRole | null,
 ): ModuleDefinition[] {
-  return getBusinessTypeDefinition(businessType).modules.filter(
-    (module) => !module.requiredPermission || can(module.requiredPermission),
-  )
+  return getBusinessTypeDefinition(businessType).modules.filter((module) => {
+    if (module.requiredPermission && !can(module.requiredPermission)) return false
+    if (module.anyOfPermissions && !module.anyOfPermissions.some((permission) => can(permission))) return false
+    if (module.navigableBy && role && !module.navigableBy.includes(role)) return false
+    return true
+  })
 }
