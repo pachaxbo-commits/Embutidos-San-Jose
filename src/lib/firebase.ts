@@ -191,6 +191,28 @@ export async function getFirebaseContext(): Promise<FirebaseContext | null> {
   return { ...runtime, restaurantId }
 }
 
+
+/**
+ * Instancia secundaria de Auth para crear cuentas sin cerrar la sesion activa.
+ *
+ * Tiene que respetar el modo emulador: sin esto, probar en el emulador creaba
+ * usuarios reales en el proyecto de produccion.
+ */
+function createSecondaryAuth(label: string): { app: FirebaseApp; auth: Auth } | null {
+  const firebaseConfig = readFirebaseConfig()
+  if (!firebaseConfig) return null
+
+  const app = initializeApp(firebaseConfig, `${label}-${Date.now()}`)
+  const auth = getAuth(app)
+
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true') {
+    const host = window.location.hostname || 'localhost'
+    connectAuthEmulator(auth, `http://${host}:9095`, { disableWarnings: true })
+  }
+
+  return { app, auth }
+}
+
 export async function signInWithEmail(email: string, password: string) {
   const context = await getFirebaseContext()
 
@@ -299,8 +321,9 @@ export async function createNewRestaurantAccount(input: {
   const firebaseConfig = readFirebaseConfig()
   if (!firebaseConfig) throw new Error('Firebase no esta configurado.')
 
-  const secondaryApp = initializeApp(firebaseConfig, `tenant-create-${Date.now()}`)
-  const secondaryAuth = getAuth(secondaryApp)
+  const secondary = createSecondaryAuth('tenant-create')
+  if (!secondary) throw new Error('Firebase no esta configurado.')
+  const { app: secondaryApp, auth: secondaryAuth } = secondary
 
   try {
     const cred = await createUserWithEmailAndPassword(secondaryAuth, input.email.trim(), input.password)
@@ -372,11 +395,11 @@ export async function createRestaurantMember(input: {
   routeId?: string
 }) {
   const context = await getFirebaseContext()
-  const firebaseConfig = readFirebaseConfig()
-  if (!context || !firebaseConfig) throw new Error('Firebase no esta configurado.')
+  if (!context) throw new Error('Firebase no esta configurado.')
 
-  const secondaryApp = initializeApp(firebaseConfig, `member-create-${Date.now()}`)
-  const secondaryAuth = getAuth(secondaryApp)
+  const secondary = createSecondaryAuth('member-create')
+  if (!secondary) throw new Error('Firebase no esta configurado.')
+  const { app: secondaryApp, auth: secondaryAuth } = secondary
 
   try {
     const credential = await createUserWithEmailAndPassword(secondaryAuth, input.email.trim(), input.password)

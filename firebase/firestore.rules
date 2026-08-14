@@ -310,6 +310,16 @@ service cloud.firestore {
       allow get: if isSignedIn() && (request.auth.uid == uid || hasRole(restaurantId, ['admin', 'owner', 'superadmin', 'warehouse']));
       // Almacen necesita el listado para saber a que distribuidor despacha.
       allow list: if hasRole(restaurantId, ['admin', 'owner', 'superadmin', 'warehouse']);
+      // Arranque de una empresa nueva: el dueno del tenant puede crear SU
+      // propio documento de miembro. Sin esto nadie podia ser el primer
+      // administrador, porque crear un miembro exigia ya ser administrador.
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && exists(/databases/$(database)/documents/restaurants/$(restaurantId))
+        && get(/databases/$(database)/documents/restaurants/$(restaurantId)).data.ownerUid == request.auth.uid
+        && request.resource.data.uid == uid
+        && request.resource.data.role in ['admin', 'owner'];
+
       allow create, update: if hasRole(restaurantId, ['admin'])
         && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'routeId'])
         && request.resource.data.uid == uid

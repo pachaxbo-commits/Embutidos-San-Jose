@@ -350,6 +350,33 @@ async function run() {
     })))
 
   // =====================================================================
+  // Arranque de una empresa nueva
+  // =====================================================================
+  await check('El dueno crea el documento de su empresa',
+    assertSucceeds(setDoc(doc(admin, 'restaurants/empresa-nueva'), {
+      id: 'empresa-nueva', name: 'Empresa Nueva', slug: 'empresa-nueva', ownerUid: 'uid-admin',
+      plan: 'pro', createdAt: new Date().toISOString(),
+    })))
+
+  await check('El dueno se registra como primer administrador de su empresa',
+    assertSucceeds(setDoc(doc(admin, 'restaurants/empresa-nueva/members/uid-admin'), {
+      uid: 'uid-admin', email: 'admin@sanjose.bo', displayName: 'Duena', role: 'admin', active: true,
+      createdAt: new Date().toISOString(),
+    })))
+
+  await check('Nadie mas puede autoproclamarse miembro de esa empresa',
+    assertFails(setDoc(doc(hugo, 'restaurants/empresa-nueva/members/uid-hugo'), {
+      uid: 'uid-hugo', email: 'hugo@sanjose.bo', displayName: 'Hugo', role: 'admin', active: true,
+      createdAt: new Date().toISOString(),
+    })))
+
+  await check('Un usuario NO puede crear una empresa a nombre de otro dueno',
+    assertFails(setDoc(doc(hugo, 'restaurants/empresa-secuestrada'), {
+      id: 'empresa-secuestrada', name: 'Ajena', slug: 'ajena', ownerUid: 'uid-admin',
+      plan: 'pro', createdAt: new Date().toISOString(),
+    })))
+
+  // =====================================================================
   // Inmutabilidad contable
   // =====================================================================
   await check('Una venta NO se puede modificar (ni el admin)',
