@@ -19,6 +19,8 @@ import {
   collection,
   connectFirestoreEmulator,
   deleteDoc,
+  disableNetwork,
+  enableNetwork,
   doc,
   getDoc,
   getDocs,
@@ -49,7 +51,14 @@ export interface FirebaseContext {
   app: FirebaseApp
   auth: Auth
   db: Firestore
+  /** Tenant activo al momento de pedir el contexto */
   restaurantId: string
+}
+
+interface FirebaseRuntime {
+  app: FirebaseApp
+  auth: Auth
+  db: Firestore
 }
 
 function readFirebaseConfig(): FirebaseWebConfig | null {
@@ -84,24 +93,28 @@ export function getFirebaseRestaurantId(): string {
 export function setFirebaseRestaurantId(id: string) {
   currentActiveRestaurantId = id
   localStorage.setItem('pachax_active_restaurant_id', id)
-  firebaseContextPromise = null
+  // Ojo: NO se invalida la inicializacion de Firebase. La app, la sesion y la
+  // instancia de Firestore no dependen del tenant activo, y volver a
+  // inicializarlas lanzaba "Firestore has already been started": el fallo
+  // dejaba al usuario en el tenant equivocado justo despues de resolver su
+  // empresa por defecto.
 }
 
 export function isFirebaseConfigured() {
   return Boolean(readFirebaseConfig())
 }
 
-let firebaseContextPromise: Promise<FirebaseContext | null> | null = null
+let firebaseRuntimePromise: Promise<FirebaseRuntime | null> | null = null
 
-export async function getFirebaseContext(): Promise<FirebaseContext | null> {
+/** Inicializa app, Firestore y Auth una sola vez por sesion. */
+async function getFirebaseRuntime(): Promise<FirebaseRuntime | null> {
   if (!isFirebaseConfigured()) {
     return null
   }
 
-  if (!firebaseContextPromise) {
-    firebaseContextPromise = (async () => {
+  if (!firebaseRuntimePromise) {
+    firebaseRuntimePromise = (async () => {
       const firebaseConfig = readFirebaseConfig()
-      const restaurantId = getFirebaseRestaurantId()
 
       if (!firebaseConfig) {
         return null
@@ -116,9 +129,15 @@ export async function getFirebaseContext(): Promise<FirebaseContext | null> {
       // llamada a getFirestore: si se pide la instancia primero, Firestore
       // queda con cache en memoria y la aplicacion pierde todo al cerrarse,
       // que es justo lo contrario de lo que necesita quien vende en calle.
+      //
+      // Contra el emulador se usa cache en memoria para no arrastrar datos
+      // entre sesiones de desarrollo, salvo que se pida explicitamente la
+      // cache persistente para poder validar el comportamiento offline real.
+      const useMemoryCache = useEmulator && import.meta.env.VITE_EMULATOR_PERSISTENT_CACHE !== 'true'
+
       try {
         db = initializeFirestore(app, {
-          localCache: useEmulator
+          localCache: useMemoryCache
             ? memoryLocalCache()
             : persistentLocalCache({
                 tabManager: persistentMultipleTabManager(),
@@ -144,18 +163,32 @@ export async function getFirebaseContext(): Promise<FirebaseContext | null> {
         await setPersistence(auth, inMemoryPersistence)
       }
 
-      TenantContextService.setContext(restaurantId, 'main', auth.currentUser?.uid)
-
-      return {
-        app,
-        auth,
-        db,
-        restaurantId,
+      // Interruptor de red solo para desarrollo/QA: permite reproducir el modo
+      // avion desde la propia capa de Firestore al validar el flujo offline.
+      if (import.meta.env.DEV) {
+        ;(window as unknown as { __pachaxDevNetwork?: unknown }).__pachaxDevNetwork = {
+          goOffline: () => disableNetwork(db),
+          goOnline: () => enableNetwork(db),
+        }
       }
+
+      return { app, auth, db }
     })()
   }
 
-  return firebaseContextPromise
+  return firebaseRuntimePromise
+}
+
+export async function getFirebaseContext(): Promise<FirebaseContext | null> {
+  const runtime = await getFirebaseRuntime()
+  if (!runtime) return null
+
+  // El tenant activo se resuelve en cada llamada: puede cambiar al iniciar
+  // sesion, sin necesidad de reinicializar Firebase.
+  const restaurantId = getFirebaseRestaurantId()
+  TenantContextService.setContext(restaurantId, 'main', runtime.auth.currentUser?.uid)
+
+  return { ...runtime, restaurantId }
 }
 
 export async function signInWithEmail(email: string, password: string) {

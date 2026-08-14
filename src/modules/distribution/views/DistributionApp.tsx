@@ -113,10 +113,12 @@ export function DistributionApp({
 
   // El distribuidor solo consulta su propia ruta y su propio dia.
   const scopeRouteId = role === 'distributor' ? routeId : null
+  const canReadFinance = can('dist.credit.view') || can('dist.credit.viewAll')
   const data = useDistributionData({
     routeId: scopeRouteId,
     dayKeys: role === 'distributor' ? [toDayKey(new Date())] : dayKeys,
     enabled: true,
+    canReadFinance,
   })
 
   useBackButtonBridge(() => {

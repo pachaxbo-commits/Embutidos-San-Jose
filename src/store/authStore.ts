@@ -191,7 +191,11 @@ async function initialize() {
           account,
         })
       } catch {
-        // Fallback: Always authorize user with admin role for dev testing
+        // Fallback: Always authorize user with admin role for dev testing.
+        // Aun asi se intenta resolver el perfil del tenant: si no, un fallo
+        // transitorio dejaba al usuario en la experiencia equivocada.
+        const account = await fetchRestaurantAccount(getFirebaseRestaurantId()).catch(() => null)
+
         setState({
           status: 'authorized',
           userEmail: user.email ?? '',
@@ -206,6 +210,8 @@ async function initialize() {
           },
           error: null,
           restaurantId: getFirebaseRestaurantId(),
+          businessType: account?.businessType ?? 'restaurant',
+          account,
         })
       }
     })()

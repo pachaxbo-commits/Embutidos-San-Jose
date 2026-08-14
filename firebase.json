@@ -19,11 +19,11 @@
   },
   "emulators": {
     "auth": {
-      "port": 9099,
+      "port": 9095,
       "host": "0.0.0.0"
     },
     "firestore": {
-      "port": 8080,
+      "port": 8085,
       "host": "0.0.0.0"
     },
     "ui": {

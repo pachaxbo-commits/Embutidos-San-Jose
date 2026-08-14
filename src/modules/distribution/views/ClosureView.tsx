@@ -71,6 +71,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     [data.expenses, dispatch],
   )
 
+  /** Un producto solo se evalua cuando almacen escribio la cantidad retornada */
+  const isDeclared = (productId: string) => {
+    const value = returns[productId]
+    return value !== undefined && value !== '' && !Number.isNaN(Number(value))
+  }
+
   const parsedReturns = useMemo(() => {
     const map: Record<string, number> = {}
     for (const [productId, value] of Object.entries(returns)) map[productId] = round2(Number(value) || 0)
@@ -88,7 +94,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   )
 
   const declaredValue = round2(Number(declaredCash) || 0)
-  const cashDifference = round2(declaredValue - money.expectedCash)
+  // Mientras no se declare el efectivo fisico no hay diferencia que reportar:
+  // guardar -368 en un cierre a medias confundia a quien revisaba el arqueo.
+  const isCashDeclared = declaredCash !== ''
+  const cashDifference = isCashDeclared ? round2(declaredValue - money.expectedCash) : 0
 
   const buildClosureDoc = (status: DistClosure['status']): DistClosure | null => {
     if (!dispatch) return null
@@ -117,10 +126,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       expectedCash: money.expectedCash,
       physicalCashDeclared: declaredValue,
       cashDifference,
-      warehouseClosedBy: status === 'warehouse_done' ? session.uid : existingClosure?.warehouseClosedBy,
-      warehouseClosedAt: status === 'warehouse_done' ? now : existingClosure?.warehouseClosedAt,
-      closedBy: status === 'closed' ? session.uid : existingClosure?.closedBy,
-      closedAt: status === 'closed' ? now : existingClosure?.closedAt,
+      // Firestore rechaza undefined: los campos aun no ocurridos van vacios.
+      warehouseClosedBy: status === 'warehouse_done' ? session.uid : (existingClosure?.warehouseClosedBy ?? ''),
+      warehouseClosedAt: status === 'warehouse_done' ? now : (existingClosure?.warehouseClosedAt ?? ''),
+      closedBy: status === 'closed' ? session.uid : (existingClosure?.closedBy ?? ''),
+      closedAt: status === 'closed' ? now : (existingClosure?.closedAt ?? ''),
+      note: existingClosure?.note ?? '',
     }
   }
 
@@ -130,6 +141,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
     const closure = buildClosureDoc(status)
     if (!closure) return
+
+    if (status === 'warehouse_done') {
+      const sinDeclarar = productRows.filter((row) => !isDeclared(row.productId))
+      if (sinDeclarar.length > 0) {
+        setError(`Falta declarar el retorno de: ${sinDeclarar.map((row) => row.productName).join(', ')}.`)
+        return
+      }
+    }
 
     if (status === 'closed' && !declaredCash) {
       setError('Ingresa el efectivo fisico declarado antes de cerrar la ruta.')
@@ -178,7 +197,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               <div key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 p-3">
                 <div className="flex items-start justify-between gap-2">
                   <p className="min-w-0 truncate text-xs font-extrabold text-slate-900">{row.productName}</p>
-                  <VarianceBadge variance={row.variance} unitType={row.unitType} />
+                  {/* Sin retorno declarado no se afirma que falte: solo falta el dato. */}
+                  {isDeclared(row.productId) ? (
+                    <VarianceBadge variance={row.variance} unitType={row.unitType} />
+                  ) : (
+                    <span className="inline-flex shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                      SIN DECLARAR
+                    </span>
+                  )}
                 </div>
 
                 <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
@@ -253,7 +279,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             </Field>
           </div>
 
-          {declaredCash !== '' && (
+          {isCashDeclared && (
             <div className="mt-3 flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
               <span className="text-xs font-extrabold uppercase text-slate-500">Diferencia de caja</span>
               <VarianceBadge variance={cashDifference} />

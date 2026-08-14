@@ -156,7 +156,13 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                         Esperado {formatBs(closure.expectedCash)} · Declarado {formatBs(closure.physicalCashDeclared)}
                       </p>
                     </div>
-                    <VarianceBadge variance={closure.cashDifference} />
+                    {closure.status === 'closed' ? (
+                      <VarianceBadge variance={closure.cashDifference} />
+                    ) : (
+                      <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                        CAJA PENDIENTE
+                      </span>
+                    )}
                   </div>
                   <div className="mt-2 grid gap-1">
                     {closure.products

@@ -129,15 +129,36 @@ function docRef(context: RepoContext, name: string, id: string) {
 
 export interface DistSyncState {
   isOnline: boolean
-  /** Operaciones escritas localmente que aun no confirmo el servidor */
+  /** Operaciones de esta sesion que aun no confirmo el servidor */
   pending: number
+  /**
+   * Firestore reporta escrituras locales sin confirmar. Sobrevive al cierre y
+   * reapertura de la app, cosa que el contador en memoria no puede hacer.
+   */
+  hasUnsyncedWrites: boolean
   lastSyncedAt: string | null
 }
 
 let syncState: DistSyncState = {
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
   pending: 0,
+  hasUnsyncedWrites: false,
   lastSyncedAt: null,
+}
+
+/** Consultas que reportan escrituras locales pendientes de confirmar */
+const queriesWithPendingWrites = new Set<string>()
+
+function reportPendingWrites(queryKey: string, hasPendingWrites: boolean) {
+  const had = queriesWithPendingWrites.size > 0
+  if (hasPendingWrites) queriesWithPendingWrites.add(queryKey)
+  else queriesWithPendingWrites.delete(queryKey)
+
+  const has = queriesWithPendingWrites.size > 0
+  if (had !== has) {
+    syncState = { ...syncState, hasUnsyncedWrites: has }
+    emitSyncState()
+  }
 }
 
 const syncListeners = new Set<() => void>()
@@ -190,6 +211,14 @@ function commitInBackground(batch: WriteBatch, operationId: string, label: strin
     })
 }
 
+/**
+ * Firestore rechaza los campos con valor undefined. Un cierre en curso tiene
+ * varios datos que todavia no ocurrieron, asi que se limpian antes de escribir.
+ */
+function stripUndefined<T extends Record<string, unknown>>(data: T): T {
+  return Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined)) as T
+}
+
 function baseDocFields(context: RepoContext, createdAt: string) {
   return {
     restaurantId: context.restaurantId,
@@ -205,6 +234,8 @@ function baseDocFields(context: RepoContext, createdAt: string) {
 // Suscripciones
 // ---------------------------------------------------------------------------
 
+let querySequence = 0
+
 function subscribeQuery<T>(
   build: (context: RepoContext) => Query<DocumentData>,
   onData: (rows: T[]) => void,
@@ -212,6 +243,7 @@ function subscribeQuery<T>(
 ): () => void {
   let unsubscribe: Unsubscribe | null = null
   let cancelled = false
+  const queryKey = `q${querySequence++}`
 
   void (async () => {
     try {
@@ -219,7 +251,9 @@ function subscribeQuery<T>(
       if (cancelled) return
       unsubscribe = onSnapshot(
         build(context),
+        { includeMetadataChanges: true },
         (snapshot) => {
+          reportPendingWrites(queryKey, snapshot.metadata.hasPendingWrites)
           onData(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as T))
         },
         (error) => {
@@ -234,6 +268,7 @@ function subscribeQuery<T>(
 
   return () => {
     cancelled = true
+    reportPendingWrites(queryKey, false)
     if (unsubscribe) unsubscribe()
   }
 }
@@ -883,7 +918,11 @@ export async function saveClosure(input: SaveClosureInput): Promise<string> {
   const closure = input.closure
   const batch = writeBatch(context.db)
 
-  batch.set(docRef(context, DIST_COLLECTIONS.closures, closure.id), { ...closure, updatedAt: createdAt }, { merge: true })
+  batch.set(
+    docRef(context, DIST_COLLECTIONS.closures, closure.id),
+    stripUndefined({ ...closure, updatedAt: createdAt }),
+    { merge: true },
+  )
 
   if (input.applyStockReturn) {
     closure.products.forEach((row, index) => {

@@ -9,7 +9,7 @@ async function run() {
     projectId: 'comandero-6907f',
     firestore: {
       host: '127.0.0.1',
-      port: 8080,
+      port: 8085,
       rules,
     },
   });

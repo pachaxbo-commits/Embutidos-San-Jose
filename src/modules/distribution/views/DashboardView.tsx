@@ -147,63 +147,107 @@ export function DashboardView({ session, data }: DistributionViewProps) {
         entry.isOpen = false
         entry.cashDifference = closure.cashDifference
       }
+      // Un cierre a medias no reporta diferencia de caja todavia.
     }
 
     return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
   }, [data.openDispatches, data.closures, sales, collections])
 
-  /** Conciliacion consolidada de producto en el periodo */
+  /**
+   * Conciliacion consolidada del periodo.
+   *
+   * La fuente es el cierre de cada ruta (que ya congela cargado, vendido y
+   * retornado) y, para las rutas todavia abiertas, el despacho vivo. Antes se
+   * miraban solo los despachos abiertos: al cerrar la ruta el panel mostraba
+   * despachado 0 y devuelto 0.
+   */
   const productRows = useMemo(() => {
-    const sold = computeSoldByProduct(sales)
-    const rows = data.openDispatches.flatMap((dispatch) =>
-      buildReconciliation(
+    type Row = {
+      name: string
+      unitType: 'kg' | 'unit' | 'package'
+      dispatched: number
+      sold: number
+      returned: number
+      variance: number
+      reconciled: boolean
+    }
+    const merged = new Map<string, Row>()
+
+    const upsert = (productId: string, patch: Partial<Row> & { name: string; unitType: Row['unitType'] }) => {
+      const current = merged.get(productId) ?? {
+        name: patch.name,
+        unitType: patch.unitType,
+        dispatched: 0,
+        sold: 0,
+        returned: 0,
+        variance: 0,
+        reconciled: false,
+      }
+      merged.set(productId, {
+        ...current,
+        name: patch.name || current.name,
+        unitType: patch.unitType || current.unitType,
+        dispatched: round2(current.dispatched + (patch.dispatched ?? 0)),
+        sold: round2(current.sold + (patch.sold ?? 0)),
+        returned: round2(current.returned + (patch.returned ?? 0)),
+        variance: round2(current.variance + (patch.variance ?? 0)),
+        reconciled: current.reconciled || Boolean(patch.reconciled),
+      })
+    }
+
+    const closedDispatchIds = new Set<string>()
+
+    for (const closure of data.closures) {
+      if (routeFilter && closure.routeId !== routeFilter) continue
+      closedDispatchIds.add(closure.dispatchId)
+      const isReconciled = closure.status !== 'draft'
+      for (const row of closure.products) {
+        upsert(row.productId, {
+          name: row.productName,
+          unitType: row.unitType,
+          dispatched: row.totalLoaded,
+          sold: row.sold,
+          returned: row.actualReturn,
+          variance: row.variance,
+          reconciled: isReconciled,
+        })
+      }
+    }
+
+    // Rutas todavia en curso: se concilian contra sus ventas del periodo.
+    for (const dispatch of data.openDispatches) {
+      if (closedDispatchIds.has(dispatch.id)) continue
+      if (routeFilter && dispatch.routeId !== routeFilter) continue
+      const rows = buildReconciliation(
         dispatch,
         sales.filter(
           (sale) =>
             sale.sourceLocation !== 'centralWarehouse' &&
             (sale.dispatchId === dispatch.id || sale.routeId === dispatch.routeId),
         ),
-        Object.fromEntries(
-          (data.closures.find((closure) => closure.dispatchId === dispatch.id)?.products ?? []).map((row) => [
-            row.productId,
-            row.actualReturn,
-          ]),
-        ),
-      ),
-    )
-
-    const merged = new Map<string, { name: string; unitType: (typeof rows)[number]['unitType']; dispatched: number; sold: number; returned: number; variance: number }>()
-
-    for (const row of rows) {
-      const current = merged.get(row.productId) ?? {
-        name: row.productName,
-        unitType: row.unitType,
-        dispatched: 0,
-        sold: 0,
-        returned: 0,
-        variance: 0,
+        {},
+      )
+      for (const row of rows) {
+        upsert(row.productId, {
+          name: row.productName,
+          unitType: row.unitType,
+          dispatched: row.totalLoaded,
+          sold: row.sold,
+          returned: 0,
+          variance: 0,
+          reconciled: false,
+        })
       }
-      current.dispatched = round2(current.dispatched + row.totalLoaded)
-      current.returned = round2(current.returned + row.actualReturn)
-      current.variance = round2(current.variance + row.variance)
-      merged.set(row.productId, current)
     }
 
-    for (const [productId, totals] of sold) {
-      const current = merged.get(productId) ?? {
-        name: totals.productName,
-        unitType: totals.unitType,
-        dispatched: 0,
-        sold: 0,
-        returned: 0,
-        variance: 0,
-      }
-      current.sold = round2(current.sold + totals.quantity)
-      merged.set(productId, current)
+    // Ventas directas desde almacen central: solo suman vendido.
+    const directSold = computeSoldByProduct(sales.filter((sale) => sale.sourceLocation === 'centralWarehouse'))
+    for (const [productId, totals] of directSold) {
+      upsert(productId, { name: totals.productName, unitType: totals.unitType, sold: totals.quantity })
     }
 
     return [...merged.entries()].map(([productId, totals]) => ({ productId, ...totals }))
-  }, [data.openDispatches, data.closures, sales])
+  }, [data.closures, data.openDispatches, sales, routeFilter])
 
   return (
     <Screen title="Panel" subtitle={`${session.dayKeys.length} dia(s) consultados`}>
@@ -330,7 +374,13 @@ export function DashboardView({ session, data }: DistributionViewProps) {
                 <div key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 p-3">
                   <div className="flex items-start justify-between gap-2">
                     <p className="min-w-0 truncate text-xs font-extrabold text-slate-900">{row.name}</p>
-                    <VarianceBadge variance={row.variance} unitType={row.unitType} />
+                    {row.reconciled ? (
+                      <VarianceBadge variance={row.variance} unitType={row.unitType} />
+                    ) : (
+                      <span className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-black text-sky-700">
+                        EN RUTA
+                      </span>
+                    )}
                   </div>
                   <dl className="mt-2 grid grid-cols-3 gap-x-3">
                     <div>

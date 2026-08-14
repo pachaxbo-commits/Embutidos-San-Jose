@@ -144,21 +144,25 @@ export function SecondaryButton({
 
 /** Estado de sincronizacion siempre visible mientras se trabaja en calle */
 export function SyncStatusPill({ state }: { state: DistSyncState }) {
+  // El contador vive en memoria; hasUnsyncedWrites viene de Firestore y
+  // sobrevive a cerrar y reabrir la aplicacion.
+  const pendingLabel = state.pending > 0 ? `${state.pending} PENDIENTES` : 'CON PENDIENTES'
+
   if (!state.isOnline) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-black text-amber-800">
         <CloudOff size={12} />
         SIN CONEXION
-        {state.pending > 0 && <span>· {state.pending} PENDIENTES</span>}
+        {(state.pending > 0 || state.hasUnsyncedWrites) && <span>· {pendingLabel}</span>}
       </span>
     )
   }
 
-  if (state.pending > 0) {
+  if (state.pending > 0 || state.hasUnsyncedWrites) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[10px] font-black text-sky-800">
         <Loader2 size={12} className="animate-spin" />
-        SINCRONIZANDO · {state.pending}
+        SINCRONIZANDO{state.pending > 0 ? ` · ${state.pending}` : ''}
       </span>
     )
   }

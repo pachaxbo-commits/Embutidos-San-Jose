@@ -42,6 +42,12 @@ export interface DistributionScope {
   /** Dias a consultar, formato YYYY-MM-DD */
   dayKeys: string[]
   enabled: boolean
+  /**
+   * El rol puede leer cartera y cobranzas. Almacen no maneja finanzas: si se
+   * suscribiera igual, Firestore le respondería permiso denegado y la pantalla
+   * mostraria un error que no le corresponde.
+   */
+  canReadFinance: boolean
 }
 
 export function useSyncStatus() {
@@ -89,7 +95,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [loadedCount, setLoadedCount] = useState(0)
 
   const dayKeysSignature = scope.dayKeys.join(',')
-  const { routeId, enabled } = scope
+  const { routeId, enabled, canReadFinance } = scope
 
   const markLoaded = useRef(new Set<string>())
   const onLoaded = useCallback((key: string) => {
@@ -134,13 +140,17 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setOpenDispatches(rows)
         onLoaded('dispatches')
       }, onError),
-      subscribeReceivables(routeId, (rows) => {
-        setReceivables(rows)
-        onLoaded('receivables')
-      }, onError),
+      ...(canReadFinance
+        ? [
+            subscribeReceivables(routeId, (rows) => {
+              setReceivables(rows)
+              onLoaded('receivables')
+            }, onError),
+          ]
+        : []),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
-  }, [enabled, routeId, onError, onLoaded])
+  }, [enabled, routeId, canReadFinance, onError, onLoaded])
 
   // Movimientos del rango consultado.
   useEffect(() => {
@@ -153,10 +163,14 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setSales(rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
         onLoaded('sales')
       }, onError),
-      subscribeCollections(dayKeys, routeId, (rows) => {
-        setCollections(rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
-        onLoaded('collections')
-      }, onError),
+      ...(canReadFinance
+        ? [
+            subscribeCollections(dayKeys, routeId, (rows) => {
+              setCollections(rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+              onLoaded('collections')
+            }, onError),
+          ]
+        : []),
       subscribeExpenses(dayKeys, routeId, (rows) => {
         setExpenses(rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
         onLoaded('expenses')
@@ -167,7 +181,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
       }, onError),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
-  }, [enabled, routeId, dayKeysSignature, onError, onLoaded])
+  }, [enabled, routeId, dayKeysSignature, canReadFinance, onError, onLoaded])
 
   return {
     products,

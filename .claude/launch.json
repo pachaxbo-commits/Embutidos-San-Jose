@@ -2,10 +2,13 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "pachax-dev",
+      "name": "pachax-emulador",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5173
+      "runtimeArgs": [
+        "run",
+        "dev:emulator"
+      ],
+      "port": 5180
     }
   ]
 }

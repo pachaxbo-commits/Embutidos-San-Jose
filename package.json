@@ -6,13 +6,17 @@
   "scripts": {
     "dev": "vite",
     "dev:emulator": "vite --mode emulator",
-    "emulators": "cmd /c \"set PATH=%PATH%;C:\\Program Files\\Android\\Android Studio\\jbr\\bin&& firebase emulators:start --import=.emulator-data --export-on-exit=.emulator-data\"",
+    "emulators": "firebase emulators:start --only firestore,auth",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
     "android:open": "cap open android",
-    "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts"
+    "test:rules": "node firebase/tests/distributionRules.test.mjs",
+    "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
+    "seed:demo": "node firebase/tests/seedDemoTenant.mjs",
+    "rules:load": "node firebase/tests/loadRules.mjs",
+    "inspect:demo": "node firebase/tests/inspectDemo.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

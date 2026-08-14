@@ -277,9 +277,39 @@ service cloud.firestore {
         && request.resource.data.options is list;
     }
 
+    // =====================================================================
+    // Documento del tenant y mapa usuario -> tenant
+    //
+    // Sin estas reglas la aplicacion no puede leer su propia empresa: el
+    // perfil (nombre, businessType, moneda, marca) quedaba siempre denegado y
+    // el tipo de empresa nunca se resolvia.
+    // =====================================================================
+
+    match /restaurants/{restaurantId} {
+      allow get: if isActiveMember(restaurantId);
+      allow list: if false;
+      // Alta de una empresa nueva: solo puede crearla su propio dueno.
+      allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if hasRole(restaurantId, ['admin', 'owner', 'superadmin']);
+      allow delete: if false;
+    }
+
+    match /users/{uid} {
+      allow get: if isSignedIn() && request.auth.uid == uid;
+      allow list: if false;
+      // Cada quien mantiene su propio mapa; ademas un administrador puede
+      // apuntar a un usuario recien creado hacia SU empresa (nunca hacia otra).
+      allow create, update: if isSignedIn() && (
+        request.auth.uid == uid
+        || hasRole(request.resource.data.defaultRestaurantId, ['admin', 'owner', 'superadmin'])
+      );
+      allow delete: if false;
+    }
+
     match /restaurants/{restaurantId}/members/{uid} {
-      allow get: if isSignedIn() && (request.auth.uid == uid || hasRole(restaurantId, ['admin']));
-      allow list: if hasRole(restaurantId, ['admin']);
+      allow get: if isSignedIn() && (request.auth.uid == uid || hasRole(restaurantId, ['admin', 'owner', 'superadmin', 'warehouse']));
+      // Almacen necesita el listado para saber a que distribuidor despacha.
+      allow list: if hasRole(restaurantId, ['admin', 'owner', 'superadmin', 'warehouse']);
       allow create, update: if hasRole(restaurantId, ['admin'])
         && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'routeId'])
         && request.resource.data.uid == uid
@@ -490,8 +520,19 @@ service cloud.firestore {
     match /restaurants/{restaurantId}/distDispatches/{dispatchId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
         || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
-      allow create, update: if (distAdmin(restaurantId) || distWarehouse(restaurantId))
+      allow create: if (distAdmin(restaurantId) || distWarehouse(restaurantId))
         && distTenantMatches(restaurantId);
+      allow update: if
+        (
+          (distAdmin(restaurantId) || distWarehouse(restaurantId)) && distTenantMatches(restaurantId)
+        )
+        || (
+          // El distribuidor cierra SU ruta: solo puede marcar el despacho como
+          // cerrado, sin tocar cargas, aumentos ni ninguna otra ruta.
+          distOwnsRoute(restaurantId, resource.data.get('routeId', ''))
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'closedAt', 'closureId'])
+          && request.resource.data.status == 'closed'
+        );
       allow delete: if false;
     }
 
