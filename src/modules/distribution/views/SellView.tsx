@@ -66,6 +66,8 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [lastSale, setLastSale] = useState<DistSale | null>(null)
+  const [printState, setPrintState] = useState<{ ok: boolean; message: string } | null>(null)
+  const [isPrinting, setIsPrinting] = useState(false)
 
   // Un id de operacion por intento de venta: evita duplicar por doble toque y
   // permite reintentar la sincronizacion sin crear una venta nueva.
@@ -145,6 +147,7 @@ export function SellView({ session, data }: DistributionViewProps) {
     setMixedQr('0')
     setLastSale(null)
     setError(null)
+    setPrintState(null)
     setIsCheckoutOpen(false)
     operationIdRef.current = null
   }
@@ -230,6 +233,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       })
 
       setIsCheckoutOpen(false)
+      setPrintState(null)
       setLastSale(sale)
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo registrar la venta.')
@@ -527,9 +531,30 @@ export function SellView({ session, data }: DistributionViewProps) {
                 tone={lastSale.creditAmount > 0 ? 'warning' : 'positive'}
               />
             </div>
-            <SecondaryButton full onClick={() => void printSaleReceipt(lastSale, receiptContext)}>
-              <Printer size={16} /> Imprimir recibo
+            {/* Un fallo de impresion no revierte ni duplica la venta: solo se reintenta. */}
+            <SecondaryButton
+              full
+              disabled={isPrinting}
+              onClick={() => {
+                setIsPrinting(true)
+                void printSaleReceipt(lastSale, receiptContext)
+                  .then(setPrintState)
+                  .finally(() => setIsPrinting(false))
+              }}
+            >
+              <Printer size={16} />
+              {isPrinting ? 'Imprimiendo...' : printState && !printState.ok ? 'Reintentar impresion' : 'Imprimir ticket'}
             </SecondaryButton>
+
+            {printState && (
+              <p
+                className={`rounded-2xl px-3 py-2 text-[11px] font-bold ${
+                  printState.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'
+                }`}
+              >
+                {printState.message}
+              </p>
+            )}
             <SecondaryButton full onClick={() => void shareSaleReceipt(lastSale, receiptContext)}>
               <Send size={16} /> Compartir por WhatsApp
             </SecondaryButton>

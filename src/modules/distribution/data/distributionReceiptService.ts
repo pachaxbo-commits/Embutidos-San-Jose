@@ -1,6 +1,8 @@
 import { PrintEngineService } from '../../../services/printing/printEngineService'
+import { AndroidBluetoothPermissionsService } from '../../../services/printing/androidBluetoothPermissionsService'
+import { getActiveReceiptPrinter } from '../../../services/printing/printerBootstrap'
 import { round2 } from '../domain/engine'
-import type { PrintJob, PrintJobPayload } from '../../../types/printing'
+import type { PrintJobPayload } from '../../../types/printing'
 import type { DistSale } from '../types'
 
 /**
@@ -60,18 +62,61 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
   }
 }
 
-/** Encola el recibo en el motor existente. Idempotente por venta. */
-export async function printSaleReceipt(sale: DistSale, context: ReceiptContext): Promise<PrintJob | null> {
+export interface PrintAttemptResult {
+  ok: boolean
+  message: string
+}
+
+/**
+ * Imprime el recibo en la impresora configurada.
+ *
+ * Un fallo de impresion NUNCA afecta a la venta: la venta ya quedo guardada y
+ * sincronizada por su cuenta. Aqui solo se informa para poder reintentar.
+ */
+export async function printSaleReceipt(sale: DistSale, context: ReceiptContext): Promise<PrintAttemptResult> {
+  const printer = getActiveReceiptPrinter()
+
+  if (!printer) {
+    return {
+      ok: false,
+      message: 'No hay impresora configurada. Entra a Impresoras y agrega tu impresora Bluetooth.',
+    }
+  }
+
+  if (printer.connectionType === 'bluetooth_spp') {
+    try {
+      const state = await AndroidBluetoothPermissionsService.checkDiagnosticState()
+      if (state.isNativeAndroid && state.bluetoothConnectPermission === 'denied') {
+        const afterRequest = await AndroidBluetoothPermissionsService.requestConnectPermission()
+        if (afterRequest.bluetoothConnectPermission !== 'granted') {
+          return { ok: false, message: afterRequest.message }
+        }
+      } else if (state.isNativeAndroid && !state.isBluetoothEnabled) {
+        return { ok: false, message: state.message }
+      }
+    } catch (error) {
+      console.error('[distribution] no se pudo verificar el estado del Bluetooth', error)
+    }
+  }
+
   try {
-    return await PrintEngineService.getInstance().submitPrintRequest({
+    const job = await PrintEngineService.getInstance().submitPrintRequest({
       targetType: 'receipt',
       orderId: sale.id,
+      printerProfileId: printer.id,
       idempotencyKey: `dist-receipt:${sale.operationId}`,
       payload: buildSaleReceiptPayload(sale, context),
     })
+
+    if (job.status === 'failed' || job.status === 'unknown') {
+      return { ok: false, message: job.lastError || 'La impresora no confirmo el ticket. Puedes reintentar.' }
+    }
+    return { ok: true, message: 'Ticket enviado a la impresora.' }
   } catch (error) {
-    console.error('[distribution] no se pudo encolar el recibo', error)
-    return null
+    return {
+      ok: false,
+      message: (error as Error).message || 'No se pudo enviar el ticket. Puedes reintentar.',
+    }
   }
 }
 

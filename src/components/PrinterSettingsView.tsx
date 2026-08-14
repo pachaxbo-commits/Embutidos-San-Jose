@@ -14,6 +14,7 @@ import { PrintEngineService } from '../services/printing/printEngineService'
 import { PrintMigrationService, type PrintingEngineVersion } from '../services/printing/printMigrationService'
 import { AndroidNetworkTcpPrinterAdapter } from '../adapters/printing/androidNetworkTcpPrinterAdapter'
 import { AndroidBluetoothSppAdapter } from '../adapters/printing/androidBluetoothSppAdapter'
+import { savePrinterProfile } from '../services/printing/printerBootstrap'
 import { PageHeader } from './ui/PageHeader'
 import type { PrinterProfile, PrinterConnectionType } from '../types/printing'
 
@@ -93,7 +94,8 @@ export function PrinterSettingsView({ onBack }: PrinterSettingsViewProps) {
 
   const handleSaveProfile = () => {
     if (!editingProfile || !editingProfile.name) return
-    engine.registerPrinterProfile(editingProfile as PrinterProfile)
+    // Se persiste ademas de registrarse: antes el perfil se perdia al recargar.
+    savePrinterProfile(editingProfile as PrinterProfile)
     loadProfiles()
     setIsEditingModalOpen(false)
     setStatusMessage(`Perfil de impresora "${editingProfile.name}" guardado exitosamente.`)
@@ -101,7 +103,7 @@ export function PrinterSettingsView({ onBack }: PrinterSettingsViewProps) {
 
   const handleToggleActive = (profile: PrinterProfile) => {
     const updated = { ...profile, isActive: !profile.isActive }
-    engine.registerPrinterProfile(updated)
+    savePrinterProfile(updated)
     loadProfiles()
   }
 

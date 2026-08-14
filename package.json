@@ -16,7 +16,8 @@
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
     "seed:demo": "node firebase/tests/seedDemoTenant.mjs",
     "rules:load": "node firebase/tests/loadRules.mjs",
-    "inspect:demo": "node firebase/tests/inspectDemo.mjs"
+    "inspect:demo": "node firebase/tests/inspectDemo.mjs",
+    "seed:restaurant": "node firebase/tests/seedRestaurantTenant.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
