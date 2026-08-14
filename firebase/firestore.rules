@@ -281,12 +281,13 @@ service cloud.firestore {
       allow get: if isSignedIn() && (request.auth.uid == uid || hasRole(restaurantId, ['admin']));
       allow list: if hasRole(restaurantId, ['admin']);
       allow create, update: if hasRole(restaurantId, ['admin'])
-        && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'active', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'routeId'])
         && request.resource.data.uid == uid
         && request.resource.data.email is string
         && request.resource.data.displayName is string
-        && request.resource.data.role in ['admin', 'caja', 'cocina', 'pedidos']
-        && request.resource.data.active is bool;
+        && request.resource.data.role in ['admin', 'caja', 'cocina', 'pedidos', 'warehouse', 'distributor']
+        && request.resource.data.active is bool
+        && (!('routeId' in request.resource.data) || request.resource.data.routeId is string);
       allow delete: if hasRole(restaurantId, ['admin']) && request.auth.uid != uid;
     }
 
@@ -411,5 +412,145 @@ service cloud.firestore {
           && hasRole(restaurantId, ['admin', 'caja']);
       }
     }
+
+    // =====================================================================
+    // Distribucion movil (businessType: 'mobile_distribution')
+    //
+    // Todo documento vive bajo el tenant y lleva restaurantId. El rol
+    // distributor solo alcanza documentos de SU ruta: por eso las consultas
+    // del cliente filtran siempre por routeId.
+    // =====================================================================
+
+    function distAdmin(restaurantId) {
+      return hasRole(restaurantId, ['admin', 'owner', 'superadmin', 'accountant']);
+    }
+
+    function distWarehouse(restaurantId) {
+      return hasRole(restaurantId, ['warehouse']);
+    }
+
+    function distDistributor(restaurantId) {
+      return hasRole(restaurantId, ['distributor']);
+    }
+
+    function distMyRoute(restaurantId) {
+      return memberData(restaurantId).get('routeId', '');
+    }
+
+    /** El documento pertenece a la ruta del distribuidor autenticado */
+    function distOwnsRoute(restaurantId, routeId) {
+      return distDistributor(restaurantId) && routeId != '' && routeId == distMyRoute(restaurantId);
+    }
+
+    function distTenantMatches(restaurantId) {
+      return request.resource.data.restaurantId == restaurantId;
+    }
+
+    // Catalogo y rutas: lectura para cualquier miembro activo, escritura solo
+    // administracion (los precios son configuracion, no operacion diaria).
+    match /restaurants/{restaurantId}/distProducts/{productId} {
+      allow read: if isActiveMember(restaurantId);
+      allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId);
+      allow delete: if distAdmin(restaurantId);
+    }
+
+    match /restaurants/{restaurantId}/distRoutes/{routeId} {
+      allow read: if isActiveMember(restaurantId);
+      allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId);
+      allow delete: if distAdmin(restaurantId);
+    }
+
+    // Los saldos por ubicacion los mantiene la app con increment() dentro del
+    // mismo lote que el movimiento del ledger.
+    match /restaurants/{restaurantId}/distBalances/{balanceId} {
+      allow read: if isActiveMember(restaurantId);
+      allow create, update: if distAdmin(restaurantId) || distWarehouse(restaurantId) || distDistributor(restaurantId);
+      allow delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distCustomers/{customerId} {
+      allow read: if isActiveMember(restaurantId);
+      allow create, update: if (distAdmin(restaurantId) || distWarehouse(restaurantId) || distDistributor(restaurantId))
+        && distTenantMatches(restaurantId);
+      allow delete: if distAdmin(restaurantId);
+    }
+
+    // Ledger inmutable: se crea, nunca se edita ni se borra.
+    match /restaurants/{restaurantId}/distStockMovements/{movementId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId);
+      allow create: if distTenantMatches(restaurantId)
+        && (
+          distAdmin(restaurantId)
+          || distWarehouse(restaurantId)
+          || distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
+        );
+      allow update, delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distDispatches/{dispatchId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
+        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
+      allow create, update: if (distAdmin(restaurantId) || distWarehouse(restaurantId))
+        && distTenantMatches(restaurantId);
+      allow delete: if false;
+    }
+
+    // Las ventas no se editan ni se borran: son historia contable.
+    match /restaurants/{restaurantId}/distSales/{saleId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
+        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
+      allow create: if distTenantMatches(restaurantId)
+        && request.resource.data.total is number
+        && request.resource.data.total >= 0
+        && (
+          distAdmin(restaurantId)
+          || distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
+        );
+      allow update, delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distReceivables/{receivableId} {
+      allow read: if distAdmin(restaurantId)
+        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
+      allow create: if distTenantMatches(restaurantId)
+        && (distAdmin(restaurantId) || distOwnsRoute(restaurantId, request.resource.data.get('routeId', '')));
+      // Solo se actualiza el saldo al registrar un cobro: la deuda no se borra.
+      allow update: if (distAdmin(restaurantId) || distOwnsRoute(restaurantId, resource.data.get('routeId', '')))
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['paidAmount', 'balance', 'status', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distCollections/{collectionId} {
+      allow read: if distAdmin(restaurantId)
+        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
+      allow create: if distTenantMatches(restaurantId)
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && (distAdmin(restaurantId) || distOwnsRoute(restaurantId, request.resource.data.get('routeId', '')));
+      allow update, delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distExpenses/{expenseId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
+        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
+      allow create: if distTenantMatches(restaurantId)
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && (distAdmin(restaurantId) || distOwnsRoute(restaurantId, request.resource.data.get('routeId', '')));
+      allow update, delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distClosures/{closureId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
+        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
+      allow create, update: if distTenantMatches(restaurantId)
+        && (
+          distAdmin(restaurantId)
+          || distWarehouse(restaurantId)
+          || distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
+        );
+      allow delete: if false;
+    }
+
   }
 }
