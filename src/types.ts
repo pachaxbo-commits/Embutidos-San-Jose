@@ -25,6 +25,16 @@ export type UserRole =
   | 'delivery'
   | 'accountant'
   | 'readonly'
+  // Roles de distribucion movil (businessType: 'mobile_distribution')
+  | 'warehouse'
+  | 'distributor'
+
+/**
+ * Tipo de negocio del tenant. Determina que modulos, roles y experiencia
+ * se renderizan. 'restaurant' es el valor por defecto/heredado: cualquier
+ * tenant existente sin este campo se comporta exactamente como antes.
+ */
+export type BusinessType = 'restaurant' | 'mobile_distribution'
 
 export type RepositoryConnectionMode = 'connected' | 'connecting' | 'local' | 'offline'
 
@@ -88,6 +98,25 @@ export type Permission =
   | 'printing.reprint'
   | 'printing.reprintReceipt'
   | 'printing.reprintKitchen'
+  // --- Distribucion movil ---
+  | 'dist.dashboard.view'
+  | 'dist.products.manage'
+  | 'dist.inventory.view'
+  | 'dist.inventory.adjust'
+  | 'dist.dispatch.create'
+  | 'dist.dispatch.addLoad'
+  | 'dist.return.register'
+  | 'dist.sale.create'
+  | 'dist.sale.fromCentral'
+  | 'dist.credit.view'
+  | 'dist.credit.viewAll'
+  | 'dist.collection.create'
+  | 'dist.customer.manage'
+  | 'dist.expense.create'
+  | 'dist.closure.money'
+  | 'dist.closure.warehouse'
+  | 'dist.reports.view'
+  | 'dist.users.manage'
 
 export type PlanFeature =
   | 'pos'
@@ -120,6 +149,8 @@ export interface RestaurantEntitlements {
 
 export interface RestaurantBranding {
   name: string
+  /** Color de fondo/base de la marca (claro). Opcional. */
+  surfaceColor?: string
   logoUrl?: string
   primaryColor?: string
   accentColor?: string
@@ -137,6 +168,10 @@ export interface RestaurantAccount {
   plan: 'basic' | 'pro' | 'enterprise'
   branding: RestaurantBranding
   schemaVersion?: number
+  /** Ausente == 'restaurant' (compatibilidad hacia atras) */
+  businessType?: BusinessType
+  currencyCode?: string
+  currencySymbol?: string
 }
 
 export interface RestaurantMember {
@@ -149,6 +184,8 @@ export interface RestaurantMember {
   createdAt?: string
   restaurantId?: string
   branchId?: string
+  /** Ruta/canal asignado (solo roles de distribucion) */
+  routeId?: string
 }
 
 export interface ProductExtra {

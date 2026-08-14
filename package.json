@@ -11,7 +11,8 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
-    "android:open": "cap open android"
+    "android:open": "cap open android",
+    "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

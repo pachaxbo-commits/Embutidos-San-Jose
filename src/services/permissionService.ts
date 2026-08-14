@@ -15,6 +15,53 @@ export interface AuthorizationResult {
   reason?: string
 }
 
+/**
+ * Paquetes de permisos de distribucion movil.
+ * Se componen dentro de ROLE_PERMISSIONS_MAP para no duplicar listas largas.
+ */
+const DIST_ADMIN_PERMISSIONS: Permission[] = [
+  'dist.dashboard.view',
+  'dist.products.manage',
+  'dist.inventory.view',
+  'dist.inventory.adjust',
+  'dist.dispatch.create',
+  'dist.dispatch.addLoad',
+  'dist.return.register',
+  'dist.sale.create',
+  'dist.sale.fromCentral',
+  'dist.credit.view',
+  'dist.credit.viewAll',
+  'dist.collection.create',
+  'dist.customer.manage',
+  'dist.expense.create',
+  'dist.closure.money',
+  'dist.closure.warehouse',
+  'dist.reports.view',
+  'dist.users.manage',
+]
+
+const DIST_WAREHOUSE_PERMISSIONS: Permission[] = [
+  'dist.dashboard.view',
+  'dist.inventory.view',
+  'dist.inventory.adjust',
+  'dist.dispatch.create',
+  'dist.dispatch.addLoad',
+  'dist.return.register',
+  'dist.closure.warehouse',
+  'dist.customer.manage',
+]
+
+const DIST_DISTRIBUTOR_PERMISSIONS: Permission[] = [
+  'dist.dashboard.view',
+  'dist.inventory.view',
+  'dist.sale.create',
+  'dist.credit.view',
+  'dist.collection.create',
+  'dist.customer.manage',
+  'dist.expense.create',
+  'dist.closure.money',
+]
+
 /** Role permissions matrix defining default permissions assigned to each role */
 export const ROLE_PERMISSIONS_MAP: Record<UserRole, Permission[]> = {
   superadmin: [
@@ -37,6 +84,7 @@ export const ROLE_PERMISSIONS_MAP: Record<UserRole, Permission[]> = {
     'settings.manage',
     'printers.manage',
     'branches.manage',
+    ...DIST_ADMIN_PERMISSIONS,
   ],
   owner: [
     'orders.create',
@@ -58,6 +106,7 @@ export const ROLE_PERMISSIONS_MAP: Record<UserRole, Permission[]> = {
     'settings.manage',
     'printers.manage',
     'branches.manage',
+    ...DIST_ADMIN_PERMISSIONS,
   ],
   admin: [
     'orders.create',
@@ -84,6 +133,7 @@ export const ROLE_PERMISSIONS_MAP: Record<UserRole, Permission[]> = {
     'printing.reprintReceipt',
     'printing.reprintKitchen',
     'cash.openDrawer',
+    ...DIST_ADMIN_PERMISSIONS,
   ],
   manager: [
     'orders.create',
@@ -124,8 +174,10 @@ export const ROLE_PERMISSIONS_MAP: Record<UserRole, Permission[]> = {
   cocina: ['orders.viewAll'],
   pedidos: ['orders.create', 'orders.edit', 'orders.viewAll'],
   delivery: ['orders.viewAll'],
-  accountant: ['reports.view', 'cash.open', 'cash.close'],
+  accountant: ['reports.view', 'cash.open', 'cash.close', ...DIST_ADMIN_PERMISSIONS],
   readonly: ['reports.view'],
+  warehouse: DIST_WAREHOUSE_PERMISSIONS,
+  distributor: DIST_DISTRIBUTOR_PERMISSIONS,
 }
 
 export function getRoleDefaultPermissions(role: UserRole): Permission[] {
