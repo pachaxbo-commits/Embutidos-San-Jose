@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from 'react'
 import { doc, getDoc } from 'firebase/firestore'
-import { getFirebaseContext, getFirebaseRestaurantId, setFirebaseRestaurantId, isFirebaseConfigured, signInWithEmail, signOutUser, subscribeToAuthChanges } from '../lib/firebase'
+import { fetchRestaurantAccount, getFirebaseContext, getFirebaseRestaurantId, setFirebaseRestaurantId, isFirebaseConfigured, signInWithEmail, signOutUser, subscribeToAuthChanges } from '../lib/firebase'
 import { resetCatalogRepository } from './catalogRepositoryFactory'
 import { resetOrdersRepository } from './repositoryFactory'
-import type { RestaurantMember, UserRole } from '../types'
+import type { BusinessType, RestaurantAccount, RestaurantMember, UserRole } from '../types'
 
 type AuthStatus = 'loading' | 'signed_out' | 'authorized' | 'unauthorized' | 'demo' | 'authenticating'
 
@@ -16,6 +16,9 @@ interface AuthState {
   member: RestaurantMember | null
   error: string | null
   restaurantId: string | null
+  /** Tipo de empresa del tenant activo. Determina la experiencia completa. */
+  businessType: BusinessType
+  account: RestaurantAccount | null
 }
 
 const listeners = new Set<() => void>()
@@ -37,6 +40,8 @@ let state: AuthState = !isFirebaseConfigured()
       },
       error: null,
       restaurantId: getFirebaseRestaurantId(),
+      businessType: 'restaurant',
+      account: null,
     }
   : {
       mode: 'firebase',
@@ -47,6 +52,8 @@ let state: AuthState = !isFirebaseConfigured()
       member: null,
       error: null,
       restaurantId: getFirebaseRestaurantId(),
+      businessType: 'restaurant',
+      account: null,
     }
 
 function emit() {
@@ -122,6 +129,7 @@ async function fetchMember(userUid: string) {
     role: (data.role as UserRole) ?? 'admin',
     active: true, // Always active for dev testing
     createdAt,
+    routeId: typeof data.routeId === 'string' ? data.routeId : undefined,
   }
 
   return member
@@ -169,6 +177,7 @@ async function initialize() {
         }
 
         const activeMember = member ?? defaultMember
+        const account = await fetchRestaurantAccount(getFirebaseRestaurantId()).catch(() => null)
 
         setState({
           status: 'authorized',
@@ -178,6 +187,8 @@ async function initialize() {
           member: activeMember,
           error: null,
           restaurantId: getFirebaseRestaurantId(),
+          businessType: account?.businessType ?? 'restaurant',
+          account,
         })
       } catch {
         // Fallback: Always authorize user with admin role for dev testing

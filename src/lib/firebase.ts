@@ -32,7 +32,7 @@ import {
   updateDoc,
   type Firestore,
 } from 'firebase/firestore'
-import type { RestaurantAccount, RestaurantBranding, RestaurantMember, UserRole } from '../types'
+import type { BusinessType, RestaurantAccount, RestaurantBranding, RestaurantMember, UserRole } from '../types'
 import { TenantContextService } from '../services/tenantService'
 
 interface FirebaseWebConfig {
@@ -208,6 +208,10 @@ export async function fetchRestaurantAccount(restaurantId: string): Promise<Rest
     ownerUid: data.ownerUid || '',
     createdAt: data.createdAt || new Date().toISOString(),
     plan: data.plan || 'pro',
+    // Un tenant sin businessType es un restaurante: nada cambia para los existentes.
+    businessType: (data.businessType as BusinessType) || 'restaurant',
+    currencyCode: data.currencyCode || 'BOB',
+    currencySymbol: data.currencySymbol || 'Bs',
     branding: data.branding || {
       name: data.name || 'Mi Restaurante',
       primaryColor: '#0B132B',
@@ -215,6 +219,30 @@ export async function fetchRestaurantAccount(restaurantId: string): Promise<Rest
       tablesCount: 12,
     },
   }
+}
+
+/** Configura el perfil del tenant (tipo de empresa, moneda, marca). */
+export async function updateRestaurantProfile(
+  restaurantId: string,
+  updates: {
+    name?: string
+    businessType?: BusinessType
+    currencyCode?: string
+    currencySymbol?: string
+    branding?: Partial<RestaurantBranding>
+  },
+) {
+  const context = await getFirebaseContext()
+  if (!context) throw new Error('Firebase no esta configurado.')
+
+  const payload: Record<string, unknown> = { updatedAt: serverTimestamp() }
+  if (updates.name) payload.name = updates.name
+  if (updates.businessType) payload.businessType = updates.businessType
+  if (updates.currencyCode) payload.currencyCode = updates.currencyCode
+  if (updates.currencySymbol) payload.currencySymbol = updates.currencySymbol
+  if (updates.branding) payload.branding = updates.branding
+
+  await setDoc(doc(context.db, 'restaurants', restaurantId), payload, { merge: true })
 }
 
 export async function updateRestaurantBranding(restaurantId: string, branding: Partial<RestaurantBranding>) {
@@ -306,6 +334,8 @@ export async function createRestaurantMember(input: {
   password: string
   displayName: string
   role: UserRole
+  /** Ruta asignada (roles de distribucion) */
+  routeId?: string
 }) {
   const context = await getFirebaseContext()
   const firebaseConfig = readFirebaseConfig()
@@ -321,16 +351,29 @@ export async function createRestaurantMember(input: {
       email: input.email.trim(),
       displayName: input.displayName.trim() || input.email.trim(),
       role: input.role,
+      routeId: input.routeId || '',
       active: true,
       createdAt: serverTimestamp(),
     })
+
+    // Mapa usuario -> tenant, para que al iniciar sesion caiga en su empresa.
+    await setDoc(
+      doc(context.db, 'users', credential.user.uid),
+      {
+        uid: credential.user.uid,
+        email: input.email.trim(),
+        displayName: input.displayName.trim() || input.email.trim(),
+        defaultRestaurantId: context.restaurantId,
+      },
+      { merge: true },
+    )
   } finally {
     await firebaseSignOut(secondaryAuth).catch(() => undefined)
     await deleteApp(secondaryApp).catch(() => undefined)
   }
 }
 
-export async function updateRestaurantMember(uid: string, updates: Partial<Pick<RestaurantMember, 'role' | 'active' | 'displayName'>>) {
+export async function updateRestaurantMember(uid: string, updates: Partial<Pick<RestaurantMember, 'role' | 'active' | 'displayName' | 'routeId'>>) {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
 
