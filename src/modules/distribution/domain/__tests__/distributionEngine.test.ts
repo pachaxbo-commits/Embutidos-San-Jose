@@ -3,6 +3,7 @@ import {
   computeLoadedByProduct,
   computeMoneySummary,
   computeSaleTotal,
+  computeSellerBreakdown,
   computeSoldByProduct,
   computeSoldKilograms,
   computeSoldPackages,
@@ -266,6 +267,28 @@ export async function runDistributionEngineTestSuite(): Promise<{ passed: number
   assert(nextReceivableStatus(159, 0) === 'OPEN', 'credito sin pagos = OPEN')
   assert(nextReceivableStatus(159, 50) === 'PARTIAL', 'credito con pago parcial = PARTIAL')
   assert(nextReceivableStatus(159, 159) === 'PAID', 'credito saldado = PAID')
+
+  // --- Resumen por vendedor ---
+  const breakdown = computeSellerBreakdown(sales, collections, expenses)
+  const hugo = breakdown.find((row) => row.sellerUid === 'hugo')!
+  assert(breakdown.length === 1, 'un solo vendedor en el resumen')
+  assert(hugo.salesCount === 2, 'Hugo tiene 2 ventas')
+  assert(hugo.salesTotal === 447, 'Hugo vendio Bs 447')
+  assert(hugo.cashSales === 288, 'Hugo cobro Bs 288 en efectivo')
+  assert(hugo.creditGenerated === 159, 'Hugo genero Bs 159 de credito')
+  assert(hugo.collected === 100, 'Hugo cobro Bs 100 de cartera')
+  assert(hugo.expenses === 20, 'Hugo gasto Bs 20')
+  assert(hugo.kilograms === 9, 'Hugo vendio 9 kg')
+  assert(hugo.packages === 0, 'Hugo no vendio paquetes')
+  assert(hugo.expectedCash === 368, 'Hugo debe entregar Bs 368')
+
+  const twoSellers = computeSellerBreakdown(
+    [...sales, { ...sales[0], id: 'sale-3', sellerUid: 'ricardo', sellerName: 'Ricardo Jimenez', total: 100, cashAmount: 100, creditAmount: 0, lines: [] }],
+    collections,
+    expenses,
+  )
+  assert(twoSellers.length === 2, 'dos vendedores se listan por separado')
+  assert(twoSellers[0].salesTotal >= twoSellers[1].salesTotal, 'el resumen ordena por venta descendente')
 
   return { passed, failed, results }
 }

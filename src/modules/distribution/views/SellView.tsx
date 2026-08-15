@@ -377,9 +377,25 @@ export function SellView({ session, data }: DistributionViewProps) {
               onChange={(event) => setQuantity(event.target.value)}
             />
           </Field>
-          <Field label="Precio unitario (Bs)" hint="Editable: el precio del catalogo es solo referencia.">
+          <Field
+            label={editingProduct?.unitType === 'kg' ? 'Precio por kilo (Bs)' : 'Precio unitario (Bs)'}
+            hint="Editable: el precio del catalogo es solo referencia."
+          >
             <NumberInput value={unitPrice} min={0} step={0.5} onChange={(event) => setUnitPrice(event.target.value)} />
           </Field>
+
+          {/* En granel el calculo tiene que estar a la vista: se pesa y se cobra. */}
+          <div className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
+            <span className="text-[11px] font-bold text-slate-500">
+              {round2(Number(quantity) || 0)}
+              {editingProduct?.unitType === 'kg' ? ' kg' : editingProduct?.unitType === 'package' ? ' paq' : ' u'} ×{' '}
+              {formatBs(round2(Number(unitPrice) || 0))}
+            </span>
+            <span className="text-base font-black tabular-nums text-slate-900">
+              {formatBs(round2((Number(quantity) || 0) * (Number(unitPrice) || 0)))}
+            </span>
+          </div>
+
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
         </div>
       </Modal>

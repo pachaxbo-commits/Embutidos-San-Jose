@@ -1,101 +1,195 @@
 import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
-import { Segmented } from '../../../components/ui/Form'
-import { computeMoneySummary, computeSoldByProduct, round2 } from '../domain/engine'
-import { KpiCard, VarianceBadge, formatBs, formatQty } from './shared'
+import { SelectInput, Segmented, Field } from '../../../components/ui/Form'
+import {
+  computeMoneySummary,
+  computeSellerBreakdown,
+  computeSoldByProduct,
+  computeSoldKilograms,
+  computeSoldPackages,
+  round2,
+} from '../domain/engine'
+import { KpiCard, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
+import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
 
-type ReportTab = 'sales' | 'products' | 'credits' | 'collections' | 'expenses' | 'closures'
+type ReportTab = 'resumen' | 'ventas' | 'productos' | 'creditos' | 'cobros' | 'gastos' | 'arqueos'
 
-function formatDayKey(dayKey: string): string {
-  const [year, month, day] = (dayKey || '').split('-')
-  return year ? `${day}/${month}/${year}` : dayKey
-}
+const TABS: { value: ReportTab; label: string }[] = [
+  { value: 'resumen', label: 'Resumen' },
+  { value: 'ventas', label: 'Ventas' },
+  { value: 'productos', label: 'Productos' },
+  { value: 'creditos', label: 'Creditos' },
+  { value: 'cobros', label: 'Cobros' },
+  { value: 'gastos', label: 'Gastos' },
+  { value: 'arqueos', label: 'Arqueos' },
+]
 
 /**
- * Detalle del periodo consultado. En movil se muestran tarjetas compactas y
- * en escritorio tabla: nunca una cuadricula estilo Excel en el telefono.
+ * Todo lo que paso en el periodo, en un solo lugar.
+ *
+ * "Resumen" responde la pregunta que la duena hace primero: cuanto vendio cada
+ * persona y cuanto efectivo deberia entregar. Las demas pestanas son el detalle.
  */
 export function ReportsView({ session, data }: DistributionViewProps) {
-  const [tab, setTab] = useState<ReportTab>('sales')
+  const [tab, setTab] = useState<ReportTab>('resumen')
+  const [routeFilter, setRouteFilter] = useState('')
+  const [sellerFilter, setSellerFilter] = useState('')
 
-  const money = useMemo(
-    () => computeMoneySummary(data.sales, data.collections, data.expenses),
+  const sales = useMemo(
+    () =>
+      data.sales
+        .filter((sale) => !routeFilter || sale.routeId === routeFilter)
+        .filter((sale) => !sellerFilter || sale.sellerUid === sellerFilter),
+    [data.sales, routeFilter, sellerFilter],
+  )
+  const collections = useMemo(
+    () =>
+      data.collections
+        .filter((row) => !routeFilter || row.routeId === routeFilter)
+        .filter((row) => !sellerFilter || row.collectedByUid === sellerFilter),
+    [data.collections, routeFilter, sellerFilter],
+  )
+  const expenses = useMemo(
+    () =>
+      data.expenses
+        .filter((row) => !routeFilter || row.routeId === routeFilter)
+        .filter((row) => !sellerFilter || row.registeredByUid === sellerFilter),
+    [data.expenses, routeFilter, sellerFilter],
+  )
+  const closures = useMemo(
+    () => data.closures.filter((row) => !routeFilter || row.routeId === routeFilter),
+    [data.closures, routeFilter],
+  )
+
+  const money = useMemo(() => computeMoneySummary(sales, collections, expenses), [sales, collections, expenses])
+  const sellers = useMemo(
+    () => computeSellerBreakdown(sales, collections, expenses),
+    [sales, collections, expenses],
+  )
+  const allSellers = useMemo(
+    () => computeSellerBreakdown(data.sales, data.collections, data.expenses),
     [data.sales, data.collections, data.expenses],
   )
 
   const productRows = useMemo(() => {
-    const sold = computeSoldByProduct(data.sales)
-    return [...sold.entries()].map(([productId, totals]) => ({ productId, ...totals }))
-  }, [data.sales])
+    const sold = computeSoldByProduct(sales)
+    return [...sold.entries()]
+      .map(([productId, totals]) => ({ productId, ...totals }))
+      .sort((a, b) => b.amount - a.amount)
+  }, [sales])
 
   const saleColumns: ResponsiveColumn<DistSale>[] = [
-    { key: 'hora', header: 'Hora', render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO') },
-    { key: 'ruta', header: 'Ruta', render: (row) => row.routeName },
+    { key: 'hora', header: 'Hora', render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }) },
     { key: 'vendedor', header: 'Vendedor', render: (row) => row.sellerName },
+    { key: 'ruta', header: 'Ruta', render: (row) => row.routeName, hideOnMobile: true },
     { key: 'cliente', header: 'Cliente', render: (row) => row.customerName || 'Ocasional' },
     { key: 'pago', header: 'Pago', render: (row) => row.paymentKind.toUpperCase() },
     { key: 'total', header: 'Total', align: 'right', render: (row) => formatBs(row.total) },
   ]
 
   const collectionColumns: ResponsiveColumn<DistCollection>[] = [
-    { key: 'hora', header: 'Hora', render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO') },
+    { key: 'hora', header: 'Hora', render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }) },
     { key: 'cobrador', header: 'Cobro', render: (row) => row.collectedByName },
     { key: 'metodo', header: 'Metodo', render: (row) => (row.method === 'qr' ? 'QR' : 'Efectivo') },
     { key: 'monto', header: 'Monto', align: 'right', render: (row) => formatBs(row.amount) },
   ]
 
   const expenseColumns: ResponsiveColumn<DistExpense>[] = [
-    { key: 'hora', header: 'Hora', render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO') },
+    { key: 'hora', header: 'Hora', render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }) },
     { key: 'ruta', header: 'Ruta', render: (row) => row.routeName },
     { key: 'quien', header: 'Registro', render: (row) => row.registeredByName },
     { key: 'monto', header: 'Monto', align: 'right', render: (row) => formatBs(row.amount) },
   ]
 
   return (
-    <Screen
-      title="Reportes"
-      subtitle={
-        session.dayKeys.length === 1
-          ? formatDayKey(session.dayKeys[0])
-          : `${formatDayKey(session.dayKeys[0])} a ${formatDayKey(session.dayKeys[session.dayKeys.length - 1])}`
-      }
-    >
+    <Screen title="Reportes" subtitle={describeRange(session.dayKeys)}>
       <div className="grid w-full min-w-0 gap-3">
+        <RangePicker
+          dayKeys={session.dayKeys}
+          onChange={session.setDayKeys}
+          routes={data.routes}
+          routeFilter={routeFilter}
+          onRouteFilterChange={setRouteFilter}
+        />
+
+        {allSellers.length > 1 && (
+          <Field label="Vendedor">
+            <SelectInput value={sellerFilter} onChange={(event) => setSellerFilter(event.target.value)}>
+              <option value="">Todos</option>
+              {allSellers.map((seller) => (
+                <option key={seller.sellerUid} value={seller.sellerUid}>
+                  {seller.sellerName}
+                </option>
+              ))}
+            </SelectInput>
+          </Field>
+        )}
+
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <KpiCard label="Ventas" value={formatBs(money.salesTotal)} tone="primary" />
-          <KpiCard label="Cobrado" value={formatBs(money.collectionsTotal)} tone="positive" />
-          <KpiCard label="Credito" value={formatBs(money.creditGenerated)} tone="warning" />
+          <KpiCard label="Ventas" value={formatBs(money.salesTotal)} tone="primary" hint={`${sales.length} operaciones`} />
+          <KpiCard label="Efectivo esperado" value={formatBs(money.expectedCash)} tone="positive" hint="Ventas + cobros - gastos" />
+          <KpiCard label="Credito generado" value={formatBs(money.creditGenerated)} tone="warning" />
           <KpiCard label="Gastos" value={formatBs(money.cashExpenses)} tone="danger" />
         </div>
 
-        <Segmented
-          value={tab}
-          onChange={setTab}
-          options={[
-            { value: 'sales', label: 'Ventas' },
-            { value: 'products', label: 'Productos' },
-            { value: 'credits', label: 'Creditos' },
-            { value: 'collections', label: 'Cobros' },
-            { value: 'expenses', label: 'Gastos' },
-            { value: 'closures', label: 'Arqueos' },
-          ]}
-        />
+        {/*
+          Sin envoltorio de ancho libre: Segmented ya reparte las pestanas en
+          varias filas en pantallas angostas. Forzar min-w-max las estiraba y
+          generaba desplazamiento horizontal.
+        */}
+        <Segmented value={tab} onChange={setTab} options={TABS} />
 
-        {tab === 'sales' &&
-          (data.sales.length === 0 ? (
-            <EmptyBlock title="Sin ventas en el periodo" />
+        {/* --- Resumen por vendedor --- */}
+        {tab === 'resumen' &&
+          (sellers.length === 0 ? (
+            <EmptyBlock title="Sin movimiento en el periodo" description="Cambia las fechas o el filtro de ruta." />
           ) : (
-            <ResponsiveTable
-              rows={data.sales}
-              columns={saleColumns}
-              keyOf={(row) => row.id}
-              titleOf={(row) => row.lines.map((line) => line.productNameSnapshot).join(', ')}
-            />
+            <div className="grid gap-2">
+              {sellers.map((seller) => (
+                <SectionCard key={seller.sellerUid} title={seller.sellerName}>
+                  <p className="-mt-2 mb-2 text-[11px] font-semibold text-slate-500">
+                    {seller.routeNames.join(' · ') || 'Sin ruta'} · {seller.salesCount} venta(s)
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <KpiCard label="Vendio" value={formatBs(seller.salesTotal)} tone="primary" />
+                    <KpiCard label="Efectivo" value={formatBs(seller.cashSales)} />
+                    <KpiCard label="QR" value={formatBs(seller.qrSales)} />
+                    <KpiCard label="Credito" value={formatBs(seller.creditGenerated)} tone="warning" />
+                    <KpiCard label="Cobro cartera" value={formatBs(seller.collected)} tone="positive" />
+                    <KpiCard label="Gastos" value={formatBs(seller.expenses)} tone="danger" />
+                    <KpiCard label="Granel" value={`${seller.kilograms} kg`} />
+                    <KpiCard label="Paquetes" value={String(seller.packages)} />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
+                    <span className="text-[11px] font-extrabold uppercase text-slate-500">Debe entregar en efectivo</span>
+                    <span className="text-base font-black tabular-nums text-slate-900">{formatBs(seller.expectedCash)}</span>
+                  </div>
+                </SectionCard>
+              ))}
+            </div>
           ))}
 
-        {tab === 'products' &&
+        {/* --- Detalle --- */}
+        {tab === 'ventas' &&
+          (sales.length === 0 ? (
+            <EmptyBlock title="Sin ventas en el periodo" />
+          ) : (
+            <>
+              <p className="text-[11px] font-bold text-slate-500">
+                {sales.length} ventas · {computeSoldKilograms(sales)} kg · {computeSoldPackages(sales)} paquetes
+              </p>
+              <ResponsiveTable
+                rows={sales}
+                columns={saleColumns}
+                keyOf={(row) => row.id}
+                titleOf={(row) => row.lines.map((line) => `${line.quantity} × ${line.productNameSnapshot}`).join(', ')}
+              />
+            </>
+          ))}
+
+        {tab === 'productos' &&
           (productRows.length === 0 ? (
             <EmptyBlock title="Sin productos vendidos" />
           ) : (
@@ -110,61 +204,67 @@ export function ReportsView({ session, data }: DistributionViewProps) {
             />
           ))}
 
-        {tab === 'credits' &&
+        {tab === 'creditos' &&
           (data.receivables.length === 0 ? (
             <EmptyBlock title="Sin creditos" />
           ) : (
-            <ResponsiveTable
-              rows={data.receivables}
-              columns={[
-                { key: 'ruta', header: 'Ruta', render: (row) => row.routeId },
-                { key: 'original', header: 'Original', render: (row) => formatBs(row.originalAmount) },
-                { key: 'pagado', header: 'Pagado', render: (row) => formatBs(row.paidAmount) },
-                { key: 'saldo', header: 'Saldo', align: 'right', render: (row) => formatBs(row.balance) },
-                { key: 'estado', header: 'Estado', render: (row) => row.status },
-              ]}
-              keyOf={(row) => row.id}
-              titleOf={(row) => row.customerName}
-            />
+            <>
+              <p className="text-[11px] font-bold text-slate-500">
+                Cartera pendiente:{' '}
+                {formatBs(round2(data.receivables.reduce((sum, row) => sum + (Number(row.balance) || 0), 0)))}
+              </p>
+              <ResponsiveTable
+                rows={data.receivables.slice().sort((a, b) => b.balance - a.balance)}
+                columns={[
+                  { key: 'distribuidor', header: 'Distribuidor', render: (row) => row.distributorName },
+                  { key: 'original', header: 'Original', render: (row) => formatBs(row.originalAmount) },
+                  { key: 'pagado', header: 'Pagado', render: (row) => formatBs(row.paidAmount) },
+                  { key: 'saldo', header: 'Saldo', align: 'right', render: (row) => formatBs(row.balance) },
+                  { key: 'estado', header: 'Estado', render: (row) => row.status },
+                ]}
+                keyOf={(row) => row.id}
+                titleOf={(row) => row.customerName}
+              />
+            </>
           ))}
 
-        {tab === 'collections' &&
-          (data.collections.length === 0 ? (
+        {tab === 'cobros' &&
+          (collections.length === 0 ? (
             <EmptyBlock title="Sin cobros en el periodo" />
           ) : (
             <ResponsiveTable
-              rows={data.collections}
+              rows={collections}
               columns={collectionColumns}
               keyOf={(row) => row.id}
               titleOf={(row) => row.customerName}
             />
           ))}
 
-        {tab === 'expenses' &&
-          (data.expenses.length === 0 ? (
+        {tab === 'gastos' &&
+          (expenses.length === 0 ? (
             <EmptyBlock title="Sin gastos en el periodo" />
           ) : (
             <ResponsiveTable
-              rows={data.expenses}
+              rows={expenses}
               columns={expenseColumns}
               keyOf={(row) => row.id}
               titleOf={(row) => row.concept}
             />
           ))}
 
-        {tab === 'closures' &&
-          (data.closures.length === 0 ? (
-            <EmptyBlock title="Sin arqueos guardados" />
+        {tab === 'arqueos' &&
+          (closures.length === 0 ? (
+            <EmptyBlock title="Sin arqueos guardados" description="Aparecen cuando se cierra una ruta." />
           ) : (
             <div className="grid gap-2">
-              {data.closures.map((closure) => (
+              {closures.map((closure) => (
                 <div key={closure.id} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="truncate text-xs font-extrabold text-slate-900">
                         {closure.routeName} · {closure.distributorName}
                       </p>
-                      <p className="text-[11px] font-semibold text-slate-500">
+                      <p className="truncate text-[11px] font-semibold text-slate-500">
                         Esperado {formatBs(closure.expectedCash)} · Declarado {formatBs(closure.physicalCashDeclared)}
                       </p>
                     </div>
@@ -180,15 +280,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                     {closure.products
                       .filter((row) => Math.abs(row.variance) > 0.001)
                       .map((row) => (
-                        <div key={row.productId} className="flex items-center justify-between gap-2">
-                          <span className="truncate text-[11px] font-bold text-slate-700">{row.productName}</span>
+                        <div key={row.productId} className="flex min-w-0 items-center justify-between gap-2">
+                          <span className="min-w-0 truncate text-[11px] font-bold text-slate-700">{row.productName}</span>
                           <VarianceBadge variance={row.variance} unitType={row.unitType} />
                         </div>
                       ))}
                   </div>
-                  <p className="mt-2 text-[10px] font-bold uppercase text-slate-400">
-                    Estado: {closure.status} · Credito generado {formatBs(round2(closure.creditGenerated))}
-                  </p>
                 </div>
               ))}
             </div>

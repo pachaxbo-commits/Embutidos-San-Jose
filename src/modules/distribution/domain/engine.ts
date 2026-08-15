@@ -316,3 +316,92 @@ export function computeSoldPackages(sales: DistSale[]): number {
   }
   return round2(total)
 }
+
+export interface SellerBreakdown {
+  sellerUid: string
+  sellerName: string
+  routeNames: string[]
+  salesCount: number
+  salesTotal: number
+  cashSales: number
+  qrSales: number
+  creditGenerated: number
+  collected: number
+  expenses: number
+  kilograms: number
+  packages: number
+  /** Efectivo que deberia entregar: ventas efectivo + cobros efectivo - gastos */
+  expectedCash: number
+}
+
+/**
+ * Resumen por persona: cuanto vendio cada quien, como cobro y que gasto.
+ * Las cobranzas y los gastos se atribuyen a quien los registro, no a la ruta,
+ * porque es esa persona la que rinde el dinero.
+ */
+export function computeSellerBreakdown(
+  sales: DistSale[],
+  collections: DistCollection[],
+  expenses: DistExpense[],
+): SellerBreakdown[] {
+  const map = new Map<string, SellerBreakdown>()
+
+  const ensure = (uid: string, name: string): SellerBreakdown => {
+    const key = uid || name || 'sin-asignar'
+    const current = map.get(key)
+    if (current) return current
+    const created: SellerBreakdown = {
+      sellerUid: key,
+      sellerName: name || 'Sin asignar',
+      routeNames: [],
+      salesCount: 0,
+      salesTotal: 0,
+      cashSales: 0,
+      qrSales: 0,
+      creditGenerated: 0,
+      collected: 0,
+      expenses: 0,
+      kilograms: 0,
+      packages: 0,
+      expectedCash: 0,
+    }
+    map.set(key, created)
+    return created
+  }
+
+  for (const sale of sales) {
+    const entry = ensure(sale.sellerUid, sale.sellerName)
+    entry.salesCount += 1
+    entry.salesTotal = round2(entry.salesTotal + (Number(sale.total) || 0))
+    entry.cashSales = round2(entry.cashSales + (Number(sale.cashAmount) || 0))
+    entry.qrSales = round2(entry.qrSales + (Number(sale.qrAmount) || 0))
+    entry.creditGenerated = round2(entry.creditGenerated + (Number(sale.creditAmount) || 0))
+    entry.kilograms = round2(entry.kilograms + computeSoldKilograms([sale]))
+    entry.packages = round2(entry.packages + computeSoldPackages([sale]))
+    if (sale.routeName && !entry.routeNames.includes(sale.routeName)) entry.routeNames.push(sale.routeName)
+  }
+
+  for (const collection of collections) {
+    const entry = ensure(collection.collectedByUid, collection.collectedByName)
+    entry.collected = round2(entry.collected + (Number(collection.amount) || 0))
+  }
+
+  for (const expense of expenses) {
+    const entry = ensure(expense.registeredByUid, expense.registeredByName)
+    entry.expenses = round2(entry.expenses + (Number(expense.amount) || 0))
+    if (expense.routeName && !entry.routeNames.includes(expense.routeName)) entry.routeNames.push(expense.routeName)
+  }
+
+  for (const collection of collections) {
+    const entry = ensure(collection.collectedByUid, collection.collectedByName)
+    if (collection.method !== 'qr') {
+      entry.expectedCash = round2(entry.expectedCash + (Number(collection.amount) || 0))
+    }
+  }
+
+  for (const entry of map.values()) {
+    entry.expectedCash = round2(entry.expectedCash + entry.cashSales - entry.expenses)
+  }
+
+  return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
+}

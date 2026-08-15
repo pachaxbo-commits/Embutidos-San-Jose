@@ -251,7 +251,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
             >
               <div className="grid gap-1.5">
                 {[...loaded.entries()].map(([productId, totals]) => (
-                  <div key={productId} className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
+                  <div key={productId} className="flex min-w-0 items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
                     <div className="min-w-0">
                       <p className="truncate text-xs font-extrabold text-slate-900">{totals.productName}</p>
                       <p className="text-[11px] font-semibold text-slate-500">

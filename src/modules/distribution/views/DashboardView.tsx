@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import { Screen } from '../../../components/ui/Screen'
-import { Field, Segmented, SelectInput, TextInput } from '../../../components/ui/Form'
 import {
   buildReconciliation,
   computeMoneySummary,
@@ -8,56 +7,18 @@ import {
   computeSoldKilograms,
   computeSoldPackages,
   round2,
-  toDayKey,
 } from '../domain/engine'
-import { buildDayRange } from '../state/useDistributionStore'
 import { KpiCard, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
+import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 
-type RangePreset = 'today' | 'week' | 'month' | 'custom'
-
-/** 2026-08-14 -> 14/08/2026 */
-function formatDayKey(dayKey: string): string {
-  const [year, month, day] = (dayKey || '').split('-')
-  return year ? `${day}/${month}/${year}` : dayKey
-}
 
 /**
  * Panel de administracion: primero resultados, no una copia del Excel.
  * Solo consulta el rango pedido; nunca toda la historia.
  */
 export function DashboardView({ session, data }: DistributionViewProps) {
-  const [preset, setPreset] = useState<RangePreset>('today')
-  const [customFrom, setCustomFrom] = useState(toDayKey(new Date()))
-  const [customTo, setCustomTo] = useState(toDayKey(new Date()))
   const [routeFilter, setRouteFilter] = useState('')
-
-  const applyPreset = (next: RangePreset) => {
-    setPreset(next)
-    const today = new Date()
-    if (next === 'today') {
-      session.setDayKeys([toDayKey(today)])
-      return
-    }
-    if (next === 'week') {
-      const from = new Date(today)
-      from.setDate(from.getDate() - 6)
-      session.setDayKeys(buildDayRange(from, today))
-      return
-    }
-    if (next === 'month') {
-      const from = new Date(today)
-      from.setDate(from.getDate() - 29)
-      session.setDayKeys(buildDayRange(from, today))
-    }
-  }
-
-  const applyCustomRange = (from: string, to: string) => {
-    const fromDate = new Date(`${from}T00:00:00`)
-    const toDate = new Date(`${to}T00:00:00`)
-    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) return
-    session.setDayKeys(buildDayRange(fromDate, toDate))
-  }
 
   const sales = useMemo(
     () => (routeFilter ? data.sales.filter((sale) => sale.routeId === routeFilter) : data.sales),
@@ -258,62 +219,16 @@ export function DashboardView({ session, data }: DistributionViewProps) {
   // Se muestra la fecha real consultada: si el dispositivo tiene mal la fecha o
   // la zona horaria, el "hoy" del telefono no coincide con el de las ventas y
   // el panel apareceria vacio sin explicacion.
-  const rangeLabel =
-    session.dayKeys.length === 1
-      ? formatDayKey(session.dayKeys[0])
-      : `${formatDayKey(session.dayKeys[0])} a ${formatDayKey(session.dayKeys[session.dayKeys.length - 1])}`
-
   return (
-    <Screen title="Panel" subtitle={rangeLabel}>
+    <Screen title="Panel" subtitle={describeRange(session.dayKeys)}>
       <div className="grid w-full min-w-0 gap-3">
-        <div className="grid gap-2">
-          <Segmented
-            value={preset}
-            onChange={applyPreset}
-            options={[
-              { value: 'today', label: 'Hoy' },
-              { value: 'week', label: 'Semana' },
-              { value: 'month', label: 'Mes' },
-              { value: 'custom', label: 'Rango' },
-            ]}
-          />
-
-          {preset === 'custom' && (
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Field label="Desde">
-                <TextInput
-                  type="date"
-                  value={customFrom}
-                  onChange={(event) => {
-                    setCustomFrom(event.target.value)
-                    applyCustomRange(event.target.value, customTo)
-                  }}
-                />
-              </Field>
-              <Field label="Hasta">
-                <TextInput
-                  type="date"
-                  value={customTo}
-                  onChange={(event) => {
-                    setCustomTo(event.target.value)
-                    applyCustomRange(customFrom, event.target.value)
-                  }}
-                />
-              </Field>
-            </div>
-          )}
-
-          <Field label="Ruta">
-            <SelectInput value={routeFilter} onChange={(event) => setRouteFilter(event.target.value)}>
-              <option value="">Todas las rutas</option>
-              {data.routes.map((route) => (
-                <option key={route.id} value={route.id}>
-                  {route.name}
-                </option>
-              ))}
-            </SelectInput>
-          </Field>
-        </div>
+        <RangePicker
+          dayKeys={session.dayKeys}
+          onChange={session.setDayKeys}
+          routes={data.routes}
+          routeFilter={routeFilter}
+          onRouteFilterChange={setRouteFilter}
+        />
 
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <KpiCard label="Ventas" value={formatBs(money.salesTotal)} tone="primary" />

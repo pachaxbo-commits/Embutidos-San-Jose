@@ -80,6 +80,17 @@ code {
   max-width: 100%;
 }
 
+/*
+ * En la aplicacion instalada (Capacitor) Android dibuja el contenido DEBAJO de
+ * la barra de estado y de la barra de navegacion. Si el dispositivo no informa
+ * los insets, env() devuelve 0 y la cabecera queda tapada. Por eso en nativo se
+ * garantiza un minimo, sin afectar al navegador de escritorio.
+ */
+html.is-native-app {
+  --safe-top: max(env(safe-area-inset-top, 0px), 28px);
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+}
+
 /* Utilidades de safe area reutilizables */
 .pt-safe {
   padding-top: var(--safe-top);

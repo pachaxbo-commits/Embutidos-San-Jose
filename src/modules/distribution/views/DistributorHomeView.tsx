@@ -73,7 +73,7 @@ export function DistributorHomeView({
               >
                 <action.icon size={17} />
               </span>
-              <span className="truncate text-xs font-extrabold text-slate-900">{action.label}</span>
+              <span className="min-w-0 truncate text-xs font-extrabold text-slate-900">{action.label}</span>
             </button>
           ))}
         </div>
@@ -84,8 +84,8 @@ export function DistributorHomeView({
           ) : (
             <div className="grid gap-1.5">
               {routeStock.map((balance) => (
-                <div key={balance.id} className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
-                  <span className="truncate text-xs font-bold text-slate-800">{balance.productName}</span>
+                <div key={balance.id} className="flex min-w-0 items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
+                  <span className="min-w-0 truncate text-xs font-bold text-slate-800">{balance.productName}</span>
                   <span className="shrink-0 text-sm font-black tabular-nums text-slate-900">
                     {formatQty(balance.quantity, balance.unitType)}
                   </span>

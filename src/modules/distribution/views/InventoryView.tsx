@@ -161,8 +161,8 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                       .map(([productId, quantity]) => {
                         const product = data.products.find((item) => item.id === productId)
                         return (
-                          <div key={productId} className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
-                            <span className="truncate text-xs font-bold text-slate-800">{product?.name ?? productId}</span>
+                          <div key={productId} className="flex min-w-0 items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
+                            <span className="min-w-0 truncate text-xs font-bold text-slate-800">{product?.name ?? productId}</span>
                             <span className="shrink-0 text-sm font-black tabular-nums text-slate-900">
                               {formatQty(quantity, product?.unitType ?? 'unit')}
                             </span>
@@ -179,8 +179,8 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                 <SectionCard key={routeId} title={data.routes.find((item) => item.id === routeId)?.name ?? routeId}>
                   <div className="grid gap-1.5">
                     {balances.map((balance) => (
-                      <div key={balance.id} className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
-                        <span className="truncate text-xs font-bold text-slate-800">{balance.productName}</span>
+                      <div key={balance.id} className="flex min-w-0 items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
+                        <span className="min-w-0 truncate text-xs font-bold text-slate-800">{balance.productName}</span>
                         <span className="shrink-0 text-sm font-black tabular-nums text-slate-900">
                           {formatQty(balance.quantity, balance.unitType)}
                         </span>

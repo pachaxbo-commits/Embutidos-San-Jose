@@ -266,7 +266,7 @@ export function DistributionApp({
                 style={isActive ? { backgroundColor: 'var(--primary)' } : undefined}
               >
                 {Icon && <Icon size={17} />}
-                <span className="truncate">{module.label}</span>
+                <span className="min-w-0 truncate">{module.label}</span>
               </button>
             )
           })}
@@ -350,7 +350,7 @@ export function DistributionApp({
                 >
                   {Icon && <Icon size={16} />}
                 </span>
-                <span className="truncate">{module.label}</span>
+                <span className="min-w-0 truncate">{module.label}</span>
               </button>
             )
           })}

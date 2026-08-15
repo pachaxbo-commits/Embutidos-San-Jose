@@ -83,7 +83,9 @@ export function VarianceBadge({ variance, unitType }: { variance: number; unitTy
     kind === 'CUADRADO' ? 'CUADRADO' : `${kind} ${unitType ? formatQty(amount, unitType) : formatBs(amount)}`
 
   return (
-    <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-black ${styles[kind]}`}>
+    <span
+      className={`inline-flex shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-black ${styles[kind]}`}
+    >
       {text}
     </span>
   )
