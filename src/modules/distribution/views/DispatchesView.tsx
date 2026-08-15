@@ -46,6 +46,22 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     return term ? activeProducts.filter((product) => product.name.toLowerCase().includes(term)) : activeProducts
   }, [activeProducts, search])
 
+  /**
+   * El distribuidor solo ve la carga de SU ruta. Si el despacho se registra en
+   * otra, la mercaderia sale del almacen y no le aparece a nadie: por eso al
+   * elegir a la persona se toma su ruta y se avisa si no coinciden.
+   */
+  const selectDistributor = (uid: string) => {
+    setDistributorUid(uid)
+    const member = distributors.find((item) => item.uid === uid)
+    if (member?.routeId) setRouteId(member.routeId)
+  }
+
+  const selectedDistributor = distributors.find((member) => member.uid === distributorUid) ?? null
+  const routeMismatch = Boolean(
+    selectedDistributor?.routeId && routeId && selectedDistributor.routeId !== routeId,
+  )
+
   const resetDraft = () => {
     setRouteId('')
     setDistributorUid('')
@@ -281,6 +297,18 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         }
       >
         <div className="grid gap-3">
+          <Field label="Distribuidor" required hint="Al elegirlo se toma su ruta asignada.">
+            <SelectInput value={distributorUid} onChange={(event) => selectDistributor(event.target.value)}>
+              <option value="">Selecciona distribuidor</option>
+              {distributors.map((member) => (
+                <option key={member.uid} value={member.uid}>
+                  {member.displayName}
+                  {member.routeId ? ` · ${data.routes.find((route) => route.id === member.routeId)?.name ?? member.routeId}` : ' · sin ruta'}
+                </option>
+              ))}
+            </SelectInput>
+          </Field>
+
           <Field label="Ruta" required>
             <SelectInput value={routeId} onChange={(event) => setRouteId(event.target.value)}>
               <option value="">Selecciona ruta</option>
@@ -291,16 +319,16 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               ))}
             </SelectInput>
           </Field>
-          <Field label="Distribuidor">
-            <SelectInput value={distributorUid} onChange={(event) => setDistributorUid(event.target.value)}>
-              <option value="">Sin asignar</option>
-              {distributors.map((member) => (
-                <option key={member.uid} value={member.uid}>
-                  {member.displayName}
-                </option>
-              ))}
-            </SelectInput>
-          </Field>
+
+          {routeMismatch && (
+            <p className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800">
+              {selectedDistributor?.displayName} trabaja en{' '}
+              {data.routes.find((route) => route.id === selectedDistributor?.routeId)?.name ?? selectedDistributor?.routeId}.
+              Si despachas a otra ruta no vera esta carga en su telefono. Cambia la ruta aqui, o su ruta asignada
+              desde Usuarios.
+            </p>
+          )}
+
           {lineEditor}
         </div>
       </Modal>

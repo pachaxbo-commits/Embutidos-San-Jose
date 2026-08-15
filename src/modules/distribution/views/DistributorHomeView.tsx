@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { ClipboardList, HandCoins, ShoppingCart, Wallet } from 'lucide-react'
 import { Screen } from '../../../components/ui/Screen'
-import { computeMoneySummary, computeSoldKilograms, round2 } from '../domain/engine'
+import { computeMoneySummary, computeSoldKilograms, computeSoldPackages, round2 } from '../domain/engine'
 import { KpiCard, SectionCard, formatBs, formatQty } from './shared'
 import type { ModuleId } from '../../../config/businessTypes'
 import type { DistributionViewProps } from './DistributionApp'
@@ -19,7 +19,11 @@ export function DistributorHomeView({
     () => computeMoneySummary(data.sales, data.collections, data.expenses),
     [data.sales, data.collections, data.expenses],
   )
+  // Se muestran las dos magnitudes por separado: los paquetes y sachets no se
+  // convierten a kilos, asi que un dia de solo paquetes daria "0 kg" y parece
+  // que no se vendio nada.
   const soldKg = useMemo(() => computeSoldKilograms(data.sales), [data.sales])
+  const soldPackages = useMemo(() => computeSoldPackages(data.sales), [data.sales])
 
   const openDispatch = data.openDispatches[0] ?? null
 
@@ -97,7 +101,10 @@ export function DistributorHomeView({
             <KpiCard label="Cobros" value={formatBs(money.collectionsTotal)} />
             <KpiCard label="Gastos" value={formatBs(money.cashExpenses)} tone="danger" />
           </div>
-          <p className="mt-2 text-[11px] font-semibold text-slate-500">Kg vendidos hoy: {soldKg} kg</p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <KpiCard label="Granel vendido" value={`${soldKg} kg`} />
+            <KpiCard label="Paquetes / unidades" value={String(soldPackages)} />
+          </div>
         </SectionCard>
       </div>
     </Screen>

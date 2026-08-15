@@ -306,8 +306,8 @@ export function DashboardView({ session, data }: DistributionViewProps) {
           <KpiCard label="Venta efectivo" value={formatBs(money.cashSales)} />
           <KpiCard label="Venta QR" value={formatBs(money.qrSales)} />
           <KpiCard label="Credito generado" value={formatBs(money.creditGenerated)} tone="warning" />
-          <KpiCard label="Kg vendidos" value={`${soldKg} kg`} />
-          <KpiCard label="Paquetes / unidades" value={String(soldPackages)} />
+          <KpiCard label="Granel vendido" value={`${soldKg} kg`} hint="Solo productos por peso" />
+          <KpiCard label="Paquetes / unidades" value={String(soldPackages)} hint="Al vacio y sachets" />
           <KpiCard label="Cobrado" value={formatBs(money.collectionsTotal)} tone="positive" />
           <KpiCard label="Cartera pendiente" value={formatBs(outstandingPortfolio)} tone="warning" />
           <KpiCard label="Gastos" value={formatBs(money.cashExpenses)} tone="danger" />
