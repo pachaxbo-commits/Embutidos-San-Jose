@@ -105,6 +105,7 @@ export function DistributionApp({
   const modules = useMemo(() => getVisibleModules('mobile_distribution', can, role), [can, role])
   const [currentModule, setCurrentModule] = useState<ModuleId>(modules[0]?.id ?? 'dist.dashboard')
   const [isMoreOpen, setIsMoreOpen] = useState(false)
+  const [isSignOutOpen, setIsSignOutOpen] = useState(false)
   const [dayKeys, setDayKeys] = useState<string[]>([toDayKey(new Date())])
 
   const activeModule = modules.some((module) => module.id === currentModule)
@@ -238,7 +239,7 @@ export function DistributionApp({
             <SyncStatusPill state={syncState} />
             <button
               type="button"
-              onClick={() => void onSignOut()}
+              onClick={() => setIsSignOutOpen(true)}
               aria-label="Cerrar sesion"
               className="hidden h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 sm:flex"
             >
@@ -271,7 +272,7 @@ export function DistributionApp({
           })}
           <button
             type="button"
-            onClick={() => void onSignOut()}
+            onClick={() => setIsSignOutOpen(true)}
             className="mt-2 flex min-h-[44px] items-center gap-2.5 rounded-2xl px-3 text-left text-sm font-bold text-rose-600 hover:bg-rose-50"
           >
             <LogOut size={17} /> Cerrar sesion
@@ -294,6 +295,43 @@ export function DistributionApp({
           else selectModule(id)
         }}
       />
+
+      {/*
+        Volver a entrar exige internet: la contrasena la valida el servidor.
+        Quien trabaja en calle no deberia cerrar sesion sin saberlo.
+      */}
+      <Modal
+        isOpen={isSignOutOpen}
+        onClose={() => setIsSignOutOpen(false)}
+        title="Cerrar sesion"
+        footer={
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setIsSignOutOpen(false)}
+              className="min-h-[44px] rounded-2xl border border-slate-200 bg-white px-4 text-sm font-extrabold text-slate-700"
+            >
+              Seguir trabajando
+            </button>
+            <button
+              type="button"
+              onClick={() => void onSignOut()}
+              className="min-h-[44px] rounded-2xl px-4 text-sm font-extrabold text-white"
+              style={{ backgroundColor: 'var(--primary)' }}
+            >
+              Cerrar sesion
+            </button>
+          </div>
+        }
+      >
+        <p className="text-sm font-semibold text-slate-700">
+          Para volver a entrar necesitaras conexion a internet.
+        </p>
+        <p className="mt-2 text-xs font-medium text-slate-500">
+          Mientras no cierres sesion puedes seguir vendiendo sin señal: la aplicacion guarda tu trabajo en el
+          telefono y lo sincroniza sola cuando vuelve la conexion.
+        </p>
+      </Modal>
 
       <Modal isOpen={isMoreOpen} onClose={() => setIsMoreOpen(false)} title="Mas opciones">
         <div className="grid grid-cols-2 gap-2">
@@ -318,7 +356,10 @@ export function DistributionApp({
           })}
           <button
             type="button"
-            onClick={() => void onSignOut()}
+            onClick={() => {
+              setIsMoreOpen(false)
+              setIsSignOutOpen(true)
+            }}
             className="flex min-h-[56px] items-center gap-2.5 rounded-2xl border border-rose-200 bg-rose-50 px-3 text-left text-xs font-extrabold text-rose-700"
           >
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-rose-600">

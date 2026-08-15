@@ -16,6 +16,12 @@ import type { DistributionViewProps } from './DistributionApp'
 
 type RangePreset = 'today' | 'week' | 'month' | 'custom'
 
+/** 2026-08-14 -> 14/08/2026 */
+function formatDayKey(dayKey: string): string {
+  const [year, month, day] = (dayKey || '').split('-')
+  return year ? `${day}/${month}/${year}` : dayKey
+}
+
 /**
  * Panel de administracion: primero resultados, no una copia del Excel.
  * Solo consulta el rango pedido; nunca toda la historia.
@@ -249,8 +255,16 @@ export function DashboardView({ session, data }: DistributionViewProps) {
     return [...merged.entries()].map(([productId, totals]) => ({ productId, ...totals }))
   }, [data.closures, data.openDispatches, sales, routeFilter])
 
+  // Se muestra la fecha real consultada: si el dispositivo tiene mal la fecha o
+  // la zona horaria, el "hoy" del telefono no coincide con el de las ventas y
+  // el panel apareceria vacio sin explicacion.
+  const rangeLabel =
+    session.dayKeys.length === 1
+      ? formatDayKey(session.dayKeys[0])
+      : `${formatDayKey(session.dayKeys[0])} a ${formatDayKey(session.dayKeys[session.dayKeys.length - 1])}`
+
   return (
-    <Screen title="Panel" subtitle={`${session.dayKeys.length} dia(s) consultados`}>
+    <Screen title="Panel" subtitle={rangeLabel}>
       <div className="grid w-full min-w-0 gap-3">
         <div className="grid gap-2">
           <Segmented

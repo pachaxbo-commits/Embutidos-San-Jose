@@ -8,6 +8,11 @@ import type { DistCollection, DistExpense, DistSale } from '../types'
 
 type ReportTab = 'sales' | 'products' | 'credits' | 'collections' | 'expenses' | 'closures'
 
+function formatDayKey(dayKey: string): string {
+  const [year, month, day] = (dayKey || '').split('-')
+  return year ? `${day}/${month}/${year}` : dayKey
+}
+
 /**
  * Detalle del periodo consultado. En movil se muestran tarjetas compactas y
  * en escritorio tabla: nunca una cuadricula estilo Excel en el telefono.
@@ -49,7 +54,14 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   ]
 
   return (
-    <Screen title="Reportes" subtitle={`${session.dayKeys.length} dia(s) consultados`}>
+    <Screen
+      title="Reportes"
+      subtitle={
+        session.dayKeys.length === 1
+          ? formatDayKey(session.dayKeys[0])
+          : `${formatDayKey(session.dayKeys[0])} a ${formatDayKey(session.dayKeys[session.dayKeys.length - 1])}`
+      }
+    >
       <div className="grid w-full min-w-0 gap-3">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <KpiCard label="Ventas" value={formatBs(money.salesTotal)} tone="primary" />
