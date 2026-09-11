@@ -107,7 +107,6 @@ public class PachaxBluetoothPrinterPlugin extends Plugin {
                 BluetoothAdapter bluetooth = adapter();
                 if (bluetooth == null || !bluetooth.isEnabled()) throw new IOException("Bluetooth está apagado");
                 closeConnection();
-                bluetooth.cancelDiscovery();
                 BluetoothDevice device = bluetooth.getRemoteDevice(address);
                 Exception secureError;
                 try {
@@ -174,6 +173,9 @@ public class PachaxBluetoothPrinterPlugin extends Plugin {
     }
 
     private String safeMessage(Exception error) {
+        if (error instanceof SecurityException) {
+            return "Android bloqueó el acceso Bluetooth. Revisa el permiso Dispositivos cercanos para esta aplicación.";
+        }
         return error.getMessage() == null || error.getMessage().isBlank() ? error.getClass().getSimpleName() : error.getMessage();
     }
 
