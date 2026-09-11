@@ -1,7 +1,10 @@
+import { exportCustomerStatement } from '../data/reportExports'
+import { prepareCustomerPhoto } from '../data/customerPhoto'
 import { useMemo, useState } from 'react'
-import { Plus, Search } from 'lucide-react'
+import { ArrowDownUp, Plus, Search } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
-import { Field, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
+import { Field, TextArea, TextInput } from '../../../components/ui/Form'
+import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2 } from '../domain/engine'
 import { saveCustomer } from '../data/distributionRepository'
@@ -18,6 +21,9 @@ export function CustomersView({ session, data }: DistributionViewProps) {
   const [editing, setEditing] = useState<DistCustomer | null>(null)
   const [isOpen, setIsOpen] = useState(false)
   const [name, setName] = useState('')
+  const [photoDataUrl, setPhotoDataUrl] = useState('')
+  const [addressReference, setAddressReference] = useState('')
+  const [identityNumber, setIdentityNumber] = useState('')
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
   const [routeId, setRouteId] = useState(session.routeId ?? '')
@@ -25,6 +31,8 @@ export function CustomersView({ session, data }: DistributionViewProps) {
   const [active, setActive] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isRouteOpen, setIsRouteOpen] = useState(false)
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest')
 
   const balanceByCustomer = useMemo(() => {
     const map = new Map<string, number>()
@@ -36,12 +44,16 @@ export function CustomersView({ session, data }: DistributionViewProps) {
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return term ? data.customers.filter((customer) => customer.name.toLowerCase().includes(term)) : data.customers
-  }, [data.customers, search])
+    const matching = term ? data.customers.filter((customer) => [customer.name, customer.customerCode, customer.identityNumber, customer.phone].join(' ').toLowerCase().includes(term)) : data.customers
+    return [...matching].sort((a, b) => sortOrder === 'newest' ? (b.createdAt || '').localeCompare(a.createdAt || '') : (a.createdAt || '').localeCompare(b.createdAt || ''))
+  }, [data.customers, search, sortOrder])
 
   const openCreate = () => {
     setEditing(null)
     setName('')
+    setPhotoDataUrl('')
+    setAddressReference('')
+    setIdentityNumber('')
     setPhone('')
     setAddress('')
     setRouteId(session.routeId ?? '')
@@ -54,6 +66,9 @@ export function CustomersView({ session, data }: DistributionViewProps) {
   const openEdit = (customer: DistCustomer) => {
     setEditing(customer)
     setName(customer.name)
+    setPhotoDataUrl(customer.photoDataUrl || '')
+    setAddressReference(customer.addressReference || '')
+    setIdentityNumber(customer.identityNumber || '')
     setPhone(customer.phone ?? '')
     setAddress(customer.address ?? '')
     setRouteId(customer.routeId ?? '')
@@ -72,7 +87,7 @@ export function CustomersView({ session, data }: DistributionViewProps) {
 
     setIsSubmitting(true)
     try {
-      await saveCustomer({ id: editing?.id, name, phone, address, routeId, notes, active })
+      await saveCustomer({ id: editing?.id, name, photoDataUrl, addressReference, identityNumber, phone, address, routeId, notes, active })
       setIsOpen(false)
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo guardar el cliente.')
@@ -97,10 +112,11 @@ export function CustomersView({ session, data }: DistributionViewProps) {
           <TextInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Buscar por nombre..."
+            placeholder="Nombre, codigo, carnet o telefono..."
             className="pl-9"
           />
         </div>
+        <div className="flex items-center gap-2 text-[11px] font-bold text-slate-500"><ArrowDownUp size={14} /><span>Orden:</span><button type="button" onClick={() => setSortOrder('newest')} className={`rounded-full px-3 py-1.5 ${sortOrder === 'newest' ? 'bg-[var(--primary-soft)] text-[var(--primary)]' : 'bg-white'}`}>Más nuevos</button><button type="button" onClick={() => setSortOrder('oldest')} className={`rounded-full px-3 py-1.5 ${sortOrder === 'oldest' ? 'bg-[var(--primary-soft)] text-[var(--primary)]' : 'bg-white'}`}>Más antiguos</button></div>
 
         {filtered.length === 0 ? (
           <EmptyBlock title="Sin clientes" description="Puedes crearlos aqui o directamente al vender." />
@@ -115,10 +131,11 @@ export function CustomersView({ session, data }: DistributionViewProps) {
                   onClick={() => openEdit(customer)}
                   className="flex w-full min-w-0 items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left"
                 >
+                  {customer.photoDataUrl && <img src={customer.photoDataUrl} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />}
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-extrabold text-slate-900">{customer.name}</p>
-                    <p className="truncate text-[11px] font-semibold text-slate-500">
-                      {[customer.phone, customer.address].filter(Boolean).join(' · ') || 'Sin datos de contacto'}
+                    <p className="break-words text-sm font-extrabold text-slate-900">{customer.name}</p>
+                    <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">
+                      {[customer.identityNumber ? `CI: ${customer.identityNumber}` : 'CI pendiente', customer.phone, customer.address].filter(Boolean).join(' · ') || 'Sin datos de contacto'}
                     </p>
                   </div>
                   {balance > 0 && (
@@ -144,8 +161,20 @@ export function CustomersView({ session, data }: DistributionViewProps) {
         }
       >
         <div className="grid gap-3">
+          {editing && session.role==='admin' && <button type="button" className="rounded-xl border p-3 text-sm font-bold" onClick={async()=>{try{await exportCustomerStatement(data,editing)}catch(e){setError((e as Error).message)}}}>Estado de cuenta PDF / imprimir</button>}
           <Field label="Nombre" required>
             <TextInput value={name} onChange={(event) => setName(event.target.value)} />
+          </Field>
+          <Field label="CI / código del cliente" required hint="El CI identifica al cliente. Incluye el complemento si corresponde.">
+            <TextInput value={identityNumber} onChange={event => setIdentityNumber(event.target.value)} />
+          </Field>
+          <Field label="Fotografía (opcional)" hint="Se guarda una imagen reducida para identificar al cliente.">
+            <input type="file" accept="image/*" onChange={async event => {
+              const file = event.target.files?.[0]; if (!file) return
+              try { setPhotoDataUrl(await prepareCustomerPhoto(file)); setError(null) } catch (err) { setError((err as Error).message) }
+              event.target.value = ''
+            }} />
+            {photoDataUrl && <div><img src={photoDataUrl} alt="Foto del cliente" className="h-24 w-24 rounded-xl object-cover" /><button type="button" onClick={() => setPhotoDataUrl('')}>Quitar fotografía</button></div>}
           </Field>
           <Field label="Telefono">
             <TextInput value={phone} inputMode="tel" onChange={(event) => setPhone(event.target.value)} />
@@ -153,15 +182,9 @@ export function CustomersView({ session, data }: DistributionViewProps) {
           <Field label="Direccion">
             <TextInput value={address} onChange={(event) => setAddress(event.target.value)} />
           </Field>
+          <Field label="Referencia de dirección"><TextInput value={addressReference} onChange={event => setAddressReference(event.target.value)} /></Field>
           <Field label="Zona / ruta">
-            <SelectInput value={routeId} onChange={(event) => setRouteId(event.target.value)}>
-              <option value="">Sin asignar</option>
-              {data.routes.map((route) => (
-                <option key={route.id} value={route.id}>
-                  {route.name}
-                </option>
-              ))}
-            </SelectInput>
+            <ChoiceButton label={routeId ? data.routes.find(route => route.id === routeId)?.name : 'Sin asignar'} placeholder="Selecciona ruta" onClick={() => setIsRouteOpen(true)} />
           </Field>
           <Field label="Observaciones">
             <TextArea value={notes} onChange={(event) => setNotes(event.target.value)} />
@@ -173,6 +196,15 @@ export function CustomersView({ session, data }: DistributionViewProps) {
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
         </div>
       </Modal>
+      <ChoiceModal
+        isOpen={isRouteOpen}
+        onClose={() => setIsRouteOpen(false)}
+        title="Zona o ruta del cliente"
+        searchable
+        options={[{ value: '', label: 'Sin asignar' }, ...data.routes.map(route => ({ value: route.id, label: route.name }))]}
+        selectedValue={routeId}
+        onSelect={setRouteId}
+      />
     </Screen>
   )
 }

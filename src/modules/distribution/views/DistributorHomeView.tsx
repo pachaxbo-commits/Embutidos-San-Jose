@@ -27,7 +27,7 @@ export function DistributorHomeView({
 
   const openDispatch = data.openDispatches[0] ?? null
 
-  const myOutstanding = round2(
+  const globalOutstanding = round2(
     data.receivables.reduce((sum, receivable) => sum + (Number(receivable.balance) || 0), 0),
   )
 
@@ -56,7 +56,7 @@ export function DistributorHomeView({
           <KpiCard label="Venta de hoy" value={formatBs(money.salesTotal)} tone="primary" />
           <KpiCard label="Efectivo esperado" value={formatBs(money.expectedCash)} tone="positive" />
           <KpiCard label="Credito generado" value={formatBs(money.creditGenerated)} tone="warning" />
-          <KpiCard label="Cartera de mi ruta" value={formatBs(myOutstanding)} />
+          <KpiCard label="Cartera general" value={formatBs(globalOutstanding)} />
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -73,7 +73,7 @@ export function DistributorHomeView({
               >
                 <action.icon size={17} />
               </span>
-              <span className="min-w-0 truncate text-xs font-extrabold text-slate-900">{action.label}</span>
+              <span className="min-w-0 break-words text-xs font-extrabold text-slate-900">{action.label}</span>
             </button>
           ))}
         </div>
@@ -85,7 +85,7 @@ export function DistributorHomeView({
             <div className="grid gap-1.5">
               {routeStock.map((balance) => (
                 <div key={balance.id} className="flex min-w-0 items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
-                  <span className="min-w-0 truncate text-xs font-bold text-slate-800">{balance.productName}</span>
+                  <span className="min-w-0 break-words text-xs font-bold text-slate-800">{balance.productName}</span>
                   <span className="shrink-0 text-sm font-black tabular-nums text-slate-900">
                     {formatQty(balance.quantity, balance.unitType)}
                   </span>

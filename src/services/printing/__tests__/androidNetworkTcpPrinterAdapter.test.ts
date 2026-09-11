@@ -23,7 +23,7 @@ export async function runAndroidNetworkTcpTestSuite(): Promise<{ passed: number;
 
   const sampleLanPrinter: PrinterProfile = {
     id: 'prn-lan-01',
-    restaurantId: 'principal',
+    restaurantId: 'sanjose',
     branchId: 'main',
     name: 'Impresora Red Cocina TCP',
     role: 'kitchen',

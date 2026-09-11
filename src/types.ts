@@ -28,6 +28,7 @@ export type UserRole =
   // Roles de distribucion movil (businessType: 'mobile_distribution')
   | 'warehouse'
   | 'distributor'
+  | 'support'
 
 /**
  * Tipo de negocio del tenant. Determina que modulos, roles y experiencia
@@ -117,6 +118,8 @@ export type Permission =
   | 'dist.closure.warehouse'
   | 'dist.reports.view'
   | 'dist.users.manage'
+  | 'support.settings.manage'
+  | 'support.reset.prepare'
 
 export type PlanFeature =
   | 'pos'
@@ -175,6 +178,8 @@ export interface RestaurantAccount {
 }
 
 export interface RestaurantMember {
+  passwordChangedAt?: string
+  passwordChangedBy?: string
   uid: string
   email: string
   displayName: string
@@ -186,6 +191,7 @@ export interface RestaurantMember {
   branchId?: string
   /** Ruta/canal asignado (solo roles de distribucion) */
   routeId?: string
+  warehouseId?: string
 }
 
 export interface ProductExtra {

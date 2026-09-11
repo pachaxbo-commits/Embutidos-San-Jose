@@ -19,6 +19,11 @@ export interface ReceiptContext {
   distributorName: string
   /** Saldo generado si la venta fue a credito */
   creditBalance?: number
+  receiptHeader?: string
+  receiptFooter?: string
+  taxId?: string
+  address?: string
+  phone?: string
 }
 
 export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext): PrintJobPayload {
@@ -30,20 +35,28 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
         : sale.paymentKind === 'credit'
           ? 'CREDITO'
           : 'MIXTO'
+  const paymentDetails = [
+    sale.cashAmount > 0 ? `EFECTIVO: ${round2(sale.cashAmount).toFixed(2)} Bs` : '',
+    sale.qrAmount > 0 ? `QR: ${round2(sale.qrAmount).toFixed(2)} Bs` : '',
+    sale.creditAmount > 0 ? `CREDITO: ${round2(sale.creditAmount).toFixed(2)} Bs` : '',
+  ].filter(Boolean)
 
   return {
     payloadSchemaVersion: 1,
     templateVersion: 'v1.0-receipt',
-    restaurantName: context.companyName.toUpperCase(),
+    restaurantName: (context.receiptHeader || context.companyName).toUpperCase(),
     branchName: `RUTA: ${context.routeName}`,
     branchAddress: `DISTRIBUIDOR: ${context.distributorName}`,
+    headerDetails: [context.taxId ? `NIT: ${context.taxId}` : '', context.address || '', context.phone ? `TEL: ${context.phone}` : ''].filter(Boolean),
     orderId: sale.id,
     displayNumber: sale.id.slice(-6).toUpperCase(),
     customerName: sale.customerName || 'Cliente ocasional',
+    customerPhone: sale.customerCode ? `CI: ${sale.customerCode}` : undefined,
     items: sale.lines.map((line) => ({
-      name: `${line.productNameSnapshot} (${line.quantity} x ${round2(line.actualUnitPrice)})`,
+      name: line.productNameSnapshot,
       basePrice: line.actualUnitPrice,
       quantity: line.quantity,
+      unitLabel: line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u',
       lineTotal: line.subtotal,
     })),
     subtotal: sale.total,
@@ -52,10 +65,12 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
     deliveryFee: 0,
     grandTotal: sale.total,
     paymentMethod: paymentLabel,
+    paymentDetails,
     customMessage:
       sale.creditAmount > 0
         ? `SALDO GENERADO: Bs ${round2(context.creditBalance ?? sale.creditAmount).toFixed(2)}`
         : undefined,
+    footerMessage: context.receiptFooter,
     isCopy: false,
     copies: 1,
     createdIso: sale.createdAt,
@@ -63,6 +78,7 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
 }
 
 export interface PrintAttemptResult {
+  uncertain?: boolean
   ok: boolean
   message: string
 }
@@ -73,7 +89,7 @@ export interface PrintAttemptResult {
  * Un fallo de impresion NUNCA afecta a la venta: la venta ya quedo guardada y
  * sincronizada por su cuenta. Aqui solo se informa para poder reintentar.
  */
-export async function printSaleReceipt(sale: DistSale, context: ReceiptContext): Promise<PrintAttemptResult> {
+export async function printSaleReceipt(sale: DistSale, context: ReceiptContext, copy = false): Promise<PrintAttemptResult> {
   const printer = getActiveReceiptPrinter()
 
   if (!printer) {
@@ -85,13 +101,14 @@ export async function printSaleReceipt(sale: DistSale, context: ReceiptContext):
 
   if (printer.connectionType === 'bluetooth_spp') {
     try {
-      const state = await AndroidBluetoothPermissionsService.checkDiagnosticState()
-      if (state.isNativeAndroid && state.bluetoothConnectPermission === 'denied') {
-        const afterRequest = await AndroidBluetoothPermissionsService.requestConnectPermission()
-        if (afterRequest.bluetoothConnectPermission !== 'granted') {
-          return { ok: false, message: afterRequest.message }
+      let state = await AndroidBluetoothPermissionsService.checkDiagnosticState()
+      if (state.isNativeAndroid && state.bluetoothConnectPermission !== 'granted') {
+        state = await AndroidBluetoothPermissionsService.requestConnectPermission()
+        if (state.bluetoothConnectPermission !== 'granted') {
+          return { ok: false, message: state.message }
         }
-      } else if (state.isNativeAndroid && !state.isBluetoothEnabled) {
+      }
+      if (state.isNativeAndroid && !state.isBluetoothEnabled) {
         return { ok: false, message: state.message }
       }
     } catch (error) {
@@ -104,11 +121,12 @@ export async function printSaleReceipt(sale: DistSale, context: ReceiptContext):
       targetType: 'receipt',
       orderId: sale.id,
       printerProfileId: printer.id,
-      idempotencyKey: `dist-receipt:${sale.operationId}`,
-      payload: buildSaleReceiptPayload(sale, context),
+      idempotencyKey: copy ? `dist-receipt-copy:${sale.operationId}:${Date.now()}` : `dist-receipt:${sale.operationId}`,
+      payload: { ...buildSaleReceiptPayload(sale, context), isCopy: copy },
     })
 
-    if (job.status === 'failed' || job.status === 'unknown') {
+    if (job.status === 'unknown') return { ok: false, uncertain: true, message: 'El envio quedo incierto. Revisa si salio papel antes de solicitar una copia.' }
+    if (!['transmitted', 'confirmed'].includes(job.status)) {
       return { ok: false, message: job.lastError || 'La impresora no confirmo el ticket. Puedes reintentar.' }
     }
     return { ok: true, message: 'Ticket enviado a la impresora.' }
@@ -128,10 +146,11 @@ export function buildSaleReceiptText(sale: DistSale, context: ReceiptContext): s
   lines.push(`Distribuidor: ${context.distributorName}`)
   lines.push(`Ruta: ${context.routeName}`)
   lines.push(`Cliente: ${sale.customerName || 'Cliente ocasional'}`)
+  if (sale.customerCode) lines.push(`CI: ${sale.customerCode}`)
   lines.push('--------------------------------')
   for (const line of sale.lines) {
     lines.push(
-      `${line.quantity} x ${line.productNameSnapshot} @ Bs ${round2(line.actualUnitPrice).toFixed(2)} = Bs ${round2(line.subtotal).toFixed(2)}`,
+      `${line.quantity} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'} x ${line.productNameSnapshot} @ Bs ${round2(line.actualUnitPrice).toFixed(2)} = Bs ${round2(line.subtotal).toFixed(2)}`,
     )
   }
   lines.push('--------------------------------')

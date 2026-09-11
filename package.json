@@ -6,14 +6,15 @@
   "scripts": {
     "dev": "vite",
     "dev:emulator": "vite --mode emulator",
-    "emulators": "firebase emulators:start --only firestore,auth",
+    "emulators": "firebase emulators:start --only \"firestore,auth,functions\" --project demo-pachax-audit",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
     "android:open": "cap open android",
-    "test:rules": "node firebase/tests/distributionRules.test.mjs",
+    "test:rules": "node firebase/tests/serverOperations.test.mjs",
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
+    "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "seed:demo": "node firebase/tests/seedDemoTenant.mjs",
     "rules:load": "node firebase/tests/loadRules.mjs",
     "inspect:demo": "node firebase/tests/inspectDemo.mjs",
@@ -24,8 +25,13 @@
     "@capacitor/app": "^8.1.1",
     "@capacitor/cli": "^8.4.2",
     "@capacitor/core": "^8.4.2",
+    "@capacitor/filesystem": "^8.1.3",
+    "@capacitor/share": "^8.0.1",
     "cordova-plugin-bluetooth-serial": "^0.4.7",
+    "exceljs": "^4.4.0",
     "firebase": "^12.15.0",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "lucide-react": "^1.21.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
@@ -47,5 +53,10 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }

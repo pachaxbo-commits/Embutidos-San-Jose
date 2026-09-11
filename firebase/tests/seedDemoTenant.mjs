@@ -13,7 +13,7 @@ import { doc, setDoc } from 'firebase/firestore'
 import fs from 'fs'
 
 const AUTH_HOST = 'http://127.0.0.1:9095'
-const PROJECT_ID = 'pachax-flow'
+const PROJECT_ID = process.env.TEST_FIREBASE_PROJECT_ID || 'demo-pachax-audit'
 const TENANT = 'sanjose'
 const PASSWORD = 'demo1234'
 
@@ -22,6 +22,7 @@ const ACCOUNTS = [
   { email: 'almacen@sanjose.bo', displayName: 'Almacen Central', role: 'warehouse', routeId: '' },
   { email: 'hugo@sanjose.bo', displayName: 'Hugo Herbas', role: 'distributor', routeId: 'route-norte' },
   { email: 'ricardo@sanjose.bo', displayName: 'Ricardo Jimenez', role: 'distributor', routeId: 'route-sud' },
+  { email: 'soporte@sanjose.bo', displayName: 'Soporte técnico', role: 'support', routeId: '' },
 ]
 
 const PRODUCTS = [
@@ -238,6 +239,7 @@ async function run() {
   console.log(`  almacen:   almacen@sanjose.bo / ${PASSWORD}`)
   console.log(`  hugo:      hugo@sanjose.bo / ${PASSWORD} (Zona Norte)`)
   console.log(`  ricardo:   ricardo@sanjose.bo / ${PASSWORD} (Zona Sud)`)
+  console.log(`  soporte:   soporte@sanjose.bo / ${PASSWORD}`)
 }
 
 run().catch((error) => {

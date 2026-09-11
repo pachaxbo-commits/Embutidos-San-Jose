@@ -14,3 +14,10 @@ firebase-debug.log
 firebase-debug-*.log
 .emulator-data/
 PACHAX-SanJose-Demo.apk
+
+functions/node_modules/
+.vercel
+output/
+tmp/
+docs/qa-san-jose/
+firebase/backup/

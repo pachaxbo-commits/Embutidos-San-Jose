@@ -39,7 +39,7 @@ export function BottomNav<T extends string>({
             type="button"
             onClick={() => onSelect(item.id)}
             aria-current={isActive ? 'page' : undefined}
-            className="relative flex min-h-[56px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 py-1.5"
+            className="relative flex min-h-[58px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-0.5 py-1.5"
             style={{ color: isActive ? 'var(--primary)' : '#64748B' }}
           >
             <span className="relative">
@@ -50,7 +50,7 @@ export function BottomNav<T extends string>({
                 </span>
               )}
             </span>
-            <span className={`w-full truncate text-center text-[10px] ${isActive ? 'font-extrabold' : 'font-semibold'}`}>
+            <span className={`w-full text-center text-[9px] leading-tight ${isActive ? 'font-extrabold' : 'font-semibold'}`}>
               {item.label}
             </span>
           </button>

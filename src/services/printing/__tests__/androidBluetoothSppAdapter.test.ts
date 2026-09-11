@@ -20,7 +20,7 @@ export async function runAndroidBluetoothSppTestSuite(): Promise<{ passed: numbe
 
   const samplePrinter: PrinterProfile = {
     id: 'prn-bt-01',
-    restaurantId: 'principal',
+    restaurantId: 'sanjose',
     branchId: 'main',
     name: 'Impresora Bluetooth POS-58',
     role: 'receipt',

@@ -25,7 +25,7 @@ export async function runPrintIntegrationTestSuite(): Promise<{ passed: number; 
   // Register active test printer profile
   const testProfile: PrinterProfile = {
     id: 'prn-integration-01',
-    restaurantId: 'principal',
+    restaurantId: 'sanjose',
     branchId: 'main',
     name: 'Impresora Integración Caja',
     role: 'receipt',

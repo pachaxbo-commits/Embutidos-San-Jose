@@ -25,6 +25,7 @@ export type StockMovementType =
   | 'overage' // sobrante detectado en conciliacion
 
 export interface DistBaseDoc {
+  pendingConfirmation?: boolean
   id: string
   restaurantId: string
   branchId: string
@@ -36,12 +37,19 @@ export interface DistBaseDoc {
 }
 
 export interface DistProduct {
+  deleted?: boolean
+  deletedAt?: string
+  deletedBy?: string
   id: string
   name: string
+  /** Fotografía optimizada opcional para catálogo y selección operativa. */
+  photoDataUrl?: string
   /** Presentacion o categoria comercial: "Al vacio", "Granel", ... */
   category: string
   presentation?: string
   unitType: UnitType
+  productionCost?: number
+  minimumStock?: number
   referencePrice: number
   /** Peso aproximado por paquete/unidad. NO se usa para convertir reportes. */
   approximateWeightKg?: number
@@ -63,6 +71,10 @@ export interface DistRoute {
 }
 
 export interface DistCustomer {
+  photoDataUrl?: string
+  addressReference?: string
+  customerCode?: string
+  identityNumber?: string
   id: string
   name: string
   phone?: string
@@ -78,6 +90,8 @@ export interface DistCustomer {
 
 /** Saldo cacheado por ubicacion. Se mantiene con increment() atomico. */
 export interface DistBalance {
+  availableQuantity?: number
+  warehouseId?: string
   id: string
   locationKind: StockLocationKind
   /** routeId cuando locationKind === 'route' */
@@ -92,6 +106,10 @@ export interface DistBalance {
 
 /** Ledger auditable e inmutable. El id es el operationId (idempotencia). */
 export interface DistStockMovement extends DistBaseDoc {
+  responsibleName?: string
+  responsibleRole?: 'admin' | 'warehouse' | 'distributor'
+  lotCode?: string
+  lossCost?: number | null
   type: StockMovementType
   productId: string
   productName: string
@@ -100,6 +118,8 @@ export interface DistStockMovement extends DistBaseDoc {
   quantity: number
   centralDelta: number
   routeDelta: number
+  fromLocation?: string
+  toLocation?: string
   routeId?: string
   /** Documento que origino el movimiento (dispatchId, saleId, closureId) */
   refType?: 'dispatch' | 'sale' | 'closure' | 'manual'
@@ -108,6 +128,10 @@ export interface DistStockMovement extends DistBaseDoc {
 }
 
 export interface DistDispatchLine {
+  lotCode?: string
+  manufacturedOn?: string
+  expiresOn?: string
+  lotId?: string
   productId: string
   productName: string
   unitType: UnitType
@@ -126,6 +150,7 @@ export interface DistDispatchAddition {
 export type DispatchStatus = 'open' | 'closed'
 
 export interface DistDispatch extends DistBaseDoc {
+  warehouseId?: string
   routeId: string
   routeName: string
   distributorUid: string
@@ -139,6 +164,8 @@ export interface DistDispatch extends DistBaseDoc {
 }
 
 export interface DistSaleLine {
+  costTotal?: number | null
+  allocations?: { lotId: string; lotCode: string; expiresOn: string; quantity: number; productionCost: number | null }[]
   productId: string
   productNameSnapshot: string
   quantity: number
@@ -149,6 +176,8 @@ export interface DistSaleLine {
 }
 
 export interface DistSale extends DistBaseDoc {
+  pendingConfirmation?: boolean
+  customerCode?: string
   /** Igual a id. Explicito para trazabilidad de operaciones offline. */
   operationId: string
   sourceLocation: SourceLocation
@@ -171,6 +200,9 @@ export interface DistSale extends DistBaseDoc {
 export type ReceivableStatus = 'OPEN' | 'PARTIAL' | 'PAID'
 
 export interface DistReceivable extends DistBaseDoc {
+  creditedAmount?: number
+  saleLines?: DistSaleLine[]
+  customerCode?: string
   saleId: string
   customerId: string
   customerName: string
@@ -185,11 +217,14 @@ export interface DistReceivable extends DistBaseDoc {
 }
 
 export interface DistCollection extends DistBaseDoc {
+  saleLines?: DistSaleLine[]
+  customerCode?: string
   operationId: string
   receivableId: string
   customerId: string
   customerName: string
   routeId: string
+  originRouteId?: string
   collectedByUid: string
   collectedByName: string
   amount: number
@@ -198,6 +233,10 @@ export interface DistCollection extends DistBaseDoc {
 }
 
 export interface DistExpense extends DistBaseDoc {
+  voided?: boolean
+  voidedAt?: string
+  voidedBy?: string
+  voidedByName?: string
   operationId: string
   concept: string
   amount: number
@@ -224,6 +263,10 @@ export interface DistClosureProductRow {
 export type ClosureStatus = 'draft' | 'warehouse_done' | 'closed' | 'reopened'
 
 export interface DistClosure extends DistBaseDoc {
+  warehouseId?: string
+  declaredReturns?: Record<string, number>
+  returnDeclaredBy?: string
+  returnDeclaredAt?: string
   dispatchId: string
   routeId: string
   routeName: string
@@ -248,3 +291,31 @@ export interface DistClosure extends DistBaseDoc {
   reopenedAt?: string
   note?: string
 }
+
+export interface DistWarehouse {
+  id: string
+  name: string
+  active: boolean
+  restaurantId: string
+}
+
+export interface DistQrVerification {
+  id: string
+  restaurantId: string
+  routeId: string
+  sourceType: 'sale' | 'collection' | 'claim'
+  sourceId: string
+  amount: number
+  verifiedBy: string
+  verifiedAt: string
+  reference: string
+}
+
+export interface DistLot {
+ id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
+ lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;
+ quantities: Record<string, number>; quarantined?: boolean; legacy?: boolean; createdAt: string; createdBy: string;
+}
+export interface DistTransfer { id: string; fromWarehouseId: string; toWarehouseId: string; line: DistDispatchLine; createdAt: string; createdBy: string; responsibleName?: string; note?: string }
+export interface DistClaim { id: string; kind: 'exchange'|'return'; saleId: string; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName: string;quantity: number;unitType: UnitType;total: number} | null }
+export interface DistCreditStatus { id: string; oldestPendingAt: string | null; checkedAt: string }

@@ -24,8 +24,8 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
   const samplePayload: PrintJobPayload = {
     payloadSchemaVersion: 1,
     templateVersion: 'v1.0',
-    restaurantName: 'PACHAX Flow Demo',
-    branchName: 'Sucursal Central',
+    restaurantName: 'Embutidos San Jose',
+    branchName: 'Almacen Central',
     orderId: 'ord-101',
     sequenceNumber: 15,
     displayNumber: '#015',
@@ -44,7 +44,7 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
 
   const samplePrinter: PrinterProfile = {
     id: 'prn-main',
-    restaurantId: 'principal',
+    restaurantId: 'sanjose',
     branchId: 'main',
     name: 'Impresora Caja Principal',
     role: 'receipt',
@@ -298,6 +298,31 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
     assert(clean.includes('Nandu') && clean.includes('Aji') && !clean.includes('ñ') && !clean.includes('í'), 'Prueba 15: Los caracteres especiales (tildes, n) tienen un transliterador controlado para ESC/POS')
   } catch (e: any) {
     assert(false, `Prueba 15 Fallo: ${e.message}`)
+  }
+
+  // --- Test 16: Perfil de la impresora real de 80 mm ---
+  try {
+    const bytes = Array.from(buildReceiptBytes(samplePayload, '80mm', true))
+    const contains = (sequence: number[]) => bytes.some((_, index) => sequence.every((byte, offset) => bytes[index + offset] === byte))
+
+    assert(
+      contains([0x1b, 0x74, 0x02]) && contains([0x1d, 0x56, 0x42, 0x00]),
+      'Prueba 16: El ticket usa CP850 y el corte parcial probado con la impresora de BURGUERLAB',
+    )
+  } catch (e: any) {
+    assert(false, `Prueba 16 Fallo: ${e.message}`)
+  }
+
+  // --- Test 17: Logo monocromo oficial de San José ---
+  try {
+    const sanJosePayload = { ...samplePayload, restaurantName: 'Embutidos San José' }
+    const bytes = Array.from(buildReceiptBytes(sanJosePayload, '80mm', true))
+    const hasRasterLogo = bytes.some((_, index) =>
+      [0x1d, 0x76, 0x30, 0x00].every((byte, offset) => bytes[index + offset] === byte),
+    )
+    assert(hasRasterLogo, 'Prueba 17: El ticket de San José incluye el logo monocromo ESC/POS')
+  } catch (e: any) {
+    assert(false, `Prueba 17 Fallo: ${e.message}`)
   }
 
   return { passed, failed, results }

@@ -1,7 +1,10 @@
-import { useMemo, useRef, useState } from 'react'
+import { submitOperation } from '../data/operationQueue'
+import type { DistCreditStatus } from '../types'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Printer, Search, Send, ShoppingCart, Trash2, UserPlus } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui/Form'
+import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import {
   computeSaleTotal,
@@ -43,6 +46,7 @@ export function SellView({ session, data }: DistributionViewProps) {
   )
 
   const [directRouteId, setDirectRouteId] = useState('route-directa')
+  const [isRouteOpen, setIsRouteOpen] = useState(false)
   const routeId = isDistributor ? (session.routeId ?? '') : directRouteId
   const routeName = data.routes.find((route) => route.id === routeId)?.name ?? 'Venta directa'
 
@@ -62,12 +66,20 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [customerSearch, setCustomerSearch] = useState('')
   const [isCustomerOpen, setIsCustomerOpen] = useState(false)
   const [newCustomerName, setNewCustomerName] = useState('')
+  const [newCustomerIdentity, setNewCustomerIdentity] = useState('')
   const [newCustomerPhone, setNewCustomerPhone] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [lastSale, setLastSale] = useState<DistSale | null>(null)
-  const [printState, setPrintState] = useState<{ ok: boolean; message: string } | null>(null)
+  const [printState, setPrintState] = useState<{ ok: boolean; message: string; uncertain?: boolean } | null>(null)
   const [isPrinting, setIsPrinting] = useState(false)
+  useEffect(() => {
+    if (!lastSale?.pendingConfirmation) return
+    const confirmed = data.sales.find(s => s.id === lastSale.id && !s.pendingConfirmation)
+    if (!confirmed) return
+    const update = window.setTimeout(() => { setLastSale(confirmed); setPrintState(null) }, 0)
+    return () => window.clearTimeout(update)
+  }, [data.sales, lastSale])
 
   // Un id de operacion por intento de venta: evita duplicar por doble toque y
   // permite reintentar la sincronizacion sin crear una venta nueva.
@@ -85,7 +97,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             product.category.toLowerCase().includes(term),
         )
       : activeProducts
-    return list.slice(0, 40)
+    return list
   }, [activeProducts, search])
 
   const total = computeSaleTotal(cart)
@@ -93,8 +105,8 @@ export function SellView({ session, data }: DistributionViewProps) {
 
   const filteredCustomers = useMemo(() => {
     const term = customerSearch.trim().toLowerCase()
-    const list = term ? data.customers.filter((customer) => customer.name.toLowerCase().includes(term)) : data.customers
-    return list.slice(0, 30)
+    const list = term ? data.customers.filter((customer) => [customer.name, customer.customerCode, customer.identityNumber, customer.phone].join(' ').toLowerCase().includes(term)) : data.customers
+    return list.filter(customer => customer.active !== false).slice(0, 30)
   }, [customerSearch, data.customers])
 
   const openProduct = (product: DistProduct) => {
@@ -154,21 +166,39 @@ export function SellView({ session, data }: DistributionViewProps) {
 
   const createCustomer = async () => {
     if (!newCustomerName.trim()) return
+    try {
     const customer = await saveCustomer({
       name: newCustomerName,
+      identityNumber: newCustomerIdentity,
       phone: newCustomerPhone,
       routeId: routeId || undefined,
     })
     setCustomerId(customer.id)
     setNewCustomerName('')
     setNewCustomerPhone('')
+    setNewCustomerIdentity('')
     setIsCustomerOpen(false)
+    } catch (err) { setError((err as Error).message) }
   }
 
   const confirmSale = async () => {
     if (isSubmitting) return
     setError(null)
 
+    if (selectedCustomer) {
+      let credit = data.creditStatus.find(c => c.id === selectedCustomer.id)
+      if (!selectedCustomer.identityNumber) { setError('Completa el CI del cliente antes de vender.'); return }
+      if (!credit) {
+        setIsSubmitting(true)
+        try { credit = await submitOperation<DistCreditStatus>('creditStatus', { customerId:selectedCustomer.id }, newOperationId('credit-status')) }
+        catch (e) { setError((e as Error).message); return }
+        finally { setIsSubmitting(false) }
+      }
+      // Se evalúa al confirmar, no durante el render de React.
+      // eslint-disable-next-line react-hooks/purity
+      const blockDays = data.supportSettings.creditBlockDays
+      if (credit.oldestPendingAt && Date.parse(credit.oldestPendingAt) + blockDays * 86400000 <= Date.now()) { setError(`Venta bloqueada: el cliente tiene créditos pendientes de ${blockDays} días o más.`); return }
+    }
     if (cart.length === 0) {
       setError('Agrega al menos un producto.')
       return
@@ -224,7 +254,8 @@ export function SellView({ session, data }: DistributionViewProps) {
         dispatchId: openDispatch?.id,
         customerId: customerId || undefined,
         customerName: selectedCustomer?.name,
-        lines: cart.map(({ lineId: _lineId, ...line }) => line),
+        customerCode: selectedCustomer?.customerCode || selectedCustomer?.identityNumber,
+        lines: cart.map(line => ({ productId: line.productId, productNameSnapshot: line.productNameSnapshot, quantity: line.quantity, unitType: line.unitType, actualUnitPrice: line.actualUnitPrice, subtotal: line.subtotal })),
         total,
         paymentKind,
         cashAmount: split.cashAmount,
@@ -233,9 +264,12 @@ export function SellView({ session, data }: DistributionViewProps) {
       })
 
       setIsCheckoutOpen(false)
-      setPrintState(null)
+      setCart([])
+      operationIdRef.current = null
+      setPrintState(sale.pendingConfirmation ? { ok: false, message: 'Venta pendiente de confirmación al sincronizar. Revisa Operaciones pendientes.' } : null)
       setLastSale(sale)
     } catch (submitError) {
+      if ((submitError as {rejected?: boolean}).rejected) operationIdRef.current = null
       setError((submitError as Error).message || 'No se pudo registrar la venta.')
     } finally {
       setIsSubmitting(false)
@@ -243,7 +277,12 @@ export function SellView({ session, data }: DistributionViewProps) {
   }
 
   const receiptContext = {
-    companyName: session.restaurantName,
+    companyName: data.supportSettings.companyName || session.restaurantName,
+    receiptHeader: data.supportSettings.receiptHeader,
+    receiptFooter: data.supportSettings.receiptFooter,
+    taxId: data.supportSettings.taxId,
+    address: data.supportSettings.address,
+    phone: data.supportSettings.phone,
     routeName,
     distributorName: session.userName,
     creditBalance: lastSale?.creditAmount,
@@ -266,17 +305,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         {!isDistributor && (
           <div className="w-full rounded-2xl border border-slate-200 bg-white p-3">
             <Field label="Canal de la venta" hint="El stock se descuenta del almacen central.">
-              <select
-                value={directRouteId}
-                onChange={(event) => setDirectRouteId(event.target.value)}
-                className="min-h-[44px] w-full rounded-2xl border border-slate-200 px-3 text-sm font-bold"
-              >
-                {data.routes.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.name}
-                  </option>
-                ))}
-              </select>
+              <ChoiceButton label={routeName} placeholder="Selecciona una ruta" onClick={() => setIsRouteOpen(true)} />
             </Field>
           </div>
         )}
@@ -297,7 +326,7 @@ export function SellView({ session, data }: DistributionViewProps) {
           />
         </div>
 
-        <div className="grid w-full min-w-0 grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid w-full min-w-0 grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-4">
           {filteredProducts.map((product) => {
             const stock = availableStock.get(product.id) ?? 0
             return (
@@ -305,20 +334,18 @@ export function SellView({ session, data }: DistributionViewProps) {
                 key={product.id}
                 type="button"
                 onClick={() => openProduct(product)}
-                className="flex min-h-[64px] w-full min-w-0 items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-left transition active:bg-slate-50"
+                className="flex min-h-[116px] w-full min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm transition active:scale-[0.99] active:bg-slate-50"
               >
-                <span className="min-w-0">
-                  <span className="block truncate text-xs font-extrabold text-slate-900">{product.name}</span>
-                  <span className="block truncate text-[11px] font-semibold text-slate-500">
-                    {product.presentation || product.category}
-                  </span>
-                </span>
-                <span className="shrink-0 text-right">
-                  <span className="block text-xs font-black tabular-nums" style={{ color: 'var(--primary)' }}>
+                {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} onError={(event) => { event.currentTarget.style.display = 'none' }} className="aspect-[16/9] w-full object-cover" />}
+                <span className="flex min-w-0 flex-1 flex-col justify-between gap-2 p-3">
+                  <span className="block text-xs font-extrabold leading-snug text-slate-900">{product.name}</span>
+                  <span className="flex flex-wrap items-end justify-between gap-1">
+                    <span className={`text-[10px] font-bold tabular-nums ${stock > 0 ? 'text-slate-500' : 'text-rose-600'}`}>
+                      {stock > 0 ? `${formatQty(stock, product.unitType)} disponibles` : 'Sin existencia'}
+                    </span>
+                    <span className="text-xs font-black tabular-nums" style={{ color: 'var(--primary)' }}>
                     {formatBs(product.referencePrice)}
-                  </span>
-                  <span className={`block text-[10px] font-bold tabular-nums ${stock > 0 ? 'text-slate-400' : 'text-rose-500'}`}>
-                    {formatQty(stock, product.unitType)}
+                    </span>
                   </span>
                 </span>
               </button>
@@ -353,6 +380,17 @@ export function SellView({ session, data }: DistributionViewProps) {
         </div>
       )}
 
+      {!isDistributor && <ChoiceModal
+        isOpen={isRouteOpen}
+        onClose={() => setIsRouteOpen(false)}
+        title="Canal de la venta"
+        subtitle="La mercadería saldrá del almacén central"
+        searchable
+        options={data.routes.map(option => ({ value: option.id, label: option.name }))}
+        selectedValue={directRouteId}
+        onSelect={setDirectRouteId}
+      />}
+
       {/* Cantidad y precio */}
       <Modal
         isOpen={Boolean(editingProduct)}
@@ -379,9 +417,9 @@ export function SellView({ session, data }: DistributionViewProps) {
           </Field>
           <Field
             label={editingProduct?.unitType === 'kg' ? 'Precio por kilo (Bs)' : 'Precio unitario (Bs)'}
-            hint="Editable: el precio del catalogo es solo referencia."
+            hint={isDistributor ? "Precio definido por Administración." : "Solo Administración puede modificarlo."}
           >
-            <NumberInput value={unitPrice} min={0} step={0.5} onChange={(event) => setUnitPrice(event.target.value)} />
+            <NumberInput disabled={isDistributor} value={unitPrice} min={0} step={0.5} onChange={(event) => setUnitPrice(event.target.value)} />
           </Field>
 
           {/* En granel el calculo tiene que estar a la vista: se pesa y se cobra. */}
@@ -417,7 +455,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             {cart.map((line) => (
               <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-extrabold text-slate-900">{line.productNameSnapshot}</p>
+                  <p className="break-words text-xs font-extrabold text-slate-900">{line.productNameSnapshot}</p>
                   <p className="text-[11px] font-semibold text-slate-500">
                     {formatQty(line.quantity, line.unitType)} × {formatBs(line.actualUnitPrice)}
                   </p>
@@ -461,7 +499,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             hint={paymentKind === 'credit' || mixedRemainder > 0 ? 'Obligatorio cuando hay credito.' : 'Opcional en venta al contado.'}
           >
             <SecondaryButton full onClick={() => setIsCustomerOpen(true)}>
-              {selectedCustomer ? selectedCustomer.name : 'Seleccionar cliente'}
+              {selectedCustomer ? `${selectedCustomer.name} · ${selectedCustomer.customerCode || selectedCustomer.identityNumber || ''}` : 'Seleccionar cliente'}
             </SecondaryButton>
           </Field>
 
@@ -475,7 +513,7 @@ export function SellView({ session, data }: DistributionViewProps) {
           <TextInput
             value={customerSearch}
             onChange={(event) => setCustomerSearch(event.target.value)}
-            placeholder="Buscar cliente por nombre..."
+            placeholder="Nombre, codigo o carnet..."
           />
           <div className="grid max-h-56 gap-1.5 overflow-y-auto">
             <button
@@ -498,7 +536,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                 }}
                 className="min-h-[44px] rounded-2xl border border-slate-200 px-3 text-left text-xs font-bold text-slate-800"
               >
-                {customer.name}
+                {customer.name} · {customer.customerCode || customer.identityNumber || 'CI pendiente'}
                 {customer.phone ? <span className="ml-2 text-slate-400">{customer.phone}</span> : null}
               </button>
             ))}
@@ -517,6 +555,8 @@ export function SellView({ session, data }: DistributionViewProps) {
                 onChange={(event) => setNewCustomerPhone(event.target.value)}
                 placeholder="Telefono (opcional)"
               />
+              <TextInput value={newCustomerIdentity} onChange={e => setNewCustomerIdentity(e.target.value)} placeholder="CI / código del cliente" />
+              {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
               <SecondaryButton full onClick={() => void createCustomer()}>
                 <UserPlus size={16} /> Crear y seleccionar
               </SecondaryButton>
@@ -550,16 +590,16 @@ export function SellView({ session, data }: DistributionViewProps) {
             {/* Un fallo de impresion no revierte ni duplica la venta: solo se reintenta. */}
             <SecondaryButton
               full
-              disabled={isPrinting}
+              disabled={isPrinting || lastSale.pendingConfirmation}
               onClick={() => {
                 setIsPrinting(true)
-                void printSaleReceipt(lastSale, receiptContext)
+                void printSaleReceipt(lastSale, receiptContext, Boolean(printState?.ok || printState?.uncertain))
                   .then(setPrintState)
                   .finally(() => setIsPrinting(false))
               }}
             >
               <Printer size={16} />
-              {isPrinting ? 'Imprimiendo...' : printState && !printState.ok ? 'Reintentar impresion' : 'Imprimir ticket'}
+              {isPrinting ? 'Imprimiendo...' : printState?.uncertain ? 'Imprimir copia (revisa el papel)' : printState?.ok ? 'Imprimir copia' : printState ? 'Reintentar impresion' : 'Imprimir ticket'}
             </SecondaryButton>
 
             {printState && (

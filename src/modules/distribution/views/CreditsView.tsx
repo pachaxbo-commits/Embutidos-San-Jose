@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react'
-import { HandCoins, Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, HandCoins, Search } from 'lucide-react'
+import { RangePicker } from './RangePicker'
+import { CreditProducts } from './CreditProducts'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { round2, validateCollection } from '../domain/engine'
+import { toDayKey, round2, validateCollection } from '../domain/engine'
 import { newOperationId, registerCollection } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -23,6 +25,7 @@ interface CustomerCredit {
  * historial, porque la clienta necesita poder auditar lo cobrado.
  */
 export function CreditsView({ session, data }: DistributionViewProps) {
+  const [period, setPeriod] = useState<string[]>([])
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<CustomerCredit | null>(null)
   const [collectTarget, setCollectTarget] = useState<DistReceivable | null>(null)
@@ -31,10 +34,12 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [note, setNote] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [paidOpen, setPaidOpen] = useState(false)
 
   const byCustomer = useMemo(() => {
     const map = new Map<string, CustomerCredit>()
     for (const receivable of data.receivables) {
+      if (period.length && !period.includes(receivable.dayKey || toDayKey(receivable.createdAt))) continue
       const current = map.get(receivable.customerId)
       const entry: CustomerCredit = current ?? {
         customerId: receivable.customerId,
@@ -51,12 +56,12 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       map.set(receivable.customerId, entry)
     }
     return [...map.values()].sort((a, b) => b.balance - a.balance)
-  }, [data.receivables])
+  }, [data.receivables, period])
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return term ? byCustomer.filter((entry) => entry.customerName.toLowerCase().includes(term)) : byCustomer
-  }, [byCustomer, search])
+    return term ? byCustomer.filter((entry) => [entry.customerName, data.customers.find(c => c.id === entry.customerId)?.customerCode, data.customers.find(c => c.id === entry.customerId)?.identityNumber].join(' ').toLowerCase().includes(term)) : byCustomer
+  }, [byCustomer, search, data.customers])
 
   const totalOutstanding = round2(byCustomer.reduce((sum, entry) => sum + entry.balance, 0))
 
@@ -86,7 +91,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         method,
         collectedByUid: session.uid,
         collectedByName: session.userName,
-        routeId: collectTarget.routeId,
+        routeId: session.routeId || collectTarget.routeId,
         note,
       })
       setCollectTarget(null)
@@ -99,8 +104,11 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   }
 
   return (
-    <Screen title="Creditos" subtitle="Cartera pendiente por cliente">
+    <Screen title="Creditos" subtitle="Cartera general de todos los clientes">
       <div className="grid w-full min-w-0 gap-3">
+        <p className="text-xs text-slate-600">La deuda es compartida entre administracion y distribuidores. Filtra por fecha de la venta a credito; el saldo incluye todos los cobros registrados.</p>
+        <RangePicker dayKeys={period.length ? period : [toDayKey(new Date())]} onChange={setPeriod} />
+        <button className="text-left text-sm font-bold text-[var(--primary)]" onClick={() => setPeriod([])}>{period.length ? 'Ver todos los creditos' : 'Mostrando todos los creditos'}</button>
         <div className="grid grid-cols-2 gap-2">
           <KpiCard label="Cartera pendiente" value={formatBs(totalOutstanding)} tone="warning" />
           <KpiCard label="Clientes con saldo" value={String(byCustomer.filter((entry) => entry.balance > 0).length)} />
@@ -123,11 +131,11 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             <button
               key={entry.customerId}
               type="button"
-              onClick={() => setSelected(entry)}
+              onClick={() => { setSelected(entry); setPaidOpen(false) }}
               className="flex w-full min-w-0 items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left"
             >
               <div className="min-w-0">
-                <p className="truncate text-sm font-extrabold text-slate-900">{entry.customerName}</p>
+                <p className="break-words text-sm font-extrabold text-slate-900">{entry.customerName}</p><p className="text-xs text-slate-500">{data.customers.find(c => c.id === entry.customerId)?.customerCode || data.customers.find(c => c.id === entry.customerId)?.identityNumber}</p>
                 <p className="text-[11px] font-semibold text-slate-500">
                   Ultimo movimiento: {new Date(entry.lastMovementAt).toLocaleDateString('es-BO')}
                 </p>
@@ -149,9 +157,11 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         subtitle={selected ? `Saldo actual ${formatBs(selected.balance)}` : ''}
       >
         <div className="grid gap-2">
+          {!!selected?.receivables.some(receivable => receivable.balance > 0) && <p className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Pendiente de pago</p>}
           {selected?.receivables
             .slice()
-            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+            .sort((a, b) => Number(b.balance > 0) - Number(a.balance > 0) || b.createdAt.localeCompare(a.createdAt))
+            .filter(receivable => receivable.balance > 0 || paidOpen)
             .map((receivable) => (
               <div key={receivable.id} className="rounded-2xl border border-slate-200 p-3">
                 <div className="flex items-start justify-between gap-2">
@@ -168,16 +178,17 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                   </div>
                   <span
                     className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${
-                      receivable.status === 'PAID'
+                      receivable.balance <= 0
                         ? 'bg-emerald-50 text-emerald-700'
-                        : receivable.status === 'PARTIAL'
+                        : receivable.paidAmount > 0
                           ? 'bg-amber-50 text-amber-700'
                           : 'bg-rose-50 text-rose-700'
                     }`}
                   >
-                    {receivable.status}
+                    {receivable.balance <= 0 ? 'PAGADO' : receivable.paidAmount > 0 ? 'PARCIAL' : 'PENDIENTE'}
                   </span>
                 </div>
+                <CreditProducts saleId={receivable.saleId} lines={receivable.saleLines || data.sales.find(sale => sale.id === receivable.saleId)?.lines} />
                 {receivable.balance > 0 && session.can('dist.collection.create') && (
                   <button
                     type="button"
@@ -190,6 +201,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                 )}
               </div>
             ))}
+          {!!selected?.receivables.some(receivable => receivable.balance <= 0) && <button type="button" onClick={() => setPaidOpen(value => !value)} className="mt-1 flex min-h-[44px] w-full items-center justify-between rounded-2xl border border-slate-200 px-3 text-left text-xs font-extrabold text-slate-700"><span>Créditos pagados ({selected.receivables.filter(receivable => receivable.balance <= 0).length})</span>{paidOpen ? <ChevronDown size={17} /> : <ChevronRight size={17} />}</button>}
         </div>
       </Modal>
 
@@ -205,6 +217,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         }
       >
         <div className="grid gap-3">
+          <CreditProducts saleId={collectTarget?.saleId} lines={collectTarget?.saleLines || data.sales.find(sale => sale.id === collectTarget?.saleId)?.lines} />
           <Field label="Monto cobrado (Bs)" required>
             <NumberInput value={amount} min={0} step={1} onChange={(event) => setAmount(event.target.value)} />
           </Field>

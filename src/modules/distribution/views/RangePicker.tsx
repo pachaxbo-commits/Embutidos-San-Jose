@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Field, Segmented, SelectInput, TextInput } from '../../../components/ui/Form'
+import { Field, Segmented, TextInput } from '../../../components/ui/Form'
+import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { buildDayRange } from '../state/useDistributionStore'
 import { toDayKey } from '../domain/engine'
 import type { DistRoute } from '../types'
@@ -35,9 +36,11 @@ export function RangePicker({
   routeFilter?: string
   onRouteFilterChange?: (routeId: string) => void
 }) {
+  const [rangeError, setRangeError] = useState('')
   const [preset, setPreset] = useState<RangePreset>(dayKeys.length === 1 ? 'today' : 'custom')
   const [from, setFrom] = useState(dayKeys[0] ?? toDayKey(new Date()))
   const [to, setTo] = useState(dayKeys[dayKeys.length - 1] ?? toDayKey(new Date()))
+  const [isRouteOpen, setIsRouteOpen] = useState(false)
 
   const applyPreset = (next: RangePreset) => {
     setPreset(next)
@@ -55,7 +58,7 @@ export function RangePicker({
     }
     if (next === 'month') {
       const start = new Date(today)
-      start.setDate(start.getDate() - 29)
+      start.setDate(1)
       onChange(buildDayRange(start, today))
     }
   }
@@ -64,7 +67,9 @@ export function RangePicker({
     const start = new Date(`${nextFrom}T00:00:00`)
     const end = new Date(`${nextTo}T00:00:00`)
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return
-    if (start > end) return
+    if (start > end) { setRangeError('La fecha inicial debe ser anterior a la final.'); return }
+    if ((end.getTime() - start.getTime()) / 86400000 > 365) { setRangeError('Consulta hasta un ano por vez.'); return }
+    setRangeError('')
     onChange(buildDayRange(start, end))
   }
 
@@ -106,18 +111,25 @@ export function RangePicker({
         </div>
       )}
 
+      {rangeError && <p role="alert" className="text-xs text-rose-700">{rangeError}</p>}
       {routes && onRouteFilterChange && (
         <Field label="Ruta">
-          <SelectInput value={routeFilter ?? ''} onChange={(event) => onRouteFilterChange(event.target.value)}>
-            <option value="">Todas las rutas</option>
-            {routes.map((route) => (
-              <option key={route.id} value={route.id}>
-                {route.name}
-              </option>
-            ))}
-          </SelectInput>
+          <ChoiceButton
+            label={routeFilter ? routes.find(route => route.id === routeFilter)?.name : 'Todas las rutas'}
+            placeholder="Todas las rutas"
+            onClick={() => setIsRouteOpen(true)}
+          />
         </Field>
       )}
+      {routes && onRouteFilterChange && <ChoiceModal
+        isOpen={isRouteOpen}
+        onClose={() => setIsRouteOpen(false)}
+        title="Filtrar por ruta"
+        searchable
+        options={[{ value: '', label: 'Todas las rutas' }, ...routes.map(route => ({ value: route.id, label: route.name }))]}
+        selectedValue={routeFilter ?? ''}
+        onSelect={onRouteFilterChange}
+      />}
     </div>
   )
 }

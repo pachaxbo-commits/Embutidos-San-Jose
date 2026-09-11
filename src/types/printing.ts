@@ -108,6 +108,8 @@ export interface PrintableItemPayload {
   categoryName?: string
   basePrice: number
   quantity: number
+  /** Unidad visible en el comprobante: kg, paq o u. */
+  unitLabel?: string
   modifiersText?: string[]
   note?: string
   extrasTotal?: number
@@ -121,6 +123,7 @@ export interface PrintJobPayload {
   branchName: string
   branchAddress?: string
   branchPhone?: string
+  headerDetails?: string[]
   orderId?: string
   sequenceNumber?: number
   displayNumber?: string
@@ -137,12 +140,15 @@ export interface PrintJobPayload {
   deliveryFee: number
   grandTotal: number
   paymentMethod?: string
+  /** Desglose visible para pagos mixtos o ventas con credito. */
+  paymentDetails?: string[]
   cashReceived?: number
   changeAmount?: number
   isCopy: boolean
   reprintReason?: string
   reprintCount?: number
   customMessage?: string
+  footerMessage?: string
   copies: number
   createdIso: string
 }

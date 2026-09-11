@@ -1,3 +1,8 @@
+import { dismissSyncError } from '../data/distributionRepository'
+import { acknowledgeOperation } from '../data/operationQueue'
+import { ClaimsView } from './ClaimsView'
+import { QrView } from './QrView'
+import { WarehousesView } from './WarehousesView'
 import { useEffect, useMemo, useState } from 'react'
 import {
   Boxes,
@@ -14,6 +19,7 @@ import {
   UserCog,
   BarChart3,
   Printer,
+  Settings2,
 } from 'lucide-react'
 import { getVisibleModules, getBusinessTypeDefinition, type ModuleId } from '../../../config/businessTypes'
 import { hasPermission } from '../../../services/permissionService'
@@ -37,6 +43,7 @@ import { ClosureView } from './ClosureView'
 import { ProductsView } from './ProductsView'
 import { ReportsView } from './ReportsView'
 import { UsersView } from './UsersView'
+import { SupportView } from './SupportView'
 import type { Permission, UserRole } from '../../../types'
 import type { DistributionData } from '../state/useDistributionStore'
 
@@ -47,6 +54,7 @@ export interface DistributionSession {
   userName: string
   role: UserRole
   /** Ruta del distribuidor; null para admin/almacen (ven todas) */
+  warehouseId?: string
   routeId: string | null
   can: (permission: Permission) => boolean
   /** Rango consultado actualmente */
@@ -60,6 +68,9 @@ export interface DistributionViewProps {
 }
 
 const MODULE_ICONS: Partial<Record<ModuleId, BottomNavItem<ModuleId>['icon']>> = {
+  'dist.claims': Receipt,
+  'dist.qr': Receipt,
+  'dist.warehouses': Boxes,
   'dist.dashboard': Home,
   'dist.sales': ShoppingCart,
   'dist.inventory': Boxes,
@@ -73,6 +84,7 @@ const MODULE_ICONS: Partial<Record<ModuleId, BottomNavItem<ModuleId>['icon']>> =
   'dist.reports': BarChart3,
   'dist.users': UserCog,
   'printer-settings': Printer,
+  'dist.support': Settings2,
 }
 
 export function DistributionApp({
@@ -82,6 +94,7 @@ export function DistributionApp({
   userName,
   role,
   routeId,
+  warehouseId = 'central',
   onSignOut,
   onOpenPrinterSettings,
 }: {
@@ -90,6 +103,7 @@ export function DistributionApp({
   uid: string
   userName: string
   role: UserRole
+  warehouseId?: string
   routeId: string | null
   onSignOut: () => Promise<void>
   onOpenPrinterSettings: () => void
@@ -103,7 +117,7 @@ export function DistributionApp({
   const can = useMemo(() => (permission: Permission) => hasPermission(role, permission), [role])
 
   const modules = useMemo(() => getVisibleModules('mobile_distribution', can, role), [can, role])
-  const [currentModule, setCurrentModule] = useState<ModuleId>(modules[0]?.id ?? 'dist.dashboard')
+  const [currentModule, setCurrentModule] = useState<ModuleId>('dist.dashboard')
   const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [isSignOutOpen, setIsSignOutOpen] = useState(false)
   const [dayKeys, setDayKeys] = useState<string[]>([toDayKey(new Date())])
@@ -117,8 +131,11 @@ export function DistributionApp({
   const canReadFinance = can('dist.credit.view') || can('dist.credit.viewAll')
   const data = useDistributionData({
     routeId: scopeRouteId,
+    distributorUid: role === 'distributor' ? uid : undefined,
     dayKeys: role === 'distributor' ? [toDayKey(new Date())] : dayKeys,
-    enabled: true,
+    enabled: role !== 'support',
+    restaurantId,
+    warehouseId: role === 'warehouse' ? warehouseId : undefined,
     canReadFinance,
   })
 
@@ -137,6 +154,7 @@ export function DistributionApp({
     userName,
     role,
     routeId: scopeRouteId,
+    warehouseId,
     can,
     dayKeys: role === 'distributor' ? [toDayKey(new Date())] : dayKeys,
     setDayKeys,
@@ -147,7 +165,9 @@ export function DistributionApp({
   // Los cuatro accesos de la barra inferior dependen del trabajo real de cada
   // rol, no del orden del catalogo de modulos.
   const navPriority: ModuleId[] =
-    role === 'distributor'
+    role === 'support'
+      ? ['dist.support']
+      : role === 'distributor'
       ? ['dist.dashboard', 'dist.sales', 'dist.credits', 'dist.closure']
       : role === 'warehouse'
         ? ['dist.dashboard', 'dist.inventory', 'dist.dispatches', 'dist.closure']
@@ -172,12 +192,16 @@ export function DistributionApp({
       return
     }
     setCurrentModule(id)
+    window.scrollTo({ top: 0 })
   }
 
   const viewProps: DistributionViewProps = { session, data }
 
   const renderModule = () => {
     switch (activeModule) {
+      case 'dist.claims': return <ClaimsView {...viewProps} />
+      case 'dist.qr': return <QrView {...viewProps} />
+      case 'dist.warehouses': return <WarehousesView {...viewProps} />
       case 'dist.dashboard':
         return role === 'distributor' ? (
           <DistributorHomeView {...viewProps} onNavigate={selectModule} />
@@ -206,37 +230,34 @@ export function DistributionApp({
         return <ReportsView {...viewProps} />
       case 'dist.users':
         return <UsersView {...viewProps} />
+      case 'dist.support':
+        return <SupportView onOpenPrinterSettings={onOpenPrinterSettings} />
       default:
         return null
     }
   }
 
   const roleLabel =
-    role === 'distributor' ? 'Distribuidor' : role === 'warehouse' ? 'Almacen' : 'Administracion'
-
+    role === 'support' ? 'Soporte técnico' : role === 'distributor' ? 'Distribuidor' : role === 'warehouse' ? 'Almacen' : 'Administracion'
   return (
-    <div className="flex min-h-[100dvh] w-full min-w-0 flex-col" style={{ backgroundColor: 'var(--background)' }}>
+    <div className="distribution-shell flex min-h-[100dvh] w-full min-w-0 flex-col" style={{ backgroundColor: 'var(--background)' }}>
       <header
-        className="sticky top-0 z-30 w-full border-b border-slate-200 bg-white px-3 py-2.5 pt-safe"
+        className="distribution-header sticky top-0 z-30 w-full border-b border-slate-200 bg-white px-3 pb-2.5"
         style={{ borderBottomColor: 'var(--primary-soft)' }}
       >
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2">
+        <div className="mx-auto grid w-full max-w-6xl grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-black text-white"
-              style={{ backgroundColor: 'var(--primary)' }}
-            >
-              SJ
-            </div>
+            <img src="/brand/san-jose-logo.png" alt="" className="h-10 w-12 shrink-0 object-contain" />
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-extrabold tracking-tight text-slate-900">{restaurantName}</h1>
-              <p className="truncate text-[11px] font-semibold text-slate-500">
+              <h1 className="text-sm font-extrabold leading-tight tracking-tight text-slate-900 sm:text-base">{restaurantName}</h1>
+              <p className="mt-0.5 text-[10px] font-semibold leading-tight text-slate-500 sm:text-[11px]">
                 {roleLabel} · {userName}
               </p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <SyncStatusPill state={syncState} />
+            <span className="sm:hidden"><SyncStatusPill state={syncState} compact /></span>
+            <span className="hidden sm:inline-flex"><SyncStatusPill state={syncState} /></span>
             <button
               type="button"
               onClick={() => setIsSignOutOpen(true)}
@@ -251,7 +272,7 @@ export function DistributionApp({
 
       <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-1 gap-4 px-3 py-4">
         {/* Navegacion lateral en pantallas amplias */}
-        <nav className="hidden w-52 shrink-0 flex-col gap-1 md:flex">
+        <nav className="sticky top-20 hidden max-h-[calc(100dvh-6rem)] w-52 shrink-0 self-start flex-col gap-1 overflow-y-auto overscroll-contain pb-2 md:flex">
           {modules.map((module) => {
             const Icon = MODULE_ICONS[module.id]
             const isActive = module.id === activeModule
@@ -266,7 +287,7 @@ export function DistributionApp({
                 style={isActive ? { backgroundColor: 'var(--primary)' } : undefined}
               >
                 {Icon && <Icon size={17} />}
-                <span className="min-w-0 truncate">{module.label}</span>
+                <span className="min-w-0 break-words text-xs leading-tight">{module.label}</span>
               </button>
             )
           })}
@@ -279,7 +300,7 @@ export function DistributionApp({
           </button>
         </nav>
 
-        <main className="min-w-0 flex-1 pb-bottom-nav">{renderModule()}</main>
+        <main className="min-w-0 flex-1 pb-bottom-nav">{data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}{syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}{data.operations.filter(o=>o.status==='queued').length>0&&<p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o=>o.status==='queued').length}. Esperando confirmación del servidor. No vuelvas a registrarlas.</p>}{data.operations.filter(o=>o.status==='rejected' && !o.acknowledged).map(o=><p key={o.id} role="alert" className="mb-2 rounded-xl bg-rose-50 p-3 text-sm">No se aplicó una operación: {o.error} <button className="ml-2 underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button></p>)}{renderModule()}</main>
       </div>
 
       <BottomNav
@@ -337,12 +358,14 @@ export function DistributionApp({
         <div className="grid grid-cols-2 gap-2">
           {overflowModules.map((module) => {
             const Icon = MODULE_ICONS[module.id]
+            const isActive = module.id === activeModule
             return (
               <button
                 key={module.id}
                 type="button"
                 onClick={() => selectModule(module.id)}
-                className="flex min-h-[56px] items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-3 text-left text-xs font-extrabold text-slate-800"
+                aria-current={isActive ? 'page' : undefined}
+                className={`flex min-h-[56px] items-center gap-2.5 rounded-2xl border px-3 text-left text-xs font-extrabold ${isActive ? 'border-[var(--primary)] bg-[var(--primary-soft)] text-[var(--primary)]' : 'border-slate-200 bg-white text-slate-800'}`}
               >
                 <span
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
@@ -350,7 +373,7 @@ export function DistributionApp({
                 >
                   {Icon && <Icon size={16} />}
                 </span>
-                <span className="min-w-0 truncate">{module.label}</span>
+                <span className="min-w-0 break-words leading-tight">{module.label}</span>
               </button>
             )
           })}

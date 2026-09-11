@@ -1,6 +1,9 @@
+import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
+import { reportCreditLabel, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
 import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
-import { SelectInput, Segmented, Field } from '../../../components/ui/Form'
+import { Segmented, Field } from '../../../components/ui/Form'
+import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import {
   computeMoneySummary,
   computeSellerBreakdown,
@@ -33,9 +36,12 @@ const TABS: { value: ReportTab; label: string }[] = [
  * persona y cuanto efectivo deberia entregar. Las demas pestanas son el detalle.
  */
 export function ReportsView({ session, data }: DistributionViewProps) {
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
   const [tab, setTab] = useState<ReportTab>('resumen')
   const [routeFilter, setRouteFilter] = useState('')
   const [sellerFilter, setSellerFilter] = useState('')
+  const [isSellerOpen, setIsSellerOpen] = useState(false)
 
   const sales = useMemo(
     () =>
@@ -85,7 +91,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     { key: 'vendedor', header: 'Vendedor', render: (row) => row.sellerName },
     { key: 'ruta', header: 'Ruta', render: (row) => row.routeName, hideOnMobile: true },
     { key: 'cliente', header: 'Cliente', render: (row) => row.customerName || 'Ocasional' },
-    { key: 'pago', header: 'Pago', render: (row) => row.paymentKind.toUpperCase() },
+    { key: 'pago', header: 'Pago', render: (row) => reportPaymentLabel(row.paymentKind) },
     { key: 'total', header: 'Total', align: 'right', render: (row) => formatBs(row.total) },
   ]
 
@@ -106,6 +112,9 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   return (
     <Screen title="Reportes" subtitle={describeRange(session.dayKeys)}>
       <div className="grid w-full min-w-0 gap-3">
+        <div className="flex flex-wrap gap-2">{(['Excel','PDF'] as const).map(kind=><button key={kind} disabled={exporting} className="rounded-xl border bg-white px-4 py-3 text-sm font-bold" onClick={async()=>{setExporting(true);setExportError('');try{if(data.operations.some(o=>o.status==='queued'))throw new Error('Espera la confirmación de las operaciones pendientes antes de exportar.');const sheets=reportSheets(data,session.dayKeys,routeFilter,sellerFilter);const routeName=routeFilter?reportRecordName(data.routes.find(route=>route.id===routeFilter)?.name,'Ruta seleccionada'):'Todas las rutas';const sellerName=sellerFilter?reportPersonName(allSellers.find(seller=>seller.sellerUid===sellerFilter)?.sellerName):'Todos los vendedores';const description=`${describeRange(session.dayKeys)} · ruta: ${routeName} · vendedor: ${sellerName} · inventario: existencias actuales`;if(kind==='Excel')await exportExcel(sheets,description);else await exportPdf(sheets,description)}catch(e){setExportError((e as Error).message)}finally{setExporting(false)}}}>{exporting?'Preparando...':kind==='Excel'?'Descargar Excel':'PDF para imprimir / compartir'}</button>)}</div>
+        {exportError&&<p role="alert">{exportError}</p>}
+        <SectionCard title="Costos y resultado del periodo"><div className="grid gap-2 text-xs">{reportSheets(data,session.dayKeys,routeFilter,sellerFilter)[0].rows.map((row,i)=><p key={i} className="flex justify-between gap-3"><span>{row[0]}</span><strong>{typeof row[1]==='number'?formatBs(row[1]):row[1]===null?'Sin costo completo':row[1]}</strong></p>)}</div></SectionCard>
         <RangePicker
           dayKeys={session.dayKeys}
           onChange={session.setDayKeys}
@@ -116,14 +125,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
 
         {allSellers.length > 1 && (
           <Field label="Vendedor">
-            <SelectInput value={sellerFilter} onChange={(event) => setSellerFilter(event.target.value)}>
-              <option value="">Todos</option>
-              {allSellers.map((seller) => (
-                <option key={seller.sellerUid} value={seller.sellerUid}>
-                  {seller.sellerName}
-                </option>
-              ))}
-            </SelectInput>
+            <ChoiceButton label={sellerFilter ? allSellers.find(seller => seller.sellerUid === sellerFilter)?.sellerName : 'Todos los vendedores'} placeholder="Todos los vendedores" onClick={() => setIsSellerOpen(true)} />
           </Field>
         )}
 
@@ -220,7 +222,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                   { key: 'original', header: 'Original', render: (row) => formatBs(row.originalAmount) },
                   { key: 'pagado', header: 'Pagado', render: (row) => formatBs(row.paidAmount) },
                   { key: 'saldo', header: 'Saldo', align: 'right', render: (row) => formatBs(row.balance) },
-                  { key: 'estado', header: 'Estado', render: (row) => row.status },
+                  { key: 'estado', header: 'Estado', render: (row) => reportCreditLabel(row.status) },
                 ]}
                 keyOf={(row) => row.id}
                 titleOf={(row) => row.customerName}
@@ -261,10 +263,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                 <div key={closure.id} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-xs font-extrabold text-slate-900">
+                      <p className="break-words text-xs font-extrabold text-slate-900">
                         {closure.routeName} · {closure.distributorName}
                       </p>
-                      <p className="truncate text-[11px] font-semibold text-slate-500">
+                      <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">
                         Esperado {formatBs(closure.expectedCash)} · Declarado {formatBs(closure.physicalCashDeclared)}
                       </p>
                     </div>
@@ -281,7 +283,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       .filter((row) => Math.abs(row.variance) > 0.001)
                       .map((row) => (
                         <div key={row.productId} className="flex min-w-0 items-center justify-between gap-2">
-                          <span className="min-w-0 truncate text-[11px] font-bold text-slate-700">{row.productName}</span>
+                          <span className="min-w-0 break-words text-[11px] font-bold leading-snug text-slate-700">{row.productName}</span>
                           <VarianceBadge variance={row.variance} unitType={row.unitType} />
                         </div>
                       ))}
@@ -291,6 +293,15 @@ export function ReportsView({ session, data }: DistributionViewProps) {
             </div>
           ))}
       </div>
+      <ChoiceModal
+        isOpen={isSellerOpen}
+        onClose={() => setIsSellerOpen(false)}
+        title="Filtrar por vendedor"
+        searchable
+        options={[{ value: '', label: 'Todos los vendedores' }, ...allSellers.map(seller => ({ value: seller.sellerUid, label: seller.sellerName }))]}
+        selectedValue={sellerFilter}
+        onSelect={setSellerFilter}
+      />
     </Screen>
   )
 }

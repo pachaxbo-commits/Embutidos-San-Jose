@@ -1,5 +1,6 @@
+import { SAN_JOSE_ID, SAN_JOSE_ROLES } from '../config/sanJose'
 import { useSyncExternalStore } from 'react'
-import { doc, getDoc, getDocFromCache, type DocumentData, type DocumentReference } from 'firebase/firestore'
+import { doc, getDoc, getDocFromCache, onSnapshot, type DocumentData, type DocumentReference } from 'firebase/firestore'
 import { fetchRestaurantAccount, getFirebaseContext, getFirebaseRestaurantId, setFirebaseRestaurantId, isFirebaseConfigured, signInWithEmail, signOutUser, subscribeToAuthChanges } from '../lib/firebase'
 import { resetCatalogRepository } from './catalogRepositoryFactory'
 import { resetOrdersRepository } from './repositoryFactory'
@@ -23,6 +24,7 @@ interface AuthState {
 
 const listeners = new Set<() => void>()
 let initialized = false
+let stopMemberWatch: (() => void) | null = null
 
 /**
  * Perfil resuelto de la ultima sesion correcta, por usuario.
@@ -40,6 +42,7 @@ interface CachedProfile {
   displayName: string
   role: UserRole
   routeId?: string
+  warehouseId?: string
   restaurantId: string
   businessType: BusinessType
 }
@@ -49,7 +52,7 @@ function readCachedProfile(uid: string): CachedProfile | null {
     const raw = localStorage.getItem(PROFILE_CACHE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as CachedProfile
-    return parsed && parsed.uid === uid ? parsed : null
+    return parsed && parsed.uid === uid && parsed.restaurantId === SAN_JOSE_ID && SAN_JOSE_ROLES.some(role => role === parsed.role) ? parsed : null
   } catch {
     return null
   }
@@ -132,36 +135,20 @@ async function fetchMember(userUid: string) {
     throw new Error('Firebase no esta configurado correctamente.')
   }
 
-  // 1. Resolve user default restaurant if available
-  try {
-    const userDocRef = doc(context.db, 'users', userUid)
-    const userSnap = await getDocAllowingCache(userDocRef)
-    if (userSnap.exists() && userSnap.data().defaultRestaurantId) {
-      const defaultId = userSnap.data().defaultRestaurantId
-      setFirebaseRestaurantId(defaultId)
-    }
-  } catch {
-    // ignore
-  }
+  setFirebaseRestaurantId(SAN_JOSE_ID)
 
   const updatedContext = await getFirebaseContext()
-  if (!updatedContext) return null
+  if (!updatedContext) throw new Error('ACCESS_DENIED: Falta contexto de empresa.')
 
   const memberRef = doc(updatedContext.db, 'restaurants', updatedContext.restaurantId, 'members', userUid)
   const memberSnapshot = await getDocAllowingCache(memberRef)
 
   if (!memberSnapshot.exists()) {
-    // Fallback: Default to admin member for registered user
-    return {
-      uid: userUid,
-      email: updatedContext.auth.currentUser?.email ?? '',
-      displayName: updatedContext.auth.currentUser?.displayName ?? updatedContext.auth.currentUser?.email ?? 'Administrador',
-      role: 'admin' as UserRole,
-      active: true,
-    }
+    throw new Error('ACCESS_DENIED: No tienes membresia en esta empresa.')
   }
 
   const data = memberSnapshot.data()
+  if (data.active !== true || !SAN_JOSE_ROLES.some(role => role === data.role)) throw new Error('ACCESS_DENIED: Tu acceso fue desactivado.')
 
   let createdAt: string | undefined
   if (data.createdAt) {
@@ -179,9 +166,10 @@ async function fetchMember(userUid: string) {
     email: data.email ?? updatedContext.auth.currentUser?.email ?? '',
     displayName: data.displayName ?? updatedContext.auth.currentUser?.displayName ?? updatedContext.auth.currentUser?.email ?? 'Usuario',
     role: (data.role as UserRole) ?? 'admin',
-    active: true, // Always active for dev testing
+    active: data.active === true,
     createdAt,
     routeId: typeof data.routeId === 'string' ? data.routeId : undefined,
+    warehouseId: typeof data.warehouseId === 'string' ? data.warehouseId : 'central',
   }
 
   return member
@@ -195,6 +183,8 @@ async function initialize() {
   initialized = true
 
   await subscribeToAuthChanges((user) => {
+    stopMemberWatch?.()
+    stopMemberWatch = null
     resetDataRepositories()
 
     if (!user) {
@@ -220,21 +210,11 @@ async function initialize() {
       try {
         const member = await fetchMember(user.uid)
 
-        const defaultMember: RestaurantMember = {
-          uid: user.uid,
-          email: user.email ?? '',
-          displayName: user.displayName ?? user.email ?? 'Administrador',
-          role: 'admin',
-          active: true,
-        }
-
-        const activeMember = member ?? defaultMember
+        const activeMember = member
         const account = await fetchRestaurantAccount(getFirebaseRestaurantId()).catch(() => null)
-        const cached = readCachedProfile(user.uid)
-
         // Sin conexion el perfil del tenant puede no resolverse; se conserva el
         // ultimo conocido de este mismo usuario antes que degradar su rol.
-        const businessType = account?.businessType ?? cached?.businessType ?? 'restaurant'
+        const businessType: BusinessType = 'mobile_distribution'
 
         writeCachedProfile({
           uid: user.uid,
@@ -242,6 +222,7 @@ async function initialize() {
           displayName: activeMember.displayName,
           role: activeMember.role,
           routeId: activeMember.routeId,
+          warehouseId: activeMember.warehouseId,
           restaurantId: getFirebaseRestaurantId(),
           businessType,
         })
@@ -257,7 +238,28 @@ async function initialize() {
           businessType,
           account,
         })
-      } catch {
+        const ctx = await getFirebaseContext()
+        if (ctx && ctx.auth.currentUser?.uid === user.uid) stopMemberWatch = onSnapshot(doc(ctx.db, 'restaurants', ctx.restaurantId, 'members', user.uid), snapshot => {
+          if (!snapshot.exists() || snapshot.data().active !== true || !SAN_JOSE_ROLES.some(role => role === snapshot.data().role)) {
+            localStorage.removeItem(PROFILE_CACHE_KEY)
+            setState({ status: 'unauthorized', member: null, role: null, account: null, error: 'Tu acceso fue desactivado. Consulta con administracion.' })
+          } else {
+            const current = snapshot.data()
+            const updated = { ...activeMember, role: current.role as UserRole, routeId: current.routeId || '', warehouseId: current.warehouseId || 'central' }
+            setState({ member: updated, role: updated.role })
+            writeCachedProfile({ uid: user.uid, email: updated.email, displayName: updated.displayName, role: updated.role, routeId: updated.routeId, warehouseId: updated.warehouseId, restaurantId: ctx.restaurantId, businessType })
+          }
+        }, error => {
+          if (error.code === 'permission-denied') setState({ status: 'unauthorized', member: null, role: null, error: 'No tienes acceso a esta empresa.' })
+        })
+
+      } catch (error) {
+        const code = (error as { code?: string }).code
+        if ((error as Error).message?.startsWith('ACCESS_DENIED') || code === 'permission-denied') {
+          localStorage.removeItem(PROFILE_CACHE_KEY)
+          setState({ status: 'unauthorized', role: null, member: null, account: null, error: 'Tu acceso no esta autorizado. Consulta con administracion.' })
+          return
+        }
         // No se pudo leer el perfil (tipicamente por falta de conexion).
         // Se reutiliza el perfil de la ultima sesion de ESTE usuario en este
         // telefono. Nunca se concede un rol supuesto: si no hay nada guardado,
@@ -291,6 +293,7 @@ async function initialize() {
             displayName: cached.displayName,
             role: cached.role,
             routeId: cached.routeId,
+            warehouseId: cached.warehouseId,
             active: true,
           },
           error: null,
@@ -325,28 +328,6 @@ export function useAuthStore() {
     ...authState,
     async signIn(email: string, password: string) {
       setState({ error: null, status: 'authenticating' })
-
-      if (email.endsWith('@dev.local')) {
-        const role = email.split('@')[0] as UserRole
-        if (['admin', 'caja', 'cocina', 'pedidos'].includes(role)) {
-          setState({
-            mode: 'local',
-            status: 'authorized',
-            userEmail: email,
-            userDisplayName: `Test ${role.toUpperCase()}`,
-            role: role,
-            member: {
-              uid: `mock-${role}`,
-              email: email,
-              displayName: `Test ${role.toUpperCase()}`,
-              role: role,
-              active: true,
-            },
-            error: null,
-          })
-          return
-        }
-      }
 
       try {
         await signInWithEmail(email, password)

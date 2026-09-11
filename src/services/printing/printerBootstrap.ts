@@ -41,7 +41,7 @@ export function persistPrinterProfiles(profiles: PrinterProfile[]): void {
 export function savePrinterProfile(profile: PrinterProfile): void {
   const engine = PrintEngineService.getInstance()
   engine.registerPrinterProfile(profile)
-  persistPrinterProfiles(engine.listPrinterProfiles())
+  persistPrinterProfiles([...loadPrinterProfiles().filter(p => p.id !== profile.id), profile])
 }
 
 export function initializePrinting(): void {

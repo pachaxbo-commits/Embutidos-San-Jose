@@ -20,7 +20,7 @@ interface ScreenProps {
 export function Screen({ title, subtitle, onBack, actions, children }: ScreenProps) {
   return (
     <section className="w-full min-w-0">
-      <header className="mb-3 flex w-full min-w-0 items-start gap-2">
+      <header className="mb-3 flex w-full min-w-0 items-start gap-2.5">
         {onBack && (
           <button
             type="button"
@@ -32,10 +32,10 @@ export function Screen({ title, subtitle, onBack, actions, children }: ScreenPro
           </button>
         )}
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-base font-extrabold tracking-tight text-slate-900">{title}</h1>
-          {subtitle && <p className="truncate text-xs font-medium text-slate-500">{subtitle}</p>}
+          <h1 className="text-lg font-extrabold leading-tight tracking-tight text-slate-900 sm:text-xl">{title}</h1>
+          {subtitle && <p className="mt-0.5 text-xs font-medium leading-snug text-slate-500">{subtitle}</p>}
         </div>
-        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+        {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
       </header>
       <div className="w-full min-w-0">{children}</div>
     </section>
@@ -125,7 +125,7 @@ export function ResponsiveTable<T>({
                 .map((column) => (
                   <div key={column.key} className="min-w-0">
                     <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{column.header}</dt>
-                    <dd className="truncate text-xs font-bold text-slate-800">{column.render(row)}</dd>
+                    <dd className="break-words text-xs font-bold leading-snug text-slate-800">{column.render(row)}</dd>
                   </div>
                 ))}
             </dl>

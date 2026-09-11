@@ -1,11 +1,29 @@
 import type { PrintJobPayload } from '../../../types/printing'
 import { EscPosBuilder, padLine } from '../escPosFormatter'
+import { SAN_JOSE_THERMAL_LOGO } from '../sanJoseThermalLogo'
 
-export function buildReceiptBytes(payload: PrintJobPayload, paperWidth: '58mm' | '80mm' = '80mm'): Uint8Array {
+function formatTicketQuantity(value: number): string {
+  return Number(value.toFixed(3)).toString()
+}
+
+export function buildReceiptBytes(
+  payload: PrintJobPayload,
+  paperWidth: '58mm' | '80mm' = '80mm',
+  supportsPaperCut = paperWidth === '80mm',
+): Uint8Array {
   const cols = paperWidth === '58mm' ? 32 : 48
   const builder = new EscPosBuilder()
 
   builder.init().alignCenter()
+
+  if (/san\s+jos[eé]/i.test(payload.restaurantName)) {
+    builder.rasterImage(
+      SAN_JOSE_THERMAL_LOGO.width,
+      SAN_JOSE_THERMAL_LOGO.height,
+      SAN_JOSE_THERMAL_LOGO.data,
+    )
+    builder.line()
+  }
 
   // Copy header if reprint
   if (payload.isCopy) {
@@ -23,6 +41,7 @@ export function buildReceiptBytes(payload: PrintJobPayload, paperWidth: '58mm' |
   builder.line(payload.branchName)
   if (payload.branchAddress) builder.line(payload.branchAddress)
   if (payload.branchPhone) builder.line(`Tel: ${payload.branchPhone}`)
+  payload.headerDetails?.forEach((detail) => builder.line(detail))
 
   builder.separator(cols)
 
@@ -41,21 +60,29 @@ export function buildReceiptBytes(payload: PrintJobPayload, paperWidth: '58mm' |
   if (payload.customerName) {
     builder.line(`CLIENTE: ${payload.customerName}`)
   }
+  if (payload.customerPhone) {
+    builder.line(payload.customerPhone)
+  }
 
   builder.separator(cols)
 
   // Column header
   builder.bold(true)
-  builder.line(padLine('CANT PRODUCTO', 'TOTAL', cols))
+  builder.line(padLine('PRODUCTO', 'SUBTOTAL', cols))
   builder.bold(false).separator(cols)
 
   // Items
   payload.items.forEach((item) => {
-    const qtyStr = `${item.quantity}x`
     const lineTotalStr = `${item.lineTotal.toFixed(2)} Bs`
-    const itemHeader = `${qtyStr} ${item.name}`
-
-    builder.line(padLine(itemHeader, lineTotalStr, cols))
+    const unit = item.unitLabel ? ` ${item.unitLabel}` : ''
+    builder.bold(true).line(item.name).bold(false)
+    builder.line(
+      padLine(
+        `${formatTicketQuantity(item.quantity)}${unit} x ${item.basePrice.toFixed(2)} Bs`,
+        lineTotalStr,
+        cols,
+      ),
+    )
 
     if (item.modifiersText && item.modifiersText.length > 0) {
       item.modifiersText.forEach((mod) => {
@@ -88,9 +115,21 @@ export function buildReceiptBytes(payload: PrintJobPayload, paperWidth: '58mm' |
     builder.line(`PAGO: ${payload.paymentMethod.toUpperCase()}`)
     if (payload.cashReceived) builder.line(`RECIBIDO: ${payload.cashReceived.toFixed(2)} Bs`)
     if (payload.changeAmount) builder.line(`CAMBIO: ${payload.changeAmount.toFixed(2)} Bs`)
+    payload.paymentDetails?.forEach((detail) => builder.line(detail))
   }
 
-  builder.feed(3).cut(true)
+  if (payload.customMessage) {
+    builder.separator(cols)
+    builder.alignCenter().bold(true).line(payload.customMessage).bold(false)
+  }
+
+  if (payload.footerMessage) {
+    builder.separator(cols)
+    builder.alignCenter().line(payload.footerMessage)
+  }
+
+  builder.feed(3)
+  if (supportsPaperCut) builder.cut(false)
 
   return builder.build()
 }

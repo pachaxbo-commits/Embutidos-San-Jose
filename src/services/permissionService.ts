@@ -48,7 +48,6 @@ const DIST_WAREHOUSE_PERMISSIONS: Permission[] = [
   'dist.dispatch.addLoad',
   'dist.return.register',
   'dist.closure.warehouse',
-  'dist.customer.manage',
 ]
 
 const DIST_DISTRIBUTOR_PERMISSIONS: Permission[] = [
@@ -60,6 +59,14 @@ const DIST_DISTRIBUTOR_PERMISSIONS: Permission[] = [
   'dist.customer.manage',
   'dist.expense.create',
   'dist.closure.money',
+]
+
+const DIST_SUPPORT_PERMISSIONS: Permission[] = [
+  'settings.manage',
+  'printers.manage',
+  'printing.manage',
+  'support.settings.manage',
+  'support.reset.prepare',
 ]
 
 /** Role permissions matrix defining default permissions assigned to each role */
@@ -178,6 +185,7 @@ export const ROLE_PERMISSIONS_MAP: Record<UserRole, Permission[]> = {
   readonly: ['reports.view'],
   warehouse: DIST_WAREHOUSE_PERMISSIONS,
   distributor: DIST_DISTRIBUTOR_PERMISSIONS,
+  support: DIST_SUPPORT_PERMISSIONS,
 }
 
 export function getRoleDefaultPermissions(role: UserRole): Permission[] {

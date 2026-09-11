@@ -49,6 +49,8 @@ html, body {
   font-family: "Plus Jakarta Sans", Inter, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 #root {
@@ -87,8 +89,20 @@ code {
  * garantiza un minimo, sin afectar al navegador de escritorio.
  */
 html.is-native-app {
-  --safe-top: max(env(safe-area-inset-top, 0px), 28px);
-  --safe-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+}
+
+.distribution-header { padding-top: calc(var(--safe-top) + 0.625rem); }
+.distribution-shell { padding-left: var(--safe-area-inset-left, 0px); padding-right: var(--safe-area-inset-right, 0px); }
+.distribution-shell button,
+.distribution-shell p,
+.distribution-shell span,
+.distribution-shell h1,
+.distribution-shell h2,
+.distribution-shell h3 {
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 /* Utilidades de safe area reutilizables */
@@ -163,4 +177,15 @@ button {
 .no-scrollbar {
   -ms-overflow-style: none;  /* IE and Edge */
   scrollbar-width: none;  /* Firefox */
+}
+
+@keyframes brand-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.brand-float { animation: brand-float 3.2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-float { animation: none; }
 }

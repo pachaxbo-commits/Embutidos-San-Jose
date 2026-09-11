@@ -47,7 +47,7 @@ export class PrintQueueManager {
     // Deduplication check
     const existing = await this.storage.get(idempotencyKey)
     if (existing) {
-      if (['transmitted', 'confirmed', 'processing', 'transmitting'].includes(existing.status)) {
+      if (['transmitted', 'confirmed', 'processing', 'transmitting', 'unknown', 'resolved'].includes(existing.status)) {
         return existing
       }
     }
@@ -91,7 +91,7 @@ export class PrintQueueManager {
     }
 
     // Do NOT auto-take an unknown state job
-    if (job.status === 'unknown') {
+    if (['unknown', 'transmitted', 'confirmed', 'resolved'].includes(job.status)) {
       return false
     }
 
@@ -129,7 +129,7 @@ export class PrintQueueManager {
     } else if (job.targetType === 'drawer_kick') {
       bytes = new EscPosBuilder().init().kickCashDrawer(printer.capabilities.drawerPin || 'pin2').build()
     } else {
-      bytes = buildReceiptBytes(job.payload, printer.paperWidth)
+      bytes = buildReceiptBytes(job.payload, printer.paperWidth, printer.capabilities.supportsPaperCut)
     }
 
     // Store base64 bytes for debug/transmission

@@ -17,6 +17,9 @@ export type ModuleId =
   | 'admin'
   | 'bot'
   // Distribucion movil
+  | 'dist.claims'
+  | 'dist.qr'
+  | 'dist.warehouses'
   | 'dist.dashboard'
   | 'dist.inventory'
   | 'dist.dispatches'
@@ -29,6 +32,7 @@ export type ModuleId =
   | 'dist.reports'
   | 'dist.users'
   | 'dist.products'
+  | 'dist.support'
   // Transversales
   | 'printer-settings'
   | 'printer-diagnostic'
@@ -132,14 +136,22 @@ const MOBILE_DISTRIBUTION: BusinessTypeDefinition = {
       id: 'dist.customers',
       label: 'Clientes',
       requiredPermission: 'dist.customer.manage',
-      navigableBy: ['admin', 'owner', 'superadmin', 'accountant', 'warehouse'],
+      navigableBy: ['admin', 'owner', 'superadmin', 'accountant'],
     },
     { id: 'dist.products', label: 'Productos', requiredPermission: 'dist.products.manage' },
     { id: 'dist.reports', label: 'Reportes', requiredPermission: 'dist.reports.view' },
     { id: 'dist.users', label: 'Usuarios', requiredPermission: 'dist.users.manage' },
-    { id: 'printer-settings', label: 'Impresoras' },
+    { id: 'dist.support', label: 'Configuración', requiredPermission: 'support.settings.manage', navigableBy: ['admin', 'support'] },
+    { id: 'dist.claims', label: 'Cambios y devoluciones', requiredPermission: 'dist.users.manage' },
+    { id: 'dist.qr', label: 'Verificar QR', requiredPermission: 'dist.users.manage' },
+    { id: 'dist.warehouses', label: 'Almacenes', requiredPermission: 'dist.dispatch.create' },
+    {
+      id: 'printer-settings',
+      label: 'Impresoras',
+      navigableBy: ['admin', 'owner', 'superadmin', 'accountant', 'distributor', 'support'],
+    },
   ],
-  roles: ['admin', 'warehouse', 'distributor'],
+  roles: ['admin', 'warehouse', 'distributor', 'support'],
   defaultCurrencyCode: 'BOB',
   defaultCurrencySymbol: 'Bs',
   theme: {

@@ -19,7 +19,7 @@ export function UnauthorizedView({
           <LockKeyhole size={24} />
         </div>
         <p className="mt-5 text-xs font-semibold uppercase tracking-[0.28em] text-accent">Acceso no autorizado</p>
-        <h1 className="mt-2 font-serif text-4xl text-ink">Tu usuario no puede entrar a este restaurante</h1>
+        <h1 className="mt-2 font-serif text-4xl text-ink">Acceso a Embutidos San José</h1>
         <p className="mt-3 text-sm leading-7 text-muted">{message}</p>
         {email ? <div className="mt-5 rounded-[1.2rem] border border-line bg-panel/85 px-4 py-3 text-sm text-muted">Usuario actual: {email}</div> : null}
         <div className="mt-6">

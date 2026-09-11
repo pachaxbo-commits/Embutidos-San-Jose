@@ -1,3 +1,4 @@
+import { StockAlerts } from './LotsAndHistory'
 import { useMemo, useState } from 'react'
 import { Screen } from '../../../components/ui/Screen'
 import {
@@ -19,6 +20,20 @@ import type { DistributionViewProps } from './DistributionApp'
  */
 export function DashboardView({ session, data }: DistributionViewProps) {
   const [routeFilter, setRouteFilter] = useState('')
+  const isWarehouse = session.role === 'warehouse'
+  const assignedWarehouse = session.warehouseId || 'central'
+  const visibleOpenDispatches = useMemo(
+    () => isWarehouse
+      ? data.openDispatches.filter(dispatch => (dispatch.warehouseId || 'central') === assignedWarehouse)
+      : data.openDispatches,
+    [data.openDispatches, isWarehouse, assignedWarehouse],
+  )
+  const visibleClosures = useMemo(
+    () => isWarehouse
+      ? data.closures.filter(closure => (closure.warehouseId || 'central') === assignedWarehouse)
+      : data.closures,
+    [data.closures, isWarehouse, assignedWarehouse],
+  )
 
   const sales = useMemo(
     () => (routeFilter ? data.sales.filter((sale) => sale.routeId === routeFilter) : data.sales),
@@ -44,15 +59,15 @@ export function DashboardView({ session, data }: DistributionViewProps) {
 
   const pendingVariances = useMemo(
     () =>
-      data.closures.reduce(
+      visibleClosures.reduce(
         (count, closure) => count + closure.products.filter((row) => Math.abs(row.variance) > 0.001).length,
         0,
       ),
-    [data.closures],
+    [visibleClosures],
   )
 
-  const openRoutes = data.openDispatches.length
-  const closedRoutes = data.closures.filter((closure) => closure.status === 'closed').length
+  const openRoutes = visibleOpenDispatches.length
+  const closedRoutes = visibleClosures.filter((closure) => closure.status === 'closed').length
 
   /** Una fila por distribuidor con lo que la duena revisa cada dia */
   const byDistributor = useMemo(() => {
@@ -71,7 +86,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
       }
     >()
 
-    for (const dispatch of data.openDispatches) {
+    for (const dispatch of visibleOpenDispatches) {
       map.set(dispatch.routeId, {
         routeId: dispatch.routeId,
         routeName: dispatch.routeName,
@@ -108,7 +123,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
       if (entry) entry.collected = round2(entry.collected + collection.amount)
     }
 
-    for (const closure of data.closures) {
+    for (const closure of visibleClosures) {
       const entry = map.get(closure.routeId)
       if (entry && closure.status === 'closed') {
         entry.isOpen = false
@@ -118,7 +133,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
     }
 
     return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
-  }, [data.openDispatches, data.closures, sales, collections])
+  }, [visibleOpenDispatches, visibleClosures, sales, collections])
 
   /**
    * Conciliacion consolidada del periodo.
@@ -164,7 +179,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
 
     const closedDispatchIds = new Set<string>()
 
-    for (const closure of data.closures) {
+    for (const closure of visibleClosures) {
       if (routeFilter && closure.routeId !== routeFilter) continue
       closedDispatchIds.add(closure.dispatchId)
       const isReconciled = closure.status !== 'draft'
@@ -182,7 +197,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
     }
 
     // Rutas todavia en curso: se concilian contra sus ventas del periodo.
-    for (const dispatch of data.openDispatches) {
+    for (const dispatch of visibleOpenDispatches) {
       if (closedDispatchIds.has(dispatch.id)) continue
       if (routeFilter && dispatch.routeId !== routeFilter) continue
       const rows = buildReconciliation(
@@ -214,13 +229,52 @@ export function DashboardView({ session, data }: DistributionViewProps) {
     }
 
     return [...merged.entries()].map(([productId, totals]) => ({ productId, ...totals }))
-  }, [data.closures, data.openDispatches, sales, routeFilter])
+  }, [visibleClosures, visibleOpenDispatches, sales, routeFilter])
 
   // Se muestra la fecha real consultada: si el dispositivo tiene mal la fecha o
   // la zona horaria, el "hoy" del telefono no coincide con el de las ventas y
   // el panel apareceria vacio sin explicacion.
+  if (isWarehouse) {
+    return (
+      <Screen title="Inicio de almacén" subtitle="Control físico de productos y devoluciones">
+        <StockAlerts data={data} />
+        <div className="grid w-full min-w-0 gap-3">
+          <RangePicker
+            dayKeys={session.dayKeys}
+            onChange={session.setDayKeys}
+            routes={data.routes}
+            routeFilter={routeFilter}
+            onRouteFilterChange={setRouteFilter}
+          />
+          <SectionCard title="Productos y conciliación">
+            {productRows.length === 0 ? (
+              <p className="text-xs font-semibold text-slate-500">Sin movimientos de productos en el periodo.</p>
+            ) : (
+              <div className="grid gap-2 md:grid-cols-2">
+                {productRows.map(row => (
+                  <div key={row.productId} className="min-w-0 rounded-2xl border border-slate-200 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="min-w-0 break-words text-xs font-extrabold text-slate-900">{row.name}</p>
+                      {row.reconciled ? <VarianceBadge variance={row.variance} unitType={row.unitType} /> : <span className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-black text-sky-700">EN RUTA</span>}
+                    </div>
+                    <dl className="mt-2 grid grid-cols-3 gap-2">
+                      <div><dt className="text-[9px] font-bold uppercase text-slate-400">Entregado</dt><dd className="text-xs font-black text-slate-800">{formatQty(row.dispatched, row.unitType)}</dd></div>
+                      <div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black text-slate-800">{formatQty(row.sold, row.unitType)}</dd></div>
+                      <div><dt className="text-[9px] font-bold uppercase text-slate-400">Devuelto</dt><dd className="text-xs font-black text-slate-800">{formatQty(row.returned, row.unitType)}</dd></div>
+                    </dl>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+        </div>
+      </Screen>
+    )
+  }
+
   return (
     <Screen title="Panel" subtitle={describeRange(session.dayKeys)}>
+      <StockAlerts data={data} />
       <div className="grid w-full min-w-0 gap-3">
         <RangePicker
           dayKeys={session.dayKeys}
@@ -254,8 +308,8 @@ export function DashboardView({ session, data }: DistributionViewProps) {
                 <div key={entry.routeId} className="w-full min-w-0 rounded-2xl border border-slate-200 p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-extrabold text-slate-900">{entry.distributorName}</p>
-                      <p className="truncate text-[11px] font-semibold text-slate-500">{entry.routeName}</p>
+                      <p className="break-words text-sm font-extrabold text-slate-900">{entry.distributorName}</p>
+                      <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">{entry.routeName}</p>
                     </div>
                     <span
                       className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black ${
@@ -302,7 +356,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
               {productRows.map((row) => (
                 <div key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 p-3">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="min-w-0 truncate text-xs font-extrabold text-slate-900">{row.name}</p>
+                    <p className="min-w-0 break-words text-xs font-extrabold text-slate-900">{row.name}</p>
                     {row.reconciled ? (
                       <VarianceBadge variance={row.variance} unitType={row.unitType} />
                     ) : (

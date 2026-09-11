@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">PACHAX Flow</string>
-    <string name="title_activity_main">PACHAX Flow</string>
+    <string name="app_name">Embutidos San José</string>
+    <string name="title_activity_main">Embutidos San José</string>
     <string name="package_name">com.pachax.flow</string>
     <string name="custom_url_scheme">com.pachax.flow</string>
 </resources>

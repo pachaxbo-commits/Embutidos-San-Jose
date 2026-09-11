@@ -1,3 +1,4 @@
+import { SAN_JOSE_ID } from '../config/sanJose'
 import { deleteApp, getApp, getApps, initializeApp, type FirebaseApp } from 'firebase/app'
 import {
   browserLocalPersistence,
@@ -84,13 +85,14 @@ function readFirebaseConfig(): FirebaseWebConfig | null {
   return requiredValues.every(Boolean) ? config : null
 }
 
-let currentActiveRestaurantId: string = localStorage.getItem('pachax_active_restaurant_id') || import.meta.env.VITE_FIREBASE_RESTAURANT_ID || 'restaurant-demo'
+let currentActiveRestaurantId: string = SAN_JOSE_ID
 
 export function getFirebaseRestaurantId(): string {
-  return currentActiveRestaurantId || 'restaurant-demo'
+  return currentActiveRestaurantId
 }
 
 export function setFirebaseRestaurantId(id: string) {
+  if (id !== SAN_JOSE_ID) throw new Error('ACCESS_DENIED: La cuenta no pertenece a Embutidos San José.')
   currentActiveRestaurantId = id
   localStorage.setItem('pachax_active_restaurant_id', id)
   // Ojo: NO se invalida la inicializacion de Firebase. La app, la sesion y la
@@ -105,6 +107,7 @@ export function isFirebaseConfigured() {
 }
 
 let firebaseRuntimePromise: Promise<FirebaseRuntime | null> | null = null
+let functionsEmulatorConnected = false
 
 /** Inicializa app, Firestore y Auth una sola vez por sesion. */
 async function getFirebaseRuntime(): Promise<FirebaseRuntime | null> {
@@ -393,6 +396,7 @@ export async function createRestaurantMember(input: {
   role: UserRole
   /** Ruta asignada (roles de distribucion) */
   routeId?: string
+  warehouseId?: string
 }) {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
@@ -409,6 +413,7 @@ export async function createRestaurantMember(input: {
       displayName: input.displayName.trim() || input.email.trim(),
       role: input.role,
       routeId: input.routeId || '',
+      warehouseId: input.warehouseId || 'central',
       active: true,
       createdAt: serverTimestamp(),
     })
@@ -430,7 +435,7 @@ export async function createRestaurantMember(input: {
   }
 }
 
-export async function updateRestaurantMember(uid: string, updates: Partial<Pick<RestaurantMember, 'role' | 'active' | 'displayName' | 'routeId'>>) {
+export async function updateRestaurantMember(uid: string, updates: Partial<Pick<RestaurantMember, 'role' | 'active' | 'displayName' | 'routeId' | 'warehouseId'>>) {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
 
@@ -442,6 +447,19 @@ export async function sendRestaurantMemberPasswordReset(email: string) {
   if (!context) throw new Error('Firebase no esta configurado.')
 
   await sendPasswordResetEmail(context.auth, email.trim())
+}
+
+export async function changeRestaurantMemberPassword(uid: string, password: string) {
+  const context = await getFirebaseContext()
+  if (!context) throw new Error('Firebase no esta configurado.')
+  const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
+  const functions = getFunctions(context.app, 'us-central1')
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !functionsEmulatorConnected) {
+    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+    functionsEmulatorConnected = true
+  }
+  const call = httpsCallable<{ uid: string; password: string }, { changed: boolean }>(functions, 'changeSanJoseMemberPassword')
+  await call({ uid, password })
 }
 
 export async function deleteRestaurantMemberAccess(uid: string) {

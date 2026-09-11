@@ -1,7 +1,11 @@
+import type { PendingOperation } from './operationQueue'
+import { submitOperation } from './operationQueue'
+import { normalizeCI } from '../domain/customerIdentity'
 import {
   collection,
+  runTransaction,
+  getDocs,
   doc,
-  increment,
   onSnapshot,
   query,
   where,
@@ -13,14 +17,15 @@ import {
   type WriteBatch,
 } from 'firebase/firestore'
 import { getFirebaseContext } from '../../../lib/firebase'
-import { centralBalanceId, round2, routeBalanceId, toDayKey } from '../domain/engine'
+import { centralBalanceId, round2, toDayKey } from '../domain/engine'
 import type {
   DistBalance,
+  DistWarehouse,
+  DistQrVerification,
   DistClosure,
   DistCollection,
   DistCustomer,
   DistDispatch,
-  DistDispatchAddition,
   DistDispatchLine,
   DistExpense,
   DistProduct,
@@ -29,10 +34,11 @@ import type {
   DistSale,
   DistSaleLine,
   DistStockMovement,
+  DistLot, DistTransfer, DistClaim, DistCreditStatus,
   PaymentKind,
   SourceLocation,
-  StockMovementType,
 } from '../types'
+import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from './supportMaintenance'
 
 /**
  * Repositorio de distribucion movil.
@@ -49,6 +55,8 @@ import type {
  */
 
 export const DIST_COLLECTIONS = {
+  warehouses: 'distWarehouses',
+  qrVerifications: 'distQrVerifications',
   products: 'distProducts',
   routes: 'distRoutes',
   customers: 'distCustomers',
@@ -63,6 +71,65 @@ export const DIST_COLLECTIONS = {
 } as const
 
 const SCHEMA_VERSION = 1
+
+export function warehouseBalanceId(warehouseId: string, productId: string): string {
+  return warehouseId === 'central' ? centralBalanceId(productId) : `warehouse__${warehouseId}__${productId}`
+}
+
+export function subscribeWarehouses(onData: (rows: DistWarehouse[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistWarehouse>(ctx => collectionRef(ctx, DIST_COLLECTIONS.warehouses), onData, onError)
+}
+
+export function subscribeQrVerifications(routeId: string | null, onData: (rows: DistQrVerification[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistQrVerification>(ctx => {
+    const ref = collectionRef(ctx, DIST_COLLECTIONS.qrVerifications)
+    return routeId ? query(ref, where('routeId', '==', routeId)) : ref
+  }, onData, onError)
+}
+
+export async function createWarehouse(name: string) {
+  if (!name.trim()) throw new Error('Ingresa el nombre del almacen.')
+  const ctx = await getContext()
+  const id = newOperationId('wh')
+  const batch = writeBatch(ctx.db)
+  batch.set(docRef(ctx, DIST_COLLECTIONS.warehouses, id), { id, name: name.trim(), active: true, restaurantId: ctx.restaurantId })
+  await batch.commit()
+}
+
+/** Transferencias administrativas conectadas: lectura y descuento atomicos. */
+export async function transferWarehouseStock(from: string, to: string, line: DistDispatchLine, note: string, operationId: string) {
+  await submitOperation('transfer', { from, to, line, note }, operationId)
+}
+
+export async function verifyQr(sourceType: 'sale' | 'collection' | 'claim', sourceId: string, reference: string) {
+  if (!reference.trim()) throw new Error('Ingresa la referencia bancaria de la verificacion.')
+  const ctx = await getContext()
+  await runTransaction(ctx.db, async tx => {
+    const verificationRef = docRef(ctx, DIST_COLLECTIONS.qrVerifications, `${sourceType}_${sourceId}`)
+    if ((await tx.get(verificationRef)).exists()) return
+    const source = await tx.get(docRef(ctx, sourceType === 'sale' ? DIST_COLLECTIONS.sales : sourceType === 'claim' ? 'distClaims' : DIST_COLLECTIONS.collections, sourceId))
+    const data = source.data()
+    const amount = sourceType === 'sale' ? data?.qrAmount : sourceType === 'claim' ? data?.qrIn : data?.method === 'qr' ? data.amount : 0
+    if (!data || !(amount > 0)) throw new Error('No existe un pago QR pendiente para este movimiento.')
+    tx.set(verificationRef, { id: `${sourceType}_${sourceId}`, restaurantId: ctx.restaurantId, routeId: data.routeId,
+      sourceType, sourceId, amount, reference: reference.trim(), verifiedBy: ctx.uid, verifiedAt: new Date().toISOString() })
+  })
+}
+
+/** Declarar retorno no modifica stock; almacen confirma la recepcion posteriormente. */
+export async function declareRouteReturn(dispatch: DistDispatch, quantities: Record<string, number>) {
+  if (Object.values(quantities).some(q => !Number.isFinite(q) || q < 0)) throw new Error('Las cantidades deben ser positivas o cero.')
+  const ctx = await getContext()
+  const id = `closure_${dispatch.id}`
+  const batch = writeBatch(ctx.db)
+  batch.set(docRef(ctx, DIST_COLLECTIONS.closures, id), {
+    id, restaurantId: ctx.restaurantId, dispatchId: dispatch.id, routeId: dispatch.routeId,
+    distributorUid: dispatch.distributorUid, distributorName: dispatch.distributorName,
+    declaredReturns: quantities, returnDeclaredBy: ctx.uid, returnDeclaredAt: new Date().toISOString(),
+    dayKey: dispatch.dayKey,
+  }, { merge: true })
+  commitInBackground(batch, newOperationId('return_declaration'), 'declaracion de retorno')
+}
 const APPLIED_OPERATIONS_KEY = 'pachax_dist_applied_operations'
 
 export function newOperationId(prefix: string): string {
@@ -108,10 +175,11 @@ interface RepoContext {
 async function getContext(): Promise<RepoContext> {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
+  if (!context.auth.currentUser) throw new Error('Inicia sesion para registrar operaciones.')
   return {
     db: context.db,
     restaurantId: context.restaurantId,
-    uid: context.auth.currentUser?.uid ?? 'system',
+    uid: context.auth.currentUser?.uid ?? '',
   }
 }
 
@@ -136,6 +204,7 @@ export interface DistSyncState {
    * reapertura de la app, cosa que el contador en memoria no puede hacer.
    */
   hasUnsyncedWrites: boolean
+  lastError?: string | null
   lastSyncedAt: string | null
 }
 
@@ -143,6 +212,7 @@ let syncState: DistSyncState = {
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
   pending: 0,
   hasUnsyncedWrites: false,
+  lastError: localStorage.getItem('pachax_dist_sync_error'),
   lastSyncedAt: null,
 }
 
@@ -177,10 +247,11 @@ export function subscribeSyncState(listener: () => void): () => void {
 }
 
 if (typeof window !== 'undefined') {
-  const update = () => {
-    syncState = { ...syncState, isOnline: navigator.onLine }
+  const update = (event: Event) => {
+    syncState = { ...syncState, isOnline: event.type === 'online' }
     emitSyncState()
   }
+  window.addEventListener('distribution-operation-error', () => { syncState = { ...syncState, lastError: localStorage.getItem('pachax_dist_sync_error') }; emitSyncState() })
   window.addEventListener('online', update)
   window.addEventListener('offline', update)
 }
@@ -207,6 +278,12 @@ function commitInBackground(batch: WriteBatch, operationId: string, label: strin
     .catch((error: unknown) => {
       syncState = { ...syncState, pending: Math.max(0, syncState.pending - 1) }
       emitSyncState()
+      appliedOperations.delete(operationId)
+      localStorage.setItem(APPLIED_OPERATIONS_KEY, JSON.stringify([...appliedOperations]))
+      const message = `No se guardó ${label}. Revisa los datos y registra nuevamente la operación. ${(error as Error).message}`
+      localStorage.setItem('pachax_dist_sync_error', message)
+      syncState = { ...syncState, lastError: message }
+      emitSyncState()
       console.error(`[distribution] fallo al sincronizar ${label} (${operationId})`, error)
     })
 }
@@ -215,10 +292,6 @@ function commitInBackground(batch: WriteBatch, operationId: string, label: strin
  * Firestore rechaza los campos con valor undefined. Un cierre en curso tiene
  * varios datos que todavia no ocurrieron, asi que se limpian antes de escribir.
  */
-function stripUndefined<T extends Record<string, unknown>>(data: T): T {
-  return Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined)) as T
-}
-
 function baseDocFields(context: RepoContext, createdAt: string) {
   return {
     restaurantId: context.restaurantId,
@@ -274,7 +347,7 @@ function subscribeQuery<T>(
 }
 
 export function subscribeProducts(onData: (rows: DistProduct[]) => void, onError?: (error: Error) => void) {
-  return subscribeQuery<DistProduct>((context) => collectionRef(context, DIST_COLLECTIONS.products), onData, onError)
+  return subscribeQuery<DistProduct>((context) => collectionRef(context, DIST_COLLECTIONS.products), rows => onData(rows.filter(product => !product.deleted)), onError)
 }
 
 export function subscribeRoutes(onData: (rows: DistRoute[]) => void, onError?: (error: Error) => void) {
@@ -294,15 +367,17 @@ export function subscribeOpenDispatches(
   routeId: string | null,
   onData: (rows: DistDispatch[]) => void,
   onError?: (error: Error) => void,
+  distributorUid?: string,
 ) {
   return subscribeQuery<DistDispatch>(
     (context) => {
       const base = collectionRef(context, DIST_COLLECTIONS.dispatches)
+      if (distributorUid) return query(base, where('distributorUid', '==', distributorUid))
       return routeId
         ? query(base, where('status', '==', 'open'), where('routeId', '==', routeId))
         : query(base, where('status', '==', 'open'))
     },
-    onData,
+    rows => onData(rows.filter(row => row.status === 'open')),
     onError,
   )
 }
@@ -313,14 +388,19 @@ function subscribeDayScoped<T>(
   routeId: string | null,
   onData: (rows: T[]) => void,
   onError?: (error: Error) => void,
+  owner?: { field: string; uid: string },
 ) {
   return subscribeQuery<T>(
     (context) => {
       const base = collectionRef(context, collectionName)
       const filters = []
       if (dayKeys.length === 1) filters.push(where('dayKey', '==', dayKeys[0]))
-      else filters.push(where('dayKey', 'in', dayKeys.slice(0, 30)))
-      if (routeId) filters.push(where('routeId', '==', routeId))
+      else {
+        const sorted = [...dayKeys].sort()
+        filters.push(where('dayKey', '>=', sorted[0]), where('dayKey', '<=', sorted[sorted.length - 1]))
+      }
+      if (owner) filters.push(where(owner.field, '==', owner.uid))
+      else if (routeId) filters.push(where('routeId', '==', routeId))
       return query(base, ...filters)
     },
     onData,
@@ -333,8 +413,9 @@ export function subscribeSales(
   routeId: string | null,
   onData: (rows: DistSale[]) => void,
   onError?: (error: Error) => void,
+  distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistSale>(DIST_COLLECTIONS.sales, dayKeys, routeId, onData, onError)
+  return subscribeDayScoped<DistSale>(DIST_COLLECTIONS.sales, dayKeys, routeId, onData, onError, distributorUid ? { field: 'sellerUid', uid: distributorUid } : undefined)
 }
 
 export function subscribeCollections(
@@ -342,8 +423,9 @@ export function subscribeCollections(
   routeId: string | null,
   onData: (rows: DistCollection[]) => void,
   onError?: (error: Error) => void,
+  distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistCollection>(DIST_COLLECTIONS.collections, dayKeys, routeId, onData, onError)
+  return subscribeDayScoped<DistCollection>(DIST_COLLECTIONS.collections, dayKeys, routeId, onData, onError, distributorUid ? { field: 'collectedByUid', uid: distributorUid } : undefined)
 }
 
 export function subscribeExpenses(
@@ -351,19 +433,22 @@ export function subscribeExpenses(
   routeId: string | null,
   onData: (rows: DistExpense[]) => void,
   onError?: (error: Error) => void,
+  distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistExpense>(DIST_COLLECTIONS.expenses, dayKeys, routeId, onData, onError)
+  return subscribeDayScoped<DistExpense>(DIST_COLLECTIONS.expenses, dayKeys, routeId, rows => onData(rows.filter(expense => !expense.voided)), onError, distributorUid ? { field: 'registeredByUid', uid: distributorUid } : undefined)
 }
 
-/** Cartera. El distribuidor solo ve la de su ruta. */
+/** Cartera global. Todos los roles con acceso a creditos ven la misma deuda. */
 export function subscribeReceivables(
   routeId: string | null,
   onData: (rows: DistReceivable[]) => void,
   onError?: (error: Error) => void,
+  distributorUid?: string,
 ) {
   return subscribeQuery<DistReceivable>(
     (context) => {
       const base = collectionRef(context, DIST_COLLECTIONS.receivables)
+      if (distributorUid) return query(base, where('distributorUid', '==', distributorUid))
       return routeId ? query(base, where('routeId', '==', routeId)) : base
     },
     onData,
@@ -376,8 +461,18 @@ export function subscribeClosures(
   routeId: string | null,
   onData: (rows: DistClosure[]) => void,
   onError?: (error: Error) => void,
+  distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistClosure>(DIST_COLLECTIONS.closures, dayKeys, routeId, onData, onError)
+  void dayKeys
+  return subscribeQuery<DistClosure>(
+    ctx => distributorUid
+      ? query(collectionRef(ctx, DIST_COLLECTIONS.closures), where('distributorUid', '==', distributorUid))
+      : routeId ? query(collectionRef(ctx, DIST_COLLECTIONS.closures), where('routeId', '==', routeId)) : collectionRef(ctx, DIST_COLLECTIONS.closures),
+    // Una declaración todavía no tiene conciliación física. La lista vacía
+    // permite consultarla sin confundirla con una recepción confirmada.
+    rows => onData(rows.map(row => ({ ...row, products: Array.isArray(row.products) ? row.products : [] }))),
+    onError,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -414,8 +509,12 @@ export async function saveRoute(route: Omit<DistRoute, 'restaurantId' | 'created
 }
 
 export interface CustomerInput {
+  photoDataUrl?: string
+  addressReference?: string
   id?: string
   name: string
+  customerCode?: string
+  identityNumber?: string
   phone?: string
   address?: string
   routeId?: string
@@ -428,9 +527,19 @@ export async function saveCustomer(input: CustomerInput): Promise<DistCustomer> 
   const now = new Date().toISOString()
   const id = input.id || newOperationId('cust')
 
+  if (!input.name.trim()) throw new Error('El nombre es obligatorio.')
+  const identityNumber = normalizeCI(input.identityNumber || '')
+  if (!identityNumber) throw new Error('El CI del cliente es obligatorio.')
+  if (input.photoDataUrl && (!input.photoDataUrl.startsWith('data:image/jpeg;base64,') || input.photoDataUrl.length > 130000)) throw new Error('La fotografía supera el tamaño permitido.')
+  const duplicates = await getDocs(query(collectionRef(context, DIST_COLLECTIONS.customers), where('identityNumber', '==', identityNumber)))
+  if (duplicates.docs.some(customer => customer.id !== id)) throw new Error('Ya existe un cliente con este CI. Busca su registro para evitar duplicarlo.')
   const customer: DistCustomer = {
     id,
     name: input.name.trim(),
+    customerCode: identityNumber,
+    identityNumber,
+    photoDataUrl: input.photoDataUrl || '',
+    addressReference: input.addressReference?.trim() || '',
     phone: input.phone?.trim() || '',
     address: input.address?.trim() || '',
     routeId: input.routeId || '',
@@ -442,9 +551,21 @@ export async function saveCustomer(input: CustomerInput): Promise<DistCustomer> 
     updatedAt: now,
   }
 
-  const batch = writeBatch(context.db)
-  batch.set(docRef(context, DIST_COLLECTIONS.customers, id), customer, { merge: true })
-  commitInBackground(batch, `customer_${id}_${now}`, 'cliente')
+  await runTransaction(context.db, async tx => {
+    const ref = docRef(context, DIST_COLLECTIONS.customers, id)
+    const previous = await tx.get(ref)
+    const identityRef = docRef(context, 'distCustomerIdentities', identityNumber)
+    const reserved = await tx.get(identityRef)
+    if (reserved.exists() && reserved.data().customerId !== id) throw new Error('Este CI ya pertenece a otro cliente.')
+    if (previous.exists()) {
+      customer.createdAt = previous.data().createdAt
+      customer.createdBy = previous.data().createdBy
+    }
+    tx.set(identityRef, { restaurantId: context.restaurantId, customerId: id, identityNumber })
+    tx.set(ref, customer, { merge: true })
+    const oldCI = previous.data()?.identityNumber
+    if (oldCI && oldCI !== identityNumber) tx.delete(docRef(context, 'distCustomerIdentities', oldCI))
+  })
   return customer
 }
 
@@ -452,108 +573,9 @@ export async function saveCustomer(input: CustomerInput): Promise<DistCustomer> 
 // Movimientos de stock
 // ---------------------------------------------------------------------------
 
-interface MovementInput {
-  type: StockMovementType
-  productId: string
-  productName: string
-  unitType: DistDispatchLine['unitType']
-  quantity: number
-  centralDelta: number
-  routeDelta: number
-  routeId?: string
-  refType?: DistStockMovement['refType']
-  refId?: string
-  note?: string
-}
-
-/**
- * Escribe una entrada de ledger y ajusta los saldos cacheados en el mismo lote.
- * El ledger es la fuente auditable; los saldos son un acumulado con increment().
- */
-function appendMovement(
-  batch: WriteBatch,
-  context: RepoContext,
-  operationId: string,
-  createdAt: string,
-  movement: MovementInput,
-) {
-  const movementDoc: DistStockMovement = {
-    id: operationId,
-    ...baseDocFields(context, createdAt),
-    type: movement.type,
-    productId: movement.productId,
-    productName: movement.productName,
-    unitType: movement.unitType,
-    quantity: round2(Math.abs(movement.quantity)),
-    centralDelta: round2(movement.centralDelta),
-    routeDelta: round2(movement.routeDelta),
-    routeId: movement.routeId || '',
-    refType: movement.refType || 'manual',
-    refId: movement.refId || '',
-    note: movement.note || '',
-  }
-  batch.set(docRef(context, DIST_COLLECTIONS.movements, operationId), movementDoc)
-
-  if (movementDoc.centralDelta !== 0) {
-    batch.set(
-      docRef(context, DIST_COLLECTIONS.balances, centralBalanceId(movement.productId)),
-      {
-        id: centralBalanceId(movement.productId),
-        locationKind: 'central',
-        productId: movement.productId,
-        productName: movement.productName,
-        unitType: movement.unitType,
-        quantity: increment(movementDoc.centralDelta),
-        restaurantId: context.restaurantId,
-        updatedAt: createdAt,
-      },
-      { merge: true },
-    )
-  }
-
-  if (movementDoc.routeDelta !== 0 && movement.routeId) {
-    const balanceId = routeBalanceId(movement.routeId, movement.productId)
-    batch.set(
-      docRef(context, DIST_COLLECTIONS.balances, balanceId),
-      {
-        id: balanceId,
-        locationKind: 'route',
-        routeId: movement.routeId,
-        productId: movement.productId,
-        productName: movement.productName,
-        unitType: movement.unitType,
-        quantity: increment(movementDoc.routeDelta),
-        restaurantId: context.restaurantId,
-        updatedAt: createdAt,
-      },
-      { merge: true },
-    )
-  }
-}
-
 /** Ingreso de mercaderia al almacen central */
 export async function registerIntake(lines: DistDispatchLine[], note: string, operationId = newOperationId('intake')) {
-  if (isOperationApplied(operationId)) return operationId
-  const context = await getContext()
-  const createdAt = new Date().toISOString()
-  const batch = writeBatch(context.db)
-
-  lines.forEach((line, index) => {
-    appendMovement(batch, context, `${operationId}__${index}`, createdAt, {
-      type: 'intake',
-      productId: line.productId,
-      productName: line.productName,
-      unitType: line.unitType,
-      quantity: line.quantity,
-      centralDelta: line.quantity,
-      routeDelta: 0,
-      refType: 'manual',
-      refId: operationId,
-      note,
-    })
-  })
-
-  commitInBackground(batch, operationId, 'ingreso a almacen')
+  await submitOperation('intake', { lines, note }, operationId)
   return operationId
 }
 
@@ -562,26 +584,9 @@ export async function registerAdjustment(
   line: DistDispatchLine,
   note: string,
   operationId = newOperationId('adjust'),
+  warehouseId = 'central',
 ) {
-  if (isOperationApplied(operationId)) return operationId
-  const context = await getContext()
-  const createdAt = new Date().toISOString()
-  const batch = writeBatch(context.db)
-
-  appendMovement(batch, context, operationId, createdAt, {
-    type: 'adjustment',
-    productId: line.productId,
-    productName: line.productName,
-    unitType: line.unitType,
-    quantity: line.quantity,
-    centralDelta: line.quantity,
-    routeDelta: 0,
-    refType: 'manual',
-    refId: operationId,
-    note,
-  })
-
-  commitInBackground(batch, operationId, 'ajuste de almacen')
+  await submitOperation('adjustment', { line, note, warehouseId }, operationId)
   return operationId
 }
 
@@ -596,49 +601,15 @@ export interface ConfirmDispatchInput {
   distributorName: string
   lines: DistDispatchLine[]
   observation?: string
+  warehouseId?: string
   operationId?: string
 }
 
 /** Confirma un despacho: descuenta central y carga la ruta (una sola vez). */
 export async function confirmDispatch(input: ConfirmDispatchInput): Promise<string> {
-  const operationId = input.operationId || newOperationId('disp')
-  if (isOperationApplied(operationId)) return operationId
-
-  const context = await getContext()
-  const createdAt = new Date().toISOString()
-  const batch = writeBatch(context.db)
-
-  const dispatch: DistDispatch = {
-    id: operationId,
-    ...baseDocFields(context, createdAt),
-    routeId: input.routeId,
-    routeName: input.routeName,
-    distributorUid: input.distributorUid,
-    distributorName: input.distributorName,
-    status: 'open',
-    lines: input.lines.map((line) => ({ ...line, quantity: round2(line.quantity) })),
-    additions: [],
-    observation: input.observation || '',
-  }
-  batch.set(docRef(context, DIST_COLLECTIONS.dispatches, operationId), dispatch)
-
-  input.lines.forEach((line, index) => {
-    appendMovement(batch, context, `${operationId}__line${index}`, createdAt, {
-      type: 'dispatch',
-      productId: line.productId,
-      productName: line.productName,
-      unitType: line.unitType,
-      quantity: line.quantity,
-      centralDelta: -line.quantity,
-      routeDelta: line.quantity,
-      routeId: input.routeId,
-      refType: 'dispatch',
-      refId: operationId,
-    })
-  })
-
-  commitInBackground(batch, operationId, 'despacho')
-  return operationId
+  const id = input.operationId || newOperationId('disp')
+  await submitOperation('dispatch', input, id)
+  return id
 }
 
 export interface AddDispatchLoadInput {
@@ -651,47 +622,9 @@ export interface AddDispatchLoadInput {
 
 /** Aumento de carga sobre un despacho abierto, conservando el historial. */
 export async function addDispatchLoad(input: AddDispatchLoadInput): Promise<string> {
-  const operationId = input.operationId || newOperationId('add')
-  if (isOperationApplied(operationId)) return operationId
-
-  const context = await getContext()
-  const createdAt = new Date().toISOString()
-  const batch = writeBatch(context.db)
-
-  const addition: DistDispatchAddition = {
-    id: operationId,
-    quantityByProduct: input.lines.map((line) => ({ ...line, quantity: round2(line.quantity) })),
-    createdAt,
-    createdBy: context.uid,
-    createdByName: input.registeredByName,
-    note: input.note || '',
-  }
-
-  // Se reescribe el arreglo completo (y no arrayUnion) para que el aumento
-  // tambien quede aplicado en el cache local mientras se esta sin conexion.
-  batch.set(
-    docRef(context, DIST_COLLECTIONS.dispatches, input.dispatch.id),
-    { additions: [...(input.dispatch.additions || []), addition] },
-    { merge: true },
-  )
-
-  input.lines.forEach((line, index) => {
-    appendMovement(batch, context, `${operationId}__line${index}`, createdAt, {
-      type: 'dispatch_addition',
-      productId: line.productId,
-      productName: line.productName,
-      unitType: line.unitType,
-      quantity: line.quantity,
-      centralDelta: -line.quantity,
-      routeDelta: line.quantity,
-      routeId: input.dispatch.routeId,
-      refType: 'dispatch',
-      refId: input.dispatch.id,
-    })
-  })
-
-  commitInBackground(batch, operationId, 'aumento de carga')
-  return operationId
+  const id = input.operationId || newOperationId('add')
+  await submitOperation('addition', input, id)
+  return id
 }
 
 // ---------------------------------------------------------------------------
@@ -708,6 +641,7 @@ export interface RegisterSaleInput {
   dispatchId?: string
   customerId?: string
   customerName?: string
+  customerCode?: string
   lines: DistSaleLine[]
   total: number
   paymentKind: PaymentKind
@@ -723,76 +657,8 @@ export interface RegisterSaleInput {
  */
 export async function registerSale(input: RegisterSaleInput): Promise<DistSale> {
   const context = await getContext()
-  const createdAt = new Date().toISOString()
-
-  const sale: DistSale = {
-    id: input.operationId,
-    operationId: input.operationId,
-    ...baseDocFields(context, createdAt),
-    sourceLocation: input.sourceLocation,
-    routeId: input.routeId,
-    routeName: input.routeName,
-    sellerUid: input.sellerUid,
-    sellerName: input.sellerName,
-    dispatchId: input.dispatchId || '',
-    customerId: input.customerId || '',
-    customerName: input.customerName || '',
-    lines: input.lines.map((line) => ({
-      ...line,
-      quantity: round2(line.quantity),
-      actualUnitPrice: round2(line.actualUnitPrice),
-      subtotal: round2(line.subtotal),
-    })),
-    total: round2(input.total),
-    paymentKind: input.paymentKind,
-    cashAmount: round2(input.cashAmount),
-    qrAmount: round2(input.qrAmount),
-    creditAmount: round2(input.creditAmount),
-    note: input.note || '',
-  }
-
-  if (isOperationApplied(input.operationId)) return sale
-
-  const batch = writeBatch(context.db)
-  batch.set(docRef(context, DIST_COLLECTIONS.sales, input.operationId), sale)
-
-  const fromCentral = input.sourceLocation === 'centralWarehouse'
-  sale.lines.forEach((line, index) => {
-    appendMovement(batch, context, `${input.operationId}__line${index}`, createdAt, {
-      type: 'sale',
-      productId: line.productId,
-      productName: line.productNameSnapshot,
-      unitType: line.unitType,
-      quantity: line.quantity,
-      centralDelta: fromCentral ? -line.quantity : 0,
-      routeDelta: fromCentral ? 0 : -line.quantity,
-      routeId: fromCentral ? undefined : input.routeId,
-      refType: 'sale',
-      refId: input.operationId,
-    })
-  })
-
-  if (sale.creditAmount > 0 && input.customerId) {
-    const receivable: DistReceivable = {
-      id: input.operationId,
-      ...baseDocFields(context, createdAt),
-      saleId: input.operationId,
-      customerId: input.customerId,
-      customerName: input.customerName || '',
-      routeId: input.routeId,
-      distributorUid: input.sellerUid,
-      distributorName: input.sellerName,
-      originalAmount: sale.creditAmount,
-      paidAmount: 0,
-      balance: sale.creditAmount,
-      status: 'OPEN',
-      note: input.note || '',
-    }
-    batch.set(docRef(context, DIST_COLLECTIONS.receivables, input.operationId), receivable)
-  }
-
-  commitInBackground(batch, input.operationId, 'venta')
-  return sale
+  const provisional = { ...input, ...baseDocFields(context, new Date().toISOString()), id: input.operationId, pendingConfirmation: true } as DistSale
+  return submitOperation<DistSale>('sale', input, input.operationId, provisional)
 }
 
 // ---------------------------------------------------------------------------
@@ -816,44 +682,8 @@ export interface RegisterCollectionInput {
  */
 export async function registerCollection(input: RegisterCollectionInput): Promise<DistCollection> {
   const context = await getContext()
-  const createdAt = new Date().toISOString()
-  const amount = round2(input.amount)
-
-  const collectionDoc: DistCollection = {
-    id: input.operationId,
-    operationId: input.operationId,
-    ...baseDocFields(context, createdAt),
-    receivableId: input.receivable.id,
-    customerId: input.receivable.customerId,
-    customerName: input.receivable.customerName,
-    routeId: input.routeId,
-    collectedByUid: input.collectedByUid,
-    collectedByName: input.collectedByName,
-    amount,
-    method: input.method,
-    note: input.note || '',
-  }
-
-  if (isOperationApplied(input.operationId)) return collectionDoc
-
-  const paidAmount = round2(input.receivable.paidAmount + amount)
-  const balance = round2(input.receivable.originalAmount - paidAmount)
-
-  const batch = writeBatch(context.db)
-  batch.set(docRef(context, DIST_COLLECTIONS.collections, input.operationId), collectionDoc)
-  batch.set(
-    docRef(context, DIST_COLLECTIONS.receivables, input.receivable.id),
-    {
-      paidAmount,
-      balance,
-      status: balance <= 0 ? 'PAID' : 'PARTIAL',
-      updatedAt: createdAt,
-    },
-    { merge: true },
-  )
-
-  commitInBackground(batch, input.operationId, 'cobro')
-  return collectionDoc
+  const provisional = { ...baseDocFields(context, new Date().toISOString()), id: input.operationId, operationId: input.operationId, receivableId: input.receivable.id, customerId: input.receivable.customerId, customerName: input.receivable.customerName, routeId: input.routeId, collectedByUid: context.uid, collectedByName: input.collectedByName, amount: input.amount, method: input.method } as DistCollection
+  return submitOperation<DistCollection>('collection', input, input.operationId, provisional)
 }
 
 // ---------------------------------------------------------------------------
@@ -873,27 +703,20 @@ export interface RegisterExpenseInput {
 
 export async function registerExpense(input: RegisterExpenseInput): Promise<DistExpense> {
   const context = await getContext()
-  const createdAt = new Date().toISOString()
+  const provisional = { ...input, ...baseDocFields(context, new Date().toISOString()), id: input.operationId } as DistExpense
+  return submitOperation<DistExpense>('expense', input, input.operationId, provisional)
+}
 
-  const expense: DistExpense = {
-    id: input.operationId,
-    operationId: input.operationId,
-    ...baseDocFields(context, createdAt),
-    concept: input.concept.trim(),
-    amount: round2(input.amount),
-    routeId: input.routeId,
-    routeName: input.routeName,
-    registeredByUid: input.registeredByUid,
-    registeredByName: input.registeredByName,
-    note: input.note || '',
-  }
+export function subscribeSupportSettings(onData: (settings: SupportSettings) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<SupportSettings>(ctx => collectionRef(ctx, 'supportConfig'), rows => onData({ ...DEFAULT_SUPPORT_SETTINGS, ...(rows[0] || {}) }), onError)
+}
 
-  if (isOperationApplied(input.operationId)) return expense
+export async function deleteExpense(expenseId: string): Promise<void> {
+  await submitOperation('deleteExpense', { expenseId }, newOperationId('delete-expense'))
+}
 
-  const batch = writeBatch(context.db)
-  batch.set(docRef(context, DIST_COLLECTIONS.expenses, input.operationId), expense)
-  commitInBackground(batch, input.operationId, 'gasto')
-  return expense
+export async function deleteProduct(productId: string): Promise<void> {
+  await submitOperation('deleteProduct', { productId }, newOperationId('delete-product'))
 }
 
 // ---------------------------------------------------------------------------
@@ -913,84 +736,25 @@ export interface SaveClosureInput {
  *   de modo que la ruta queda en cero y nunca se descuenta dos veces central.
  */
 export async function saveClosure(input: SaveClosureInput): Promise<string> {
-  const context = await getContext()
-  const createdAt = new Date().toISOString()
-  const closure = input.closure
-  const batch = writeBatch(context.db)
-
-  batch.set(
-    docRef(context, DIST_COLLECTIONS.closures, closure.id),
-    stripUndefined({ ...closure, updatedAt: createdAt }),
-    { merge: true },
-  )
-
-  if (input.applyStockReturn) {
-    closure.products.forEach((row, index) => {
-      if (row.actualReturn > 0) {
-        appendMovement(batch, context, `${closure.id}__ret${index}`, createdAt, {
-          type: 'return',
-          productId: row.productId,
-          productName: row.productName,
-          unitType: row.unitType,
-          quantity: row.actualReturn,
-          centralDelta: row.actualReturn,
-          routeDelta: -row.actualReturn,
-          routeId: closure.routeId,
-          refType: 'closure',
-          refId: closure.id,
-        })
-      }
-
-      // El faltante/sobrante ajusta solo la ruta: el faltante no vuelve a
-      // almacen porque fisicamente no existe.
-      if (row.variance !== 0) {
-        appendMovement(batch, context, `${closure.id}__var${index}`, createdAt, {
-          type: row.variance < 0 ? 'shortage' : 'overage',
-          productId: row.productId,
-          productName: row.productName,
-          unitType: row.unitType,
-          quantity: Math.abs(row.variance),
-          centralDelta: 0,
-          routeDelta: row.variance,
-          routeId: closure.routeId,
-          refType: 'closure',
-          refId: closure.id,
-          note: row.variance < 0 ? 'Faltante de ruta' : 'Sobrante de ruta',
-        })
-      }
-    })
-  }
-
-  if (closure.status === 'closed' && closure.dispatchId) {
-    batch.set(
-      docRef(context, DIST_COLLECTIONS.dispatches, closure.dispatchId),
-      { status: 'closed', closedAt: createdAt, closureId: closure.id },
-      { merge: true },
-    )
-  }
-
-  commitInBackground(batch, `${closure.id}_${closure.status}_${createdAt}`, 'cierre de ruta')
-  return closure.id
+  await submitOperation('closure', { ...input, mode: input.applyStockReturn ? 'warehouse' : 'money' }, newOperationId('closure'))
+  return input.closure.id
 }
 
 /** Reapertura administrativa de una ruta cerrada */
-export async function reopenClosure(closure: DistClosure, reopenedBy: string): Promise<void> {
-  const context = await getContext()
-  const now = new Date().toISOString()
-  const batch = writeBatch(context.db)
+export async function reopenClosure(closure: DistClosure, _reopenedBy: string): Promise<void> {
+  await submitOperation('reopen', { closureId: closure.id }, newOperationId('reopen'))
+}
 
-  batch.set(
-    docRef(context, DIST_COLLECTIONS.closures, closure.id),
-    { status: 'reopened', reopenedBy, reopenedAt: now },
-    { merge: true },
-  )
-  if (closure.dispatchId) {
-    batch.set(
-      docRef(context, DIST_COLLECTIONS.dispatches, closure.dispatchId),
-      { status: 'open', closedAt: '', closureId: '' },
-      { merge: true },
-    )
-  }
+export function subscribeLots(onData: (rows: DistLot[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistLot>(ctx => collectionRef(ctx, 'distLots'), onData, onError) }
+export function subscribeOperations(onData: (rows: PendingOperation[]) => void, onError?: (error: Error) => void) { return subscribeQuery<PendingOperation>(ctx => query(collectionRef(ctx, 'distOperations'), where('createdBy', '==', ctx.uid), where('status', 'in', ['queued', 'rejected'])), onData, onError) }
+export function subscribeMovements(onData: (rows: DistStockMovement[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistStockMovement>(ctx => collectionRef(ctx, 'distStockMovements'), onData, onError) }
+export function subscribeTransfers(onData: (rows: DistTransfer[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistTransfer>(ctx => collectionRef(ctx, 'distTransfers'), onData, onError) }
+export function subscribeClaims(routeId: string | null, onData: (rows: DistClaim[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistClaim>(ctx => routeId ? query(collectionRef(ctx, 'distClaims'), where('routeId', '==', routeId)) : collectionRef(ctx, 'distClaims'), onData, onError) }
+export function subscribeCreditStatus(onData: (rows: DistCreditStatus[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistCreditStatus>(ctx => collectionRef(ctx, 'distCreditStatus'), onData, onError) }
+export async function registerClaim(payload: Record<string, unknown>, operationId: string) { return submitOperation<DistClaim>('claim', payload, operationId) }
 
-  commitInBackground(batch, `reopen_${closure.id}_${now}`, 'reapertura de ruta')
+export function dismissSyncError() {
+  localStorage.removeItem('pachax_dist_sync_error')
+  syncState = { ...syncState, lastError: null }
+  emitSyncState()
 }

@@ -321,13 +321,14 @@ service cloud.firestore {
         && request.resource.data.role in ['admin', 'owner'];
 
       allow create, update: if hasRole(restaurantId, ['admin'])
-        && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'routeId'])
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'routeId', 'warehouseId', 'passwordChangedAt', 'passwordChangedBy'])
         && request.resource.data.uid == uid
         && request.resource.data.email is string
         && request.resource.data.displayName is string
-        && request.resource.data.role in ['admin', 'caja', 'cocina', 'pedidos', 'warehouse', 'distributor']
+        && request.resource.data.role in ['admin', 'caja', 'cocina', 'pedidos', 'warehouse', 'distributor', 'support']
         && request.resource.data.active is bool
-        && (!('routeId' in request.resource.data) || request.resource.data.routeId is string);
+        && (!('routeId' in request.resource.data) || request.resource.data.routeId is string)
+        && (!('warehouseId' in request.resource.data) || request.resource.data.warehouseId is string);
       allow delete: if hasRole(restaurantId, ['admin']) && request.auth.uid != uid;
     }
 
@@ -473,6 +474,14 @@ service cloud.firestore {
       return hasRole(restaurantId, ['distributor']);
     }
 
+    function distWorker(restaurantId) {
+      return hasRole(restaurantId, ['admin', 'owner', 'superadmin', 'accountant', 'warehouse', 'distributor']);
+    }
+
+    function distSupport(restaurantId) {
+      return hasRole(restaurantId, ['support']);
+    }
+
     function distMyRoute(restaurantId) {
       return memberData(restaurantId).get('routeId', '');
     }
@@ -489,119 +498,220 @@ service cloud.firestore {
     // Catalogo y rutas: lectura para cualquier miembro activo, escritura solo
     // administracion (los precios son configuracion, no operacion diaria).
     match /restaurants/{restaurantId}/distProducts/{productId} {
-      allow read: if isActiveMember(restaurantId);
-      allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId);
-      allow delete: if distAdmin(restaurantId);
-    }
-
-    match /restaurants/{restaurantId}/distRoutes/{routeId} {
-      allow read: if isActiveMember(restaurantId);
-      allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId);
-      allow delete: if distAdmin(restaurantId);
-    }
-
-    // Los saldos por ubicacion los mantiene la app con increment() dentro del
-    // mismo lote que el movimiento del ledger.
-    match /restaurants/{restaurantId}/distBalances/{balanceId} {
-      allow read: if isActiveMember(restaurantId);
-      allow create, update: if distAdmin(restaurantId) || distWarehouse(restaurantId) || distDistributor(restaurantId);
+      allow read: if distWorker(restaurantId);
+      allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId)
+        && request.resource.data.unitType in ['kg','unit','package']
+        && request.resource.data.referencePrice is number && request.resource.data.referencePrice >= 0
+        && request.resource.data.get('productionCost',0) >= 0 && request.resource.data.get('minimumStock',0) >= 0
+        && request.resource.data.get('photoDataUrl', '').size() <= 150000
+        && (request.resource.data.get('photoDataUrl', '') == ''
+          || request.resource.data.get('photoDataUrl', '').matches('^data:image/jpeg;base64,[A-Za-z0-9+/=]+$'))
+        && (resource == null || request.resource.data.unitType == resource.data.unitType);
       allow delete: if false;
     }
 
-    match /restaurants/{restaurantId}/distCustomers/{customerId} {
-      allow read: if isActiveMember(restaurantId);
-      allow create, update: if (distAdmin(restaurantId) || distWarehouse(restaurantId) || distDistributor(restaurantId))
-        && distTenantMatches(restaurantId);
+    match /restaurants/{restaurantId}/distRoutes/{routeId} {
+      allow read: if distWorker(restaurantId);
+      allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId);
       allow delete: if distAdmin(restaurantId);
+    }
+
+    function distWarehouseOwns(restaurantId, warehouseId) {
+      return distAdmin(restaurantId) || (distWarehouse(restaurantId) && memberData(restaurantId).get('warehouseId', 'central') == warehouseId);
+    }
+
+    match /restaurants/{restaurantId}/distWarehouses/{warehouseId} {
+      allow read: if distWorker(restaurantId);
+      allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId)
+        && request.resource.data.name is string && request.resource.data.active is bool;
+      allow delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distTransfers/{transferId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId);
+      allow create, update, delete: if false;
+    }
+
+    function incomingTransfer(restaurantId) {
+      let id = request.resource.data.get('transferId', '');
+      let transfer = getAfter(/databases/$(database)/documents/restaurants/$(restaurantId)/distTransfers/$(id)).data;
+      return id != '' && !exists(/databases/$(database)/documents/restaurants/$(restaurantId)/distTransfers/$(id))
+        && transfer.createdBy == request.auth.uid
+        && transfer.toWarehouseId == request.resource.data.get('warehouseId', 'central')
+        && transfer.line.productId == request.resource.data.productId
+        && request.resource.data.quantity == (resource == null ? 0 : resource.data.quantity) + transfer.line.quantity;
+    }
+
+    match /restaurants/{restaurantId}/distBalances/{balanceId} {
+      allow read: if distWorker(restaurantId);
+      allow create, update, delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distQrVerifications/{verificationId} {
+      allow read: if distAdmin(restaurantId) || distOwnsRoute(restaurantId, resource.data.routeId);
+      allow create: if distAdmin(restaurantId) && distTenantMatches(restaurantId)
+        && request.resource.data.verifiedBy == request.auth.uid
+        && request.resource.data.amount > 0 && request.resource.data.reference is string
+        && request.resource.data.reference.size() > 0
+        && ((request.resource.data.sourceType == 'sale'
+          && verificationId == 'sale_' + request.resource.data.sourceId
+          && request.resource.data.amount == get(/databases/$(database)/documents/restaurants/$(restaurantId)/distSales/$(request.resource.data.sourceId)).data.qrAmount)
+        || (request.resource.data.sourceType == 'collection'
+          && verificationId == 'collection_' + request.resource.data.sourceId
+          && get(/databases/$(database)/documents/restaurants/$(restaurantId)/distCollections/$(request.resource.data.sourceId)).data.method == 'qr'
+          && request.resource.data.amount == get(/databases/$(database)/documents/restaurants/$(restaurantId)/distCollections/$(request.resource.data.sourceId)).data.amount)
+        || (request.resource.data.sourceType == 'claim'
+          && verificationId == 'claim_' + request.resource.data.sourceId
+          && request.resource.data.amount == get(/databases/$(database)/documents/restaurants/$(restaurantId)/distClaims/$(request.resource.data.sourceId)).data.qrIn));
+      allow update, delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distCustomerIdentities/{ci} {
+      allow read: if distWorker(restaurantId);
+      allow create: if distWorker(restaurantId) && request.resource.data.restaurantId == restaurantId
+        && request.resource.data.identityNumber == ci
+        && getAfter(/databases/$(database)/documents/restaurants/$(restaurantId)/distCustomers/$(request.resource.data.customerId)).data.identityNumber == ci;
+      allow update: if distWorker(restaurantId) && request.resource.data == resource.data;
+      allow delete: if distWorker(restaurantId)
+        && getAfter(/databases/$(database)/documents/restaurants/$(restaurantId)/distCustomers/$(resource.data.customerId)).data.identityNumber != ci;
+    }
+    match /restaurants/{restaurantId}/distCustomers/{customerId} {
+      allow read: if distWorker(restaurantId);
+      allow create, update: if distWorker(restaurantId) && distTenantMatches(restaurantId)
+        && request.resource.data.id == customerId
+        && request.resource.data.identityNumber is string && request.resource.data.identityNumber.matches('^[0-9]{4,12}(-[0-9A-Z]{1,5})?$')
+        && request.resource.data.customerCode == request.resource.data.identityNumber
+        && getAfter(/databases/$(database)/documents/restaurants/$(restaurantId)/distCustomerIdentities/$(request.resource.data.identityNumber)).data.customerId == customerId
+        && request.resource.data.get('photoDataUrl', '').size() <= 130000
+        && (resource == null ? request.resource.data.createdBy == request.auth.uid : request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy);
+      allow delete: if false;
+    }
+    match /restaurants/{restaurantId}/distOperations/{operationId} {
+      allow get: if isActiveMember(restaurantId) && (resource == null || distAdmin(restaurantId) || resource.data.createdBy == request.auth.uid);
+      allow list: if distAdmin(restaurantId) || (isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid);
+      allow create: if isActiveMember(restaurantId) && restaurantId == 'sanjose'
+        && request.resource.data.keys().hasOnly(['id','restaurantId','createdBy','createdAt','type','payload','status'])
+        && request.resource.data.id == operationId && distTenantMatches(restaurantId)
+        && request.resource.data.createdBy == request.auth.uid && request.resource.data.status == 'queued'
+        && request.resource.data.payload is map
+        && ((request.resource.data.type in ['sale','collection','expense','creditStatus'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
+          || (request.resource.data.type in ['intake','transfer','dispatch','addition','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
+          || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
+          || (request.resource.data.type in ['adjustment','claim','updateLot','reopen','deleteExpense','deleteProduct'] && distAdmin(restaurantId)));
+      allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged']) && request.resource.data.acknowledged == true;
+      allow delete: if false;
+    }
+    match /restaurants/{restaurantId}/distLots/{lotId} {
+      allow read: if distWorker(restaurantId);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distLotHistory/{entryId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distClaims/{claimId} {
+      allow read: if distAdmin(restaurantId) || distOwnsRoute(restaurantId, resource.data.routeId);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distCreditStatus/{customerId} {
+      allow read: if distWorker(restaurantId);
+      allow write: if false;
     }
 
     // Ledger inmutable: se crea, nunca se edita ni se borra.
     match /restaurants/{restaurantId}/distStockMovements/{movementId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId);
-      allow create: if distTenantMatches(restaurantId)
-        && (
-          distAdmin(restaurantId)
-          || distWarehouse(restaurantId)
-          || distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
-        );
-      allow update, delete: if false;
+      allow create, update, delete: if false;
     }
 
     match /restaurants/{restaurantId}/distDispatches/{dispatchId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
-        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
-      allow create: if (distAdmin(restaurantId) || distWarehouse(restaurantId))
-        && distTenantMatches(restaurantId);
-      allow update: if
-        (
-          (distAdmin(restaurantId) || distWarehouse(restaurantId)) && distTenantMatches(restaurantId)
-        )
-        || (
-          // El distribuidor cierra SU ruta: solo puede marcar el despacho como
-          // cerrado, sin tocar cargas, aumentos ni ninguna otra ruta.
-          distOwnsRoute(restaurantId, resource.data.get('routeId', ''))
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status', 'closedAt', 'closureId'])
-          && request.resource.data.status == 'closed'
-        );
-      allow delete: if false;
+        || (distDistributor(restaurantId) && resource.data.get('distributorUid', '') == request.auth.uid);
+      allow create, update, delete: if false;
     }
 
     // Las ventas no se editan ni se borran: son historia contable.
     match /restaurants/{restaurantId}/distSales/{saleId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
-        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
-      allow create: if distTenantMatches(restaurantId)
-        && request.resource.data.total is number
-        && request.resource.data.total >= 0
-        && (
-          distAdmin(restaurantId)
-          || distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
-        );
-      allow update, delete: if false;
+        || (distDistributor(restaurantId) && resource.data.get('sellerUid', '') == request.auth.uid);
+      allow create, update, delete: if false;
     }
 
     match /restaurants/{restaurantId}/distReceivables/{receivableId} {
-      allow read: if distAdmin(restaurantId)
-        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
-      allow create: if distTenantMatches(restaurantId)
-        && (distAdmin(restaurantId) || distOwnsRoute(restaurantId, request.resource.data.get('routeId', '')));
-      // Solo se actualiza el saldo al registrar un cobro: la deuda no se borra.
-      allow update: if (distAdmin(restaurantId) || distOwnsRoute(restaurantId, resource.data.get('routeId', '')))
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['paidAmount', 'balance', 'status', 'updatedAt']);
-      allow delete: if false;
+      allow read: if distAdmin(restaurantId) || distDistributor(restaurantId);
+      allow create, update, delete: if false;
     }
 
     match /restaurants/{restaurantId}/distCollections/{collectionId} {
       allow read: if distAdmin(restaurantId)
-        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
-      allow create: if distTenantMatches(restaurantId)
-        && request.resource.data.amount is number
-        && request.resource.data.amount > 0
-        && (distAdmin(restaurantId) || distOwnsRoute(restaurantId, request.resource.data.get('routeId', '')));
-      allow update, delete: if false;
+        || (distDistributor(restaurantId) && resource.data.get('collectedByUid', '') == request.auth.uid);
+      allow create, update, delete: if false;
     }
 
     match /restaurants/{restaurantId}/distExpenses/{expenseId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
-        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
-      allow create: if distTenantMatches(restaurantId)
-        && request.resource.data.amount is number
-        && request.resource.data.amount > 0
-        && (distAdmin(restaurantId) || distOwnsRoute(restaurantId, request.resource.data.get('routeId', '')));
-      allow update, delete: if false;
+        || (distDistributor(restaurantId) && resource.data.get('registeredByUid', '') == request.auth.uid);
+      allow create, update, delete: if false;
     }
 
+    function closureWarehouse(restaurantId, data) {
+      let dispatch = get(/databases/$(database)/documents/restaurants/$(restaurantId)/distDispatches/$(data.dispatchId)).data;
+      return distWarehouseOwns(restaurantId, dispatch.get('warehouseId', 'central'));
+    }
     match /restaurants/{restaurantId}/distClosures/{closureId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
-        || distOwnsRoute(restaurantId, resource.data.get('routeId', ''));
-      allow create, update: if distTenantMatches(restaurantId)
-        && (
-          distAdmin(restaurantId)
-          || distWarehouse(restaurantId)
-          || distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
-        );
+        || (distDistributor(restaurantId) && resource.data.get('distributorUid', '') == request.auth.uid)
+        || (distDistributor(restaurantId) && resource.data.get('returnDeclaredBy', '') == request.auth.uid);
+      allow create: if distTenantMatches(restaurantId)
+        && distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
+        && request.resource.data.keys().hasOnly(['id', 'restaurantId', 'dispatchId', 'routeId', 'distributorUid', 'distributorName', 'declaredReturns', 'returnDeclaredBy', 'returnDeclaredAt', 'dayKey'])
+        && request.resource.data.distributorUid == request.auth.uid
+        && request.resource.data.returnDeclaredBy == request.auth.uid;
+      allow update: if distTenantMatches(restaurantId)
+        && distOwnsRoute(restaurantId, resource.data.get('routeId', ''))
+        && resource.data.get('warehouseClosedBy', '') == ''
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['declaredReturns', 'returnDeclaredBy', 'returnDeclaredAt', 'dayKey', 'distributorUid', 'distributorName'])
+        && request.resource.data.distributorUid == request.auth.uid
+        && request.resource.data.returnDeclaredBy == request.auth.uid;
       allow delete: if false;
     }
 
+    // Configuración técnica separada de toda la información comercial. El rol
+    // soporte solo puede leer y modificar este único documento.
+    match /restaurants/{restaurantId}/supportConfig/{configId} {
+      // La aplicación mantiene una suscripción a la colección para compartir
+      // las políticas operativas. Firestore evalúa una consulta como `list` y
+      // no puede demostrar que devolverá únicamente el documento `main`.
+      allow get: if configId == 'main' && isActiveMember(restaurantId);
+      allow list: if isActiveMember(restaurantId);
+      allow create, update: if configId == 'main' && (distAdmin(restaurantId) || distSupport(restaurantId))
+        && request.resource.data.keys().hasOnly(['restaurantId','companyName','taxId','address','phone','receiptHeader','receiptFooter','expiryAlertDays','creditBlockDays','requireQrVerification','defaultPaperWidth','updatedAt','updatedBy','lastResetAt','lastResetBy'])
+        && request.resource.data.restaurantId == restaurantId
+        && request.resource.data.companyName is string
+        && request.resource.data.taxId is string
+        && request.resource.data.address is string
+        && request.resource.data.phone is string
+        && request.resource.data.receiptHeader is string
+        && request.resource.data.receiptFooter is string
+        && request.resource.data.expiryAlertDays is int && request.resource.data.expiryAlertDays >= 1 && request.resource.data.expiryAlertDays <= 90
+        && request.resource.data.creditBlockDays is int && request.resource.data.creditBlockDays >= 1 && request.resource.data.creditBlockDays <= 90
+        && request.resource.data.requireQrVerification is bool
+        && request.resource.data.defaultPaperWidth in ['58mm','80mm']
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Los respaldos y registros de limpieza contienen datos sensibles y solo
+    // son accesibles por las funciones del servidor (Admin SDK).
+    match /restaurants/{restaurantId}/maintenanceBackups/{document=**} {
+      allow read, write: if false;
+    }
+    match /restaurants/{restaurantId}/maintenanceResetRequests/{document=**} {
+      allow read, write: if false;
+    }
+    match /restaurants/{restaurantId}/maintenanceAudit/{document=**} {
+      allow read, write: if false;
+    }
   }
 }

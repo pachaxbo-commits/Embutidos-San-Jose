@@ -1,3 +1,4 @@
+import { getFirebaseRestaurantId } from '../lib/firebase'
 import { useState, useEffect } from 'react'
 import {
   Printer,
@@ -53,7 +54,7 @@ export function PrinterSettingsView({ onBack }: PrinterSettingsViewProps) {
   const handleOpenCreateModal = () => {
     setEditingProfile({
       id: `prn-${Date.now()}`,
-      restaurantId: 'principal',
+      restaurantId: getFirebaseRestaurantId(),
       branchId: 'main',
       name: 'Nueva Impresora',
       role: 'receipt',

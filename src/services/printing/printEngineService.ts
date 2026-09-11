@@ -11,6 +11,7 @@ import type {
   RequestReprintInput,
   SubmitPrintRequestInput,
 } from '../../types/printing'
+import { getFirebaseRestaurantId } from '../../lib/firebase'
 import { DiagnosticPrinterAdapter } from './diagnosticPrinterAdapter'
 import { PrintQueueManager } from './printQueueManager'
 
@@ -50,7 +51,7 @@ export class PrintEngineService {
   }
 
   listPrinterProfiles(): PrinterProfile[] {
-    return Array.from(this.printers.values())
+    return Array.from(this.printers.values()).filter(p => p.restaurantId === getFirebaseRestaurantId())
   }
 
   /** Resolves destination printer for target or station */
@@ -63,7 +64,7 @@ export class PrintEngineService {
     }
 
     // Default lookup by role
-    const activePrinters = Array.from(this.printers.values()).filter((p) => p.isActive)
+    const activePrinters = this.listPrinterProfiles().filter((p) => p.isActive)
     const roleMatch = activePrinters.find((p) => p.role === (targetType === 'kitchen_ticket' ? 'kitchen' : 'receipt'))
     const fallback = roleMatch || activePrinters[0] || this.createDefaultFallbackProfile()
 
@@ -107,13 +108,16 @@ export class PrintEngineService {
 
   /** Main entry point for submitting any print request */
   async submitPrintRequest(input: SubmitPrintRequestInput): Promise<PrintJob> {
-    const { primary, backup } = this.resolveDestinationPrinters(input.targetType, input.stationId)
+    const selected = input.printerProfileId ? this.printers.get(input.printerProfileId) : undefined
+    const { primary, backup } = selected ? { primary: selected, backup: undefined } : this.resolveDestinationPrinters(input.targetType, input.stationId)
+    if (primary.id === 'default-diagnostic') throw new Error('Configura una impresora real antes de imprimir.')
+    const adapter = this.queueManager.getAdapter(primary.connectionType)
+    if (!adapter) throw new Error('No hay un adaptador disponible para esta impresora.')
     const job = await this.queueManager.submitJob(input, primary, backup)
 
     // Attempt processing immediately if lease acquired
     const acquired = await this.queueManager.acquireLease(job.id)
     if (acquired) {
-      const adapter = this.queueManager.getAdapter(primary.connectionType) || new DiagnosticPrinterAdapter()
       return await this.queueManager.processJob(job.id, adapter, primary, backup)
     }
 

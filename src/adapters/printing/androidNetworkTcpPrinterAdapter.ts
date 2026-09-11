@@ -16,12 +16,14 @@ export function isValidIpOrHost(host?: string): boolean {
   if (trimmed.length === 0) return false
 
   // IPv4 regex check
-  const ipv4Regex = /^((25[0-5]|(2[0-4]|1\d|[1-9]|0)\d)\.){3}(25[0-5]|(2[0-4]|1\d|[1-9]|0)\d)$/
-  if (ipv4Regex.test(trimmed)) return true
+  if (/^[\d.]+$/.test(trimmed)) {
+    const octets = trimmed.split('.')
+    return octets.length === 4 && octets.every(o => /^\d{1,3}$/.test(o) && Number(o) <= 255)
+  }
 
   // Hostname regex check
   const hostRegex = /^([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])(\.([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]))*$/
-  return hostRegex.test(trimmed)
+  return trimmed.includes('.') && hostRegex.test(trimmed)
 }
 
 /** Helper for Port range validation */

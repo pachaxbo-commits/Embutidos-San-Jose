@@ -44,9 +44,9 @@ export function KpiCard({
 
   return (
     <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
-      <p className="truncate text-[10px] font-extrabold uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 truncate text-xl font-black tabular-nums ${toneStyle[tone]}`}>{value}</p>
-      {hint && <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-400">{hint}</p>}
+      <p className="break-words text-[10px] font-extrabold uppercase leading-tight tracking-wide text-slate-500">{label}</p>
+      <p className={`mt-1 break-words text-xl font-black leading-tight tabular-nums ${toneStyle[tone]}`}>{value}</p>
+      {hint && <p className="mt-0.5 break-words text-[11px] font-semibold leading-snug text-slate-400">{hint}</p>}
     </div>
   )
 }
@@ -63,7 +63,7 @@ export function SectionCard({
   return (
     <section className="w-full min-w-0 rounded-3xl border border-slate-200 bg-white p-3 sm:p-4">
       <header className="mb-3 flex items-center justify-between gap-2">
-        <h2 className="truncate text-xs font-extrabold uppercase tracking-wide text-slate-500">{title}</h2>
+        <h2 className="break-words text-xs font-extrabold uppercase tracking-wide text-slate-500">{title}</h2>
         {action}
       </header>
       {children}
@@ -145,34 +145,33 @@ export function SecondaryButton({
 }
 
 /** Estado de sincronizacion siempre visible mientras se trabaja en calle */
-export function SyncStatusPill({ state }: { state: DistSyncState }) {
+export function SyncStatusPill({ state, compact = false }: { state: DistSyncState; compact?: boolean }) {
   // El contador vive en memoria; hasUnsyncedWrites viene de Firestore y
   // sobrevive a cerrar y reabrir la aplicacion.
   const pendingLabel = state.pending > 0 ? `${state.pending} PENDIENTES` : 'CON PENDIENTES'
 
   if (!state.isOnline) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-black text-amber-800">
+      <span title={pendingLabel} aria-label={`Sin conexión. ${pendingLabel}`} className={`${compact ? 'h-9 w-9 justify-center px-0' : 'px-2.5'} inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 py-1 text-[10px] font-black text-amber-800`}>
         <CloudOff size={12} />
-        SIN CONEXION
-        {(state.pending > 0 || state.hasUnsyncedWrites) && <span>· {pendingLabel}</span>}
+        {compact ? <span className="sr-only">Sin conexión</span> : <>SIN CONEXION{(state.pending > 0 || state.hasUnsyncedWrites) && <span>· {pendingLabel}</span>}</>}
       </span>
     )
   }
 
   if (state.pending > 0 || state.hasUnsyncedWrites) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[10px] font-black text-sky-800">
+      <span title="Sincronizando" aria-label="Sincronizando" className={`${compact ? 'h-9 w-9 justify-center px-0' : 'px-2.5'} inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 py-1 text-[10px] font-black text-sky-800`}>
         <Loader2 size={12} className="animate-spin" />
-        SINCRONIZANDO{state.pending > 0 ? ` · ${state.pending}` : ''}
+        {compact ? <span className="sr-only">Sincronizando</span> : <>SINCRONIZANDO{state.pending > 0 ? ` · ${state.pending}` : ''}</>}
       </span>
     )
   }
 
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-black text-emerald-800">
-      <ShieldCheck size={12} />
-      SINCRONIZADO
+    <span title="Sincronizado" aria-label="Sincronizado" className={`${compact ? 'h-9 w-9 justify-center px-0' : 'px-2.5'} inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 py-1 text-[10px] font-black text-emerald-800`}>
+      <ShieldCheck size={compact ? 17 : 12} />
+      {compact ? <span className="sr-only">Sincronizado</span> : 'SINCRONIZADO'}
     </span>
   )
 }

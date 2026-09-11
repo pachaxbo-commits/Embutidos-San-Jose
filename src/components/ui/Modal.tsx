@@ -78,11 +78,11 @@ export function Modal({
         className={`relative z-10 flex w-full ${SIZE_CLASS[size]} flex-col overflow-hidden bg-white shadow-modal ${
           isSheet ? 'rounded-t-3xl sm:rounded-3xl' : 'rounded-3xl'
         }`}
-        style={{ maxHeight: 'calc(100dvh - env(safe-area-inset-top) - 1rem)' }}
+        style={{ maxHeight: 'calc(100dvh - var(--safe-top) - 1rem)' }}
       >
         <header className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-extrabold tracking-tight text-slate-900">{title}</h2>
+            <h2 className="break-words text-sm font-extrabold tracking-tight text-slate-900">{title}</h2>
             {subtitle && <p className="mt-0.5 text-[11px] font-medium text-slate-500">{subtitle}</p>}
           </div>
           <button
@@ -100,7 +100,7 @@ export function Modal({
         {footer && (
           <footer
             className="shrink-0 border-t border-slate-200 bg-white px-4 py-3"
-            style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))' }}
+            style={{ paddingBottom: 'calc(0.75rem + var(--safe-bottom))' }}
           >
             {footer}
           </footer>
