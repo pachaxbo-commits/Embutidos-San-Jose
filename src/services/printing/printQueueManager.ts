@@ -12,6 +12,8 @@ import type {
 import { IndexedDbPrintJobStorage } from './printJobStorage'
 import { buildReceiptBytes } from './templates/receiptTemplate'
 import { buildKitchenTicketBytes } from './templates/kitchenTicketTemplate'
+import { buildTsplReceiptBytes } from './templates/tsplReceiptTemplate'
+import { resolvePrinterLanguage } from './printerLanguage'
 import { EscPosBuilder } from './escPosFormatter'
 
 const LEASE_DURATION_MS = 15000 // 15s lease duration
@@ -124,7 +126,9 @@ export class PrintQueueManager {
 
     // Build raw ESC/POS bytes according to targetType
     let bytes: Uint8Array
-    if (job.targetType === 'kitchen_ticket') {
+    if (resolvePrinterLanguage(printer) === 'tspl') {
+      bytes = buildTsplReceiptBytes(job.payload, printer.paperWidth)
+    } else if (job.targetType === 'kitchen_ticket') {
       bytes = buildKitchenTicketBytes(job.payload, printer.paperWidth)
     } else if (job.targetType === 'drawer_kick') {
       bytes = new EscPosBuilder().init().kickCashDrawer(printer.capabilities.drawerPin || 'pin2').build()

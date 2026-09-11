@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core'
 import PachaxBluetoothPermissions, { type BluetoothPermissionValue } from '../../plugins/pachaxBluetoothPermissions'
+import PachaxBluetoothPrinter from '../../plugins/pachaxBluetoothPrinter'
 
 export interface BluetoothDiagnosticState {
   isNativeAndroid: boolean
@@ -16,7 +17,7 @@ export class AndroidBluetoothPermissionsService {
   static async checkDiagnosticState(): Promise<BluetoothDiagnosticState> {
     const isNativeAndroid = Capacitor.getPlatform() === 'android'
     const btSerial = (window as any).bluetoothSerial
-    const isPluginAvailable = Boolean(btSerial)
+    const isPluginAvailable = Capacitor.isPluginAvailable('PachaxBluetoothPrinter') || Boolean(btSerial)
 
     let apiLevel = 0
     let bluetoothConnectPermission: BluetoothPermissionValue = 'notRequired'
@@ -34,7 +35,13 @@ export class AndroidBluetoothPermissionsService {
     }
 
     let isBluetoothEnabled = false
-    if (btSerial && typeof btSerial.isEnabled === 'function') {
+    if (isNativeAndroid && Capacitor.isPluginAvailable('PachaxBluetoothPrinter')) {
+      try {
+        isBluetoothEnabled = (await PachaxBluetoothPrinter.getState()).enabled
+      } catch {
+        isBluetoothEnabled = false
+      }
+    } else if (btSerial && typeof btSerial.isEnabled === 'function') {
       isBluetoothEnabled = await new Promise<boolean>((resolve) => {
         btSerial.isEnabled(
           () => resolve(true),

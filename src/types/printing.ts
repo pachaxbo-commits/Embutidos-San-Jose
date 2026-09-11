@@ -85,6 +85,8 @@ export interface PrinterProfile extends Partial<TenantScopedEntity> {
   role: 'receipt' | 'kitchen' | 'bar' | 'despacho' | 'general'
   connectionType: PrinterConnectionType
   paperWidth: '58mm' | '80mm'
+  /** auto usa el nombre Bluetooth; escpos imprime recibos y tspl imprime etiquetas. */
+  commandLanguage?: 'auto' | 'escpos' | 'tspl'
   macAddress?: string
   ipAddress?: string
   ipPort?: number

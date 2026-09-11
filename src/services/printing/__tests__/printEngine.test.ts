@@ -3,6 +3,8 @@ import { DiagnosticPrinterAdapter } from '../diagnosticPrinterAdapter'
 import { IndexedDbPrintJobStorage } from '../printJobStorage'
 import { buildReceiptBytes } from '../templates/receiptTemplate'
 import { buildKitchenTicketBytes } from '../templates/kitchenTicketTemplate'
+import { buildTsplReceiptBytes } from '../templates/tsplReceiptTemplate'
+import { detectPrinterLanguage, resolvePrinterLanguage } from '../printerLanguage'
 import { transliterateText } from '../escPosFormatter'
 import type { PrinterProfile, PrintJobPayload } from '../../../types/printing'
 
@@ -323,6 +325,24 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
     assert(hasRasterLogo, 'Prueba 17: El ticket de San José incluye el logo monocromo ESC/POS')
   } catch (e: any) {
     assert(false, `Prueba 17 Fallo: ${e.message}`)
+  }
+
+  // --- Test 18: selección automática y plantilla de etiquetas QR-368BT ---
+  try {
+    const labelPrinter: PrinterProfile = { ...samplePrinter, name: 'QR380A-FE0A43', connectionType: 'bluetooth_spp', commandLanguage: 'auto', capabilities: { ...samplePrinter.capabilities, supportsPaperCut: false } }
+    const tspl = new TextDecoder().decode(buildTsplReceiptBytes(samplePayload, '80mm'))
+    assert(
+      detectPrinterLanguage('QIRUI QR-368BT') === 'tspl'
+        && resolvePrinterLanguage(labelPrinter) === 'tspl'
+        && detectPrinterLanguage('POS-80') === 'escpos'
+        && tspl.startsWith('SIZE 80 mm,')
+        && tspl.includes('\r\nCLS\r\n')
+        && tspl.includes('BITMAP ')
+        && tspl.endsWith('PRINT 1,1\r\n'),
+      'Prueba 18: Automático reconoce QR-368BT y genera un comprobante TSPL con logo y sin comandos de corte',
+    )
+  } catch (e: any) {
+    assert(false, `Prueba 18 Fallo: ${e.message}`)
   }
 
   return { passed, failed, results }

@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core'
 import { AndroidBluetoothPermissionsService, type BluetoothDiagnosticState } from '../../services/printing/androidBluetoothPermissionsService'
+import PachaxBluetoothPrinter from '../../plugins/pachaxBluetoothPrinter'
 import type {
   ErrorClassification,
   PrinterAdapter,
@@ -36,7 +37,7 @@ export class AndroidBluetoothSppAdapter implements PrinterAdapter {
 
   /** Checks whether bluetoothSerial native plugin object is available in window */
   isPluginAvailable(): boolean {
-    return Boolean((window as any).bluetoothSerial)
+    return Capacitor.isPluginAvailable('PachaxBluetoothPrinter') || Boolean((window as any).bluetoothSerial)
   }
 
   async isAvailable(): Promise<boolean> {
@@ -62,6 +63,11 @@ export class AndroidBluetoothSppAdapter implements PrinterAdapter {
   /** List paired Bluetooth devices from Android OS Settings via window.bluetoothSerial.list() */
   async listPairedDevices(): Promise<BluetoothPairedDevice[]> {
     if (!this.isNativeAndroid()) return []
+
+    if (Capacitor.isPluginAvailable('PachaxBluetoothPrinter')) {
+      const result = await PachaxBluetoothPrinter.listPairedDevices()
+      return result.devices
+    }
 
     const btSerial = (window as any).bluetoothSerial
     if (!btSerial) {
@@ -94,6 +100,19 @@ export class AndroidBluetoothSppAdapter implements PrinterAdapter {
       const err: any = new Error('[AndroidBluetoothSppAdapter] Falta la dirección MAC de la impresora')
       err.classification = 'safeToRetry' as ErrorClassification
       throw err
+    }
+
+    if (this.isNativeAndroid() && Capacitor.isPluginAvailable('PachaxBluetoothPrinter')) {
+      try {
+        await PachaxBluetoothPrinter.connect({ address: targetAddress })
+        this.connectedDeviceAddress = targetAddress
+        this.isConnectedFlag = true
+        return
+      } catch (nativeError: any) {
+        const error: any = new Error(nativeError?.message || `No se pudo conectar a ${printer.name}`)
+        error.classification = 'safeToRetry' as ErrorClassification
+        throw error
+      }
     }
 
     const btSerial = (window as any).bluetoothSerial
@@ -131,6 +150,12 @@ export class AndroidBluetoothSppAdapter implements PrinterAdapter {
 
   /** Disconnect from printer */
   async disconnect(): Promise<void> {
+    if (this.isNativeAndroid() && Capacitor.isPluginAvailable('PachaxBluetoothPrinter')) {
+      await PachaxBluetoothPrinter.disconnect().catch(() => undefined)
+      this.connectedDeviceAddress = null
+      this.isConnectedFlag = false
+      return
+    }
     const btSerial = (window as any).bluetoothSerial
     if (btSerial && this.isConnectedFlag) {
       await new Promise<void>((resolve) => {
@@ -146,6 +171,9 @@ export class AndroidBluetoothSppAdapter implements PrinterAdapter {
 
   /** Check active connection status */
   async isConnected(): Promise<boolean> {
+    if (this.isNativeAndroid() && Capacitor.isPluginAvailable('PachaxBluetoothPrinter')) {
+      return (await PachaxBluetoothPrinter.getState()).connected
+    }
     const btSerial = (window as any).bluetoothSerial
     if (!btSerial) return this.isConnectedFlag
 
@@ -162,7 +190,7 @@ export class AndroidBluetoothSppAdapter implements PrinterAdapter {
    */
   async sendBytes(payload: PrintTransportPayload): Promise<PrintResult> {
     const { bytes, printer } = payload
-    const chunkSize = printer.capabilities.chunkSize || 512
+    const chunkSize = printer.capabilities.chunkSize || 256
     const chunkDelayMs = printer.capabilities.chunkDelayMs || 50
     const btSerial = (window as any).bluetoothSerial
 
@@ -181,7 +209,11 @@ export class AndroidBluetoothSppAdapter implements PrinterAdapter {
       const arrayBufferToWrite = toCleanArrayBuffer(chunk)
 
       try {
-        if (btSerial) {
+        if (this.isNativeAndroid() && Capacitor.isPluginAvailable('PachaxBluetoothPrinter')) {
+          let binary = ''
+          for (const byte of chunk) binary += String.fromCharCode(byte)
+          await PachaxBluetoothPrinter.write({ dataBase64: btoa(binary) })
+        } else if (btSerial) {
           await new Promise<void>((resolve, reject) => {
             const timeoutTimer = setTimeout(() => {
               reject(new Error(`Timeout escribiendo bloque ${i + 1}/${chunks.length}`))
