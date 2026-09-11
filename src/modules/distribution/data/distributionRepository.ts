@@ -463,6 +463,8 @@ export function subscribeClosures(
   onError?: (error: Error) => void,
   distributorUid?: string,
 ) {
+  // Se conserva el historial completo porque Cierre y el panel de diferencias
+  // pendientes lo necesitan. Dashboard aplica el rango elegido al resumen.
   void dayKeys
   return subscribeQuery<DistClosure>(
     ctx => distributorUid
@@ -743,6 +745,11 @@ export async function saveClosure(input: SaveClosureInput): Promise<string> {
 /** Reapertura administrativa de una ruta cerrada */
 export async function reopenClosure(closure: DistClosure, _reopenedBy: string): Promise<void> {
   await submitOperation('reopen', { closureId: closure.id }, newOperationId('reopen'))
+}
+
+/** Reconoce o devuelve a pendientes una diferencia histórica de productos. */
+export async function setClosureVarianceReviewed(closureId: string, reviewed: boolean): Promise<void> {
+  await submitOperation('reviewVariance', { closureId, reviewed }, newOperationId('review-variance'))
 }
 
 export function subscribeLots(onData: (rows: DistLot[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistLot>(ctx => collectionRef(ctx, 'distLots'), onData, onError) }

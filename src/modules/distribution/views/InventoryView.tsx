@@ -1,6 +1,6 @@
 import { LotsAndHistory } from './LotsAndHistory'
 import { useMemo, useRef, useState } from 'react'
-import { Download, History, ListTree, PackagePlus, SlidersHorizontal } from 'lucide-react'
+import { Download, FileSpreadsheet, History, ListTree, PackagePlus, SlidersHorizontal } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -13,8 +13,7 @@ import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
-import { exportPdf } from '../data/reportExports'
-import { reportDateTime, reportMovementLabel, reportPersonName, reportUnitLabel } from '../domain/reportLabels'
+import { exportExcel, exportPdf, inventoryHistorySheet } from '../data/reportExports'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
@@ -53,6 +52,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
   const [historyProduct, setHistoryProduct] = useState<DistProduct | null>(null)
   const [isGeneralHistoryOpen, setIsGeneralHistoryOpen] = useState(false)
   const [historyDays, setHistoryDays] = useState<string[]>([toDayKey(new Date())])
+  const [historyExporting, setHistoryExporting] = useState<'pdf' | 'excel' | null>(null)
 
   const { route } = useStockIndex(data.balances, session.routeId)
   const central = new Map(data.products.map(p => [p.id, data.balances.find(b => b.id === warehouseBalanceId(warehouseId, p.id))?.quantity || 0]))
@@ -66,12 +66,6 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     if (location.startsWith('route__')) return data.routes.find(item => item.id === location.slice(7))?.name || 'Ruta registrada'
     return 'Ubicación registrada'
   }
-  const responsibleName = (role: string | undefined, name: string | undefined) => {
-    const visibleName = reportPersonName(name)
-    if (visibleName === 'Usuario de registro anterior') return visibleName
-    const roleName = role === 'admin' ? 'Administración' : role === 'warehouse' ? 'Almacén' : 'Usuario'
-    return `${roleName} · ${visibleName}`
-  }
   const generalMovements = useMemo(() => data.movements
     .filter(movement => historyDays.includes(movement.dayKey || toDayKey(movement.createdAt)))
     .map(movement => {
@@ -83,15 +77,19 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     .filter(row => Math.abs(row.delta) > 0.0001)
     .sort((a, b) => b.movement.createdAt.localeCompare(a.movement.createdAt)), [data.movements, historyDays, warehouseLocation])
 
-  const downloadGeneralHistory = async () => {
+  const generalHistorySheet = inventoryHistorySheet(data, historyDays, warehouseId)
+
+  const downloadGeneralHistory = async (format: 'pdf' | 'excel') => {
+    if (historyExporting) return
+    setHistoryExporting(format)
     try {
-      await exportPdf([{
-        name: 'Historial de inventario',
-        headers: ['Fecha y hora', 'Producto', 'Movimiento', 'Variación', 'Unidad', 'Origen', 'Destino', 'Responsable', 'Observación'],
-        rows: generalMovements.map(({ movement, delta }) => [reportDateTime(movement.createdAt), movement.productName, reportMovementLabel(movement.type), delta, reportUnitLabel(movement.unitType), locationName(movement.fromLocation), locationName(movement.toLocation), responsibleName(movement.responsibleRole, movement.responsibleName), movement.note || '']),
-      }], `${warehouseName} · ${describeRange(historyDays)}`, 'SanJose-historial-inventario.pdf')
+      const description = `${warehouseName} · ${describeRange(historyDays)} · Emitido ${new Date().toLocaleString('es-BO')}`
+      if (format === 'pdf') await exportPdf([generalHistorySheet], description, 'SanJose-historial-inventario.pdf')
+      else await exportExcel([generalHistorySheet], description, 'SanJose-historial-inventario.xlsx')
     } catch (downloadError) {
-      setError((downloadError as Error).message || 'No se pudo generar el PDF.')
+      setError((downloadError as Error).message || 'No se pudo generar el historial de inventario.')
+    } finally {
+      setHistoryExporting(null)
     }
   }
 
@@ -266,7 +264,10 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       <Modal isOpen={isGeneralHistoryOpen} onClose={() => setIsGeneralHistoryOpen(false)} title="Historial general de inventario" subtitle={warehouseName}>
         <div className="grid gap-3">
           <RangePicker dayKeys={historyDays} onChange={setHistoryDays} />
-          <button type="button" disabled={generalMovements.length === 0} onClick={() => void downloadGeneralHistory()} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] px-4 text-xs font-extrabold text-white disabled:opacity-40"><Download size={16} /> Descargar PDF</button>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" disabled={generalMovements.length === 0 || Boolean(historyExporting)} onClick={() => void downloadGeneralHistory('pdf')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] px-3 text-xs font-extrabold text-white disabled:opacity-40"><Download size={15} /> {historyExporting === 'pdf' ? 'Generando…' : 'Descargar PDF'}</button>
+            <button type="button" disabled={generalMovements.length === 0 || Boolean(historyExporting)} onClick={() => void downloadGeneralHistory('excel')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 text-xs font-extrabold text-slate-700 disabled:opacity-40"><FileSpreadsheet size={15} /> {historyExporting === 'excel' ? 'Generando…' : 'Descargar Excel'}</button>
+          </div>
           <p className="text-[11px] font-semibold text-slate-500">{describeRange(historyDays)} · {generalMovements.length} movimientos</p>
           <div className="grid gap-2 md:grid-cols-2">{generalMovements.map(({ movement, delta }) => <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-xs font-extrabold text-slate-900">{movement.productName}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p></div><strong className={`shrink-0 text-sm tabular-nums ${delta > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{delta > 0 ? '+' : ''}{formatQty(delta, movement.unitType)}</strong></div><p className="mt-2 text-[11px] font-bold text-slate-700">{MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'}</p><p className="mt-1 break-words text-[10px] text-slate-500">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}</p><p className="mt-1 break-words text-[10px] text-slate-500">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Usuario'} · {visiblePersonName(movement.responsibleName)}</p>{movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}</article>)}</div>
           {generalMovements.length === 0 && <EmptyBlock title="Sin movimientos en este periodo" description="Prueba otro rango de fechas." />}

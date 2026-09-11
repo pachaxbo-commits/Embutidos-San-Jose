@@ -9,6 +9,8 @@ import {
   computeSoldPackages,
   round2,
 } from '../domain/engine'
+import { closuresInPeriod, pendingDifferenceClosures as findPendingDifferenceClosures } from '../domain/closurePeriod'
+import { setClosureVarianceReviewed } from '../data/distributionRepository'
 import { KpiCard, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
@@ -20,6 +22,8 @@ import type { DistributionViewProps } from './DistributionApp'
  */
 export function DashboardView({ session, data }: DistributionViewProps) {
   const [routeFilter, setRouteFilter] = useState('')
+  const [reviewingClosureId, setReviewingClosureId] = useState('')
+  const [reviewError, setReviewError] = useState<string | null>(null)
   const isWarehouse = session.role === 'warehouse'
   const assignedWarehouse = session.warehouseId || 'central'
   const visibleOpenDispatches = useMemo(
@@ -33,6 +37,14 @@ export function DashboardView({ session, data }: DistributionViewProps) {
       ? data.closures.filter(closure => (closure.warehouseId || 'central') === assignedWarehouse)
       : data.closures,
     [data.closures, isWarehouse, assignedWarehouse],
+  )
+  const periodClosures = useMemo(
+    () => closuresInPeriod(visibleClosures, session.dayKeys),
+    [visibleClosures, session.dayKeys],
+  )
+  const pendingDifferenceClosures = useMemo(
+    () => findPendingDifferenceClosures(visibleClosures, routeFilter),
+    [visibleClosures, routeFilter],
   )
 
   const sales = useMemo(
@@ -59,15 +71,15 @@ export function DashboardView({ session, data }: DistributionViewProps) {
 
   const pendingVariances = useMemo(
     () =>
-      visibleClosures.reduce(
+      periodClosures.reduce(
         (count, closure) => count + closure.products.filter((row) => Math.abs(row.variance) > 0.001).length,
         0,
       ),
-    [visibleClosures],
+    [periodClosures],
   )
 
   const openRoutes = visibleOpenDispatches.length
-  const closedRoutes = visibleClosures.filter((closure) => closure.status === 'closed').length
+  const closedRoutes = periodClosures.filter((closure) => closure.status === 'closed').length
 
   /** Una fila por distribuidor con lo que la duena revisa cada dia */
   const byDistributor = useMemo(() => {
@@ -123,7 +135,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
       if (entry) entry.collected = round2(entry.collected + collection.amount)
     }
 
-    for (const closure of visibleClosures) {
+    for (const closure of periodClosures) {
       const entry = map.get(closure.routeId)
       if (entry && closure.status === 'closed') {
         entry.isOpen = false
@@ -133,7 +145,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
     }
 
     return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
-  }, [visibleOpenDispatches, visibleClosures, sales, collections])
+  }, [visibleOpenDispatches, periodClosures, sales, collections])
 
   /**
    * Conciliacion consolidada del periodo.
@@ -179,7 +191,7 @@ export function DashboardView({ session, data }: DistributionViewProps) {
 
     const closedDispatchIds = new Set<string>()
 
-    for (const closure of visibleClosures) {
+    for (const closure of periodClosures) {
       if (routeFilter && closure.routeId !== routeFilter) continue
       closedDispatchIds.add(closure.dispatchId)
       const isReconciled = closure.status !== 'draft'
@@ -229,7 +241,20 @@ export function DashboardView({ session, data }: DistributionViewProps) {
     }
 
     return [...merged.entries()].map(([productId, totals]) => ({ productId, ...totals }))
-  }, [visibleClosures, visibleOpenDispatches, sales, routeFilter])
+  }, [periodClosures, visibleOpenDispatches, sales, routeFilter])
+
+  const markDifferenceReviewed = async (closureId: string) => {
+    if (reviewingClosureId) return
+    setReviewError(null)
+    setReviewingClosureId(closureId)
+    try {
+      await setClosureVarianceReviewed(closureId, true)
+    } catch (error) {
+      setReviewError((error as Error).message || 'No se pudo marcar la diferencia como revisada.')
+    } finally {
+      setReviewingClosureId('')
+    }
+  }
 
   // Se muestra la fecha real consultada: si el dispositivo tiene mal la fecha o
   // la zona horaria, el "hoy" del telefono no coincide con el de las ventas y
@@ -294,10 +319,50 @@ export function DashboardView({ session, data }: DistributionViewProps) {
           <KpiCard label="Cobrado" value={formatBs(money.collectionsTotal)} tone="positive" />
           <KpiCard label="Cartera pendiente" value={formatBs(outstandingPortfolio)} tone="warning" />
           <KpiCard label="Gastos" value={formatBs(money.cashExpenses)} tone="danger" />
-          <KpiCard label="Diferencias de producto" value={String(pendingVariances)} tone={pendingVariances > 0 ? 'danger' : 'positive'} />
+          <KpiCard label="Diferencias del periodo" value={String(pendingVariances)} tone={pendingVariances > 0 ? 'danger' : 'positive'} />
           <KpiCard label="Rutas abiertas" value={String(openRoutes)} />
           <KpiCard label="Rutas cerradas" value={String(closedRoutes)} />
         </div>
+
+        <SectionCard title={`Diferencias pendientes anteriores (${pendingDifferenceClosures.length})`}>
+          {reviewError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-xs font-semibold text-rose-700">{reviewError}</p>}
+          {pendingDifferenceClosures.length === 0 ? (
+            <p className="text-xs font-semibold text-slate-500">No hay diferencias históricas pendientes de revisión.</p>
+          ) : (
+            <div className="grid gap-2 md:grid-cols-2">
+              {pendingDifferenceClosures.map(closure => {
+                const differences = closure.products.filter(row => Math.abs(Number(row.variance) || 0) > 0.001)
+                const date = closure.warehouseClosedAt || closure.closedAt || closure.createdAt
+                return (
+                  <article key={closure.id} className="min-w-0 rounded-2xl border border-amber-200 bg-amber-50/40 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="break-words text-sm font-extrabold text-slate-900">{closure.routeName || 'Ruta registrada'} · {closure.distributorName || 'Distribuidor'}</p>
+                        <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Conciliado: {new Date(date).toLocaleString('es-BO')}</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={Boolean(reviewingClosureId)}
+                        onClick={() => void markDifferenceReviewed(closure.id)}
+                        className="min-h-9 shrink-0 rounded-xl border border-emerald-200 bg-white px-3 text-xs font-extrabold text-emerald-700 disabled:opacity-50"
+                      >
+                        {reviewingClosureId === closure.id ? 'Guardando…' : 'Marcar revisada'}
+                      </button>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {differences.map(row => (
+                        <span key={row.productId} className="inline-flex max-w-full items-center gap-1 rounded-xl bg-white px-2 py-1 text-[10px] font-bold text-slate-700">
+                          <span className="min-w-0 break-words">{row.productName}</span>
+                          <VarianceBadge variance={row.variance} unitType={row.unitType} />
+                        </span>
+                      ))}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          )}
+        </SectionCard>
 
         <SectionCard title="Distribuidores">
           {byDistributor.length === 0 ? (

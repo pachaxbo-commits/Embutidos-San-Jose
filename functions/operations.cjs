@@ -1150,6 +1150,28 @@ handlers.reopen = async (o, p) => {
   return { id: c.id };
 };
 
+handlers.reviewVariance = async (o, p) => {
+  o.admin();
+  const c = await o.read("distClosures", p.closureId);
+  check(c, "No existe el cierre indicado.");
+  check(
+    ["warehouse_done", "closed"].includes(c.status),
+    "La conciliación todavía no está finalizada.",
+  );
+  check(
+    Array.isArray(c.products) &&
+      c.products.some((row) => Math.abs(Number(row.variance) || 0) > 0.001),
+    "Este cierre no tiene diferencias de producto.",
+  );
+  check(typeof p.reviewed === "boolean", "Estado de revisión inválido.");
+  o.put("distClosures", c.id, {
+    ...c,
+    varianceReviewedBy: p.reviewed ? o.actor : "",
+    varianceReviewedAt: p.reviewed ? o.now : "",
+  });
+  return { id: c.id, reviewed: p.reviewed };
+};
+
 handlers.creditStatus = async (o, p) => {
   check(["admin", "distributor"].includes(o.member.role), "Sin permiso.");
   const c = await o.read("distCustomers", p.customerId);

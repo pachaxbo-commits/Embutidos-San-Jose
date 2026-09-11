@@ -4,7 +4,7 @@ import { Field, NumberInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { buildReconciliation, computeMoneySummary, round2, toDayKey } from '../domain/engine'
-import { declareRouteReturn, reopenClosure, saveClosure, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
+import { declareRouteReturn, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
@@ -36,6 +36,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isDispatchOpen, setIsDispatchOpen] = useState(false)
   const [historyOpenId, setHistoryOpenId] = useState<string | null>(null)
+  const [reviewingClosureId, setReviewingClosureId] = useState('')
 
   const dispatch = availableDispatches.find(item => item.id === selectedDispatchId) ?? availableDispatches[0] ?? null
 
@@ -185,6 +186,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       {historicalClosures.length === 0 ? <p className="text-xs font-semibold text-slate-500">Todavía no hay cierres registrados.</p> : <div className="grid gap-2">
         {historicalClosures.map(closure => {
           const expanded = historyOpenId === closure.id
+          const hasProductDifference = closure.products.some(row => Math.abs(Number(row.variance) || 0) > 0.001)
           return <article key={closure.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
             <button type="button" onClick={() => setHistoryOpenId(expanded ? null : closure.id)} className="flex min-h-[62px] w-full items-center gap-3 p-3 text-left" aria-expanded={expanded}>
               <span className="min-w-0 flex-1"><strong className="block break-words text-sm text-slate-900">{closure.routeName || 'Ruta registrada'} · {closure.distributorName || 'Distribuidor'}</strong><span className="mt-0.5 block text-[11px] font-semibold text-slate-500">{new Date(closure.closedAt || closure.warehouseClosedAt || closure.createdAt).toLocaleString('es-BO')}</span><span className="mt-1 block text-[10px] font-extrabold text-[var(--primary)]">{CLOSURE_STATUS[closure.status] || 'Estado pendiente'}</span></span>
@@ -193,6 +195,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             {expanded && <div className="grid gap-3 border-t border-slate-100 p-3">
               <div className="grid gap-2 md:grid-cols-2">{closure.products.length === 0 ? <p className="text-xs text-slate-500">Almacén todavía no confirmó las cantidades.</p> : closure.products.map(row => <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Entregado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía volver</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Devuelto</dt><dd className="text-xs font-black">{formatQty(row.actualReturn, row.unitType)}</dd></div></dl></div>)}</div>
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared)} /></div>}
+              {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
               {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => void reopenClosure(closure, session.uid).catch(e => setError(e.message))}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
             </div>}
           </article>

@@ -16,7 +16,8 @@ import {
   validateSalePayment,
   validateStockAvailability,
 } from '../engine.ts'
-import type { DistCollection, DistDispatch, DistExpense, DistSale } from '../../types.ts'
+import { closuresInPeriod, pendingDifferenceClosures } from '../closurePeriod.ts'
+import type { DistClosure, DistCollection, DistDispatch, DistExpense, DistSale } from '../../types.ts'
 
 /**
  * Suite de pruebas del motor de distribucion.
@@ -289,6 +290,28 @@ export async function runDistributionEngineTestSuite(): Promise<{ passed: number
   )
   assert(twoSellers.length === 2, 'dos vendedores se listan por separado')
   assert(twoSellers[0].salesTotal >= twoSellers[1].salesTotal, 'el resumen ordena por venta descendente')
+
+  // --- Periodo y diferencias históricas de conciliación ---
+  const closureBase: DistClosure = {
+    ...BASE,
+    id: 'closure-old',
+    createdAt: '2026-08-13T18:00:00.000Z',
+    dayKey: '2026-08-13',
+    dispatchId: 'dispatch-old',
+    routeId: 'route-norte',
+    routeName: 'Zona Norte',
+    distributorUid: 'hugo',
+    distributorName: 'Hugo Herbas',
+    status: 'closed',
+    products: [{ productId: 'p-viena', productName: 'Viena', unitType: 'kg', initialDispatch: 5, additions: 0, totalLoaded: 5, sold: 4, expectedReturn: 1, actualReturn: 0.5, variance: -0.5 }],
+    cashSales: 0, qrSales: 0, creditGenerated: 0, cashCollections: 0,
+    qrCollections: 0, cashExpenses: 0, expectedCash: 0,
+    physicalCashDeclared: 0, cashDifference: 0,
+  }
+  const todayClosure = { ...closureBase, id: 'closure-today', dayKey: '2026-08-14', createdAt: '2026-08-14T18:00:00.000Z' }
+  assert(closuresInPeriod([closureBase, todayClosure], ['2026-08-14']).map(item => item.id).join() === 'closure-today', 'el panel del día excluye cierres anteriores')
+  assert(pendingDifferenceClosures([closureBase, todayClosure]).length === 2, 'las diferencias anteriores siguen visibles como pendientes')
+  assert(pendingDifferenceClosures([{ ...closureBase, varianceReviewedAt: '2026-08-15T08:00:00.000Z' }]).length === 0, 'una diferencia revisada sale de pendientes')
 
   return { passed, failed, results }
 }

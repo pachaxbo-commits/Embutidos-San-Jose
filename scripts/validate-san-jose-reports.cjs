@@ -33,6 +33,7 @@ const RAW_ENUMS = new Set([
         expenses: 'distExpenses', claims: 'distClaims', movements: 'distStockMovements',
         closures: 'distClosures', lots: 'distLots', transfers: 'distTransfers',
         warehouses: 'distWarehouses', routes: 'distRoutes', customers: 'distCustomers',
+        products: 'distProducts', balances: 'distBalances',
       }
       for (const [key, collectionName] of Object.entries(collections)) {
         const snapshot = await sdk.getDocs(sdk.collection(ctx.db, 'restaurants', 'sanjose', collectionName))
@@ -49,10 +50,12 @@ const RAW_ENUMS = new Set([
       const module = await import('/src/modules/distribution/data/reportExports.ts')
       window.qaData = data
       window.qaSheets = module.reportSheets(data, [...dates])
+      window.qaWarehouseSheets = module.warehouseReportSheets(data, [...dates])
+      window.qaInventorySheets = [module.inventoryHistorySheet(data, [...dates], 'central')]
 
       const problems = []
       const raw = new Set(rawEnums.map(value => value.toLowerCase()))
-      for (const sheet of window.qaSheets) {
+      for (const sheet of [...window.qaSheets, ...window.qaWarehouseSheets, ...window.qaInventorySheets]) {
         for (const row of sheet.rows) {
           if (row.length !== sheet.headers.length) problems.push(`${sheet.name}: columnas desalineadas`)
           for (const value of row) {
@@ -63,7 +66,13 @@ const RAW_ENUMS = new Set([
           }
         }
       }
-      return { sheets: window.qaSheets.length, dates: [...dates], problems }
+      return {
+        sheets: window.qaSheets.length,
+        warehouseSheets: window.qaWarehouseSheets.length,
+        inventorySheets: window.qaInventorySheets.length,
+        dates: [...dates],
+        problems,
+      }
     }, [...RAW_ENUMS])
 
     if (audit.problems.length) throw new Error(audit.problems.join('\n'))
@@ -77,6 +86,17 @@ const RAW_ENUMS = new Set([
       await (await pendingDownload).saveAs(path.join(OUTPUT, filename))
     }
 
+    for (const [sheetsKey, filenameBase] of [['qaWarehouseSheets', 'almacenes'], ['qaInventorySheets', 'historial-inventario']]) {
+      for (const [fn, extension] of [['exportExcel', 'xlsx'], ['exportPdf', 'pdf']]) {
+        const pendingDownload = page.waitForEvent('download')
+        await page.evaluate(async ({ fn, sheetsKey, filenameBase, extension, dates }) => {
+          const module = await import('/src/modules/distribution/data/reportExports.ts')
+          await module[fn](window[sheetsKey], `Verificación San José · ${dates.length} fechas`, `SanJose-${filenameBase}.${extension}`)
+        }, { fn, sheetsKey, filenameBase, extension, dates: audit.dates })
+        await (await pendingDownload).saveAs(path.join(OUTPUT, `${filenameBase}.${extension}`))
+      }
+    }
+
     const pendingStatement = page.waitForEvent('download')
     await page.evaluate(async () => {
       const module = await import('/src/modules/distribution/data/reportExports.ts')
@@ -84,7 +104,7 @@ const RAW_ENUMS = new Set([
     })
     await (await pendingStatement).saveAs(path.join(OUTPUT, 'estado-cuenta.pdf'))
 
-    console.log(`PASS ${audit.sheets} hojas, ${audit.dates.length} fechas, Excel, PDF y estado de cuenta sin valores internos`)
+    console.log(`PASS ${audit.sheets + audit.warehouseSheets + audit.inventorySheets} hojas, ${audit.dates.length} fechas, archivos generales, almacenes, historial y estado de cuenta sin valores internos`)
   } finally {
     await browser.close()
   }

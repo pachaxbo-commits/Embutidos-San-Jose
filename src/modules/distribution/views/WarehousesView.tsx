@@ -1,12 +1,15 @@
 import { useMemo, useRef, useState } from 'react'
-import { ArrowRight, Boxes, ChevronDown, ChevronRight, History, Plus } from 'lucide-react'
+import { ArrowRight, Boxes, ChevronDown, ChevronRight, Download, FileSpreadsheet, History, Plus } from 'lucide-react'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Field, NumberInput, TextInput } from '../../../components/ui/Form'
 import { Modal } from '../../../components/ui/Modal'
 import { Screen } from '../../../components/ui/Screen'
 import { createWarehouse, newOperationId, transferWarehouseStock, warehouseBalanceId } from '../data/distributionRepository'
+import { exportExcel, exportPdf, warehouseReportSheets } from '../data/reportExports'
+import { toDayKey } from '../domain/engine'
 import { PrimaryButton, SecondaryButton, formatQty } from './shared'
 import { visiblePersonName, visibleRecordText } from './displayText'
+import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 
 export function WarehousesView({ session, data }: DistributionViewProps) {
@@ -24,11 +27,29 @@ export function WarehousesView({ session, data }: DistributionViewProps) {
   const [choice, setChoice] = useState<'from' | 'to' | 'product' | null>(null)
   const [openWarehouse, setOpenWarehouse] = useState<string | null>(null)
   const [transfersOpen, setTransfersOpen] = useState(false)
+  const [exportDays, setExportDays] = useState<string[]>([toDayKey(new Date())])
+  const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null)
   const operation = useRef<string | null>(null)
   const isAdmin = session.can('dist.users.manage')
   const selected = data.products.find(product => product.id === productId)
   const available = selected ? data.balances.find(balance => balance.id === warehouseBalanceId(from, selected.id))?.availableQuantity || 0 : 0
   const availableProducts = data.products.filter(product => product.active && (data.balances.find(balance => balance.id === warehouseBalanceId(from, product.id))?.availableQuantity || 0) > 0)
+  const warehouseSheets = useMemo(() => warehouseReportSheets(data, exportDays), [data, exportDays])
+
+  const downloadWarehouseReport = async (format: 'pdf' | 'excel') => {
+    if (exporting) return
+    setExporting(format)
+    setFeedback('')
+    const description = `Existencias actuales · Transferencias: ${describeRange(exportDays)} · Emitido ${new Date().toLocaleString('es-BO')}`
+    try {
+      if (format === 'pdf') await exportPdf(warehouseSheets, description, 'SanJose-almacenes.pdf')
+      else await exportExcel(warehouseSheets, description, 'SanJose-almacenes.xlsx')
+    } catch (error) {
+      setFeedback((error as Error).message || 'No se pudo generar el archivo de almacenes.')
+    } finally {
+      setExporting(null)
+    }
+  }
 
   const resetTransfer = () => {
     setTo('')
@@ -63,6 +84,18 @@ export function WarehousesView({ session, data }: DistributionViewProps) {
         <PrimaryButton full onClick={() => { resetTransfer(); setIsTransferOpen(true) }}><ArrowRight size={16} /> Transferir</PrimaryButton>
         {isAdmin && <SecondaryButton full onClick={() => { setName(''); setFeedback(''); setIsCreateOpen(true) }}><Plus size={16} /> Nuevo almacén</SecondaryButton>}
       </div>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-3 sm:p-4">
+        <div className="mb-3">
+          <h2 className="text-xs font-extrabold uppercase tracking-wide text-slate-500">Descargar existencias y transferencias</h2>
+          <p className="mt-1 text-[11px] font-semibold text-slate-500">Las existencias reflejan el stock actual. El período se aplica a las transferencias.</p>
+        </div>
+        <RangePicker dayKeys={exportDays} onChange={setExportDays} />
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <button type="button" disabled={Boolean(exporting)} onClick={() => void downloadWarehouseReport('pdf')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] px-3 text-xs font-extrabold text-white disabled:opacity-50"><Download size={15} /> {exporting === 'pdf' ? 'Generando…' : 'Descargar PDF'}</button>
+          <button type="button" disabled={Boolean(exporting)} onClick={() => void downloadWarehouseReport('excel')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 text-xs font-extrabold text-slate-700 disabled:opacity-50"><FileSpreadsheet size={15} /> {exporting === 'excel' ? 'Generando…' : 'Descargar Excel'}</button>
+        </div>
+      </section>
 
       <div className="grid gap-3 md:grid-cols-1 lg:grid-cols-2">
         {warehouses.map(warehouse => {

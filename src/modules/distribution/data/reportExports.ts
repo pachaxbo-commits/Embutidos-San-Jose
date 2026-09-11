@@ -20,6 +20,152 @@ export interface ReportSheet {
   headers: string[];
   rows: Cell[][];
 }
+
+/** Historial del almacén elegido con la variación que ese movimiento produjo allí. */
+export function inventoryHistorySheet(
+  data: DistributionData,
+  days: string[],
+  warehouseId = "central",
+): ReportSheet {
+  const location = warehouseId === "central" ? "central" : `warehouse__${warehouseId}`;
+  const warehouseName = (id?: string) => {
+    if (!id || id === "central") return "Almacén central";
+    return reportRecordName(data.warehouses.find(item => item.id === id)?.name, "Almacén interno");
+  };
+  const locationName = (value?: string) => {
+    if (!value) return "Salida de inventario";
+    if (value === "central") return "Almacén central";
+    if (value.startsWith("warehouse__")) return warehouseName(value.slice(11));
+    if (value.startsWith("route__")) {
+      return reportRecordName(data.routes.find(item => item.id === value.slice(7))?.name, "Ruta registrada");
+    }
+    return "Ubicación registrada";
+  };
+  const rows = data.movements
+    .filter(movement => days.includes(movement.dayKey || toDayKey(movement.createdAt)))
+    .map(movement => {
+      const from = movement.fromLocation || "";
+      const to = movement.toLocation || "";
+      const delta = to === location
+        ? movement.quantity
+        : from === location
+          ? -movement.quantity
+          : location === "central"
+            ? movement.centralDelta
+            : 0;
+      const visibleName = reportPersonName(movement.responsibleName || movement.createdBy);
+      const role = movement.responsibleRole === "admin"
+        ? "Administración"
+        : movement.responsibleRole === "warehouse"
+          ? "Almacén"
+          : "Usuario";
+      return { movement, delta, responsible: visibleName === "Usuario de registro anterior" ? visibleName : `${role} · ${visibleName}` };
+    })
+    .filter(item => Math.abs(item.delta) > 0.0001)
+    .sort((a, b) => b.movement.createdAt.localeCompare(a.movement.createdAt));
+
+  return {
+    name: "Historial de inventario",
+    headers: ["Fecha y hora", "Producto", "Movimiento", "Variación", "Unidad", "Origen", "Destino", "Responsable", "Observación"],
+    rows: rows.map(({ movement, delta, responsible }) => [
+      reportDateTime(movement.createdAt),
+      reportRecordName(movement.productName, "Producto de registro anterior"),
+      reportMovementLabel(movement.type),
+      round2(delta),
+      reportUnitLabel(movement.unitType),
+      locationName(movement.fromLocation),
+      locationName(movement.toLocation),
+      responsible,
+      movement.note || "",
+    ]),
+  };
+}
+
+/** Existencias actuales y transferencias del periodo, sin identificadores internos. */
+export function warehouseReportSheets(data: DistributionData, days: string[]): ReportSheet[] {
+  const warehouses = [
+    { id: "central", name: "Almacén central" },
+    ...data.warehouses
+      .filter(warehouse => warehouse.active)
+      .map(warehouse => ({ id: warehouse.id, name: reportRecordName(warehouse.name, "Almacén registrado") })),
+  ];
+  const warehouseName = (id?: string) =>
+    warehouses.find(warehouse => warehouse.id === (id || "central"))?.name || "Almacén registrado";
+  const productName = (id: string, fallback?: string) =>
+    reportRecordName(data.products.find(product => product.id === id)?.name || fallback, "Producto de registro anterior");
+  const products = data.products.filter(product => product.active !== false);
+
+  const sheets: ReportSheet[] = [
+    {
+      name: "Existencias por almacén",
+      headers: ["Almacén", "Producto", "Existencia física", "Disponible", "No disponible", "Unidad", "Estado"],
+      rows: warehouses.flatMap(warehouse => products.map(product => {
+        const balance = data.balances.find(item =>
+          item.locationKind === "central" &&
+          (item.warehouseId || "central") === warehouse.id &&
+          item.productId === product.id,
+        );
+        const physical = round2(Number(balance?.quantity) || 0);
+        const available = round2(Number(balance?.availableQuantity ?? balance?.quantity) || 0);
+        return [
+          warehouse.name,
+          reportRecordName(product.name, "Producto registrado"),
+          physical,
+          available,
+          round2(Math.max(0, physical - available)),
+          reportUnitLabel(product.unitType),
+          available > 0 ? "Con existencia" : "Sin existencia",
+        ];
+      })),
+    },
+    {
+      name: "Lotes por almacén",
+      headers: ["Almacén", "Producto", "Lote", "Elaboración", "Vencimiento", "Cantidad", "Unidad", "Estado"],
+      rows: data.lots.flatMap(lot => warehouses.flatMap(warehouse => {
+        const location = warehouse.id === "central" ? "central" : `warehouse__${warehouse.id}`;
+        const quantity = round2(Number(lot.quantities?.[location]) || 0);
+        if (quantity <= 0) return [];
+        const expired = Boolean(lot.expiresOn && lot.expiresOn < toDayKey(new Date()));
+        return [[
+          warehouse.name,
+          productName(lot.productId, lot.productName),
+          reportRecordName(lot.lotCode, "Lote registrado"),
+          reportDate(lot.manufacturedOn),
+          reportDate(lot.expiresOn),
+          quantity,
+          reportUnitLabel(lot.unitType),
+          lot.quarantined ? "Separado para revisión" : expired ? "Vencido" : "Disponible",
+        ] as Cell[]];
+      })),
+    },
+    {
+      name: "Transferencias",
+      headers: ["Fecha y hora", "Origen", "Destino", "Producto", "Cantidad", "Unidad", "Responsable", "Observación"],
+      rows: data.transfers
+        .filter(transfer => days.includes(toDayKey(transfer.createdAt)))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map(transfer => [
+          reportDateTime(transfer.createdAt),
+          warehouseName(transfer.fromWarehouseId),
+          warehouseName(transfer.toWarehouseId),
+          productName(transfer.line.productId, transfer.line.productName),
+          transfer.line.quantity,
+          reportUnitLabel(transfer.line.unitType),
+          reportPersonName(transfer.responsibleName || transfer.createdBy),
+          transfer.note || "",
+        ]),
+    },
+  ];
+  return sheets.map(sheet => sheet.rows.length > 0 ? sheet : {
+    ...sheet,
+    rows: [[
+      sheet.name === "Transferencias"
+        ? "No hay transferencias en el período seleccionado."
+        : "No hay lotes con existencia.",
+      ...Array.from({ length: sheet.headers.length - 1 }, () => ""),
+    ]],
+  });
+}
 export function reportSheets(
   data: DistributionData,
   days: string[],
@@ -367,7 +513,7 @@ export function reportSheets(
     },
   ];
 }
-export async function exportExcel(sheets: ReportSheet[], description: string) {
+export async function exportExcel(sheets: ReportSheet[], description: string, filename = "SanJose-reportes.xlsx") {
   const { Workbook } = await import("exceljs");
   const book = new Workbook();
   book.creator = "Embutidos San José";
@@ -415,7 +561,7 @@ export async function exportExcel(sheets: ReportSheet[], description: string) {
   const buffer = await book.xlsx.writeBuffer();
   await saveReport(
     new Uint8Array(buffer),
-    "SanJose-reportes.xlsx",
+    filename,
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   );
 }
@@ -441,9 +587,6 @@ export async function exportPdf(
   };
   sheets.forEach((s, i) => {
     if (i) pdf.addPage();
-    header();
-    pdf.setFontSize(11);
-    pdf.text(s.name, 14, 35);
     autoTable(pdf, {
       head: [s.headers],
       body: s.rows.map((r) =>
@@ -461,6 +604,10 @@ export async function exportPdf(
       headStyles: { fillColor: [31, 41, 55] },
       didDrawPage: () => {
         header();
+        pdf.setTextColor(30, 40, 50);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(11);
+        pdf.text(s.name, 14, 35);
         pdf.setFontSize(8);
         pdf.text(`Página ${pdf.getNumberOfPages()}`, 270, 200);
       },

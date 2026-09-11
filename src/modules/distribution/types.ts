@@ -289,6 +289,9 @@ export interface DistClosure extends DistBaseDoc {
   closedAt?: string
   reopenedBy?: string
   reopenedAt?: string
+  /** La revisión reconoce la diferencia sin modificar el cierre ni el stock. */
+  varianceReviewedBy?: string
+  varianceReviewedAt?: string
   note?: string
 }
 

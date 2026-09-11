@@ -71,12 +71,18 @@ try {
  await command(admin,'claim',{kind:'return',saleId:sold.id,productId:pid,quantity:1,warehouseId:'central',reason:'Deteriorado',method:'cash'})
  ok((await read('distReceivables',sold.id)).balance===3,'devolución reduce el saldo restante')
  await command(admin,'claim',{kind:'return',saleId:sold.id,productId:pid,quantity:1,warehouseId:'central',reason:'Repetido',method:'cash'},'rejected');checks++
- const closeInput={closure:{dispatchId:dispatch.id,products:[{productId:pid,actualReturn:1}],physicalCashDeclared:5},mode:'warehouse'}
+ const closeInput={closure:{dispatchId:dispatch.id,products:[{productId:pid,actualReturn:0}],physicalCashDeclared:5},mode:'warehouse'}
  await command(warehouse,'closure',closeInput)
- ok((await read('distBalances',`warehouse__${wh}__${pid}`)).quantity===2,'retorno vuelve al almacén de origen y conserva lote')
+ ok((await read('distBalances',`warehouse__${wh}__${pid}`)).quantity===1,'conciliación registra el faltante sin devolver stock inexistente')
  const closed=await command(seller,'closure',{...closeInput,mode:'money'})
  ok(closed.result.expectedCash===5&&closed.result.cashDifference===0,'cierre calcula efectivo en servidor')
- const client=env.authenticatedContext(seller).firestore()
+ const sellerClient=env.authenticatedContext(seller).firestore()
+ await assertFails(setDoc(doc(sellerClient,'restaurants','sanjose','distOperations',`${prefix}-forbidden-review`),{id:`${prefix}-forbidden-review`,restaurantId:'sanjose',createdBy:seller,createdAt:new Date().toISOString(),type:'reviewVariance',payload:{closureId:`closure_${dispatch.id}`,reviewed:true},status:'queued'}));checks++
+ await command(admin,'reviewVariance',{closureId:`closure_${dispatch.id}`,reviewed:true})
+ ok(Boolean((await read('distClosures',`closure_${dispatch.id}`)).varianceReviewedAt),'Administración marca una diferencia histórica como revisada')
+ await command(admin,'reviewVariance',{closureId:`closure_${dispatch.id}`,reviewed:false})
+ ok(!(await read('distClosures',`closure_${dispatch.id}`)).varianceReviewedAt,'Administración puede devolver la diferencia a pendientes')
+ const client=sellerClient
  const adminClient=env.authenticatedContext(admin).firestore()
  await assertFails(setDoc(doc(client,'restaurants','sanjose','distSales',`${prefix}-forged`),{restaurantId:'sanjose',routeId:route}));checks++
  await assertFails(setDoc(doc(client,'restaurants','sanjose','distBalances',`route__${route}__${pid}`),{quantity:999},{merge:true}));checks++
