@@ -19,7 +19,6 @@ import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'fire
 import {
   collection,
   connectFirestoreEmulator,
-  deleteDoc,
   disableNetwork,
   enableNetwork,
   doc,
@@ -435,11 +434,21 @@ export async function createRestaurantMember(input: {
   }
 }
 
-export async function updateRestaurantMember(uid: string, updates: Partial<Pick<RestaurantMember, 'role' | 'active' | 'displayName' | 'routeId' | 'warehouseId'>>) {
+async function callMemberAdministration<TResult>(payload: Record<string, unknown>): Promise<TResult> {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
+  const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
+  const functions = getFunctions(context.app, 'us-central1')
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !functionsEmulatorConnected) {
+    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+    functionsEmulatorConnected = true
+  }
+  const call = httpsCallable<Record<string, unknown>, TResult>(functions, 'changeSanJoseMemberPassword')
+  return (await call(payload)).data
+}
 
-  await updateDoc(doc(context.db, 'restaurants', context.restaurantId, 'members', uid), updates)
+export async function updateRestaurantMember(uid: string, updates: Partial<Pick<RestaurantMember, 'role' | 'active' | 'displayName' | 'email' | 'routeId' | 'warehouseId'>>) {
+  await callMemberAdministration<{ changed: boolean }>({ action: 'updateMember', uid, ...updates })
 }
 
 export async function sendRestaurantMemberPasswordReset(email: string) {
@@ -450,23 +459,11 @@ export async function sendRestaurantMemberPasswordReset(email: string) {
 }
 
 export async function changeRestaurantMemberPassword(uid: string, password: string) {
-  const context = await getFirebaseContext()
-  if (!context) throw new Error('Firebase no esta configurado.')
-  const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
-  const functions = getFunctions(context.app, 'us-central1')
-  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !functionsEmulatorConnected) {
-    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
-    functionsEmulatorConnected = true
-  }
-  const call = httpsCallable<{ uid: string; password: string }, { changed: boolean }>(functions, 'changeSanJoseMemberPassword')
-  await call({ uid, password })
+  await callMemberAdministration<{ changed: boolean }>({ action: 'changePassword', uid, password })
 }
 
 export async function deleteRestaurantMemberAccess(uid: string) {
-  const context = await getFirebaseContext()
-  if (!context) throw new Error('Firebase no esta configurado.')
-
-  await deleteDoc(doc(context.db, 'restaurants', context.restaurantId, 'members', uid))
+  await callMemberAdministration<{ deleted: boolean }>({ action: 'deleteMember', uid })
 }
 
 export async function uploadProductImageToFirebase(file: File, restaurantId: string): Promise<string> {

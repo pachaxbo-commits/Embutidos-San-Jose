@@ -320,7 +320,10 @@ service cloud.firestore {
         && request.resource.data.uid == uid
         && request.resource.data.role in ['admin', 'owner'];
 
-      allow create, update: if hasRole(restaurantId, ['admin'])
+      // Los administradores crean el perfil inicial. Las modificaciones y bajas
+      // pasan por la función del servidor para mantener Firebase Auth, el mapa
+      // del usuario y la regla de al menos un administrador activo coordinados.
+      allow create: if hasRole(restaurantId, ['admin'])
         && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'routeId', 'warehouseId', 'passwordChangedAt', 'passwordChangedBy'])
         && request.resource.data.uid == uid
         && request.resource.data.email is string
@@ -329,7 +332,7 @@ service cloud.firestore {
         && request.resource.data.active is bool
         && (!('routeId' in request.resource.data) || request.resource.data.routeId is string)
         && (!('warehouseId' in request.resource.data) || request.resource.data.warehouseId is string);
-      allow delete: if hasRole(restaurantId, ['admin']) && request.auth.uid != uid;
+      allow update, delete: if false;
     }
 
     match /restaurants/{restaurantId}/branches/{branchId} {

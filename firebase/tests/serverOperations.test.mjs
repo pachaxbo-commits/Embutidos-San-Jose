@@ -114,10 +114,28 @@ try {
  await assertFails(setDoc(doc(client,'restaurants','sanjose','distCustomers',customerId),{photoDataUrl:'x'.repeat(130001)},{merge:true}));checks++
  const signIn=async(email,password)=>{const response=await fetch('http://127.0.0.1:9095/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password,returnSecureToken:true})});return {response,data:await response.json()}}
  const adminSignIn=await signIn(`${prefix}-admin@example.test`,'Inicial123')
- const passwordCall=await fetch('http://127.0.0.1:5001/demo-pachax-audit/us-central1/changeSanJoseMemberPassword',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${adminSignIn.data.idToken}`},body:JSON.stringify({data:{uid:passwordTarget,password:'NuevaClave123'}})})
+ const memberCall=async payload=>{const response=await fetch('http://127.0.0.1:5001/demo-pachax-audit/us-central1/changeSanJoseMemberPassword',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${adminSignIn.data.idToken}`},body:JSON.stringify({data:payload})});return {response,data:await response.json()}}
+ const passwordCall=(await memberCall({action:'changePassword',uid:passwordTarget,password:'NuevaClave123'})).response
  ok(passwordCall.ok,'Administración puede cambiar directamente la contraseña de otro usuario')
  const targetSignIn=await signIn(`${prefix}-target@example.test`,'NuevaClave123')
  ok(targetSignIn.response.ok,'la nueva contraseña permite iniciar sesión')
+ const changedEmail=`${prefix}-target-edited@example.test`
+ const edited=await memberCall({action:'updateMember',uid:passwordTarget,displayName:'Responsable editado',email:changedEmail,role:'distributor',active:true,routeId:route})
+ const editedMember=await read('members',passwordTarget),editedMap=(await db.collection('users').doc(passwordTarget).get()).data(),editedAuth=await adminAuth.getUser(passwordTarget)
+ ok(edited.response.ok&&editedMember.displayName==='Responsable editado'&&editedMember.email===changedEmail&&editedMap.email===changedEmail&&editedAuth.email===changedEmail,'edición coordina nombre y correo en acceso y perfil')
+ ok((await signIn(changedEmail,'NuevaClave123')).response.ok,'el correo nuevo permite iniciar sesión')
+ await assertFails(setDoc(doc(adminClient,'restaurants','sanjose','members',passwordTarget),{displayName:'Cambio directo prohibido'},{merge:true}));checks++
+ const lastAdmin=await memberCall({action:'updateMember',uid:admin,active:false})
+ ok(!lastAdmin.response.ok&&!(await adminAuth.getUser(admin)).disabled&&(await read('members',admin)).active===true,'no se puede desactivar la última cuenta administrativa')
+ const removable=`${prefix}-removable`,removableEmail=`${prefix}-removable@example.test`
+ await adminAuth.createUser({uid:removable,email:removableEmail,password:'Eliminar123'})
+ await root.collection('members').doc(removable).set({uid:removable,email:removableEmail,displayName:'Usuario eliminable',role:'warehouse',active:true,warehouseId:wh,routeId:''})
+ await db.collection('users').doc(removable).set({uid:removable,email:removableEmail,displayName:'Usuario eliminable',defaultRestaurantId:'sanjose'})
+ const deletedMember=await memberCall({action:'deleteMember',uid:removable})
+ let deletedFromAuth=false;try{await adminAuth.getUser(removable)}catch(error){deletedFromAuth=error.code==='auth/user-not-found'}
+ ok(deletedMember.response.ok&&deletedFromAuth&&!(await root.collection('members').doc(removable).get()).exists&&!(await db.collection('users').doc(removable).get()).exists,'eliminar retira acceso, perfil y mapa del usuario')
+ const deleteSelf=await memberCall({action:'deleteMember',uid:admin})
+ ok(!deleteSelf.response.ok&&(await root.collection('members').doc(admin).get()).exists,'Administración no puede eliminar su propia cuenta')
 
  const support=`${prefix}-support`
  await adminAuth.createUser({uid:support,email:`${prefix}-support@example.test`,password:'Soporte123'})
