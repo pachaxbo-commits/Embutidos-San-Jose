@@ -144,16 +144,6 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
-    function incomingTransfer(restaurantId) {
-      let id = request.resource.data.get('transferId', '');
-      let transfer = getAfter(/databases/$(database)/documents/restaurants/$(restaurantId)/distTransfers/$(id)).data;
-      return id != '' && !exists(/databases/$(database)/documents/restaurants/$(restaurantId)/distTransfers/$(id))
-        && transfer.createdBy == request.auth.uid
-        && transfer.toWarehouseId == request.resource.data.get('warehouseId', 'central')
-        && transfer.line.productId == request.resource.data.productId
-        && request.resource.data.quantity == (resource == null ? 0 : resource.data.quantity) + transfer.line.quantity;
-    }
-
     match /restaurants/{restaurantId}/distBalances/{balanceId} {
       allow read: if distWorker(restaurantId);
       allow create, update, delete: if false;
@@ -267,10 +257,6 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
-    function closureWarehouse(restaurantId, data) {
-      let dispatch = get(/databases/$(database)/documents/restaurants/$(restaurantId)/distDispatches/$(data.dispatchId)).data;
-      return distWarehouseOwns(restaurantId, dispatch.get('warehouseId', 'central'));
-    }
     match /restaurants/{restaurantId}/distClosures/{closureId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
         || (distDistributor(restaurantId) && resource.data.get('distributorUid', '') == request.auth.uid)
