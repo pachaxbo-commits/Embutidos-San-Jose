@@ -55,7 +55,7 @@ async function openUsers(page) {
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'la pantalla no debe desbordar horizontalmente')
     assert.deepEqual(errors, [])
     const result = { passed: true, checks: 8, at: new Date().toISOString() }
-    fs.writeFileSync(path.resolve('docs/qa-san-jose/user-management-result.json'), JSON.stringify(result, null, 2))
+    fs.writeFileSync(path.resolve('../PACHAX_QA_RESULTS/Embutidos-San-Jose/user-management-result.json'), JSON.stringify(result, null, 2))
     console.log('PASS gestión de usuarios: edición, correo visible, eliminación y protección de Administración')
   } finally {
     await browser.close()

@@ -1,5 +1,5 @@
 {
-  "name": "pachax-comandero",
+  "name": "embutidos-san-jose",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -13,12 +13,12 @@
     "preview": "vite preview",
     "android:open": "cap open android",
     "test:rules": "node firebase/tests/serverOperations.test.mjs",
+    "test:access": "node firebase/tests/exclusiveAccessRules.test.mjs",
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "seed:demo": "node firebase/tests/seedDemoTenant.mjs",
     "rules:load": "node firebase/tests/loadRules.mjs",
-    "inspect:demo": "node firebase/tests/inspectDemo.mjs",
-    "seed:restaurant": "node firebase/tests/seedRestaurantTenant.mjs"
+    "inspect:demo": "node firebase/tests/inspectDemo.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

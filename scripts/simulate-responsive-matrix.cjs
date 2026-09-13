@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
 const base = 'http://127.0.0.1:5180'
-const output = path.resolve('docs/qa-san-jose')
+const output = path.resolve('../PACHAX_QA_RESULTS/Embutidos-San-Jose')
 const roles = {
   admin: { email: 'admin@sanjose.bo', modules: ['Inicio','Vender','Creditos','Gastos','Cierre','Inventario','Despachos','Cobros','Clientes','Productos','Reportes','Usuarios','Cambios y devoluciones','Verificar QR','Almacenes','Impresoras'] },
   warehouse: { email: 'almacen@sanjose.bo', modules: ['Inicio','Cierre','Inventario','Despachos','Almacenes'] },

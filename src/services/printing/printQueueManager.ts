@@ -11,7 +11,6 @@ import type {
 } from '../../types/printing'
 import { IndexedDbPrintJobStorage } from './printJobStorage'
 import { buildReceiptBytes } from './templates/receiptTemplate'
-import { buildKitchenTicketBytes } from './templates/kitchenTicketTemplate'
 import { buildTsplReceiptBytes } from './templates/tsplReceiptTemplate'
 import { resolvePrinterLanguage } from './printerLanguage'
 import { EscPosBuilder } from './escPosFormatter'
@@ -128,8 +127,6 @@ export class PrintQueueManager {
     let bytes: Uint8Array
     if (resolvePrinterLanguage(printer) === 'tspl') {
       bytes = buildTsplReceiptBytes(job.payload, printer.paperWidth)
-    } else if (job.targetType === 'kitchen_ticket') {
-      bytes = buildKitchenTicketBytes(job.payload, printer.paperWidth)
     } else if (job.targetType === 'drawer_kick') {
       bytes = new EscPosBuilder().init().kickCashDrawer(printer.capabilities.drawerPin || 'pin2').build()
     } else {

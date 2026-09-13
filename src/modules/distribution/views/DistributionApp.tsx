@@ -21,9 +21,9 @@ import {
   Printer,
   Settings2,
 } from 'lucide-react'
-import { getVisibleModules, getBusinessTypeDefinition, type ModuleId } from '../../../config/businessTypes'
+import { getVisibleModules, SAN_JOSE_APP_CONFIG, type ModuleId } from '../../../config/appConfig'
 import { hasPermission } from '../../../services/permissionService'
-import { applyTenantTheme } from '../../../lib/tenantTheme'
+import { applyAppTheme } from '../../../lib/appTheme'
 import { BottomNav, type BottomNavItem } from '../../../components/ui/BottomNav'
 import { Modal } from '../../../components/ui/Modal'
 import { useBackButtonBridge } from '../../../hooks/useBackHandler'
@@ -108,15 +108,13 @@ export function DistributionApp({
   onSignOut: () => Promise<void>
   onOpenPrinterSettings: () => void
 }) {
-  const definition = getBusinessTypeDefinition('mobile_distribution')
-
   useEffect(() => {
-    applyTenantTheme(definition.theme)
-  }, [definition.theme])
+    applyAppTheme(SAN_JOSE_APP_CONFIG.theme)
+  }, [])
 
   const can = useMemo(() => (permission: Permission) => hasPermission(role, permission), [role])
 
-  const modules = useMemo(() => getVisibleModules('mobile_distribution', can, role), [can, role])
+  const modules = useMemo(() => getVisibleModules(can, role), [can, role])
   const [currentModule, setCurrentModule] = useState<ModuleId>('dist.dashboard')
   const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [isSignOutOpen, setIsSignOutOpen] = useState(false)

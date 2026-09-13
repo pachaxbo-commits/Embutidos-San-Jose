@@ -100,7 +100,7 @@ export class DiagnosticPrinterAdapter implements PrinterAdapter {
   async discoverDevices(): Promise<Array<{ id: string; name: string; address?: string }>> {
     return [
       { id: 'mock-01', name: 'Impresora Virtual Diagnostico (80mm)', address: '00:11:22:33:44:55' },
-      { id: 'mock-02', name: 'Impresora Virtual Cocina (58mm)', address: '192.168.1.150' },
+      { id: 'mock-02', name: 'Impresora virtual de respaldo (58 mm)', address: '192.168.1.150' },
     ]
   }
 }

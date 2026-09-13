@@ -160,6 +160,6 @@ try {
  ok((await root.collection('distProducts').doc(pid).get()).exists&&(await root.collection('members').doc(support).get()).exists&&(await root.collection('distWarehouses').doc(wh).get()).exists,'entrega limpia conserva productos, usuarios y almacenes')
  const backup=await root.collection('maintenanceBackups').doc(reset.backupId).get()
  ok(backup.data().status==='complete'&&backup.data().documentCount>0,'respaldo restringido queda completo antes de finalizar la limpieza')
- fs.writeFileSync('docs/qa-san-jose/server-operations-result.json',JSON.stringify({passed:true,checks,at:new Date().toISOString()},null,2))
+ fs.writeFileSync('../PACHAX_QA_RESULTS/Embutidos-San-Jose/server-operations-result.json',JSON.stringify({passed:true,checks,at:new Date().toISOString()},null,2))
  console.log(`${checks} comprobaciones aprobadas`)
 }finally{await env.cleanup()}

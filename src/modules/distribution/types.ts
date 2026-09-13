@@ -1,8 +1,9 @@
 /**
- * Modelo de datos de distribucion movil (businessType: 'mobile_distribution').
+ * Modelo de datos operativo de Embutidos San José.
  *
- * Todo documento vive bajo restaurants/{restaurantId}/dist*  y lleva
- * restaurantId + branchId para respetar el multitenancy existente.
+ * Los documentos conservan `restaurantId` y `branchId` como claves técnicas
+ * compatibles con la base de datos existente. En esta aplicación,
+ * `restaurantId` siempre identifica a San José.
  */
 
 /** kg = granel por peso, unit = pieza suelta, package = paquete/sachet cerrado */

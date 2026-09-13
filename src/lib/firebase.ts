@@ -7,7 +7,6 @@ import {
   getAuth,
   inMemoryPersistence,
   onAuthStateChanged,
-  sendPasswordResetEmail,
   setPersistence,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
@@ -15,14 +14,12 @@ import {
   type User,
   type Unsubscribe,
 } from 'firebase/auth'
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
 import {
   collection,
   connectFirestoreEmulator,
   disableNetwork,
   enableNetwork,
   doc,
-  getDoc,
   getDocs,
   getFirestore,
   initializeFirestore,
@@ -31,10 +28,9 @@ import {
   persistentMultipleTabManager,
   serverTimestamp,
   setDoc,
-  updateDoc,
   type Firestore,
 } from 'firebase/firestore'
-import type { BusinessType, RestaurantAccount, RestaurantBranding, RestaurantMember, UserRole } from '../types'
+import type { RestaurantMember, UserRole } from '../types'
 import { TenantContextService } from '../services/tenantService'
 
 interface FirebaseWebConfig {
@@ -250,136 +246,6 @@ export async function subscribeToAuthChanges(listener: (user: User | null) => vo
   return onAuthStateChanged(context.auth, listener)
 }
 
-export async function fetchRestaurantAccount(restaurantId: string): Promise<RestaurantAccount | null> {
-  const context = await getFirebaseContext()
-  if (!context) return null
-
-  const ref = doc(context.db, 'restaurants', restaurantId)
-  const snap = await getDoc(ref)
-  if (!snap.exists()) return null
-
-  const data = snap.data()
-  return {
-    id: snap.id,
-    name: data.name || 'Mi Restaurante',
-    slug: data.slug || restaurantId,
-    ownerUid: data.ownerUid || '',
-    createdAt: data.createdAt || new Date().toISOString(),
-    plan: data.plan || 'pro',
-    // Un tenant sin businessType es un restaurante: nada cambia para los existentes.
-    businessType: (data.businessType as BusinessType) || 'restaurant',
-    currencyCode: data.currencyCode || 'BOB',
-    currencySymbol: data.currencySymbol || 'Bs',
-    branding: data.branding || {
-      name: data.name || 'Mi Restaurante',
-      primaryColor: '#0B132B',
-      accentColor: '#00F0FF',
-      tablesCount: 12,
-    },
-  }
-}
-
-/** Configura el perfil del tenant (tipo de empresa, moneda, marca). */
-export async function updateRestaurantProfile(
-  restaurantId: string,
-  updates: {
-    name?: string
-    businessType?: BusinessType
-    currencyCode?: string
-    currencySymbol?: string
-    branding?: Partial<RestaurantBranding>
-  },
-) {
-  const context = await getFirebaseContext()
-  if (!context) throw new Error('Firebase no esta configurado.')
-
-  const payload: Record<string, unknown> = { updatedAt: serverTimestamp() }
-  if (updates.name) payload.name = updates.name
-  if (updates.businessType) payload.businessType = updates.businessType
-  if (updates.currencyCode) payload.currencyCode = updates.currencyCode
-  if (updates.currencySymbol) payload.currencySymbol = updates.currencySymbol
-  if (updates.branding) payload.branding = updates.branding
-
-  await setDoc(doc(context.db, 'restaurants', restaurantId), payload, { merge: true })
-}
-
-export async function updateRestaurantBranding(restaurantId: string, branding: Partial<RestaurantBranding>) {
-  const context = await getFirebaseContext()
-  if (!context) throw new Error('Firebase no está configurado.')
-
-  const ref = doc(context.db, 'restaurants', restaurantId)
-  await updateDoc(ref, {
-    branding,
-    updatedAt: serverTimestamp(),
-  })
-}
-
-export async function createNewRestaurantAccount(input: {
-  restaurantName: string
-  ownerName: string
-  email: string
-  password: string
-}): Promise<string> {
-  const firebaseConfig = readFirebaseConfig()
-  if (!firebaseConfig) throw new Error('Firebase no esta configurado.')
-
-  const secondary = createSecondaryAuth('tenant-create')
-  if (!secondary) throw new Error('Firebase no esta configurado.')
-  const { app: secondaryApp, auth: secondaryAuth } = secondary
-
-  try {
-    const cred = await createUserWithEmailAndPassword(secondaryAuth, input.email.trim(), input.password)
-    const ownerUid = cred.user.uid
-    const restaurantId = `rest_${input.restaurantName.toLowerCase().replace(/[^a-z0-9]/g, '')}_${Date.now().toString(36)}`
-
-    const context = await getFirebaseContext()
-    if (!context) throw new Error('Error al conectar con la base de datos.')
-
-    // 1. Create Restaurant Doc
-    await setDoc(doc(context.db, 'restaurants', restaurantId), {
-      id: restaurantId,
-      name: input.restaurantName.trim(),
-      slug: restaurantId,
-      ownerUid,
-      createdAt: serverTimestamp(),
-      plan: 'pro',
-      branding: {
-        name: input.restaurantName.trim(),
-        primaryColor: '#0B132B',
-        accentColor: '#00F0FF',
-        receiptHeader: `*** ${input.restaurantName.toUpperCase()} ***`,
-        receiptFooter: '¡Gracias por su preferencia!',
-        tablesCount: 12,
-      },
-    })
-
-    // 2. Add Owner as Admin Member inside the restaurant
-    await setDoc(doc(context.db, 'restaurants', restaurantId, 'members', ownerUid), {
-      uid: ownerUid,
-      email: input.email.trim(),
-      displayName: input.ownerName.trim(),
-      role: 'admin',
-      active: true,
-      createdAt: serverTimestamp(),
-    })
-
-    // 3. User mapping record
-    await setDoc(doc(context.db, 'users', ownerUid), {
-      uid: ownerUid,
-      email: input.email.trim(),
-      displayName: input.ownerName.trim(),
-      defaultRestaurantId: restaurantId,
-      restaurants: [restaurantId],
-    })
-
-    setFirebaseRestaurantId(restaurantId)
-    return restaurantId
-  } finally {
-    await firebaseSignOut(secondaryAuth).catch(() => undefined)
-    await deleteApp(secondaryApp).catch(() => undefined)
-  }
-}
-
 export async function listRestaurantMembers() {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
@@ -451,30 +317,10 @@ export async function updateRestaurantMember(uid: string, updates: Partial<Pick<
   await callMemberAdministration<{ changed: boolean }>({ action: 'updateMember', uid, ...updates })
 }
 
-export async function sendRestaurantMemberPasswordReset(email: string) {
-  const context = await getFirebaseContext()
-  if (!context) throw new Error('Firebase no esta configurado.')
-
-  await sendPasswordResetEmail(context.auth, email.trim())
-}
-
 export async function changeRestaurantMemberPassword(uid: string, password: string) {
   await callMemberAdministration<{ changed: boolean }>({ action: 'changePassword', uid, password })
 }
 
 export async function deleteRestaurantMemberAccess(uid: string) {
   await callMemberAdministration<{ deleted: boolean }>({ action: 'deleteMember', uid })
-}
-
-export async function uploadProductImageToFirebase(file: File, restaurantId: string): Promise<string> {
-  const context = await getFirebaseContext()
-  if (!context) throw new Error('Firebase no esta configurado.')
-
-  const storage = getStorage(context.app)
-  const fileExt = file.name.split('.').pop() || 'jpg'
-  const path = `restaurants/${restaurantId}/products/${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${fileExt}`
-  const fileRef = storageRef(storage, path)
-
-  await uploadBytes(fileRef, file)
-  return getDownloadURL(fileRef)
 }

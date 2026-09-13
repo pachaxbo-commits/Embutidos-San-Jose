@@ -4,7 +4,7 @@
  *
  *   npm run seed:demo
  *
- * Crea las cuentas de acceso, el tenant con businessType mobile_distribution,
+ * Crea las cuentas de acceso y los datos de prueba de San José,
  * el catalogo minimo del escenario, stock inicial en almacen central y un
  * credito anterior para poder registrar el cobro de Bs 100.
  */
@@ -107,7 +107,6 @@ async function run() {
       name: 'Embutidos San Jose',
       slug: TENANT,
       plan: 'pro',
-      businessType: 'mobile_distribution',
       currencyCode: 'BOB',
       currencySymbol: 'Bs',
       createdAt: nowIso(),

@@ -1,13 +1,11 @@
 import type {
   IndependentDrawerKickInput,
-  KitchenStation,
   PrinterAdapter,
   PrinterProfile,
   PrintJob,
   PrintJobPayload,
   PrintJobResolution,
   PrintJobStorage,
-  PrintJobTarget,
   RequestReprintInput,
   SubmitPrintRequestInput,
 } from '../../types/printing'
@@ -19,7 +17,6 @@ export class PrintEngineService {
   private static instance: PrintEngineService | null = null
   public queueManager: PrintQueueManager
   private printers = new Map<string, PrinterProfile>()
-  private stations = new Map<string, KitchenStation>()
 
   private constructor(storage?: PrintJobStorage) {
     this.queueManager = new PrintQueueManager(storage)
@@ -38,10 +35,6 @@ export class PrintEngineService {
     this.printers.set(printer.id, printer)
   }
 
-  registerKitchenStation(station: KitchenStation): void {
-    this.stations.set(station.id, station)
-  }
-
   registerAdapter(adapter: PrinterAdapter): void {
     this.queueManager.registerAdapter(adapter)
   }
@@ -54,18 +47,10 @@ export class PrintEngineService {
     return Array.from(this.printers.values()).filter(p => p.restaurantId === getFirebaseRestaurantId())
   }
 
-  /** Resolves destination printer for target or station */
-  resolveDestinationPrinters(targetType: PrintJobTarget, stationId?: string): { primary: PrinterProfile; backup?: PrinterProfile } {
-    if (stationId && this.stations.has(stationId)) {
-      const station = this.stations.get(stationId)!
-      const primary = this.printers.get(station.primaryPrinterId)
-      const backup = station.backupPrinterId ? this.printers.get(station.backupPrinterId) : undefined
-      if (primary) return { primary, backup }
-    }
-
-    // Default lookup by role
+  /** Resuelve la impresora guardada para comprobantes. */
+  resolveDestinationPrinters(): { primary: PrinterProfile; backup?: PrinterProfile } {
     const activePrinters = this.listPrinterProfiles().filter((p) => p.isActive)
-    const roleMatch = activePrinters.find((p) => p.role === (targetType === 'kitchen_ticket' ? 'kitchen' : 'receipt'))
+    const roleMatch = activePrinters.find((p) => p.role === 'receipt')
     const fallback = roleMatch || activePrinters[0] || this.createDefaultFallbackProfile()
 
     return { primary: fallback }
@@ -74,7 +59,7 @@ export class PrintEngineService {
   private createDefaultFallbackProfile(): PrinterProfile {
     return {
       id: 'default-diagnostic',
-      restaurantId: 'principal',
+      restaurantId: 'sanjose',
       branchId: 'main',
       name: 'Impresora Diagnostico Virtual',
       role: 'general',
@@ -109,7 +94,7 @@ export class PrintEngineService {
   /** Main entry point for submitting any print request */
   async submitPrintRequest(input: SubmitPrintRequestInput): Promise<PrintJob> {
     const selected = input.printerProfileId ? this.printers.get(input.printerProfileId) : undefined
-    const { primary, backup } = selected ? { primary: selected, backup: undefined } : this.resolveDestinationPrinters(input.targetType, input.stationId)
+    const { primary, backup } = selected ? { primary: selected, backup: undefined } : this.resolveDestinationPrinters()
     if (primary.id === 'default-diagnostic') throw new Error('Configura una impresora real antes de imprimir.')
     const adapter = this.queueManager.getAdapter(primary.connectionType)
     if (!adapter) throw new Error('No hay un adaptador disponible para esta impresora.')
@@ -129,8 +114,8 @@ export class PrintEngineService {
     const payload: PrintJobPayload = {
       payloadSchemaVersion: 1,
       templateVersion: 'v1.0',
-      restaurantName: 'PACHAX Flow',
-      branchName: 'Sucursal Central',
+      restaurantName: 'EMBUTIDOS SAN JOSÉ',
+      branchName: 'Almacén central',
       items: [],
       subtotal: 0,
       discountTotal: 0,

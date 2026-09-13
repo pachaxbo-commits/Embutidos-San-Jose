@@ -1,6 +1,6 @@
 const fs = require('node:fs')
 const assert = require('node:assert/strict')
-const { chromium } = require('playwright')
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
 
 ;
 (async () => {
@@ -21,7 +21,7 @@ const { chromium } = require('playwright')
       assert(await page.getByText('Información comercial bloqueada').isVisible())
       assert(await page.getByRole('button', { name: /Configurar y probar impresora/ }).isVisible())
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'desbordamiento horizontal')
-      await page.screenshot({ path: `docs/qa-san-jose/support-${viewport.width}x${viewport.height}.png`, fullPage: true })
+      await page.screenshot({ path: `../PACHAX_QA_RESULTS/Embutidos-San-Jose/support-${viewport.width}x${viewport.height}.png`, fullPage: true })
       results.viewports.push(`${viewport.width}x${viewport.height}`)
 
       if (viewport.width === 360) {
@@ -42,7 +42,7 @@ const { chromium } = require('playwright')
     }
     assert.deepEqual(results.errors, [])
     results.passed = true
-    fs.writeFileSync('docs/qa-san-jose/support-center-result.json', JSON.stringify(results, null, 2))
+    fs.writeFileSync('../PACHAX_QA_RESULTS/Embutidos-San-Jose/support-center-result.json', JSON.stringify(results, null, 2))
     console.log('PASS Soporte: aislamiento comercial, configuración responsive y limpieza con doble confirmación')
   } finally { await browser.close() }
 })().catch(error => { console.error(error); process.exitCode = 1 })

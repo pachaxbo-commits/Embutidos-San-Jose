@@ -3,7 +3,7 @@ import { ClipboardList, HandCoins, ShoppingCart, Wallet } from 'lucide-react'
 import { Screen } from '../../../components/ui/Screen'
 import { computeMoneySummary, computeSoldKilograms, computeSoldPackages, round2 } from '../domain/engine'
 import { KpiCard, SectionCard, formatBs, formatQty } from './shared'
-import type { ModuleId } from '../../../config/businessTypes'
+import type { ModuleId } from '../../../config/appConfig'
 import type { DistributionViewProps } from './DistributionApp'
 
 /**

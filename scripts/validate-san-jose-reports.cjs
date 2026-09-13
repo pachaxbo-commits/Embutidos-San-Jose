@@ -2,7 +2,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
 const fs = require('node:fs')
 const path = require('node:path')
 
-const OUTPUT = path.resolve('docs/qa-san-jose')
+const OUTPUT = path.resolve('../PACHAX_QA_RESULTS/Embutidos-San-Jose')
 const RAW_ENUMS = new Set([
   'cash', 'credit', 'mixed', 'unit', 'package', 'open', 'partial', 'paid',
   'draft', 'closed', 'reopened', 'warehouse_done', 'intake', 'dispatch',

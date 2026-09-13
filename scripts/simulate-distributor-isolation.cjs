@@ -6,7 +6,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
 
 const base = 'http://127.0.0.1:5180'
 const repo = '/src/modules/distribution/data/distributionRepository.ts'
-const output = path.resolve('docs/qa-san-jose')
+const output = path.resolve('../PACHAX_QA_RESULTS/Embutidos-San-Jose')
 const today = new Date().toLocaleDateString('en-CA')
 const run = (page, name, ...args) => page.evaluate(async ({ repo, name, args }) => (await import(repo))[name](...args), { repo, name, args })
 

@@ -44,7 +44,7 @@ import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from './supportMainten
  * Repositorio de distribucion movil.
  *
  * Offline: se apoya en la persistencia local ya configurada de Firestore
- * (persistentLocalCache + multi-tab) que usa el resto de PACHAX Flow. No hay
+ * (persistentLocalCache + multi-tab) de la aplicación. No hay
  * un segundo motor offline. Las escrituras se envian en lote y NO se esperan:
  * Firestore las aplica al cache local de inmediato (los onSnapshot disparan al
  * instante) y las reenvia sola al recuperar conexion.

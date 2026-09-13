@@ -5,7 +5,7 @@ const path = require('node:path')
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
 
 const base = 'http://127.0.0.1:5180'
-const output = path.resolve('docs/qa-san-jose')
+const output = path.resolve('../PACHAX_QA_RESULTS/Embutidos-San-Jose')
 const password = 'demo1234'
 fs.mkdirSync(output, { recursive: true })
 
@@ -104,7 +104,7 @@ async function run() {
         if (label === 'Creditos' && (account === 'hugo' || account === 'ricardo')) {
           const text = await page.locator('main').innerText()
           assert(text.includes('Cartera general de todos los clientes'), `${account}: créditos no indica cartera global`)
-          assert(text.includes('Cliente con mismo nombre'), `${account}: no ve la deuda global creada por Hugo`)
+          assert(text.includes('Tienda Dona Rosa'), `${account}: no ve la deuda global disponible para todos los distribuidores`)
           result.globalCredit[account] = text.match(/CARTERA PENDIENTE\s+Bs\s+[0-9.,]+/)?.[0] || ''
         }
         if (label === 'Impresoras') {

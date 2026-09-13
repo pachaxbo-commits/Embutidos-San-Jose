@@ -1,10 +1,8 @@
 import { SAN_JOSE_ID, SAN_JOSE_ROLES } from '../config/sanJose'
 import { useSyncExternalStore } from 'react'
 import { doc, getDoc, getDocFromCache, onSnapshot, type DocumentData, type DocumentReference } from 'firebase/firestore'
-import { fetchRestaurantAccount, getFirebaseContext, getFirebaseRestaurantId, setFirebaseRestaurantId, isFirebaseConfigured, signInWithEmail, signOutUser, subscribeToAuthChanges } from '../lib/firebase'
-import { resetCatalogRepository } from './catalogRepositoryFactory'
-import { resetOrdersRepository } from './repositoryFactory'
-import type { BusinessType, RestaurantAccount, RestaurantMember, UserRole } from '../types'
+import { getFirebaseContext, getFirebaseRestaurantId, setFirebaseRestaurantId, isFirebaseConfigured, signInWithEmail, signOutUser, subscribeToAuthChanges } from '../lib/firebase'
+import type { RestaurantMember, UserRole } from '../types'
 
 type AuthStatus = 'loading' | 'signed_out' | 'authorized' | 'unauthorized' | 'demo' | 'authenticating'
 
@@ -17,9 +15,6 @@ interface AuthState {
   member: RestaurantMember | null
   error: string | null
   restaurantId: string | null
-  /** Tipo de empresa del tenant activo. Determina la experiencia completa. */
-  businessType: BusinessType
-  account: RestaurantAccount | null
 }
 
 const listeners = new Set<() => void>()
@@ -44,7 +39,6 @@ interface CachedProfile {
   routeId?: string
   warehouseId?: string
   restaurantId: string
-  businessType: BusinessType
 }
 
 function readCachedProfile(uid: string): CachedProfile | null {
@@ -95,8 +89,6 @@ let state: AuthState = !isFirebaseConfigured()
       },
       error: null,
       restaurantId: getFirebaseRestaurantId(),
-      businessType: 'restaurant',
-      account: null,
     }
   : {
       mode: 'firebase',
@@ -107,17 +99,10 @@ let state: AuthState = !isFirebaseConfigured()
       member: null,
       error: null,
       restaurantId: getFirebaseRestaurantId(),
-      businessType: 'restaurant',
-      account: null,
     }
 
 function emit() {
   listeners.forEach((listener) => listener())
-}
-
-function resetDataRepositories() {
-  resetOrdersRepository()
-  resetCatalogRepository()
 }
 
 function setState(nextState: Partial<AuthState>) {
@@ -185,7 +170,6 @@ async function initialize() {
   await subscribeToAuthChanges((user) => {
     stopMemberWatch?.()
     stopMemberWatch = null
-    resetDataRepositories()
 
     if (!user) {
       setState({
@@ -211,11 +195,6 @@ async function initialize() {
         const member = await fetchMember(user.uid)
 
         const activeMember = member
-        const account = await fetchRestaurantAccount(getFirebaseRestaurantId()).catch(() => null)
-        // Sin conexion el perfil del tenant puede no resolverse; se conserva el
-        // ultimo conocido de este mismo usuario antes que degradar su rol.
-        const businessType: BusinessType = 'mobile_distribution'
-
         writeCachedProfile({
           uid: user.uid,
           email: activeMember.email,
@@ -224,7 +203,6 @@ async function initialize() {
           routeId: activeMember.routeId,
           warehouseId: activeMember.warehouseId,
           restaurantId: getFirebaseRestaurantId(),
-          businessType,
         })
 
         setState({
@@ -235,19 +213,17 @@ async function initialize() {
           member: activeMember,
           error: null,
           restaurantId: getFirebaseRestaurantId(),
-          businessType,
-          account,
         })
         const ctx = await getFirebaseContext()
         if (ctx && ctx.auth.currentUser?.uid === user.uid) stopMemberWatch = onSnapshot(doc(ctx.db, 'restaurants', ctx.restaurantId, 'members', user.uid), snapshot => {
           if (!snapshot.exists() || snapshot.data().active !== true || !SAN_JOSE_ROLES.some(role => role === snapshot.data().role)) {
             localStorage.removeItem(PROFILE_CACHE_KEY)
-            setState({ status: 'unauthorized', member: null, role: null, account: null, error: 'Tu acceso fue desactivado. Consulta con administracion.' })
+            setState({ status: 'unauthorized', member: null, role: null, error: 'Tu acceso fue desactivado. Consulta con administracion.' })
           } else {
             const current = snapshot.data()
             const updated = { ...activeMember, role: current.role as UserRole, routeId: current.routeId || '', warehouseId: current.warehouseId || 'central' }
             setState({ member: updated, role: updated.role })
-            writeCachedProfile({ uid: user.uid, email: updated.email, displayName: updated.displayName, role: updated.role, routeId: updated.routeId, warehouseId: updated.warehouseId, restaurantId: ctx.restaurantId, businessType })
+            writeCachedProfile({ uid: user.uid, email: updated.email, displayName: updated.displayName, role: updated.role, routeId: updated.routeId, warehouseId: updated.warehouseId, restaurantId: ctx.restaurantId })
           }
         }, error => {
           if (error.code === 'permission-denied') setState({ status: 'unauthorized', member: null, role: null, error: 'No tienes acceso a esta empresa.' })
@@ -257,7 +233,7 @@ async function initialize() {
         const code = (error as { code?: string }).code
         if ((error as Error).message?.startsWith('ACCESS_DENIED') || code === 'permission-denied') {
           localStorage.removeItem(PROFILE_CACHE_KEY)
-          setState({ status: 'unauthorized', role: null, member: null, account: null, error: 'Tu acceso no esta autorizado. Consulta con administracion.' })
+          setState({ status: 'unauthorized', role: null, member: null, error: 'Tu acceso no esta autorizado. Consulta con administracion.' })
           return
         }
         // No se pudo leer el perfil (tipicamente por falta de conexion).
@@ -298,8 +274,6 @@ async function initialize() {
           },
           error: null,
           restaurantId: cached.restaurantId,
-          businessType: cached.businessType,
-          account: null,
         })
       }
     })()

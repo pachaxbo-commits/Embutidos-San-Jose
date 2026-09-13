@@ -15,10 +15,6 @@ export type PlatformType = 'web' | 'android_native' | 'ios_native'
 
 export type PrintJobTarget =
   | 'receipt'
-  | 'kitchen_ticket'
-  | 'bar_ticket'
-  | 'cancellation_ticket'
-  | 'cash_report'
   | 'drawer_kick'
   | 'test'
 
@@ -66,23 +62,12 @@ export interface PrinterCapability {
   imageMaxWidthPx?: number
 }
 
-export interface KitchenStation {
-  id: string
-  restaurantId: string
-  branchId: string
-  name: string
-  primaryPrinterId: string
-  backupPrinterId?: string
-  assignedCategoryIds: string[]
-  isActive: boolean
-}
-
 export interface PrinterProfile extends Partial<TenantScopedEntity> {
   id: string
   restaurantId: string
   branchId: string
   name: string
-  role: 'receipt' | 'kitchen' | 'bar' | 'despacho' | 'general'
+  role: 'receipt' | 'despacho' | 'general'
   connectionType: PrinterConnectionType
   paperWidth: '58mm' | '80mm'
   /** auto usa el nombre Bluetooth; escpos imprime recibos y tspl imprime etiquetas. */
@@ -171,7 +156,6 @@ export interface PrintJob extends Partial<TenantScopedEntity> {
   terminalId: string
   processorInstanceId?: string
   targetType: PrintJobTarget
-  stationId?: string
   printerProfileId: string
   backupPrinterProfileId?: string
   connectionType: PrinterConnectionType
@@ -245,7 +229,7 @@ export interface RequestReprintInput {
   requestedByUid: string
   reason: string
   terminalId: string
-  targetReceiptType?: 'receipt' | 'kitchen_ticket'
+  targetReceiptType?: 'receipt'
 }
 
 export interface IndependentDrawerKickInput {

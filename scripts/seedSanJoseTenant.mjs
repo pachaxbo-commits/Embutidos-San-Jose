@@ -179,7 +179,6 @@ async function main() {
       ownerUid: uids.admin,
       plan: 'pro',
       createdAt: nowIso(),
-      businessType: 'mobile_distribution',
       currencyCode: 'BOB',
       currencySymbol: 'Bs',
       branding: {
@@ -195,7 +194,7 @@ async function main() {
   } else {
     await setDoc(
       tenantRef,
-      { businessType: 'mobile_distribution', currencyCode: 'BOB', currencySymbol: 'Bs', updatedAt: nowIso() },
+      { currencyCode: 'BOB', currencySymbol: 'Bs', updatedAt: nowIso() },
       { merge: true },
     )
     console.log('3. Empresa ya existia (perfil actualizado)')
@@ -304,7 +303,7 @@ async function main() {
     const memberSnap = await getDoc(doc(db, 'restaurants', TENANT, 'members', uids[key]))
     const tenantDoc = await getDoc(doc(db, 'restaurants', TENANT))
     console.log(
-      `   ${account.email}: tenant=${userSnap.data()?.defaultRestaurantId} rol=${memberSnap.data()?.role} businessType=${tenantDoc.data()?.businessType}`,
+      `   ${account.email}: empresa=${userSnap.data()?.defaultRestaurantId} rol=${memberSnap.data()?.role} nombre=${tenantDoc.data()?.name}`,
     )
     await signOut(auth)
   }

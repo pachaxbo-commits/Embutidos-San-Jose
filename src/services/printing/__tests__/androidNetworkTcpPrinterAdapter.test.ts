@@ -26,7 +26,7 @@ export async function runAndroidNetworkTcpTestSuite(): Promise<{ passed: number;
     restaurantId: 'sanjose',
     branchId: 'main',
     name: 'Impresora Red Cocina TCP',
-    role: 'kitchen',
+    role: 'receipt',
     connectionType: 'network_tcp',
     paperWidth: '80mm',
     ipAddress: '192.168.1.150',
@@ -72,7 +72,7 @@ export async function runAndroidNetworkTcpTestSuite(): Promise<{ passed: number;
 
   // --- Test 3: Valid Hostname validation ---
   try {
-    assert(isValidIpOrHost('printer-cocina.local'), 'LAN-3: Validación correcta de hostnames en red local')
+    assert(isValidIpOrHost('impresora-almacen.local'), 'LAN-3: Validación correcta de nombres de equipo en red local')
   } catch (e: any) {
     assert(false, `LAN-3 Fallo: ${e.message}`)
   }

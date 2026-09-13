@@ -8,11 +8,9 @@ export interface BottomNavItem<T extends string> {
 }
 
 /**
- * Navegacion inferior movil generica, alimentada por datos.
- *
- * A diferencia de la barra especifica del comandero, no conoce ninguna vista:
- * cualquier tipo de empresa le pasa sus modulos visibles. Respeta safe-area y
- * mantiene objetivos tactiles de ~44px.
+ * Navegación inferior adaptable, alimentada por las secciones permitidas para
+ * cada rol de San José. Respeta safe-area y mantiene objetivos táctiles de
+ * aproximadamente 44 px.
  */
 export function BottomNav<T extends string>({
   items,

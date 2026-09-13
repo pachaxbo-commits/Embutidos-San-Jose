@@ -2,7 +2,6 @@ import { PrintEngineService } from '../printEngineService'
 import { DiagnosticPrinterAdapter } from '../diagnosticPrinterAdapter'
 import { IndexedDbPrintJobStorage } from '../printJobStorage'
 import { buildReceiptBytes } from '../templates/receiptTemplate'
-import { buildKitchenTicketBytes } from '../templates/kitchenTicketTemplate'
 import { buildTsplReceiptBytes } from '../templates/tsplReceiptTemplate'
 import { detectPrinterLanguage, resolvePrinterLanguage } from '../printerLanguage'
 import { transliterateText } from '../escPosFormatter'
@@ -32,7 +31,7 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
     sequenceNumber: 15,
     displayNumber: '#015',
     items: [
-      { name: 'Hamburguesa Clásica con Queso y Ñandú', basePrice: 35, quantity: 2, lineTotal: 70, modifiersText: ['Sin Tomate', 'Extra Queso'] },
+      { name: 'Chorizo parrillero con ají', basePrice: 35, quantity: 2, lineTotal: 70 },
     ],
     subtotal: 70,
     discountTotal: 0,
@@ -48,7 +47,7 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
     id: 'prn-main',
     restaurantId: 'sanjose',
     branchId: 'main',
-    name: 'Impresora Caja Principal',
+    name: 'Impresora principal',
     role: 'receipt',
     connectionType: 'virtual_pdf',
     paperWidth: '80mm',
@@ -80,8 +79,8 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
   const backupPrinter: PrinterProfile = {
     ...samplePrinter,
     id: 'prn-backup',
-    name: 'Impresora Respaldo Cocina',
-    role: 'kitchen',
+    name: 'Impresora de respaldo',
+    role: 'receipt',
     paperWidth: '58mm',
   }
 
@@ -147,7 +146,7 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
     engine.registerPrinterProfile(backupPrinter)
 
     const key = `failover-safe-${Date.now()}`
-    const job = await engine.queueManager.submitJob({ targetType: 'kitchen_ticket', payload: samplePayload, idempotencyKey: key }, samplePrinter, backupPrinter)
+    const job = await engine.queueManager.submitJob({ targetType: 'receipt', payload: samplePayload, idempotencyKey: key }, samplePrinter, backupPrinter)
 
     // Simulate pre-transmit error
     const adapter = new DiagnosticPrinterAdapter('error_pre_transmit')
@@ -285,9 +284,7 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
   try {
     const bytes58 = buildReceiptBytes(samplePayload, '58mm')
     const bytes80 = buildReceiptBytes(samplePayload, '80mm')
-    const kitchen58 = buildKitchenTicketBytes(samplePayload, '58mm')
-
-    assert(bytes58.length > 0 && bytes80.length > 0 && kitchen58.length > 0, 'Prueba 14: Las plantillas se formatean correctamente para 58mm y 80mm')
+    assert(bytes58.length > 0 && bytes80.length > 0, 'Prueba 14: Las plantillas se formatean correctamente para 58mm y 80mm')
   } catch (e: any) {
     assert(false, `Prueba 14 Fallo: ${e.message}`)
   }

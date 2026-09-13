@@ -3,8 +3,8 @@ import { listRestaurantMembers } from '../../../lib/firebase'
 import type { RestaurantMember } from '../../../types'
 
 /**
- * Miembros del tenant activo. Reutiliza el listado seguro ya existente
- * (subcoleccion members del restaurante) en vez de duplicar usuarios.
+ * Usuarios activos de San José. Lee la subcolección técnica `members`
+ * utilizada por autenticación y permisos.
  */
 export function useTenantMembers() {
   const [members, setMembers] = useState<RestaurantMember[]>([])

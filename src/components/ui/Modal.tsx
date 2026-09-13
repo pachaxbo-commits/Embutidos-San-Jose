@@ -22,7 +22,7 @@ const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
 }
 
 /**
- * Modal responsive base de PACHAX Flow.
+ * Modal responsive de Embutidos San José.
  *
  * Reglas que resuelve de forma reutilizable (no parcheada por pantalla):
  * - nunca supera el viewport: usa 100dvh y scroll interno en el cuerpo
