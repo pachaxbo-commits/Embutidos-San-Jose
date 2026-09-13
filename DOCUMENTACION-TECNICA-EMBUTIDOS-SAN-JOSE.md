@@ -6,6 +6,8 @@ Este repositorio contiene la aplicación exclusiva de **Embutidos San José**, d
 
 La interfaz, los permisos y las reglas de acceso están cerrados a Embutidos San José. No existe una pantalla para registrar empresas, cambiar de empresa ni activar categorías comerciales distintas.
 
+La copia local principal preparada después de la limpieza está en `G:\Embutidos San Jose`.
+
 ## Identificadores técnicos conservados
 
 Algunos nombres internos se conservaron para mantener compatibilidad con los datos existentes y evitar una migración riesgosa:
