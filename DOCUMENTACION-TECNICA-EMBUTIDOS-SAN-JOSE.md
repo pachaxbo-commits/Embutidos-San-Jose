@@ -8,6 +8,12 @@ La interfaz, los permisos y las reglas de acceso están cerrados a Embutidos San
 
 La copia local principal preparada después de la limpieza está en `G:\Embutidos San Jose`.
 
+- Repositorio: `https://github.com/pachaxbo-commits/Embutidos-San-Jose`
+- Rama de entrega: `main`
+- Web: `https://embutidos-sanjose.vercel.app`
+- Firebase: `pachax-flow`
+- Identificador Android: `com.pachax.flow`
+
 ## Identificadores técnicos conservados
 
 Algunos nombres internos se conservaron para mantener compatibilidad con los datos existentes y evitar una migración riesgosa:
@@ -108,3 +114,28 @@ npx cap sync android
 ```
 
 Las reglas de `firebase/firestore.rules` deben probarse en el emulador antes de publicarlas. Renombrar la carpeta local o el repositorio de GitHub no cambia Firebase, Vercel, el identificador Android ni la firma de instalación.
+
+## Continuidad para un nuevo chat
+
+Antes de modificar el sistema, leer este documento completo, ejecutar `git status` y comprobar que la rama sea `main`. La aplicación debe conservar su comportamiento actual y cualquier prueba que cree, modifique o elimine información debe ejecutarse con Firebase Emulator Suite. No se deben usar los datos reales para simulacros.
+
+Reglas de continuidad:
+
+- Mantener el proyecto exclusivo para Embutidos San José.
+- Preservar `restaurantId=sanjose`, `/restaurants/sanjose`, el proyecto Firebase y el identificador Android mientras no exista una migración planificada y probada.
+- Mantener Administración, Almacén, Distribuidor y Soporte con sus límites actuales.
+- Todos los distribuidores autorizados comparten la cartera de créditos, pero no ven ventas, gastos, cierres ni operaciones privadas de otro distribuidor.
+- Almacén no ve información financiera, clientes ni impresoras; ve inventario, despachos, productos y conciliación correspondiente.
+- Soporte no ve ventas ni información comercial. Su limpieza conserva usuarios, productos, almacenes y configuración, y requiere doble confirmación.
+- Mantener PDF y Excel en español, sin estados internos ni identificadores largos.
+- Mantener compatibilidad de impresión Bluetooth genérica y por red.
+- No implementar la merma hasta que la cliente defina exactamente desde qué cantidad se redondea, qué unidades la permiten y cómo debe registrarse la diferencia.
+- Tras cualquier cambio funcional, compilar web y Android, probar permisos con el emulador y verificar la web publicada.
+
+Estado al cerrar esta limpieza:
+
+- Código limpio confirmado en `main`.
+- Reglas exclusivas publicadas en Firebase y comprobadas.
+- Vercel sirve el mismo paquete validado localmente.
+- Android compila correctamente; esta limpieza no requiere entregar otra APK.
+- La carpeta anterior `G:\pachax-comandero` conserva temporalmente una copia porque el chat original la mantiene abierta. Puede eliminarse después de abrir `G:\Embutidos San Jose` como proyecto y comprobar que ningún proceso use la carpeta anterior.
