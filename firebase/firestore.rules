@@ -128,10 +128,6 @@ service cloud.firestore {
       allow delete: if distAdmin(restaurantId);
     }
 
-    function distWarehouseOwns(restaurantId, warehouseId) {
-      return distAdmin(restaurantId) || (distWarehouse(restaurantId) && memberData(restaurantId).get('warehouseId', 'central') == warehouseId);
-    }
-
     match /restaurants/{restaurantId}/distWarehouses/{warehouseId} {
       allow read: if distWorker(restaurantId);
       allow create, update: if distAdmin(restaurantId) && distTenantMatches(restaurantId)
