@@ -131,6 +131,7 @@ Reglas de continuidad:
 - Mantener compatibilidad de impresión Bluetooth genérica y por red.
 - No implementar la merma hasta que la cliente defina exactamente desde qué cantidad se redondea, qué unidades la permiten y cómo debe registrarse la diferencia.
 - Tras cualquier cambio funcional, compilar web y Android, probar permisos con el emulador y verificar la web publicada.
+- Cuando un cambio requiera actualizar la aplicación Android instalada, avisar explícitamente al usuario y dejar la nueva APK compatible con la firma anterior en el Escritorio real del equipo, verificando identificador, firma y `versionCode` antes de entregarla.
 
 Estado al cerrar esta limpieza:
 
