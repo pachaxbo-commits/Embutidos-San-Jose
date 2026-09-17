@@ -4,6 +4,7 @@ import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2 } from '../domain/engine'
+import { unitForCategory } from '../domain/productUnits'
 import { deleteProduct, saveProduct, saveRoute } from '../data/distributionRepository'
 import { prepareProductPhoto } from '../data/productPhoto'
 import { SAN_JOSE_PRODUCTS, SAN_JOSE_ROUTES } from '../seed/sanJoseSeed'
@@ -73,6 +74,17 @@ export function ProductsView({ data }: DistributionViewProps) {
     setActive(product.active !== false)
     setError(null)
     setIsOpen(true)
+  }
+
+  const changeCategory = (nextCategory: string) => {
+    const categoryUnit = unitForCategory(nextCategory)
+    if (editing && categoryUnit && categoryUnit !== editing.unitType) {
+      setError('La unidad de un producto existente no se puede cambiar porque afectaría su inventario e historial. Crea otro producto para esta presentación.')
+      return
+    }
+    setCategory(nextCategory)
+    if (!editing && categoryUnit) setUnitType(categoryUnit)
+    setError(null)
   }
 
   const submit = async () => {
@@ -218,19 +230,19 @@ export function ProductsView({ data }: DistributionViewProps) {
               </div>
             </div>
           </Field>
-          <Field label="Costo de producción por unidad de venta (Bs)"><NumberInput min={0} step={0.01} value={cost} onChange={event => setCost(event.target.value)} /></Field>
-          <Field label="Existencia mínima" hint="Se expresa en la unidad de venta del producto."><NumberInput min={0} value={minimum} onChange={event => setMinimum(event.target.value)} /></Field>
+          <Field label={`Costo de producción por ${unitType === 'kg' ? 'kg' : unitType === 'package' ? 'paquete' : 'unidad'} (Bs)`} hint="Ingresa el costo de producir una sola unidad de venta, no el costo de todo un lote."><NumberInput min={0} step={0.01} value={cost} onChange={event => setCost(event.target.value)} /></Field>
+          <Field label={`Existencia mínima (${unitType === 'kg' ? 'kg' : unitType === 'package' ? 'paquetes' : 'unidades'})`}><NumberInput min={0} value={minimum} onChange={event => setMinimum(event.target.value)} /></Field>
           <Field label="Nombre" required>
             <TextInput value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
           <Field label="Categoria / presentacion comercial">
-            <Segmented value={category} onChange={setCategory} options={[{ value: 'Al vacio', label: 'Al vacío' }, { value: 'Granel', label: 'Granel' }, { value: 'Otros', label: 'Otros' }]} />
+            <Segmented value={category} onChange={changeCategory} options={[{ value: 'Al vacio', label: 'Al vacío' }, { value: 'Granel', label: 'Granel' }, { value: 'Otros', label: 'Otros' }]} />
           </Field>
           <Field label="Detalle de presentacion" hint="Ej: sachet 200 g, 10 unidades 12 cm">
             <TextInput value={presentation} onChange={(event) => setPresentation(event.target.value)} />
           </Field>
-          <Field label="Unidad de venta" hint="Los reportes no convierten paquetes a kilos.">
-            {editing ? <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm font-bold text-slate-700">{unitType === 'kg' ? 'Granel (kg)' : unitType === 'package' ? 'Paquete / sachet' : 'Unidad'}</div> : <Segmented value={unitType} onChange={setUnitType} options={[{ value: 'kg', label: 'Granel (kg)' }, { value: 'package', label: 'Paquete' }, { value: 'unit', label: 'Unidad' }]} />}
+          <Field label="Unidad de venta" hint={editing ? 'La unidad de un producto existente no cambia para proteger su inventario e historial.' : unitForCategory(category) ? 'Se eligió automáticamente según la categoría.' : 'Elige cómo se contará y venderá este producto. Los reportes no convierten paquetes a kilos.'}>
+            {editing || unitForCategory(category) ? <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm font-bold text-slate-700">{unitType === 'kg' ? 'Granel (kg)' : unitType === 'package' ? 'Paquete / sachet' : 'Unidad'}</div> : <Segmented value={unitType} onChange={setUnitType} options={[{ value: 'kg', label: 'Granel (kg)' }, { value: 'package', label: 'Paquete' }, { value: 'unit', label: 'Unidad' }]} />}
           </Field>
           <Field label="Precio de referencia (Bs)" hint="Solo Administración puede modificar el precio de venta.">
             <NumberInput value={price} min={0} step={0.5} onChange={(event) => setPrice(event.target.value)} />

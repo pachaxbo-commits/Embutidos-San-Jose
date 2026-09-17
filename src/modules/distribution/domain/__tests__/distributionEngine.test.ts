@@ -17,6 +17,7 @@ import {
   validateStockAvailability,
 } from '../engine.ts'
 import { closuresInPeriod, pendingDifferenceClosures } from '../closurePeriod.ts'
+import { unitForCategory } from '../productUnits.ts'
 import type { DistClosure, DistCollection, DistDispatch, DistExpense, DistSale } from '../../types.ts'
 
 /**
@@ -312,6 +313,9 @@ export async function runDistributionEngineTestSuite(): Promise<{ passed: number
   assert(closuresInPeriod([closureBase, todayClosure], ['2026-08-14']).map(item => item.id).join() === 'closure-today', 'el panel del día excluye cierres anteriores')
   assert(pendingDifferenceClosures([closureBase, todayClosure]).length === 2, 'las diferencias anteriores siguen visibles como pendientes')
   assert(pendingDifferenceClosures([{ ...closureBase, varianceReviewedAt: '2026-08-15T08:00:00.000Z' }]).length === 0, 'una diferencia revisada sale de pendientes')
+  assert(unitForCategory('Granel') === 'kg', 'granel se vende por kg')
+  assert(unitForCategory('Al vacio') === 'package', 'al vacío se vende por paquete')
+  assert(unitForCategory('Otros') === null, 'otros requiere elegir su unidad de venta')
 
   return { passed, failed, results }
 }
