@@ -5,6 +5,7 @@ import {
   collection,
   runTransaction,
   getDocs,
+  getDoc,
   doc,
   deleteField,
   onSnapshot,
@@ -758,7 +759,33 @@ export function subscribeLots(onData: (rows: DistLot[]) => void, onError?: (erro
 export function subscribeOperations(onData: (rows: PendingOperation[]) => void, onError?: (error: Error) => void) { return subscribeQuery<PendingOperation>(ctx => query(collectionRef(ctx, 'distOperations'), where('createdBy', '==', ctx.uid), where('status', 'in', ['queued', 'rejected'])), onData, onError) }
 export function subscribeMovements(onData: (rows: DistStockMovement[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistStockMovement>(ctx => collectionRef(ctx, 'distStockMovements'), onData, onError) }
 export function subscribeTransfers(onData: (rows: DistTransfer[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistTransfer>(ctx => collectionRef(ctx, 'distTransfers'), onData, onError) }
-export function subscribeClaims(routeId: string | null, onData: (rows: DistClaim[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistClaim>(ctx => routeId ? query(collectionRef(ctx, 'distClaims'), where('routeId', '==', routeId)) : collectionRef(ctx, 'distClaims'), onData, onError) }
+export function subscribeClaims(routeId: string | null, onData: (rows: DistClaim[]) => void, onError?: (error: Error) => void) {
+  const sellerBySale = new Map<string, { uid: string; name: string }>()
+  let revision = 0
+  return subscribeQuery<DistClaim>(
+    ctx => routeId ? query(collectionRef(ctx, 'distClaims'), where('routeId', '==', routeId)) : collectionRef(ctx, 'distClaims'),
+    rows => {
+      const current = ++revision
+      // Los reclamos antiguos no guardaban el vendedor. Administración recupera
+      // la venta original aunque pertenezca a otro periodo, antes de reportar.
+      if (routeId || rows.every(row => row.sellerUid)) { onData(rows); return }
+      void (async () => {
+        try {
+          const ctx = await getContext()
+          const missing = [...new Set(rows.filter(row => !row.sellerUid && !sellerBySale.has(row.saleId)).map(row => row.saleId))]
+          await Promise.all(missing.map(async saleId => {
+            const sale = await getDoc(docRef(ctx, DIST_COLLECTIONS.sales, saleId))
+            const data = sale.data()
+            if (!data?.sellerUid) throw new Error('No se pudo identificar al vendedor de una devolución histórica.')
+            sellerBySale.set(saleId, { uid: data.sellerUid, name: data.sellerName || '' })
+          }))
+          if (current === revision) onData(rows.map(row => row.sellerUid ? row : { ...row, sellerUid: sellerBySale.get(row.saleId)?.uid, sellerName: sellerBySale.get(row.saleId)?.name }))
+        } catch (error) { if (current === revision) onError?.(error as Error) }
+      })()
+    },
+    onError,
+  )
+}
 export function subscribeCreditStatus(onData: (rows: DistCreditStatus[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistCreditStatus>(ctx => collectionRef(ctx, 'distCreditStatus'), onData, onError) }
 export async function registerClaim(payload: Record<string, unknown>, operationId: string) { return submitOperation<DistClaim>('claim', payload, operationId) }
 

@@ -997,11 +997,12 @@ async function claim(o, p) {
       returnedAmount: round((debt.returnedAmount || 0) + debtReduction),
     });
   }
-  check(
-    p.kind === "exchange" || ["cash", "qr"].includes(p.method),
-    "Elige efectivo o QR para la devolución.",
-  );
   const refund = round(Math.max(0, -delta) - debtReduction);
+  check(
+    (delta === 0 && ["none", "cash", "qr"].includes(p.method)) ||
+      (delta !== 0 && ["cash", "qr"].includes(p.method)),
+    "Elige efectivo o QR para cobrar o devolver la diferencia.",
+  );
   const lotId = `${o.id}__damaged`;
   e.lots.push({
     id: lotId,
@@ -1030,6 +1031,8 @@ async function claim(o, p) {
     ...o.base(),
     kind: p.kind,
     saleId: s.id,
+    sellerUid: s.sellerUid,
+    sellerName: s.sellerName,
     customerId: s.customerId || "",
     customerName: s.customerName || "",
     routeId: s.routeId,
@@ -1044,11 +1047,11 @@ async function claim(o, p) {
     revenueDelta: delta,
     additionalCost,
     debtReduction,
-    cashIn: p.kind === "return" && p.method === "cash" ? Math.max(0, delta) : 0,
-    cashOut: p.kind === "return" && p.method === "cash" ? refund : 0,
-    qrIn: p.kind === "return" && p.method === "qr" ? Math.max(0, delta) : 0,
-    qrOut: p.kind === "return" && p.method === "qr" ? refund : 0,
-    method: p.kind === "return" ? p.method : "none",
+    cashIn: p.method === "cash" ? Math.max(0, delta) : 0,
+    cashOut: p.method === "cash" ? refund : 0,
+    qrIn: p.method === "qr" ? Math.max(0, delta) : 0,
+    qrOut: p.method === "qr" ? refund : 0,
+    method: p.method,
     responsibleName: o.member.displayName || o.actor,
   };
   o.put("distClaims", o.id, c);

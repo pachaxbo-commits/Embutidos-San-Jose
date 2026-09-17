@@ -1,4 +1,4 @@
-import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
+import { exportExcel, exportPdf, reportAttributionError, reportSheets } from '../data/reportExports'
 import { reportCreditLabel, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
 import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
@@ -11,6 +11,7 @@ import {
   computeSoldKilograms,
   computeSoldPackages,
   round2,
+  toDayKey,
 } from '../domain/engine'
 import { KpiCard, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import { RangePicker, describeRange } from './RangePicker'
@@ -42,10 +43,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const [routeFilter, setRouteFilter] = useState('')
   const [sellerFilter, setSellerFilter] = useState('')
   const [isSellerOpen, setIsSellerOpen] = useState(false)
+  const attributionError = reportAttributionError(data, session.dayKeys, routeFilter, sellerFilter)
 
   const sales = useMemo(
     () =>
       data.sales
+        .filter((sale) => !sale.pendingConfirmation)
         .filter((sale) => !routeFilter || sale.routeId === routeFilter)
         .filter((sale) => !sellerFilter || sale.sellerUid === sellerFilter),
     [data.sales, routeFilter, sellerFilter],
@@ -53,6 +56,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const collections = useMemo(
     () =>
       data.collections
+        .filter((row) => !row.pendingConfirmation)
         .filter((row) => !routeFilter || row.routeId === routeFilter)
         .filter((row) => !sellerFilter || row.collectedByUid === sellerFilter),
     [data.collections, routeFilter, sellerFilter],
@@ -60,6 +64,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const expenses = useMemo(
     () =>
       data.expenses
+        .filter((row) => !row.pendingConfirmation && !row.voided)
         .filter((row) => !routeFilter || row.routeId === routeFilter)
         .filter((row) => !sellerFilter || row.registeredByUid === sellerFilter),
     [data.expenses, routeFilter, sellerFilter],
@@ -69,14 +74,23 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     [data.closures, routeFilter],
   )
 
-  const money = useMemo(() => computeMoneySummary(sales, collections, expenses), [sales, collections, expenses])
+  const claims = useMemo(() => data.claims
+    .filter(claim => session.dayKeys.includes(claim.dayKey || toDayKey(claim.createdAt)))
+    .filter(claim => !routeFilter || claim.routeId === routeFilter)
+    .filter(claim => !sellerFilter || claim.sellerUid === sellerFilter || (!claim.sellerUid && data.sales.some(sale => sale.id === claim.saleId && sale.sellerUid === sellerFilter))),
+  [data.claims, data.sales, session.dayKeys, routeFilter, sellerFilter])
+  const money = useMemo(() => {
+    const base = computeMoneySummary(sales, collections, expenses)
+    const claimCash = claims.reduce((sum, claim) => sum + (Number(claim.cashIn) || 0) - (Number(claim.cashOut) || 0), 0)
+    return { ...base, expectedCash: round2(base.expectedCash + claimCash) }
+  }, [sales, collections, expenses, claims])
   const sellers = useMemo(
-    () => computeSellerBreakdown(sales, collections, expenses),
-    [sales, collections, expenses],
+    () => computeSellerBreakdown(sales, collections, expenses, claims),
+    [sales, collections, expenses, claims],
   )
   const allSellers = useMemo(
-    () => computeSellerBreakdown(data.sales, data.collections, data.expenses),
-    [data.sales, data.collections, data.expenses],
+    () => computeSellerBreakdown(data.sales, data.collections, data.expenses, data.claims),
+    [data.sales, data.collections, data.expenses, data.claims],
   )
 
   const productRows = useMemo(() => {
@@ -114,7 +128,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       <div className="grid w-full min-w-0 gap-3">
         <div className="flex flex-wrap gap-2">{(['Excel','PDF'] as const).map(kind=><button key={kind} disabled={exporting} className="rounded-xl border bg-white px-4 py-3 text-sm font-bold" onClick={async()=>{setExporting(true);setExportError('');try{if(data.operations.some(o=>o.status==='queued'))throw new Error('Espera la confirmación de las operaciones pendientes antes de exportar.');const sheets=reportSheets(data,session.dayKeys,routeFilter,sellerFilter);const routeName=routeFilter?reportRecordName(data.routes.find(route=>route.id===routeFilter)?.name,'Ruta seleccionada'):'Todas las rutas';const sellerName=sellerFilter?reportPersonName(allSellers.find(seller=>seller.sellerUid===sellerFilter)?.sellerName):'Todos los vendedores';const description=`${describeRange(session.dayKeys)} · ruta: ${routeName} · vendedor: ${sellerName} · inventario: existencias actuales`;if(kind==='Excel')await exportExcel(sheets,description);else await exportPdf(sheets,description)}catch(e){setExportError((e as Error).message)}finally{setExporting(false)}}}>{exporting?'Preparando...':kind==='Excel'?'Descargar Excel':'PDF para imprimir / compartir'}</button>)}</div>
         {exportError&&<p role="alert">{exportError}</p>}
-        <SectionCard title="Costos y resultado del periodo"><div className="grid gap-2 text-xs">{reportSheets(data,session.dayKeys,routeFilter,sellerFilter)[0].rows.map((row,i)=><p key={i} className="flex justify-between gap-3"><span>{row[0]}</span><strong>{typeof row[1]==='number'?formatBs(row[1]):row[1]===null?'Sin costo completo':row[1]}</strong></p>)}</div></SectionCard>
+        <SectionCard title="Costos y resultado del periodo">{attributionError ? <p role="alert" className="text-xs font-bold text-rose-700">{attributionError}</p> : <div className="grid gap-2 text-xs">{reportSheets(data,session.dayKeys,routeFilter,sellerFilter)[0].rows.map((row,i)=><p key={i} className="flex justify-between gap-3"><span>{row[0]}</span><strong>{typeof row[1]==='number'?formatBs(row[1]):row[1]===null?'No corresponde o falta costo':row[1]}</strong></p>)}</div>}</SectionCard>
         <RangePicker
           dayKeys={session.dayKeys}
           onChange={session.setDayKeys}
@@ -130,8 +144,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         )}
 
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <KpiCard label="Ventas" value={formatBs(money.salesTotal)} tone="primary" hint={`${sales.length} operaciones`} />
-          <KpiCard label="Efectivo esperado" value={formatBs(money.expectedCash)} tone="positive" hint="Ventas + cobros - gastos" />
+          <KpiCard label="Ventas antes de devoluciones" value={formatBs(money.salesTotal)} tone="primary" hint={`${sales.length} operaciones`} />
+          <KpiCard label="Efectivo esperado" value={formatBs(money.expectedCash)} tone="positive" hint="Ventas + cobros + cambios - gastos" />
           <KpiCard label="Credito generado" value={formatBs(money.creditGenerated)} tone="warning" />
           <KpiCard label="Gastos" value={formatBs(money.cashExpenses)} tone="danger" />
         </div>

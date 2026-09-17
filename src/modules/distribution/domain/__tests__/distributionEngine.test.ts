@@ -18,7 +18,7 @@ import {
 } from '../engine.ts'
 import { closuresInPeriod, pendingDifferenceClosures } from '../closurePeriod.ts'
 import { unitForCategory } from '../productUnits.ts'
-import type { DistClosure, DistCollection, DistDispatch, DistExpense, DistSale } from '../../types.ts'
+import type { DistClaim, DistClosure, DistCollection, DistDispatch, DistExpense, DistSale } from '../../types.ts'
 
 /**
  * Suite de pruebas del motor de distribucion.
@@ -283,6 +283,8 @@ export async function runDistributionEngineTestSuite(): Promise<{ passed: number
   assert(hugo.kilograms === 9, 'Hugo vendio 9 kg')
   assert(hugo.packages === 0, 'Hugo no vendio paquetes')
   assert(hugo.expectedCash === 368, 'Hugo debe entregar Bs 368')
+  const withClaim = computeSellerBreakdown(sales, collections, expenses, [{ sellerUid: 'hugo', sellerName: 'Hugo', cashIn: 3, cashOut: 8 } as DistClaim])
+  assert(withClaim[0].expectedCash === 363, 'cobro y devolución de cambio ajustan efectivo del vendedor')
 
   const twoSellers = computeSellerBreakdown(
     [...sales, { ...sales[0], id: 'sale-3', sellerUid: 'ricardo', sellerName: 'Ricardo Jimenez', total: 100, cashAmount: 100, creditAmount: 0, lines: [] }],

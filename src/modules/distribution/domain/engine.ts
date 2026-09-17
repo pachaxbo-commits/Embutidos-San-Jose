@@ -1,6 +1,7 @@
 import type {
   DistClosureProductRow,
   DistCollection,
+  DistClaim,
   DistDispatch,
   DistExpense,
   DistSale,
@@ -343,6 +344,7 @@ export function computeSellerBreakdown(
   sales: DistSale[],
   collections: DistCollection[],
   expenses: DistExpense[],
+  claims: DistClaim[] = [],
 ): SellerBreakdown[] {
   const map = new Map<string, SellerBreakdown>()
 
@@ -397,6 +399,12 @@ export function computeSellerBreakdown(
     if (collection.method !== 'qr') {
       entry.expectedCash = round2(entry.expectedCash + (Number(collection.amount) || 0))
     }
+  }
+
+  for (const claim of claims) {
+    if (!claim.sellerUid) continue
+    const entry = ensure(claim.sellerUid, claim.sellerName || '')
+    entry.expectedCash = round2(entry.expectedCash + (Number(claim.cashIn) || 0) - (Number(claim.cashOut) || 0))
   }
 
   for (const entry of map.values()) {

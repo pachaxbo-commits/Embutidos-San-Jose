@@ -166,12 +166,25 @@ export function warehouseReportSheets(data: DistributionData, days: string[]): R
     ]],
   });
 }
+export function reportAttributionError(data: DistributionData, days: string[], route = "", seller = ""): string | null {
+  if (!seller) return null;
+  const unresolved = data.claims.some(c =>
+    days.includes(c.dayKey || toDayKey(c.createdAt)) &&
+    (!route || c.routeId === route) &&
+    !c.sellerUid &&
+    !data.sales.some(s => s.id === c.saleId && s.sellerUid),
+  );
+  return unresolved ? "No se pudo identificar al vendedor de una devolución histórica. No se muestran cifras parciales." : null;
+}
+
 export function reportSheets(
   data: DistributionData,
   days: string[],
   route = "",
   seller = "",
 ): ReportSheet[] {
+  const attributionError = reportAttributionError(data, days, route, seller);
+  if (attributionError) throw new Error(attributionError);
   const inScope = (r: {
     dayKey?: string;
     createdAt: string;
@@ -197,6 +210,7 @@ export function reportSheets(
     expenses = data.expenses.filter(
       (r) =>
         !r.pendingConfirmation &&
+        !r.voided &&
         inScope(r) &&
         (!seller || r.registeredByUid === seller),
     );
@@ -204,7 +218,8 @@ export function reportSheets(
     (c) =>
       inScope(c) &&
       (!seller ||
-        data.sales.some((s) => s.id === c.saleId && s.sellerUid === seller)),
+        c.sellerUid === seller ||
+        (!c.sellerUid && data.sales.some((s) => s.id === c.saleId && s.sellerUid === seller))),
   );
   const lines = sales.flatMap((s) => s.lines.map((l) => ({ ...l, sale: s })));
   const losses = data.movements
@@ -218,7 +233,7 @@ export function reportSheets(
   const costKnown =
     lines.every((l) => typeof l.costTotal === "number") &&
     claims.every((c) => typeof c.additionalCost === "number") &&
-    losses.every((m) => typeof m.lossCost === "number");
+    (seller || losses.every((m) => typeof m.lossCost === "number"));
   const revenue = round2(
       sales.reduce((n, s) => n + s.total, 0) +
         claims.reduce((n, c) => n + c.revenueDelta, 0),
@@ -256,15 +271,15 @@ export function reportSheets(
         ["Costo de lo vendido y reemplazos", costKnown ? cost : null],
         ["Margen bruto", costKnown ? round2(revenue - cost) : null],
         ["Gastos registrados", spent],
-        ["Pérdidas de inventario", costKnown ? lossCost : null],
+        ["Pérdidas de inventario", seller ? null : costKnown ? lossCost : null],
         [
           "Resultado operativo",
-          costKnown ? round2(revenue - cost - spent - lossCost) : null,
+          seller ? null : costKnown ? round2(revenue - cost - spent - lossCost) : null,
         ],
         [
           "Estado de costos",
           costKnown
-            ? "Costos completos"
+            ? seller ? "Las pérdidas de inventario y el resultado operativo no se asignan por vendedor" : "Costos completos"
             : "Hay ventas históricas sin costo; no se estima una ganancia falsa",
         ],
       ],
@@ -497,6 +512,10 @@ export function reportSheets(
         "Ajuste de venta (Bs)",
         "Costo adicional (Bs)",
         "Deuda compensada (Bs)",
+        "Efectivo recibido (Bs)",
+        "Efectivo devuelto (Bs)",
+        "QR recibido (Bs)",
+        "QR devuelto (Bs)",
       ],
       rows: claims.map((c) => [
         reportDateTime(c.createdAt),
@@ -509,6 +528,10 @@ export function reportSheets(
         c.revenueDelta,
         c.additionalCost,
         c.debtReduction,
+        c.cashIn,
+        c.cashOut,
+        c.qrIn,
+        c.qrOut,
       ]),
     },
   ];

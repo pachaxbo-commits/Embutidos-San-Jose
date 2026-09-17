@@ -88,7 +88,7 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
             {replacement && <Field label={`Cantidad entregada (${replacement.unitType === 'kg' ? 'kg' : replacement.unitType === 'package' ? 'paquetes' : 'unidades'})`}><NumberInput min={0} step={replacement.unitType === 'kg' ? 0.01 : 1} value={replacementQuantity} onChange={event => { setReplacementQuantity(event.target.value); resetOperation() }} /></Field>}
           </>}
           <Field label="Motivo" required><TextArea value={reason} onChange={event => { setReason(event.target.value); resetOperation() }} placeholder="Ej. producto mal envasado o deteriorado antes de vencer" /></Field>
-          {kind === 'return' && Math.abs(difference) > 0 && <Field label="Medio para devolver el dinero"><Segmented value={method} options={[{ value: 'cash', label: 'Efectivo' }, { value: 'qr', label: 'QR / transferencia' }]} onChange={value => { setMethod(value); resetOperation() }} /></Field>}
+          {Math.abs(difference) > 0 && <Field label={difference > 0 ? 'Medio para cobrar la diferencia' : 'Medio para devolver la diferencia, si corresponde'}><Segmented value={method} options={[{ value: 'cash', label: 'Efectivo' }, { value: 'qr', label: 'QR / transferencia' }]} onChange={value => { setMethod(value); resetOperation() }} /></Field>}
           <div className="rounded-2xl bg-slate-50 p-3">
             <p className="text-[10px] font-extrabold uppercase text-slate-500">Resumen</p>
             <p className="mt-1 text-sm font-extrabold leading-snug text-slate-900">{formatQty(Number(quantity), line.unitType)} de {line.productNameSnapshot}</p>
@@ -99,7 +99,7 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
             setBusy(true)
             op.current ||= newOperationId('claim')
             try {
-              await registerClaim({ saleId, productId, kind, quantity: Number(quantity), replacementProductId, replacementQuantity: Number(replacementQuantity), warehouseId, reason, method: kind === 'return' ? method : 'none' }, op.current)
+              await registerClaim({ saleId, productId, kind, quantity: Number(quantity), replacementProductId, replacementQuantity: Number(replacementQuantity), warehouseId, reason, method: Math.abs(difference) > 0 ? method : 'none' }, op.current)
               setMessage('Reclamo registrado. Se actualizaron stock y saldo.')
               op.current = null
               setSaleId('')

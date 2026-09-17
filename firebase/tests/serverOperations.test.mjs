@@ -13,7 +13,7 @@ const {processCommand,dayKey}=req('./operations.cjs')
 const {prepareCleanDelivery,executeCleanDelivery}=req('./maintenance.cjs')
 const projectId='demo-pachax-audit',adminApp=initializeApp({projectId},'qa-operations'),db=getFirestore(adminApp),adminAuth=getAuth(adminApp),root=db.doc('restaurants/sanjose')
 const env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:8085,rules:fs.readFileSync('firebase/firestore.rules','utf8')}})
-const prefix=`q${Date.now().toString(36)}`,pid=`${prefix}-p`,pid2=`${prefix}-p2`,pid3=`${prefix}-p3`,route=`${prefix}-route`,wh=`${prefix}-wh`,cust=`${prefix}-customer`,old=`${prefix}-overdue`,admin=`${prefix}-admin`,seller=`${prefix}-seller`,warehouse=`${prefix}-warehouse`
+const prefix=`q${Date.now().toString(36)}`,pid=`${prefix}-p`,pid2=`${prefix}-p2`,pid3=`${prefix}-p3`,pid4=`${prefix}-p4`,route=`${prefix}-route`,wh=`${prefix}-wh`,cust=`${prefix}-customer`,old=`${prefix}-overdue`,admin=`${prefix}-admin`,seller=`${prefix}-seller`,warehouse=`${prefix}-warehouse`
 let checks=0
 const ok=(v,msg)=>{assert(v,msg);checks++;console.log('PASS',msg)}
 const read=async(col,id)=>(await root.collection(col).doc(id).get()).data()
@@ -34,11 +34,11 @@ try {
  await root.collection('members').doc(seller).set({role:'distributor',active:true,routeId:route,displayName:'QA vendedor'})
  await root.collection('members').doc(warehouse).set({role:'warehouse',active:true,warehouseId:wh,displayName:'QA almacén'})
  await root.collection('distWarehouses').doc(wh).set({id:wh,restaurantId:'sanjose',name:'QA interno',active:true})
- for(const [id,price,cost] of [[pid,10,5],[pid2,8,3],[pid3,6,2]])await root.collection('distProducts').doc(id).set({id,restaurantId:'sanjose',name:id,unitType:'kg',active:true,referencePrice:price,productionCost:cost})
+ for(const [id,price,cost] of [[pid,10,5],[pid2,8,3],[pid3,6,2],[pid4,12,7]])await root.collection('distProducts').doc(id).set({id,restaurantId:'sanjose',name:id,unitType:'kg',active:true,referencePrice:price,productionCost:cost})
  for(const id of [cust,old])await root.collection('distCustomers').doc(id).set({id,restaurantId:'sanjose',name:id,identityNumber:id===cust?'6543210':'6543211',customerCode:id===cust?'6543210':'6543211',active:true,createdAt:new Date().toISOString(),createdBy:admin})
  await root.collection('distReceivables').doc(`${prefix}-old`).set({id:`${prefix}-old`,restaurantId:'sanjose',customerId:old,routeId:route,originalAmount:5,paidAmount:0,balance:5,createdAt:new Date(Date.now()-8*86400000).toISOString()})
  const date=(days)=>dayKey(new Date(Date.now()+days*86400000))
- const intake=await command(admin,'intake',{lines:[{productId:pid,quantity:10,lotCode:'FUTURO',manufacturedOn:date(-10),expiresOn:date(30)},{productId:pid,quantity:2,lotCode:'PRIMERO',manufacturedOn:date(-10),expiresOn:date(5)},{productId:pid,quantity:4,lotCode:'VENCIDO',manufacturedOn:date(-10),expiresOn:date(-1)},{productId:pid2,quantity:4,lotCode:'REEMPLAZO',manufacturedOn:date(-10),expiresOn:date(30)}],note:'QA'})
+ const intake=await command(admin,'intake',{lines:[{productId:pid,quantity:10,lotCode:'FUTURO',manufacturedOn:date(-10),expiresOn:date(30)},{productId:pid,quantity:2,lotCode:'PRIMERO',manufacturedOn:date(-10),expiresOn:date(5)},{productId:pid,quantity:4,lotCode:'VENCIDO',manufacturedOn:date(-10),expiresOn:date(-1)},{productId:pid2,quantity:4,lotCode:'REEMPLAZO',manufacturedOn:date(-10),expiresOn:date(30)},{productId:pid4,quantity:2,lotCode:'CAMBIOS',manufacturedOn:date(-10),expiresOn:date(30)}],note:'QA'})
  ok((await read('distBalances',`central__${pid}`)).quantity===16,'ingreso por lotes suma stock físico')
  const intakeMovements=await root.collection('distStockMovements').where('productId','==',pid).get()
  ok(intakeMovements.docs.some(entry=>entry.data().type==='intake'&&entry.data().responsibleRole==='admin'&&entry.data().responsibleName==='QA administración'),'historial de ingreso conserva rol y nombre del usuario')
@@ -90,6 +90,14 @@ try {
  const drafts=[{sourceLocation:'centralWarehouse',routeId:'route-directa',routeName:'Directa',lines:[{productId:pid2,quantity:2,actualUnitPrice:8}],cashAmount:16,qrAmount:0,creditAmount:0,paymentKind:'cash'},{sourceLocation:'centralWarehouse',routeId:'route-directa',routeName:'Directa',lines:[{productId:pid2,quantity:2,actualUnitPrice:8}],cashAmount:16,qrAmount:0,creditAmount:0,paymentKind:'cash'}]
  const concurrent=await Promise.allSettled(drafts.map(p=>command(admin,'sale',p)))
  ok(concurrent.filter(r=>r.status==='fulfilled').length===1,'ventas concurrentes no dejan stock negativo')
+
+ const directSale=await command(admin,'sale',{sourceLocation:'centralWarehouse',routeId:route,routeName:'QA ruta',customerId:cust,lines:[{productId:pid,quantity:1,actualUnitPrice:10}],cashAmount:10,qrAmount:0,creditAmount:0,paymentKind:'cash'})
+ const dearer=await command(admin,'claim',{kind:'exchange',saleId:directSale.id,productId:pid,quantity:1,replacementProductId:pid4,replacementQuantity:1,warehouseId:'central',reason:'Producto dañado',method:'cash'})
+ ok(dearer.result.cashIn===2&&dearer.result.cashOut===0&&dearer.result.sellerUid===admin,'cambio más caro registra cobro y vendedor original')
+ const dearerSale=await command(admin,'sale',{sourceLocation:'centralWarehouse',routeId:route,routeName:'QA ruta',customerId:cust,lines:[{productId:pid4,quantity:1,actualUnitPrice:12}],cashAmount:12,qrAmount:0,creditAmount:0,paymentKind:'cash'})
+ const cheaper=await command(admin,'claim',{kind:'exchange',saleId:dearerSale.id,productId:pid4,quantity:1,replacementProductId:pid,replacementQuantity:1,warehouseId:'central',reason:'Producto dañado',method:'qr'})
+ ok(cheaper.result.qrOut===2&&cheaper.result.cashOut===0,'cambio más barato registra devolución por QR')
+ await command(admin,'claim',{kind:'exchange',saleId:directSale.id,productId:pid,quantity:1,replacementProductId:pid4,replacementQuantity:1,warehouseId:'central',reason:'Sin medio de cobro',method:'none'},'rejected');checks++
 
  await assertFails(setDoc(doc(client,'restaurants','sanjose','distClosures',`closure_${dispatch.id}`),{physicalCashDeclared:999,expectedCash:999},{merge:true}));checks++
  await assertFails(setDoc(doc(client,'restaurants','sanjose','distProducts',pid),{referencePrice:1},{merge:true}));checks++

@@ -48,6 +48,15 @@ const RAW_ENUMS = new Set([
         }
       }
       const module = await import('/src/modules/distribution/data/reportExports.ts')
+      const fixture = Object.fromEntries(Object.keys(collections).map(key => [key, []]))
+      fixture.claims = [{ id: 'devolucion-prueba', saleId: 'venta-otro-mes', sellerUid: 'vendedor-prueba', dayKey: '2026-09-17', createdAt: '2026-09-17T12:00:00.000Z', routeId: 'ruta-prueba', revenueDelta: -10, additionalCost: 0, cashIn: 0, cashOut: 10, qrIn: 0, qrOut: 0, debtReduction: 0 }]
+      fixture.expenses = [{ id: 'gasto-anulado', dayKey: '2026-09-17', createdAt: '2026-09-17T12:00:00.000Z', routeId: 'ruta-prueba', registeredByUid: 'vendedor-prueba', amount: 20, voided: true }]
+      const sellerSummary = module.reportSheets(fixture, ['2026-09-17'], 'ruta-prueba', 'vendedor-prueba')[0]
+      if (sellerSummary.rows[0][1] !== -10 || sellerSummary.rows[2][1] !== -10 || sellerSummary.rows[3][1] !== 0) throw new Error('Devolución de otro mes o gasto anulado alteró el resumen del vendedor')
+      const claimSheet = module.reportSheets(fixture, ['2026-09-17'], 'ruta-prueba', 'vendedor-prueba').find(sheet => sheet.name === 'Cambios y devoluciones')
+      if (claimSheet.rows.length !== 1 || claimSheet.rows[0].length !== claimSheet.headers.length) throw new Error('La devolución no coincide con el PDF y Excel')
+      fixture.claims[0].sellerUid = undefined
+      if (!module.reportAttributionError(fixture, ['2026-09-17'], 'ruta-prueba', 'vendedor-prueba')) throw new Error('Una devolución sin vendedor permitiría cifras parciales')
       window.qaData = data
       window.qaSheets = module.reportSheets(data, [...dates])
       window.qaWarehouseSheets = module.warehouseReportSheets(data, [...dates])
