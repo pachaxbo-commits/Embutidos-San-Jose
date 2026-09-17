@@ -6,6 +6,7 @@ import {
   runTransaction,
   getDocs,
   doc,
+  deleteField,
   onSnapshot,
   query,
   where,
@@ -489,6 +490,7 @@ export async function saveProduct(product: Omit<DistProduct, 'restaurantId' | 'c
     docRef(context, DIST_COLLECTIONS.products, product.id),
     {
       ...product,
+      approximateWeightKg: product.approximateWeightKg === undefined ? deleteField() : product.approximateWeightKg,
       referencePrice: round2(product.referencePrice),
       restaurantId: context.restaurantId,
       createdAt: product.createdAt ?? now,

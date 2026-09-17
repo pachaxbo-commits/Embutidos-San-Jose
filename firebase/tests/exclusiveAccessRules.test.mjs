@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
-import { collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore'
+import { collection, deleteField, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore'
 
 const COMPANY = 'sanjose'
 const OTHER_COMPANY = 'otra-empresa'
@@ -51,6 +51,12 @@ try {
   const outsider = env.authenticatedContext('ajeno').firestore()
 
   await check('Administración lee productos', assertSucceeds(getDocs(collection(admin, `restaurants/${COMPANY}/distProducts`))))
+  const granelRef = doc(admin, companyPath('distProducts', 'granel-sin-peso'))
+  await check('Administración registra peso informativo opcional', assertSucceeds(setDoc(granelRef, { id: 'granel-sin-peso', name: 'Chorizo a granel', unitType: 'kg', referencePrice: 53, productionCost: 20, minimumStock: 0, active: true, restaurantId: COMPANY, approximateWeightKg: 1 })))
+  const granelBatch = writeBatch(admin)
+  granelBatch.set(granelRef, { id: 'granel-sin-peso', name: 'Chorizo a granel', unitType: 'kg', referencePrice: 53, productionCost: 20, minimumStock: 0, active: true, restaurantId: COMPANY, approximateWeightKg: deleteField() }, { merge: true })
+  await check('Administración guarda producto por kilos sin peso aproximado', assertSucceeds(granelBatch.commit()))
+  await check('Producto por kilos no conserva peso aproximado', getDoc(granelRef).then(snapshot => { if (snapshot.data()?.approximateWeightKg !== undefined) throw new Error('El peso aproximado no se eliminó') }))
   await check('Almacén lee inventario', assertSucceeds(getDocs(collection(warehouse, `restaurants/${COMPANY}/distProducts`))))
   await check('Distribuidor lee productos', assertSucceeds(getDocs(collection(seller, `restaurants/${COMPANY}/distProducts`))))
   await check('Distribuidor consulta únicamente sus ventas', assertSucceeds(getDocs(query(collection(seller, `restaurants/${COMPANY}/distSales`), where('sellerUid', '==', 'vendedor')))))
