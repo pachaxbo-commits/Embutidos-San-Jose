@@ -229,7 +229,7 @@ export function DistributionApp({
       case 'dist.users':
         return <UsersView {...viewProps} />
       case 'dist.support':
-        return <SupportView onOpenPrinterSettings={onOpenPrinterSettings} />
+        return <SupportView onOpenPrinterSettings={onOpenPrinterSettings} initialSettings={role === 'support' ? undefined : data.supportSettings} />
       default:
         return null
     }

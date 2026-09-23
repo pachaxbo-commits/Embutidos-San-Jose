@@ -24,6 +24,7 @@ import {
   getFirestore,
   initializeFirestore,
   memoryLocalCache,
+  onSnapshot,
   persistentLocalCache,
   persistentMultipleTabManager,
   serverTimestamp,
@@ -252,6 +253,24 @@ export async function listRestaurantMembers() {
 
   const snap = await getDocs(collection(context.db, 'restaurants', context.restaurantId, 'members'))
   return snap.docs.map((memberDoc) => ({ uid: memberDoc.id, ...memberDoc.data() }) as RestaurantMember)
+}
+
+/**
+ * Mantiene la lista de usuarios en tiempo real. A diferencia de getDocs(),
+ * onSnapshot entrega primero la caché local y no deja la pantalla esperando
+ * indefinidamente cuando la conexión móvil cambia entre Wi-Fi y datos.
+ */
+export async function subscribeRestaurantMembers(
+  listener: (members: RestaurantMember[]) => void,
+  onError?: (error: Error) => void,
+): Promise<Unsubscribe> {
+  const context = await getFirebaseContext()
+  if (!context) throw new Error('Firebase no esta configurado.')
+  return onSnapshot(
+    collection(context.db, 'restaurants', context.restaurantId, 'members'),
+    snapshot => listener(snapshot.docs.map(memberDoc => ({ uid: memberDoc.id, ...memberDoc.data() }) as RestaurantMember)),
+    error => onError?.(error),
+  )
 }
 
 export async function createRestaurantMember(input: {

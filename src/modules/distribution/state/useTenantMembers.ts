@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { listRestaurantMembers } from '../../../lib/firebase'
+import { subscribeRestaurantMembers } from '../../../lib/firebase'
 import type { RestaurantMember } from '../../../types'
 
 /**
@@ -11,22 +11,51 @@ export function useTenantMembers() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const [revision, setRevision] = useState(0)
   const reload = useCallback(async () => {
     setIsLoading(true)
-    try {
-      const rows = await listRestaurantMembers()
-      setMembers(rows)
-      setError(null)
-    } catch (loadError) {
-      setError((loadError as Error).message || 'No se pudieron cargar los usuarios.')
-    } finally {
-      setIsLoading(false)
-    }
+    setError(null)
+    setRevision(value => value + 1)
   }, [])
 
   useEffect(() => {
-    void reload()
-  }, [reload])
+    let cancelled = false
+    let unsubscribe: (() => void) | undefined
+    const timeout = window.setTimeout(() => {
+      if (!cancelled) {
+        setIsLoading(false)
+        setError('La lista de usuarios tardó demasiado. Revisa la conexión e intenta nuevamente.')
+      }
+    }, 12000)
+    void subscribeRestaurantMembers(
+      rows => {
+        if (cancelled) return
+        window.clearTimeout(timeout)
+        setMembers(rows)
+        setError(null)
+        setIsLoading(false)
+      },
+      loadError => {
+        if (cancelled) return
+        window.clearTimeout(timeout)
+        setError(loadError.message || 'No se pudieron cargar los usuarios.')
+        setIsLoading(false)
+      },
+    ).then(stop => {
+      if (cancelled) stop()
+      else unsubscribe = stop
+    }).catch(loadError => {
+      if (cancelled) return
+      window.clearTimeout(timeout)
+      setError((loadError as Error).message || 'No se pudieron cargar los usuarios.')
+      setIsLoading(false)
+    })
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+      unsubscribe?.()
+    }
+  }, [revision])
 
   return { members, isLoading, error, reload }
 }

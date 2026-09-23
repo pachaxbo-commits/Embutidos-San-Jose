@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, DatabaseBackup, Printer, Save, ShieldCheck, Wrench } from 'lucide-react'
 import { Field, NumberInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { Modal } from '../../../components/ui/Modal'
-import { LoadingState, Screen } from '../../../components/ui/Screen'
+import { Screen } from '../../../components/ui/Screen'
 import {
   DEFAULT_SUPPORT_SETTINGS,
   executeCleanDelivery,
@@ -24,9 +24,9 @@ const SCOPE_LABELS: Record<string, string> = {
   distOperations: 'Operaciones técnicas',
 }
 
-export function SupportView({ onOpenPrinterSettings }: { onOpenPrinterSettings: () => void }) {
-  const [settings, setSettings] = useState<SupportSettings>(DEFAULT_SUPPORT_SETTINGS)
-  const [loading, setLoading] = useState(true)
+export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpenPrinterSettings: () => void; initialSettings?: SupportSettings }) {
+  const [settings, setSettings] = useState<SupportSettings>(initialSettings ?? DEFAULT_SUPPORT_SETTINGS)
+  const [loading, setLoading] = useState(!initialSettings)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -37,8 +37,21 @@ export function SupportView({ onOpenPrinterSettings }: { onOpenPrinterSettings: 
   const [acknowledged, setAcknowledged] = useState(false)
 
   useEffect(() => {
-    void loadSupportSettings().then(setSettings).catch(e => setError((e as Error).message)).finally(() => setLoading(false))
-  }, [])
+    if (initialSettings) {
+      return
+    }
+    let active = true
+    const timeout = window.setTimeout(() => {
+      if (!active) return
+      setLoading(false)
+      setError('La configuración tardó demasiado en responder. Se muestran valores seguros; revisa la conexión antes de guardar.')
+    }, 12000)
+    void loadSupportSettings()
+      .then(value => { if (active) { setSettings(value); setError(null) } })
+      .catch(e => { if (active) setError((e as Error).message) })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false; window.clearTimeout(timeout) }
+  }, [initialSettings])
 
   const update = <K extends keyof SupportSettings>(key: K, value: SupportSettings[K]) => setSettings(current => ({ ...current, [key]: value }))
 
@@ -66,10 +79,9 @@ export function SupportView({ onOpenPrinterSettings }: { onOpenPrinterSettings: 
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }
 
-  if (loading) return <LoadingState label="Cargando configuración..." />
-
   return <Screen title="Configuración" subtitle="Soporte técnico sin acceso a información comercial">
     <div className="grid gap-4 lg:grid-cols-2">
+      {loading && <p role="status" className="lg:col-span-2 rounded-2xl border border-sky-200 bg-sky-50 p-3 text-xs font-bold text-sky-800">Cargando la configuración guardada…</p>}
       {feedback && <p role="status" className="lg:col-span-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800"><CheckCircle2 className="mr-2 inline" size={16} />{feedback}</p>}
       {error && <p role="alert" className="lg:col-span-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-bold text-rose-800">{error}</p>}
 
