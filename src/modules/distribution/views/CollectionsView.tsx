@@ -38,7 +38,7 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
                   <CreditProducts saleId={data.receivables.find(r => r.id === collection.receivableId)?.saleId} lines={collection.saleLines?.length ? collection.saleLines : data.receivables.find(r => r.id === collection.receivableId)?.saleLines} />
                   <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">
                     {new Date(collection.createdAt).toLocaleString('es-BO')} · {collection.collectedByName} ·{' '}
-                    {collection.method === 'qr' ? 'QR' : 'Efectivo'}
+                    {collection.method === 'qr' ? 'QR' : collection.method === 'mixed' ? `Mixto · efectivo ${formatBs(collection.cashAmount || 0)} · QR ${formatBs(collection.qrAmount || 0)}` : 'Efectivo'}
                   </p>
                 </div>
                 <span className="shrink-0 text-sm font-black tabular-nums text-emerald-600">

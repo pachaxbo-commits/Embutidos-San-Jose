@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Check, PackagePlus, Search, Trash2, Truck } from 'lucide-react'
+import { Check, FileText, PackagePlus, Printer, Search, Trash2, Truck } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -10,6 +10,7 @@ import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistDispatch, DistDispatchLine } from '../types'
+import { printDispatchTicket, printOperationalSheet } from '../data/distributionDocumentPrintService'
 
 interface DraftLine {
   productId: string
@@ -272,6 +273,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                   ))}
                 </div>
               )}
+              <div className="mt-2 grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton><SecondaryButton onClick={() => printOperationalSheet('Despacho entregado', `${dispatch.routeName} · ${dispatch.distributorName}`, [...loaded.values()].map(row => ({ name: row.productName, detail: formatQty(row.totalLoaded, row.unitType) })))}><FileText size={15} /> Hoja</SecondaryButton></div>
             </SectionCard>
           )
         })}
@@ -331,7 +333,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       <ChoiceModal isOpen={isDistributorPickerOpen} onClose={() => setIsDistributorPickerOpen(false)} title="Selecciona distribuidor" subtitle="La ruta se asignará automáticamente" searchable options={distributors.map(member => ({ value: member.uid, label: member.displayName, description: member.routeId ? data.routes.find(route => route.id === member.routeId)?.name ?? 'Ruta de registro anterior' : 'Sin ruta asignada', disabled: !member.routeId }))} selectedValue={distributorUid} onSelect={selectDistributor} />
       <Modal isOpen={isProductPickerOpen} onClose={() => { setIsProductPickerOpen(false); setSearch('') }} title="Productos del despacho" subtitle="Selecciona varios y escribe la cantidad" size="lg" footer={<PrimaryButton full onClick={() => { setIsProductPickerOpen(false); setSearch('') }}>Listo · {draftLines.length} producto{draftLines.length === 1 ? '' : 's'}</PrimaryButton>}>
         <div className="grid gap-3">
-          <div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput autoFocus value={search} onChange={event => setSearch(event.target.value)} className="pl-9" placeholder="Buscar producto..." /></div>
+          <div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={search} onChange={event => setSearch(event.target.value)} className="pl-9" placeholder="Buscar producto..." /></div>
           <div className="grid grid-cols-2 gap-2">
             {filteredProducts.filter(product => (central.get(product.id) ?? 0) > 0 || draftLines.some(line => line.productId === product.id)).map(product => {
               const draft = draftLines.find(line => line.productId === product.id)
@@ -341,7 +343,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                   <span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span>
                   <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>{formatQty(central.get(product.id) ?? 0, product.unitType)}</span>{draft && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--primary)] text-white"><Check size={13} /></span>}</span>
                 </button>
-                {draft && <div className="border-t border-[var(--primary)]/15 p-2"><NumberInput autoFocus value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={`Cantidad (${product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u'})`} onChange={event => setDraftLines(current => current.map(line => line.productId === product.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /></div>}
+                {draft && <div className="border-t border-[var(--primary)]/15 p-2"><NumberInput value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={`Cantidad (${product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u'})`} onChange={event => setDraftLines(current => current.map(line => line.productId === product.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /></div>}
               </div>
             })}
           </div>

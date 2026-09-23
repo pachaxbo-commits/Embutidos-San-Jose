@@ -105,6 +105,21 @@ export interface DistBalance {
   updatedAt: string
 }
 
+export interface DistAdjustmentRequest extends DistBaseDoc {
+  productId: string
+  productName: string
+  unitType: UnitType
+  quantity: number
+  warehouseId: string
+  lotId?: string
+  note: string
+  requestedByUid: string
+  requestedByName: string
+  status: 'pending' | 'approved' | 'rejected'
+  reviewedBy?: string
+  reviewedAt?: string
+}
+
 /** Ledger auditable e inmutable. El id es el operationId (idempotencia). */
 export interface DistStockMovement extends DistBaseDoc {
   responsibleName?: string
@@ -173,6 +188,9 @@ export interface DistSaleLine {
   unitType: UnitType
   /** Precio realmente aplicado, congelado historicamente */
   actualUnitPrice: number
+  /** Precio oficial vigente al vender; permite auditar descuentos promocionales. */
+  referenceUnitPrice?: number
+  isPromotional?: boolean
   subtotal: number
 }
 
@@ -195,6 +213,8 @@ export interface DistSale extends DistBaseDoc {
   cashAmount: number
   qrAmount: number
   creditAmount: number
+  cashReceived?: number
+  changeAmount?: number
   note?: string
 }
 
@@ -229,7 +249,9 @@ export interface DistCollection extends DistBaseDoc {
   collectedByUid: string
   collectedByName: string
   amount: number
-  method: 'cash' | 'qr'
+  method: 'cash' | 'qr' | 'mixed'
+  cashAmount?: number
+  qrAmount?: number
   note?: string
 }
 

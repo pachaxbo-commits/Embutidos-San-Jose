@@ -59,11 +59,13 @@ try {
  const dispatch=await command(warehouse,'dispatch',{warehouseId:wh,routeId:route,routeName:'QA ruta',distributorUid:seller,distributorName:'QA vendedor',lines:[{productId:pid,quantity:3}]})
  const base={sourceLocation:'route',routeId:route,routeName:'QA ruta',dispatchId:dispatch.id,customerId:cust,lines:[{productId:pid,quantity:2,actualUnitPrice:10}],cashAmount:0,qrAmount:0,creditAmount:20,paymentKind:'credit'}
  await command(seller,'sale',{...base,lines:[{productId:pid,quantity:2,actualUnitPrice:9}],creditAmount:18},'rejected');checks++
+ const promotional=await command(seller,'sale',{...base,lines:[{productId:pid,quantity:0.5,actualUnitPrice:9,isPromotional:true}],creditAmount:4.5})
+ ok(promotional.result.lines[0].isPromotional===true&&promotional.result.lines[0].referenceUnitPrice===10,'venta promocional conserva precio oficial y precio aplicado')
  await command(seller,'sale',{...base,customerId:old,creditAmount:0,cashAmount:20,paymentKind:'cash'},'rejected');checks++
  const sold=await command(seller,'sale',base)
  ok(sold.result.lines[0].costTotal===10,'venta conserva el costo histórico')
  await processCommand(db,root.collection('distOperations').doc(sold.id))
- ok((await read('distBalances',`route__${route}__${pid}`)).quantity===1,'reintento no duplica la venta')
+ ok((await read('distBalances',`route__${route}__${pid}`)).quantity===0.5,'reintento no duplica la venta')
  await command(seller,'collection',{receivable:{id:sold.id},amount:5,method:'cash'})
  await command(admin,'claim',{kind:'exchange',saleId:sold.id,productId:pid,quantity:1,replacementProductId:pid2,replacementQuantity:1,warehouseId:'central',reason:'Mal envasado',method:'cash'})
  let debt=await read('distReceivables',sold.id)
@@ -92,6 +94,7 @@ try {
  ok(concurrent.filter(r=>r.status==='fulfilled').length===1,'ventas concurrentes no dejan stock negativo')
 
  const directSale=await command(admin,'sale',{sourceLocation:'centralWarehouse',routeId:route,routeName:'QA ruta',customerId:cust,lines:[{productId:pid,quantity:1,actualUnitPrice:10}],cashAmount:10,qrAmount:0,creditAmount:0,paymentKind:'cash'})
+ ok(directSale.result.routeId==='administracion'&&directSale.result.routeName==='Administración','venta de Administración nunca se atribuye a una zona')
  const dearer=await command(admin,'claim',{kind:'exchange',saleId:directSale.id,productId:pid,quantity:1,replacementProductId:pid4,replacementQuantity:1,warehouseId:'central',reason:'Producto dañado',method:'cash'})
  ok(dearer.result.cashIn===2&&dearer.result.cashOut===0&&dearer.result.sellerUid===admin,'cambio más caro registra cobro y vendedor original')
  const dearerSale=await command(admin,'sale',{sourceLocation:'centralWarehouse',routeId:route,routeName:'QA ruta',customerId:cust,lines:[{productId:pid4,quantity:1,actualUnitPrice:12}],cashAmount:12,qrAmount:0,creditAmount:0,paymentKind:'cash'})
@@ -110,6 +113,12 @@ try {
  const foreignCollection=await command(seller,'collection',{receivable:{id:foreignDebtId},amount:2,method:'cash'})
  ok((await read('distReceivables',foreignDebtId)).balance===10,'distribuidor puede cobrar una deuda originada por otra ruta')
  ok(foreignCollection.result.routeId===route&&foreignCollection.result.originRouteId==='otra-ruta','cobro cruzado entra a la caja del cobrador y conserva la ruta original')
+ const mixedCollection=await command(seller,'collection',{receivable:{id:foreignDebtId},amount:5,method:'mixed',cashAmount:2,qrAmount:3})
+ ok(mixedCollection.result.cashAmount===2&&mixedCollection.result.qrAmount===3&&(await read('distReceivables',foreignDebtId)).balance===5,'cobro mixto separa efectivo y QR sin duplicar la deuda')
+ const request=await command(warehouse,'adjustmentRequest',{warehouseId:wh,line:{productId:pid,quantity:-0.5},note:'Merma solicitada QA'})
+ ok(request.result.status==='pending'&&(await read('distBalances',`warehouse__${wh}__${pid}`)).quantity===1,'solicitud de Almacén no descuenta stock antes de aprobarse')
+ await command(admin,'reviewAdjustmentRequest',{requestId:request.id,approve:true})
+ ok((await read('distAdjustmentRequests',request.id)).status==='approved'&&(await read('distBalances',`warehouse__${wh}__${pid}`)).quantity===0.5,'Administración aprueba y recién entonces se descuenta stock')
  const validPhoto='data:image/jpeg;base64,/9j/2Q=='
  await setDoc(doc(adminClient,'restaurants','sanjose','distProducts',pid2),{photoDataUrl:validPhoto},{merge:true});checks++
  await assertFails(setDoc(doc(adminClient,'restaurants','sanjose','distProducts',pid2),{photoDataUrl:'data:image/png;base64,AAAA'},{merge:true}));checks++

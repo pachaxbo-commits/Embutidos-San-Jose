@@ -432,6 +432,12 @@ async function sale(o, p) {
       (o.member.role === "distributor" ? "route" : "centralWarehouse"),
     "Origen de venta no autorizado.",
   );
+  if (o.member.role === "admin") {
+    p.routeId = "administracion";
+    p.routeName = "Administración";
+  } else {
+    check(p.routeId === o.member.routeId, "La venta no corresponde a tu ruta.");
+  }
   const loc =
     o.member.role === "distributor"
       ? location("route", o.member.routeId)
@@ -472,13 +478,13 @@ async function sale(o, p) {
   const lines = [];
   for (const l of p.lines) {
     const product = await o.product(l.productId);
+    const promotional = round(l.actualUnitPrice) !== round(product.referencePrice);
     check(
-      o.member.role === "admin" ||
-        round(l.actualUnitPrice) === round(product.referencePrice),
-      "El vendedor no puede modificar el precio. Revisa el precio vigente.",
+      o.member.role === "admin" || !promotional || l.isPromotional === true,
+      "Marca la venta como promocional para modificar el precio.",
     );
     check(
-      Number.isFinite(l.actualUnitPrice) && l.actualUnitPrice >= 0,
+      Number.isFinite(l.actualUnitPrice) && l.actualUnitPrice > 0,
       "Precio inválido.",
     );
     const allocations = await o.take(l.productId, loc, l.quantity);
@@ -489,6 +495,8 @@ async function sale(o, p) {
       unitType: product.unitType,
       quantity: l.quantity,
       actualUnitPrice: round(l.actualUnitPrice),
+      referenceUnitPrice: round(product.referencePrice),
+      isPromotional: promotional,
       subtotal: round(l.quantity * l.actualUnitPrice),
       allocations,
       costTotal: known
@@ -526,6 +534,8 @@ async function sale(o, p) {
     cashAmount: p.cashAmount,
     qrAmount: p.qrAmount,
     creditAmount: p.creditAmount,
+    cashReceived: Number.isFinite(p.cashReceived) ? round(p.cashReceived) : p.cashAmount,
+    changeAmount: Number.isFinite(p.changeAmount) ? round(p.changeAmount) : 0,
     note: p.note || "",
   };
   o.put("distSales", o.id, s);
@@ -560,7 +570,20 @@ async function collection(o, p) {
     Number.isFinite(p.amount) && p.amount > 0 && p.amount <= r.balance,
     "El cobro supera el saldo pendiente.",
   );
-  check(["cash", "qr"].includes(p.method), "Método de pago inválido.");
+  check(["cash", "qr", "mixed"].includes(p.method), "Método de pago inválido.");
+  const cashAmount = round(Number.isFinite(p.cashAmount) ? p.cashAmount : p.method === "cash" ? p.amount : 0);
+  const qrAmount = round(Number.isFinite(p.qrAmount) ? p.qrAmount : p.method === "qr" ? p.amount : 0);
+  check(
+    [cashAmount, qrAmount].every((value) => Number.isFinite(value) && value >= 0) &&
+      Math.abs(round(cashAmount + qrAmount) - round(p.amount)) < 0.01,
+    "El desglose del cobro no coincide con el monto.",
+  );
+  check(
+    (p.method === "cash" && cashAmount === round(p.amount) && qrAmount === 0) ||
+      (p.method === "qr" && qrAmount === round(p.amount) && cashAmount === 0) ||
+      (p.method === "mixed" && cashAmount > 0 && qrAmount > 0),
+    "Revisa la forma y el desglose del cobro.",
+  );
   r.paidAmount = round(r.paidAmount + p.amount);
   r.balance = round(r.balance - p.amount);
   r.status = r.balance === 0 ? "PAID" : "PARTIAL";
@@ -585,6 +608,8 @@ async function collection(o, p) {
     collectedByName: o.member.displayName || o.actor,
     amount: p.amount,
     method: p.method,
+    cashAmount,
+    qrAmount,
     note: p.note || "",
   };
   o.put("distCollections", o.id, c);
@@ -672,6 +697,50 @@ async function adjustment(o, p) {
       : null,
   });
   return { id: o.id };
+}
+async function adjustmentRequest(o, p) {
+  check(o.member.role === "warehouse", "Solo Almacén puede solicitar esta baja.");
+  check(p.note?.trim(), "El motivo de la baja es obligatorio.");
+  const warehouseId = p.warehouseId || o.member.warehouseId || "central";
+  o.owns(location("warehouse", warehouseId));
+  const product = await o.product(p.line.productId);
+  const quantity = o.amount(p.line.quantity, product, true);
+  check(quantity < 0, "La solicitud debe descontar una cantidad mayor a cero.");
+  const request = {
+    id: o.id,
+    ...o.base(),
+    productId: product.id,
+    productName: product.name,
+    unitType: product.unitType,
+    quantity,
+    warehouseId,
+    lotId: p.line.lotId || "",
+    note: p.note.trim(),
+    requestedByUid: o.actor,
+    requestedByName: o.member.displayName || o.actor,
+    status: "pending",
+  };
+  o.put("distAdjustmentRequests", o.id, request);
+  return request;
+}
+async function reviewAdjustmentRequest(o, p) {
+  o.admin();
+  const request = await o.read("distAdjustmentRequests", p.requestId);
+  check(request?.status === "pending", "Esta solicitud ya fue revisada.");
+  if (p.approve === true) {
+    await adjustment(o, {
+      warehouseId: request.warehouseId,
+      note: `${request.note} (solicitado por ${request.requestedByName})`,
+      line: { productId: request.productId, quantity: request.quantity, lotId: request.lotId || undefined },
+    });
+    request.status = "approved";
+  } else {
+    request.status = "rejected";
+  }
+  request.reviewedBy = o.actor;
+  request.reviewedAt = o.now;
+  o.put("distAdjustmentRequests", request.id, request);
+  return request;
 }
 async function expense(o, p) {
   check(
@@ -886,10 +955,7 @@ async function closure(o, p) {
   );
   const sum = (list, key) => round(list.reduce((n, r) => n + (r[key] || 0), 0));
   const cashSales = sum(sales, "cashAmount"),
-    cashCollections = sum(
-      collections.filter((x) => x.method === "cash"),
-      "amount",
-    ),
+    cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
     cashExpenses = sum(expenses, "amount"),
     claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
     expectedCash = round(
@@ -907,10 +973,7 @@ async function closure(o, p) {
     qrSales: sum(sales, "qrAmount"),
     creditGenerated: sum(sales, "creditAmount"),
     cashCollections,
-    qrCollections: sum(
-      collections.filter((x) => x.method === "qr"),
-      "amount",
-    ),
+    qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
     cashExpenses,
     claimCash,
     expectedCash,
@@ -1057,7 +1120,7 @@ async function claim(o, p) {
   o.put("distClaims", o.id, c);
   return c;
 }
-Object.assign(handlers, { adjustment, expense, deleteExpense, deleteProduct, closure, claim });
+Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, deleteProduct, closure, claim });
 async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);

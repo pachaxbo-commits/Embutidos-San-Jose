@@ -194,11 +194,16 @@ service cloud.firestore {
         && request.resource.data.payload is map
         && ((request.resource.data.type in ['sale','collection','expense','creditStatus'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
+          || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
-          || (request.resource.data.type in ['adjustment','claim','updateLot','reopen','reviewVariance','deleteExpense','deleteProduct'] && distAdmin(restaurantId)));
+          || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','deleteProduct'] && distAdmin(restaurantId)));
       allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged']) && request.resource.data.acknowledged == true;
       allow delete: if false;
+    }
+    match /restaurants/{restaurantId}/distAdjustmentRequests/{requestId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId);
+      allow write: if false;
     }
     match /restaurants/{restaurantId}/distLots/{lotId} {
       allow read: if distWorker(restaurantId);

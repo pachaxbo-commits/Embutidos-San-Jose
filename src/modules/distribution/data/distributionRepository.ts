@@ -36,7 +36,7 @@ import type {
   DistSale,
   DistSaleLine,
   DistStockMovement,
-  DistLot, DistTransfer, DistClaim, DistCreditStatus,
+  DistLot, DistTransfer, DistClaim, DistCreditStatus, DistAdjustmentRequest,
   PaymentKind,
   SourceLocation,
 } from '../types'
@@ -70,6 +70,7 @@ export const DIST_COLLECTIONS = {
   collections: 'distCollections',
   expenses: 'distExpenses',
   closures: 'distClosures',
+  adjustmentRequests: 'distAdjustmentRequests',
 } as const
 
 const SCHEMA_VERSION = 1
@@ -111,7 +112,7 @@ export async function verifyQr(sourceType: 'sale' | 'collection' | 'claim', sour
     if ((await tx.get(verificationRef)).exists()) return
     const source = await tx.get(docRef(ctx, sourceType === 'sale' ? DIST_COLLECTIONS.sales : sourceType === 'claim' ? 'distClaims' : DIST_COLLECTIONS.collections, sourceId))
     const data = source.data()
-    const amount = sourceType === 'sale' ? data?.qrAmount : sourceType === 'claim' ? data?.qrIn : data?.method === 'qr' ? data.amount : 0
+    const amount = sourceType === 'sale' ? data?.qrAmount : sourceType === 'claim' ? data?.qrIn : (data?.qrAmount ?? (data?.method === 'qr' ? data.amount : 0))
     if (!data || !(amount > 0)) throw new Error('No existe un pago QR pendiente para este movimiento.')
     tx.set(verificationRef, { id: `${sourceType}_${sourceId}`, restaurantId: ctx.restaurantId, routeId: data.routeId,
       sourceType, sourceId, amount, reference: reference.trim(), verifiedBy: ctx.uid, verifiedAt: new Date().toISOString() })
@@ -595,6 +596,16 @@ export async function registerAdjustment(
   return operationId
 }
 
+export async function requestAdjustment(line: DistDispatchLine, note: string, operationId = newOperationId('adjust-request'), warehouseId = 'central') {
+  await submitOperation('adjustmentRequest', { line, note, warehouseId }, operationId)
+  return operationId
+}
+
+export async function reviewAdjustmentRequest(requestId: string, approve: boolean, operationId = newOperationId('adjust-review')) {
+  await submitOperation('reviewAdjustmentRequest', { requestId, approve }, operationId)
+  return operationId
+}
+
 // ---------------------------------------------------------------------------
 // Despachos
 // ---------------------------------------------------------------------------
@@ -653,6 +664,8 @@ export interface RegisterSaleInput {
   cashAmount: number
   qrAmount: number
   creditAmount: number
+  cashReceived?: number
+  changeAmount?: number
   note?: string
 }
 
@@ -674,7 +687,9 @@ export interface RegisterCollectionInput {
   operationId: string
   receivable: DistReceivable
   amount: number
-  method: 'cash' | 'qr'
+  method: 'cash' | 'qr' | 'mixed'
+  cashAmount: number
+  qrAmount: number
   collectedByUid: string
   collectedByName: string
   routeId: string
@@ -687,7 +702,7 @@ export interface RegisterCollectionInput {
  */
 export async function registerCollection(input: RegisterCollectionInput): Promise<DistCollection> {
   const context = await getContext()
-  const provisional = { ...baseDocFields(context, new Date().toISOString()), id: input.operationId, operationId: input.operationId, receivableId: input.receivable.id, customerId: input.receivable.customerId, customerName: input.receivable.customerName, routeId: input.routeId, collectedByUid: context.uid, collectedByName: input.collectedByName, amount: input.amount, method: input.method } as DistCollection
+  const provisional = { ...baseDocFields(context, new Date().toISOString()), id: input.operationId, operationId: input.operationId, receivableId: input.receivable.id, customerId: input.receivable.customerId, customerName: input.receivable.customerName, routeId: input.routeId, collectedByUid: context.uid, collectedByName: input.collectedByName, amount: input.amount, method: input.method, cashAmount: input.cashAmount, qrAmount: input.qrAmount } as DistCollection
   return submitOperation<DistCollection>('collection', input, input.operationId, provisional)
 }
 
@@ -785,6 +800,10 @@ export function subscribeClaims(routeId: string | null, onData: (rows: DistClaim
     },
     onError,
   )
+}
+
+export function subscribeAdjustmentRequests(onData: (rows: DistAdjustmentRequest[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistAdjustmentRequest>(ctx => collectionRef(ctx, DIST_COLLECTIONS.adjustmentRequests), onData, onError)
 }
 export function subscribeCreditStatus(onData: (rows: DistCreditStatus[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistCreditStatus>(ctx => collectionRef(ctx, 'distCreditStatus'), onData, onError) }
 export async function registerClaim(payload: Record<string, unknown>, operationId: string) { return submitOperation<DistClaim>('claim', payload, operationId) }

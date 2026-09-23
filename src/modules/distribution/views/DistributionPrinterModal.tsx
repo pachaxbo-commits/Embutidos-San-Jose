@@ -22,7 +22,7 @@ export function DistributionPrinterModal({ restaurantId, onClose }: { restaurant
   const [connection, setConnection] = useState<'bluetooth_spp' | 'network_tcp'>(previous?.connectionType === 'network_tcp' ? 'network_tcp' : 'bluetooth_spp')
   const [address, setAddress] = useState(previous?.macAddress || '')
   const [ip, setIp] = useState(previous?.ipAddress || '')
-  const [paper, setPaper] = useState<'58mm' | '80mm'>(previous?.paperWidth || '80mm')
+  const [paper, setPaper] = useState<'58mm' | '80mm'>(previous?.paperWidth || '58mm')
   const [commandLanguage, setCommandLanguage] = useState<'auto' | 'escpos' | 'tspl'>(previous?.commandLanguage || 'auto')
   const [devices, setDevices] = useState<BluetoothPairedDevice[]>([])
   const [feedback, setFeedback] = useState(previous ? 'Configuración guardada en este dispositivo.' : 'Vincula la impresora en Android y luego búscala aquí.')
@@ -150,7 +150,7 @@ export function DistributionPrinterModal({ restaurantId, onClose }: { restaurant
       </div> : <Field label="Dirección IP"><TextInput value={ip} onChange={event => { setIp(event.target.value); setStatus('idle') }} placeholder="192.168.1.150" inputMode="decimal" /></Field>}
 
       <Field label="Ancho del papel">
-        <div className="grid grid-cols-2 gap-2">{(['58mm', '80mm'] as const).map(width => <button key={width} type="button" onClick={() => setPaper(width)} className={`min-h-[48px] rounded-2xl border text-sm font-extrabold ${paper === width ? 'border-[var(--primary)] bg-[var(--primary-soft)] text-[var(--primary)]' : 'border-slate-200 text-slate-600'}`}>{width === '58mm' ? '58 mm' : '80 mm recomendado'}</button>)}</div>
+        <div className="grid grid-cols-2 gap-2">{(['58mm', '80mm'] as const).map(width => <button key={width} type="button" onClick={() => setPaper(width)} className={`min-h-[48px] rounded-2xl border text-sm font-extrabold ${paper === width ? 'border-[var(--primary)] bg-[var(--primary-soft)] text-[var(--primary)]' : 'border-slate-200 text-slate-600'}`}>{width === '58mm' ? '58 mm predeterminado' : '80 mm opcional'}</button>)}</div>
       </Field>
 
       <Field label="Lenguaje de impresión" hint={`Se utilizará ${detectedLanguage === 'tspl' ? 'TSPL para etiquetas' : 'ESC/POS para tickets'}.`}>

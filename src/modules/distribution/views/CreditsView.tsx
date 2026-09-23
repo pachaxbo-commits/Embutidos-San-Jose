@@ -30,7 +30,9 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [selected, setSelected] = useState<CustomerCredit | null>(null)
   const [collectTarget, setCollectTarget] = useState<DistReceivable | null>(null)
   const [amount, setAmount] = useState('')
-  const [method, setMethod] = useState<'cash' | 'qr'>('cash')
+  const [method, setMethod] = useState<'cash' | 'qr' | 'mixed'>('cash')
+  const [cashAmount, setCashAmount] = useState('')
+  const [qrAmount, setQrAmount] = useState('')
   const [note, setNote] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -69,6 +71,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     setCollectTarget(receivable)
     setAmount(String(round2(receivable.balance)))
     setMethod('cash')
+    setCashAmount(String(round2(receivable.balance)))
+    setQrAmount('0')
     setNote('')
     setError(null)
   }
@@ -81,6 +85,12 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       setError(validation)
       return
     }
+    const cash = method === 'cash' ? value : method === 'qr' ? 0 : round2(Number(cashAmount))
+    const qr = method === 'qr' ? value : method === 'cash' ? 0 : round2(Number(qrAmount))
+    if (cash < 0 || qr < 0 || round2(cash + qr) !== value || (method === 'mixed' && (!(cash > 0) || !(qr > 0)))) {
+      setError('El efectivo y el QR deben ser mayores a cero y sumar exactamente el monto cobrado.')
+      return
+    }
 
     setIsSubmitting(true)
     try {
@@ -89,6 +99,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         receivable: collectTarget,
         amount: value,
         method,
+        cashAmount: cash,
+        qrAmount: qr,
         collectedByUid: session.uid,
         collectedByName: session.userName,
         routeId: session.routeId || collectTarget.routeId,
@@ -228,9 +240,11 @@ export function CreditsView({ session, data }: DistributionViewProps) {
               options={[
                 { value: 'cash', label: 'Efectivo' },
                 { value: 'qr', label: 'QR' },
+                { value: 'mixed', label: 'Mixto' },
               ]}
             />
           </Field>
+          {method === 'mixed' && <div className="grid grid-cols-2 gap-2"><Field label="Efectivo (Bs)" required><NumberInput value={cashAmount} min={0} onChange={event => setCashAmount(event.target.value)} /></Field><Field label="QR (Bs)" required><NumberInput value={qrAmount} min={0} onChange={event => setQrAmount(event.target.value)} /></Field></div>}
           <Field label="Observacion">
             <TextArea value={note} onChange={(event) => setNote(event.target.value)} />
           </Field>

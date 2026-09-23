@@ -40,7 +40,7 @@ export const DEFAULT_SUPPORT_SETTINGS: SupportSettings = {
   expiryAlertDays: 14,
   creditBlockDays: 7,
   requireQrVerification: true,
-  defaultPaperWidth: '80mm',
+  defaultPaperWidth: '58mm',
 }
 
 let maintenanceEmulatorConnected = false

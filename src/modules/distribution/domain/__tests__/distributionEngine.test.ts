@@ -210,6 +210,8 @@ export async function runDistributionEngineTestSuite(): Promise<{ passed: number
   assert(money.cashCollections === 100, 'cobros efectivo = Bs 100')
   assert(money.cashExpenses === 20, 'gastos efectivo = Bs 20')
   assert(money.expectedCash === 368, 'efectivo esperado = 288 + 100 - 20 = Bs 368')
+  const mixedMoney = computeMoneySummary(sales, [{ ...collections[0], id: 'col-mixed', operationId: 'col-mixed', amount: 100, method: 'mixed', cashAmount: 40, qrAmount: 60 }], expenses)
+  assert(mixedMoney.cashCollections === 40 && mixedMoney.qrCollections === 60 && mixedMoney.expectedCash === 308, 'cobro mixto separa efectivo y QR en el arqueo')
   assert(round2(365 - money.expectedCash) === -3, 'declarado 365 produce diferencia -3')
   assert(describeVariance(365 - money.expectedCash).kind === 'FALTANTE', 'diferencia de caja = FALTANTE Bs 3')
   assert(describeVariance(365 - money.expectedCash).amount === 3, 'faltante de caja mostrado como Bs 3')

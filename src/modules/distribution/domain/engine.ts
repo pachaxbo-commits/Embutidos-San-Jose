@@ -193,8 +193,10 @@ export function computeMoneySummary(
   let cashCollections = 0
   let qrCollections = 0
   for (const collection of collections) {
-    if (collection.method === 'qr') qrCollections += Number(collection.amount) || 0
-    else cashCollections += Number(collection.amount) || 0
+    const cash = collection.cashAmount ?? (collection.method === 'cash' ? collection.amount : 0)
+    const qr = collection.qrAmount ?? (collection.method === 'qr' ? collection.amount : 0)
+    cashCollections += Number(cash) || 0
+    qrCollections += Number(qr) || 0
   }
 
   const cashExpenses = expenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0)
@@ -396,9 +398,8 @@ export function computeSellerBreakdown(
 
   for (const collection of collections) {
     const entry = ensure(collection.collectedByUid, collection.collectedByName)
-    if (collection.method !== 'qr') {
-      entry.expectedCash = round2(entry.expectedCash + (Number(collection.amount) || 0))
-    }
+    const cash = collection.cashAmount ?? (collection.method === 'cash' ? collection.amount : 0)
+    entry.expectedCash = round2(entry.expectedCash + (Number(cash) || 0))
   }
 
   for (const claim of claims) {

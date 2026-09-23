@@ -4,6 +4,9 @@ import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
 import { Segmented, Field } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
+import { Modal } from '../../../components/ui/Modal'
+import { Printer, Send } from 'lucide-react'
+import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
 import {
   computeMoneySummary,
   computeSellerBreakdown,
@@ -13,7 +16,7 @@ import {
   round2,
   toDayKey,
 } from '../domain/engine'
-import { KpiCard, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
+import { KpiCard, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
@@ -43,6 +46,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const [routeFilter, setRouteFilter] = useState('')
   const [sellerFilter, setSellerFilter] = useState('')
   const [isSellerOpen, setIsSellerOpen] = useState(false)
+  const [selectedSale, setSelectedSale] = useState<DistSale | null>(null)
+  const [printFeedback, setPrintFeedback] = useState('')
   const attributionError = reportAttributionError(data, session.dayKeys, routeFilter, sellerFilter)
 
   const sales = useMemo(
@@ -106,13 +111,14 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     { key: 'ruta', header: 'Ruta', render: (row) => row.routeName, hideOnMobile: true },
     { key: 'cliente', header: 'Cliente', render: (row) => row.customerName || 'Ocasional' },
     { key: 'pago', header: 'Pago', render: (row) => reportPaymentLabel(row.paymentKind) },
+    { key: 'precio', header: 'Precio', render: (row) => row.lines.some(line => line.isPromotional) ? <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-black text-amber-800">PROMOCIONAL</span> : 'Oficial' },
     { key: 'total', header: 'Total', align: 'right', render: (row) => formatBs(row.total) },
   ]
 
   const collectionColumns: ResponsiveColumn<DistCollection>[] = [
     { key: 'hora', header: 'Hora', render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }) },
     { key: 'cobrador', header: 'Cobro', render: (row) => row.collectedByName },
-    { key: 'metodo', header: 'Metodo', render: (row) => (row.method === 'qr' ? 'QR' : 'Efectivo') },
+    { key: 'metodo', header: 'Metodo', render: (row) => (row.method === 'qr' ? 'QR' : row.method === 'mixed' ? `Mixto: efectivo ${formatBs(row.cashAmount || 0)} + QR ${formatBs(row.qrAmount || 0)}` : 'Efectivo') },
     { key: 'monto', header: 'Monto', align: 'right', render: (row) => formatBs(row.amount) },
   ]
 
@@ -200,8 +206,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                 rows={sales}
                 columns={saleColumns}
                 keyOf={(row) => row.id}
-                titleOf={(row) => row.lines.map((line) => `${line.quantity} × ${line.productNameSnapshot}`).join(', ')}
+                titleOf={(row) => row.lines.map((line) => `${line.quantity} × ${line.productNameSnapshot}${line.isPromotional ? ` · promocional ${formatBs(line.actualUnitPrice)} (oficial ${formatBs(line.referenceUnitPrice || line.actualUnitPrice)})` : ''}`).join(', ')}
+                onRowClick={setSelectedSale}
               />
+              <p className="text-[11px] font-semibold text-slate-500">Toca una venta para reimprimir o compartir su comprobante.</p>
             </>
           ))}
 
@@ -316,6 +324,9 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         selectedValue={sellerFilter}
         onSelect={setSellerFilter}
       />
+      <Modal isOpen={Boolean(selectedSale)} onClose={() => { setSelectedSale(null); setPrintFeedback('') }} title="Comprobante de venta" subtitle={selectedSale ? `${new Date(selectedSale.createdAt).toLocaleString('es-BO')} · ${formatBs(selectedSale.total)}` : ''}>
+        {selectedSale && <div className="grid gap-2"><p className="rounded-2xl bg-slate-50 p-3 text-xs font-semibold text-slate-700">{selectedSale.customerName || 'Cliente ocasional'} · {selectedSale.lines.length} producto(s)</p><SecondaryButton full onClick={() => void printSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptHeader: data.supportSettings.receiptHeader, receiptFooter: data.supportSettings.receiptFooter, taxId: data.supportSettings.taxId, address: data.supportSettings.address, phone: data.supportSettings.phone, routeName: '', distributorName: '' }, true).then(result => setPrintFeedback(result.message))}><Printer size={16} /> Reimprimir ticket</SecondaryButton><SecondaryButton full onClick={() => printLargeSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptFooter: data.supportSettings.receiptFooter, routeName: '', distributorName: '' })}><Printer size={16} /> Imprimir en hoja</SecondaryButton><SecondaryButton full onClick={() => void shareSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptFooter: data.supportSettings.receiptFooter, routeName: '', distributorName: '' })}><Send size={16} /> Compartir imagen</SecondaryButton>{printFeedback && <p className="rounded-xl bg-amber-50 p-2 text-xs font-bold text-amber-800">{printFeedback}</p>}</div>}
+      </Modal>
     </Screen>
   )
 }

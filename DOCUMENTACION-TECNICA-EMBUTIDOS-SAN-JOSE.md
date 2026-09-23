@@ -140,3 +140,17 @@ Estado al cerrar esta limpieza:
 - Vercel sirve el mismo paquete validado localmente.
 - Android compila correctamente; esta limpieza no requiere entregar otra APK.
 - La carpeta anterior `G:\pachax-comandero` conserva temporalmente una copia porque el chat original la mantiene abierta. Puede eliminarse después de abrir `G:\Embutidos San Jose` como proyecto y comprobar que ningún proceso use la carpeta anterior.
+
+## Actualización funcional 1.3.0 (23 de septiembre de 2026)
+
+- Cobros de créditos: efectivo, QR o mixto con desglose separado para arqueos.
+- Ventas de Administración: canal fijo `Administración`; nunca se atribuyen a una zona o distribuidor.
+- Venta promocional para distribuidores con precio oficial y aplicado conservados para auditoría y reportes.
+- Venta móvil: solo muestra productos con existencia, calcula cambio y guarda observaciones sin imprimirlas.
+- Cliente ocasional: permitido únicamente cuando no existe saldo a crédito; selector y alta rápida diferenciados.
+- Comprobantes: 58 mm predeterminado, formato compacto, sin ruta/distribuidor, reimpresión desde Reportes, imagen compartible y hoja A4 para Administración.
+- Despachos y cierres: impresión térmica y en hoja.
+- Inventario: fotografías visibles y bajas solicitadas por Almacén, aplicadas solo después de aprobación administrativa.
+- Acceso y formularios: ojo para contraseña, sin apertura automática del teclado y controles más visibles.
+- Pruebas obligatorias: compilación web, 67 operaciones/permisos en emulador, 21 comprobaciones exclusivas, 63 cálculos de dominio y verificaciones móviles de navegador/ticket.
+- Android: `versionCode 17`, `versionName 1.3.0`.

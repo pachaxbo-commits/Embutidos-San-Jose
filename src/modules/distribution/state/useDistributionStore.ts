@@ -17,11 +17,12 @@ import {
   subscribeSales,
   subscribeSupportSettings,
   subscribeSyncState,
+  subscribeAdjustmentRequests,
 } from '../data/distributionRepository'
 import { centralBalanceId, routeBalanceId, toDayKey } from '../domain/engine'
 import type {
   DistBalance,
-  DistLot, DistStockMovement, DistTransfer, DistClaim, DistCreditStatus,
+  DistLot, DistStockMovement, DistTransfer, DistClaim, DistCreditStatus, DistAdjustmentRequest,
   DistWarehouse,
   DistQrVerification,
   DistClosure,
@@ -83,6 +84,7 @@ export interface DistributionData {
   lots: DistLot[]; operations: PendingOperation[]; movements: DistStockMovement[]; transfers: DistTransfer[]; claims: DistClaim[]; creditStatus: DistCreditStatus[];
   warehouses: DistWarehouse[]
   qrVerifications: DistQrVerification[]
+  adjustmentRequests: DistAdjustmentRequest[]
   products: DistProduct[]
   routes: DistRoute[]
   customers: DistCustomer[]
@@ -107,6 +109,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [creditStatus, setCreditStatus] = useState<DistCreditStatus[]>([])
   const [warehouses, setWarehouses] = useState<DistWarehouse[]>([])
   const [qrVerifications, setQrVerifications] = useState<DistQrVerification[]>([])
+  const [adjustmentRequests, setAdjustmentRequests] = useState<DistAdjustmentRequest[]>([])
   const [products, setProducts] = useState<DistProduct[]>([])
   const [routes, setRoutes] = useState<DistRoute[]>([])
   const [customers, setCustomers] = useState<DistCustomer[]>([])
@@ -143,6 +146,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
       ...(routeId === null ? [subscribeMovements(setMovements, onError), subscribeTransfers(setTransfers, onError)] : []),
       ...(canReadFinance ? [subscribeClaims(routeId, setClaims, onError)] : []),
       subscribeWarehouses(setWarehouses, onError),
+      ...(routeId === null ? [subscribeAdjustmentRequests(setAdjustmentRequests, onError)] : []),
       ...(canReadFinance ? [subscribeQrVerifications(routeId, setQrVerifications, onError)] : []),
       subscribeProducts((rows) => {
         setProducts(rows.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)))
@@ -218,7 +222,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
 
   const pendingSales = operations.filter(o => o.status === 'queued' && o.type === 'sale' && !sales.some(s => s.id === o.id)).map(o => ({ ...o.payload, id:o.id, createdAt:o.createdAt, dayKey:toDayKey(o.createdAt), pendingConfirmation:true } as unknown as DistSale))
   const pendingCollections = operations.filter(o => o.status === 'queued' && o.type === 'collection' && !collections.some(c => c.id === o.id)).map(o => {
-    const p = o.payload as unknown as { receivable: DistReceivable; amount: number; method: 'cash'|'qr'; routeId: string; collectedByName: string }
+    const p = o.payload as unknown as { receivable: DistReceivable; amount: number; method: 'cash'|'qr'|'mixed'; cashAmount?: number; qrAmount?: number; routeId: string; collectedByName: string }
     return { ...p, id: o.id, operationId: o.id, receivableId: p.receivable.id, customerId: p.receivable.customerId, customerName: p.receivable.customerName, collectedByUid: o.createdBy, createdAt: o.createdAt, dayKey: toDayKey(o.createdAt), pendingConfirmation: true } as unknown as DistCollection
   })
   const pendingExpenses = operations.filter(o => o.status === 'queued' && o.type === 'expense' && !expenses.some(e => e.id === o.id)).map(o => ({ ...o.payload, id:o.id, createdAt:o.createdAt, dayKey:toDayKey(o.createdAt), pendingConfirmation:true } as unknown as DistExpense))
@@ -237,6 +241,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     lots, operations, movements, transfers, claims, creditStatus,
     warehouses,
     qrVerifications,
+    adjustmentRequests,
     products,
     routes,
     customers,

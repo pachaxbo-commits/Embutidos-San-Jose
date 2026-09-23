@@ -9,7 +9,7 @@ import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTML
  */
 
 const CONTROL_CLASS =
-  'w-full min-w-0 min-h-[44px] rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary-soft)] disabled:bg-slate-100 disabled:text-slate-400'
+  'w-full min-w-0 min-h-[44px] rounded-2xl border-2 border-slate-300 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary-soft)] disabled:bg-slate-100 disabled:text-slate-400'
 
 interface FieldProps {
   label: string

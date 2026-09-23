@@ -6,9 +6,9 @@ import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../com
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2, toDayKey } from '../domain/engine'
-import { newOperationId, registerAdjustment, registerIntake, warehouseBalanceId } from '../data/distributionRepository'
+import { newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, warehouseBalanceId } from '../data/distributionRepository'
 import { useRouteStock, useStockIndex } from '../state/useDistributionStore'
-import { PrimaryButton, SectionCard, formatQty } from './shared'
+import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
@@ -33,7 +33,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
   const lotLocation = warehouseId === 'central' ? 'central' : `warehouse__${warehouseId}`
   const canIntake = ['admin','warehouse'].includes(session.role) && warehouseId === 'central'
   const operation = useRef<string | null>(null)
-  const canAdjust = session.role === 'admin'
+  const canAdjust = ['admin', 'warehouse'].includes(session.role)
   const isDistributor = session.role === 'distributor'
 
   const [tab, setTab] = useState<'central' | 'route'>(isDistributor ? 'route' : 'central')
@@ -142,7 +142,8 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       if (intakeMode === 'intake') {
         await registerIntake([line], intakeNote, operation.current)
       } else {
-        await registerAdjustment(line, intakeNote, operation.current, warehouseId)
+        if (session.role === 'warehouse') await requestAdjustment(line, intakeNote, operation.current, warehouseId)
+        else await registerAdjustment(line, intakeNote, operation.current, warehouseId)
       }
       setIntakeProduct(null)
     } catch (submitError) {
@@ -168,6 +169,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
           />
         )}
         {!isDistributor && <button type="button" onClick={() => setIsGeneralHistoryOpen(true)} className="mx-auto flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-xs font-extrabold text-slate-700 shadow-sm"><ListTree size={16} /> Historial general de inventario</button>}
+        {session.role === 'admin' && data.adjustmentRequests.some(request => request.status === 'pending') && <SectionCard title="Solicitudes de baja pendientes"><div className="grid gap-2">{data.adjustmentRequests.filter(request => request.status === 'pending').map(request => <article key={request.id} className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-3"><p className="text-sm font-extrabold text-slate-900">{request.productName} · {formatQty(Math.abs(request.quantity), request.unitType)}</p><p className="mt-1 text-xs text-slate-600">{request.requestedByName}: {request.note}</p><div className="mt-2 grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void reviewAdjustmentRequest(request.id, false)}>Rechazar</SecondaryButton><PrimaryButton onClick={() => void reviewAdjustmentRequest(request.id, true)}>Aprobar baja</PrimaryButton></div></article>)}</div></SectionCard>}
 
         {tab === 'central' && !isDistributor && (
           <>
@@ -177,7 +179,8 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                 const stock = central.get(product.id) ?? 0
                 return (
                   <div key={product.id} className="flex w-full min-w-0 items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3">
-                    <div className="min-w-0">
+                    {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} className="h-14 w-14 shrink-0 rounded-xl object-cover" />}
+                    <div className="min-w-0 flex-1">
                       <p className="break-words text-xs font-extrabold text-slate-900">{product.name}</p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
@@ -282,11 +285,11 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       <Modal
         isOpen={Boolean(intakeProduct)}
         onClose={() => setIntakeProduct(null)}
-        title={intakeMode === 'intake' ? 'Ingreso a almacen' : 'Ajuste de almacen'}
+        title={intakeMode === 'intake' ? 'Ingreso a almacen' : session.role === 'warehouse' ? 'Solicitar baja de stock' : 'Ajuste de almacen'}
         subtitle={intakeProduct?.name}
         footer={
           <PrimaryButton full disabled={isSubmitting} onClick={() => void submitIntake()}>
-            {isSubmitting ? 'Guardando...' : 'Registrar movimiento'}
+            {isSubmitting ? 'Guardando...' : intakeMode === 'adjustment' && session.role === 'warehouse' ? 'Enviar solicitud a Administración' : 'Registrar movimiento'}
           </PrimaryButton>
         }
       >

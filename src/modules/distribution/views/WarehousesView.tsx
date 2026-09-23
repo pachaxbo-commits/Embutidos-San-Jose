@@ -141,7 +141,7 @@ export function WarehousesView({ session, data }: DistributionViewProps) {
     </Modal>
 
     <Modal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} title="Nuevo almacén" footer={<PrimaryButton full disabled={busy || !name.trim()} onClick={async () => { setBusy(true); setFeedback(''); try { await createWarehouse(name); setName(''); setIsCreateOpen(false); setFeedback('Almacén creado. Asigna su responsable desde Usuarios.') } catch (error) { setFeedback((error as Error).message) } finally { setBusy(false) } }}>{busy ? 'Creando...' : 'Crear almacén'}</PrimaryButton>}>
-      <Field label="Nombre"><TextInput autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="Ej. Almacén zona norte" /></Field>
+      <Field label="Nombre"><TextInput value={name} onChange={event => setName(event.target.value)} placeholder="Ej. Almacén zona norte" /></Field>
       {feedback && <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 text-xs font-semibold text-amber-800">{feedback}</p>}
     </Modal>
 

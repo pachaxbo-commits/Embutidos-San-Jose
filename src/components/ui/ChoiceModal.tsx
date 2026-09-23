@@ -46,7 +46,7 @@ export function ChoiceModal({ isOpen, onClose, title, subtitle, options, selecte
 
   return <Modal isOpen={isOpen} onClose={() => { setSearch(''); onClose() }} title={title} subtitle={subtitle}>
     <div className="grid gap-2.5">
-      {searchable && <div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput autoFocus value={search} onChange={event => setSearch(event.target.value)} className="pl-9" placeholder="Buscar..." /></div>}
+      {searchable && <div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={search} onChange={event => setSearch(event.target.value)} className="pl-9" placeholder="Buscar..." /></div>}
       <div className="grid gap-2">
         {filtered.map(option => {
           const selected = option.value === selectedValue

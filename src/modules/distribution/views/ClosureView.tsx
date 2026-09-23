@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, ClipboardCheck, Lock, PackageCheck, Unlock } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Unlock } from 'lucide-react'
 import { Field, NumberInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -8,6 +8,7 @@ import { declareRouteReturn, reopenClosure, saveClosure, setClosureVarianceRevie
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
+import { printClosureTicket, printOperationalSheet } from '../data/distributionDocumentPrintService'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   draft: 'Devolución declarada; espera confirmación de almacén',
@@ -197,6 +198,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
               {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => void reopenClosure(closure, session.uid).catch(e => setError(e.message))}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
+              <div className="grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton><SecondaryButton onClick={() => printOperationalSheet('Cierre de ruta', `${closure.routeName} · ${closure.distributorName}`, closure.products.map(row => ({ name: row.productName, detail: `Entregado ${formatQty(row.totalLoaded, row.unitType)} · vendido ${formatQty(row.sold, row.unitType)} · devuelto ${formatQty(row.actualReturn, row.unitType)}` })), closure.status === 'closed' ? [{ label: 'Efectivo esperado', value: formatBs(closure.expectedCash) }, { label: 'Efectivo declarado', value: formatBs(closure.physicalCashDeclared) }, { label: 'Diferencia', value: formatBs(closure.cashDifference) }] : [])}><FileText size={15} /> Hoja de cierre</SecondaryButton></div>
             </div>}
           </article>
         })}

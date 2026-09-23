@@ -15,6 +15,7 @@ import type { PrinterProfile } from '../../types/printing'
  */
 
 const PRINTER_PROFILES_KEY = 'pachax:printer-profiles'
+const SAN_JOSE_58MM_MIGRATION_KEY = 'sanjose:printer-default-58mm:v1'
 
 let initialized = false
 
@@ -54,7 +55,13 @@ export function initializePrinting(): void {
   engine.registerAdapter(new AndroidBluetoothSppAdapter())
   engine.registerAdapter(new AndroidNetworkTcpPrinterAdapter())
 
-  for (const profile of loadPrinterProfiles()) {
+  let profiles = loadPrinterProfiles()
+  if (!localStorage.getItem(SAN_JOSE_58MM_MIGRATION_KEY)) {
+    profiles = profiles.map(profile => profile.role === 'receipt' ? { ...profile, paperWidth: '58mm', capabilities: { ...profile.capabilities, columnsPerLine: 32, supportsPaperCut: false } } : profile)
+    persistPrinterProfiles(profiles)
+    localStorage.setItem(SAN_JOSE_58MM_MIGRATION_KEY, 'done')
+  }
+  for (const profile of profiles) {
     engine.registerPrinterProfile(profile)
   }
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { LoaderCircle, LogIn, ShieldCheck } from 'lucide-react'
+import { Eye, EyeOff, LoaderCircle, LogIn, ShieldCheck } from 'lucide-react'
 
 export function LoginView({
   error,
@@ -12,6 +12,7 @@ export function LoginView({
 }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   return (
     <div className="relative flex min-h-[100dvh] w-full overflow-hidden flex-col items-center justify-center bg-[#FAF7F2] px-4 py-6 text-slate-900 font-sans selection:bg-red-500/20 selection:text-red-700 ">
@@ -42,9 +43,9 @@ export function LoginView({
             <label htmlFor="login-email" className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
               Correo Electrónico
             </label>
-            <input
+            <div className="relative"><input
               required
-              className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-red-600 focus:bg-white focus:ring-2 focus:ring-red-600/20"
+              className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-2.5 pr-12 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-red-600 focus:bg-white focus:ring-2 focus:ring-red-600/20"
               placeholder="tu.correo@empresa.com"
               id="login-email"
               autoComplete="username"
@@ -63,10 +64,10 @@ export function LoginView({
               placeholder="••••••••"
               id="login-password"
               autoComplete="current-password"
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-            />
+            /><button type="button" aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} onClick={() => setShowPassword(value => !value)} className="absolute right-1 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100">{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button></div>
           </div>
 
           {error ? (
