@@ -90,11 +90,18 @@ public class SanJoseUpdaterPlugin extends Plugin {
     @PluginMethod
     public void downloadUpdate(PluginCall call) {
         String rawUrl = call.getString("url", "");
-        Long expectedSize = call.getLong("expectedSizeBytes");
-        if (expectedSize == null || expectedSize <= 0 || expectedSize > MAX_APK_BYTES) {
+        Double expectedSizeValue = call.getDouble("expectedSizeBytes");
+        if (
+            expectedSizeValue == null ||
+            !Double.isFinite(expectedSizeValue) ||
+            expectedSizeValue <= 0 ||
+            expectedSizeValue > MAX_APK_BYTES ||
+            expectedSizeValue != Math.rint(expectedSizeValue)
+        ) {
             call.reject("El tamaño esperado de la actualización no es válido.");
             return;
         }
+        long expectedSize = expectedSizeValue.longValue();
         final URL trustedUrl;
         try {
             trustedUrl = validateTrustedUrl(rawUrl);
@@ -189,11 +196,18 @@ public class SanJoseUpdaterPlugin extends Plugin {
     public void verifyApk(PluginCall call) {
         String filePath = call.getString("filePath", "");
         String expectedSha256 = call.getString("expectedSha256", "").replace(":", "").toLowerCase(Locale.ROOT);
-        Long expectedVersionCode = call.getLong("expectedVersionCode");
-        if (!expectedSha256.matches("[a-f0-9]{64}") || expectedVersionCode == null || expectedVersionCode <= 0) {
+        Double expectedVersionCodeValue = call.getDouble("expectedVersionCode");
+        if (
+            !expectedSha256.matches("[a-f0-9]{64}") ||
+            expectedVersionCodeValue == null ||
+            !Double.isFinite(expectedVersionCodeValue) ||
+            expectedVersionCodeValue <= 0 ||
+            expectedVersionCodeValue != Math.rint(expectedVersionCodeValue)
+        ) {
             call.reject("Los datos de verificación no son válidos.");
             return;
         }
+        long expectedVersionCode = expectedVersionCodeValue.longValue();
         executor.execute(() -> {
             File apk = null;
             try {
