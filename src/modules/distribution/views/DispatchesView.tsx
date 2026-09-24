@@ -273,7 +273,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                   ))}
                 </div>
               )}
-              <div className="mt-2 grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton><SecondaryButton onClick={() => printOperationalSheet('Despacho entregado', `${dispatch.routeName} · ${dispatch.distributorName}`, [...loaded.values()].map(row => ({ name: row.productName, detail: formatQty(row.totalLoaded, row.unitType) })))}><FileText size={15} /> Hoja</SecondaryButton></div>
+              <div className="mt-2 grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton><SecondaryButton onClick={() => void printOperationalSheet('Despacho entregado', `${dispatch.routeName} · ${dispatch.distributorName}`, [...loaded.values()].map(row => ({ name: row.productName, detail: formatQty(row.totalLoaded, row.unitType) }))).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja</SecondaryButton></div>
             </SectionCard>
           )
         })}

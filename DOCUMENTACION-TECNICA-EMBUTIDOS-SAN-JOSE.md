@@ -172,3 +172,28 @@ Estado al cerrar esta limpieza:
 - El encabezado térmico se envía como `EMBUTIDOS SAN JOSE` en ASCII porque la impresora física omite la `É` de CP850.
 - La prueba del motor verifica byte por byte que el ticket contenga la palabra `JOSE` completa, incluida la `E` final.
 - Android: `versionCode 19`, `versionName 1.3.2`.
+
+## Preparación del actualizador Android 1.4.0 (24 de septiembre de 2026)
+
+- Trabajo aislado en la rama `codex/android-updater`; no desplegar ni fusionar sin revisión y prueba real autorizada.
+- Actualizador exclusivo del runtime Android nativo. `npm run build` para Vercel no contiene el módulo; solo `npm run build:android` lo empaqueta para Capacitor.
+- Canal preparado en Firebase Hosting bajo `/updates/san-jose/`, todavía sin desplegar.
+- Descarga nativa con progreso y validación obligatoria de tamaño, SHA-256, paquete, `versionCode` superior y certificado antes de abrir el instalador oficial.
+- Firma histórica preservada únicamente como respaldo de 1.3.2: `%USERPROFILE%\.android\debug.keystore`, alias `AndroidDebugKey`, SHA-256 `68:72:F7:AA:28:E3:C4:58:EC:44:9F:2D:14:DF:DC:E5:F6:4F:0A:C0:43:32:69:85:6F:59:BA:32:50:C2:8F:AE`.
+- Decisión de migración: 1.4.0 debe firmarse con la clave release exclusiva `pachax-san-jose-release.jks`, alias `pachax-san-jose`; no se acepta la firma histórica. La clave se crea fuera del repositorio mediante solicitud interactiva de contraseña.
+- Firma definitiva creada: RSA 4096 bits, `SHA256withRSA`, válida del 24 de septiembre de 2026 al 14 de septiembre de 2066. SHA-256 `C8:7F:3A:B0:00:CF:0A:5D:1F:B7:F6:93:C9:42:6D:2C:17:3F:8A:CD:7E:4E:03:8B:2A:6A:3C:E8:43:C3:38:2B`.
+- `release` carga secretos desde `android/signing.properties` ignorado o variables de entorno y falla si faltan; nunca usa `signingConfigs.debug`.
+- La migración 1.3.2 → 1.4.0 requiere comprobar cero operaciones pendientes, desinstalar una vez, instalar manualmente, iniciar sesión y volver a configurar la impresora. Desde 1.4.0 las actualizaciones conservarán la firma definitiva.
+- Firebase `pachax-flow` fue comprobado en plan Blaze. Hosting puede alojar `update.json` y APK; no se desplegó nada.
+- Android: `versionCode 20`, `versionName 1.4.0`.
+- Procedimiento completo y prohibiciones en `docs/ANDROID_UPDATES.md`.
+
+## Correcciones Android 1.4.1 (24 de septiembre de 2026)
+
+- La migración 1.3.2 → 1.4.0 con la nueva firma release fue validada en un teléfono real: instalación, inicio de sesión, recuperación de datos y venta correctos.
+- Android: `versionCode 21`, `versionName 1.4.1`; misma clave `pachax-san-jose` y certificado SHA-256 `C8:7F:3A:B0:00:CF:0A:5D:1F:B7:F6:93:C9:42:6D:2C:17:3F:8A:CD:7E:4E:03:8B:2A:6A:3C:E8:43:C3:38:2B`.
+- Compartir recibo: en Android genera PNG, lo escribe temporalmente en caché privada y utiliza Capacitor Share/FileProvider. No fija un paquete de WhatsApp; el selector permite WhatsApp normal, Business u otra aplicación compatible. Incluye timeout, error visible y limpieza posterior.
+- Impresión A4: Android ya no usa `window.open` sobre el WebView principal. `SanJoseDocumentPrintPlugin` crea un WebView nativo aislado, abre PrintManager y destruye la vista temporal al imprimir o cancelar.
+- Actualizador: una consulta asíncrona por montaje de la sesión Android, sin caché de seis horas ni consulta al reanudar desde WhatsApp/impresión. “Más tarde” conserva un recordatorio compacto durante esa sesión y el manifiesto conocido queda en almacenamiento local para recordar la actualización sin conexión.
+- Aislamiento web comprobado: el build normal no contiene módulo, URL ni textos del actualizador Android.
+- APK 1.4.1 preparada localmente para Hosting, sin deploy. SHA-256 APK `B0:ED:21:4D:F7:92:B3:7E:01:52:31:4D:6D:F8:36:F2:9F:50:8B:2C:BF:87:43:6C:E8:C4:07:6F:6F:66:BF:BA`.

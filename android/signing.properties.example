@@ -1,0 +1,7 @@
+# Copiar como android/signing.properties y completar únicamente en la computadora de firma.
+# android/signing.properties está ignorado por Git. Nunca versionar contraseñas.
+storeFile=C:/Users/fabri/.pachax/signing/pachax-san-jose-release.jks
+storePassword=REEMPLAZAR_LOCALMENTE
+keyAlias=pachax-san-jose
+keyPassword=REEMPLAZAR_LOCALMENTE
+certificateSha256=REEMPLAZAR_DESPUES_DE_CREAR_LA_CLAVE

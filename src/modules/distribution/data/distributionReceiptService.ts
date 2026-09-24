@@ -4,6 +4,10 @@ import { getActiveReceiptPrinter } from '../../../services/printing/printerBoots
 import { round2 } from '../domain/engine'
 import type { PrintJobPayload } from '../../../types/printing'
 import type { DistSale } from '../types'
+import { Capacitor } from '@capacitor/core'
+import { Directory, Filesystem } from '@capacitor/filesystem'
+import { Share } from '@capacitor/share'
+import { printHtmlDocument } from '../../../services/printing/documentPrintService'
 
 /**
  * Recibo de venta de distribucion.
@@ -180,6 +184,27 @@ async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): P
 /** Comparte el recibo por el canal nativo disponible (WhatsApp incluido). */
 export async function shareSaleReceipt(sale: DistSale, context: ReceiptContext): Promise<boolean> {
   const file = await buildSaleReceiptImage(sale, context)
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
+    const data = await fileToBase64(file)
+    const path = `shared/recibo-san-jose-${sale.id.slice(-6)}-${Date.now()}.png`
+    const written = await Filesystem.writeFile({ path, data, directory: Directory.Cache, recursive: true })
+    let cleanupDelay = 120_000
+    try {
+      await withTimeout(Share.share({
+        title: `Recibo ${context.companyName}`,
+        dialogTitle: 'Enviar recibo por WhatsApp u otra aplicación',
+        files: [written.uri],
+      }), 45_000, 'Android tardó demasiado en abrir las opciones para compartir.')
+      cleanupDelay = 15_000
+      return true
+    } catch (error) {
+      const message = (error as Error).message || ''
+      if (/cancel|cancelad|dismiss/i.test(message)) return false
+      throw new Error('No se pudo abrir WhatsApp ni las opciones para compartir. Intenta nuevamente.', { cause: error })
+    } finally {
+      window.setTimeout(() => { void Filesystem.deleteFile({ path, directory: Directory.Cache }).catch(() => undefined) }, cleanupDelay)
+    }
+  }
   const nav = navigator as Navigator & { share?: (data: { title?: string; text?: string; files?: File[] }) => Promise<void>; canShare?: (data: { files: File[] }) => boolean }
 
   if (typeof nav.share === 'function' && (!nav.canShare || nav.canShare({ files: [file] }))) {
@@ -195,12 +220,31 @@ export async function shareSaleReceipt(sale: DistSale, context: ReceiptContext):
   return true
 }
 
+async function fileToBase64(file: Blob): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || '').split(',', 2)[1] || '')
+    reader.onerror = () => reject(reader.error || new Error('No se pudo preparar la imagen del recibo.'))
+    reader.readAsDataURL(file)
+  })
+}
+
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+  let timer = 0
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => { timer = window.setTimeout(() => reject(new Error(message)), milliseconds) }),
+    ])
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
 /** Comprobante en hoja para impresora normal. No incluye rutas, vendedor ni observaciones. */
-export function printLargeSaleReceipt(sale: DistSale, context: ReceiptContext): void {
+export async function printLargeSaleReceipt(sale: DistSale, context: ReceiptContext): Promise<void> {
   const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] || character)
   const rows = sale.lines.map(line => `<tr><td><strong>${escape(line.productNameSnapshot)}</strong>${line.isPromotional ? `<small>Precio promocional (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})</small>` : ''}</td><td>${escape(line.quantity)} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'}</td><td>Bs ${round2(line.actualUnitPrice).toFixed(2)}</td><td>Bs ${round2(line.subtotal).toFixed(2)}</td></tr>`).join('')
-  const popup = window.open('', '_blank')
-  if (!popup) throw new Error('El navegador bloqueó la ventana de impresión.')
-  popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comprobante San José</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;padding:18mm}.head{border-bottom:4px solid #c8102e;display:flex;align-items:center;gap:22px;padding-bottom:18px}.head img{width:105px;height:70px;object-fit:contain}.head h1{font-size:26px;margin:0}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:24px 0;padding:16px;background:#fff7f5;border-radius:12px}table{width:100%;border-collapse:collapse}th{background:#c8102e;color:#fff;text-align:left;padding:11px}td{padding:12px;border-bottom:1px solid #e2e8f0}td:nth-child(n+2),th:nth-child(n+2){text-align:right}small{display:block;color:#b45309;margin-top:4px}.total{margin-top:20px;text-align:right;font-size:28px;font-weight:800;color:#c8102e}.payments{text-align:right;line-height:1.6}.foot{text-align:center;color:#64748b;margin-top:42px}</style></head><body><header class="head"><img src="/brand/san-jose-logo.png"><div><h1>${escape(context.companyName)}</h1><p>Comprobante de venta</p></div></header><section class="meta"><div><strong>Comprobante:</strong> ${escape(sale.id.slice(-6).toUpperCase())}</div><div><strong>Fecha:</strong> ${escape(new Date(sale.createdAt).toLocaleString('es-BO'))}</div><div><strong>Cliente:</strong> ${escape(sale.customerName || 'Cliente ocasional')}</div><div><strong>CI:</strong> ${escape(sale.customerCode || '-')}</div></section><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${rows}</tbody></table><div class="total">TOTAL: Bs ${round2(sale.total).toFixed(2)}</div><div class="payments">${sale.cashAmount > 0 ? `Efectivo: Bs ${round2(sale.cashAmount).toFixed(2)}<br>` : ''}${sale.qrAmount > 0 ? `QR: Bs ${round2(sale.qrAmount).toFixed(2)}<br>` : ''}${sale.creditAmount > 0 ? `Crédito: Bs ${round2(sale.creditAmount).toFixed(2)}<br>` : ''}${sale.changeAmount ? `<strong>Cambio devuelto: Bs ${round2(sale.changeAmount).toFixed(2)}</strong>` : ''}</div><p class="foot">${escape(context.receiptFooter || 'Gracias por su preferencia')}</p><script>window.onafterprint=()=>window.close();window.onload=()=>window.print()</script></body></html>`)
-  popup.document.close()
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comprobante San José</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;padding:18mm}.head{border-bottom:4px solid #c8102e;display:flex;align-items:center;gap:22px;padding-bottom:18px}.head img{width:105px;height:70px;object-fit:contain}.head h1{font-size:26px;margin:0}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:24px 0;padding:16px;background:#fff7f5;border-radius:12px}table{width:100%;border-collapse:collapse}th{background:#c8102e;color:#fff;text-align:left;padding:11px}td{padding:12px;border-bottom:1px solid #e2e8f0}td:nth-child(n+2),th:nth-child(n+2){text-align:right}small{display:block;color:#b45309;margin-top:4px}.total{margin-top:20px;text-align:right;font-size:28px;font-weight:800;color:#c8102e}.payments{text-align:right;line-height:1.6}.foot{text-align:center;color:#64748b;margin-top:42px}</style></head><body><header class="head"><img src="/brand/san-jose-logo.png"><div><h1>${escape(context.companyName)}</h1><p>Comprobante de venta</p></div></header><section class="meta"><div><strong>Comprobante:</strong> ${escape(sale.id.slice(-6).toUpperCase())}</div><div><strong>Fecha:</strong> ${escape(new Date(sale.createdAt).toLocaleString('es-BO'))}</div><div><strong>Cliente:</strong> ${escape(sale.customerName || 'Cliente ocasional')}</div><div><strong>CI:</strong> ${escape(sale.customerCode || '-')}</div></section><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${rows}</tbody></table><div class="total">TOTAL: Bs ${round2(sale.total).toFixed(2)}</div><div class="payments">${sale.cashAmount > 0 ? `Efectivo: Bs ${round2(sale.cashAmount).toFixed(2)}<br>` : ''}${sale.qrAmount > 0 ? `QR: Bs ${round2(sale.qrAmount).toFixed(2)}<br>` : ''}${sale.creditAmount > 0 ? `Crédito: Bs ${round2(sale.creditAmount).toFixed(2)}<br>` : ''}${sale.changeAmount ? `<strong>Cambio devuelto: Bs ${round2(sale.changeAmount).toFixed(2)}</strong>` : ''}</div><p class="foot">${escape(context.receiptFooter || 'Gracias por su preferencia')}</p></body></html>`
+  await printHtmlDocument(html, `Venta ${sale.id.slice(-6).toUpperCase()}`)
 }

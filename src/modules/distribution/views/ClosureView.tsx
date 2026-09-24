@@ -198,7 +198,21 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
               {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => void reopenClosure(closure, session.uid).catch(e => setError(e.message))}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
-              <div className="grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton><SecondaryButton onClick={() => printOperationalSheet('Cierre de ruta', `${closure.routeName} · ${closure.distributorName}`, closure.products.map(row => ({ name: row.productName, detail: `Entregado ${formatQty(row.totalLoaded, row.unitType)} · vendido ${formatQty(row.sold, row.unitType)} · devuelto ${formatQty(row.actualReturn, row.unitType)}` })), closure.status === 'closed' ? [{ label: 'Efectivo esperado', value: formatBs(closure.expectedCash) }, { label: 'Efectivo declarado', value: formatBs(closure.physicalCashDeclared) }, { label: 'Diferencia', value: formatBs(closure.cashDifference) }] : [])}><FileText size={15} /> Hoja de cierre</SecondaryButton></div>
+              <div className="grid grid-cols-2 gap-2">
+                <SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton>
+                <SecondaryButton onClick={() => {
+                  void printOperationalSheet(
+                    'Cierre de ruta',
+                    `${closure.routeName} · ${closure.distributorName}`,
+                    closure.products.map(row => ({ name: row.productName, detail: `Entregado ${formatQty(row.totalLoaded, row.unitType)} · vendido ${formatQty(row.sold, row.unitType)} · devuelto ${formatQty(row.actualReturn, row.unitType)}` })),
+                    closure.status === 'closed' ? [
+                      { label: 'Efectivo esperado', value: formatBs(closure.expectedCash) },
+                      { label: 'Efectivo declarado', value: formatBs(closure.physicalCashDeclared) },
+                      { label: 'Diferencia', value: formatBs(closure.cashDifference) },
+                    ] : [],
+                  ).catch(printError => setError(printError.message))
+                }}><FileText size={15} /> Hoja de cierre</SecondaryButton>
+              </div>
             </div>}
           </article>
         })}
