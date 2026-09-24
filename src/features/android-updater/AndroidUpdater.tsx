@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { App } from '@capacitor/app'
-import { AlertTriangle, CheckCircle2, Download, RefreshCw, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Download, RefreshCw, ShieldCheck, ArrowUpCircle } from 'lucide-react'
 import { Modal } from '../../components/ui/Modal'
 import { SanJoseUpdaterNative, type InstalledAndroidVersion } from './nativePlugin'
 import { checkAndroidUpdate } from './updateService'
 import { formatUpdateSize, type AndroidUpdateManifest } from './updateManifest'
+import { canPresentAutomaticUpdate, hasPendingKnownUpdate } from './sessionPolicy'
 
 type UpdateStage = 'idle' | 'checking' | 'available' | 'downloading' | 'verifying' | 'permission' | 'installing' | 'current' | 'error'
 
@@ -21,6 +22,7 @@ export default function AndroidUpdater({ manualCheckRequest, pendingOperations }
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
+  const [autoPresentationPending, setAutoPresentationPending] = useState(false)
   const firstManualRequest = useRef(manualCheckRequest)
 
   const mandatory = Boolean(manifest && (
@@ -36,14 +38,11 @@ export default function AndroidUpdater({ manualCheckRequest, pendingOperations }
     try {
       const result = await checkAndroidUpdate(manual)
       setInstalled(result.installed)
-      if (result.skippedByCache) {
-        setStage('idle')
-        return
-      }
       setManifest(result.manifest)
       if (result.updateAvailable && result.manifest) {
-        setOpen(true)
         setStage('available')
+        if (manual) setOpen(true)
+        else setAutoPresentationPending(true)
       } else if (manual) {
         setStage('current')
       } else {
@@ -61,6 +60,18 @@ export default function AndroidUpdater({ manualCheckRequest, pendingOperations }
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!autoPresentationPending || stage !== 'available' || open || pendingOperations) return
+    const tryToPresent = () => {
+      if (!canPresentAutomaticUpdate({ postponedThisSession: false, pendingOperations, anotherDialogOpen: Boolean(document.querySelector('[role="dialog"]')) })) return
+      setOpen(true)
+      setAutoPresentationPending(false)
+    }
+    const first = window.setTimeout(tryToPresent, 1_200)
+    const retry = window.setInterval(tryToPresent, 1_500)
+    return () => { window.clearTimeout(first); window.clearInterval(retry) }
+  }, [autoPresentationPending, open, pendingOperations, stage])
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void runCheck(false) }, 0)
@@ -134,10 +145,11 @@ export default function AndroidUpdater({ manualCheckRequest, pendingOperations }
   const close = () => {
     if (stage === 'downloading' || stage === 'verifying' || stage === 'installing') return
     if (!canPostpone && (stage === 'available' || stage === 'permission')) return
+    setAutoPresentationPending(false)
     setOpen(false)
   }
 
-  if (!open) return null
+  const reminderVisible = hasPendingKnownUpdate(installed?.versionCode ?? null, manifest)
 
   const footer = (() => {
     if (stage === 'available') {
@@ -172,7 +184,13 @@ export default function AndroidUpdater({ manualCheckRequest, pendingOperations }
   })()
 
   return (
-    <Modal isOpen onClose={close} title="Acerca de y actualizaciones" subtitle={installed ? `Versión instalada: ${installed.versionName} (${installed.versionCode})` : undefined} footer={footer}>
+    <>
+      {reminderVisible && !open && (
+        <button type="button" onClick={() => { setStage('available'); setOpen(true); setAutoPresentationPending(false) }} className="fixed bottom-[calc(5.25rem+var(--safe-bottom))] right-3 z-20 inline-flex min-h-[40px] max-w-[calc(100vw-1.5rem)] items-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-extrabold text-amber-900 shadow-lg" aria-label="Abrir actualización disponible">
+          <ArrowUpCircle size={17} /> Nueva versión disponible
+        </button>
+      )}
+      <Modal isOpen={open} onClose={close} title={stage === 'available' ? 'Actualización disponible' : 'Acerca de y actualizaciones'} subtitle={installed ? `Versión instalada: ${installed.versionName} (${installed.versionCode})` : undefined} footer={footer}>
       {stage === 'checking' && <Status icon={<RefreshCw className="animate-spin" size={28} />} title="Buscando actualizaciones…" text="La aplicación está comprobando el canal oficial de Embutidos San José." />}
       {stage === 'available' && manifest && (
         <div className="space-y-4">
@@ -188,7 +206,8 @@ export default function AndroidUpdater({ manualCheckRequest, pendingOperations }
       {stage === 'installing' && <Status icon={<RefreshCw className="animate-spin" size={28} />} title="Abriendo el instalador…" text="Confirma la actualización en la pantalla oficial de Android. Tus datos permanecerán guardados." />}
       {stage === 'current' && <Status icon={<CheckCircle2 size={28} />} title="La aplicación está actualizada" text="No hay una versión más nueva publicada en el canal oficial." />}
       {stage === 'error' && <Status danger icon={<AlertTriangle size={28} />} title="No se pudo completar" text={error || 'Ocurrió un error inesperado.'} />}
-    </Modal>
+      </Modal>
+    </>
   )
 }
 

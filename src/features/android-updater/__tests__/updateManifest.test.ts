@@ -1,4 +1,5 @@
 import { formatUpdateSize, hasNewerAndroidVersion, parseAndroidUpdateManifest } from '../updateManifest.ts'
+import { canPresentAutomaticUpdate, hasPendingKnownUpdate } from '../sessionPolicy.ts'
 
 function equal(actual: unknown, expected: unknown) {
   if (actual !== expected) throw new Error(`Se esperaba ${String(expected)} y se obtuvo ${String(actual)}.`)
@@ -34,4 +35,11 @@ throws(() => parseAndroidUpdateManifest({ ...valid, versionCode: 0 }), /código 
 throws(() => parseAndroidUpdateManifest({ ...valid, minimumSupportedVersionCode: 22 }), /versión mínima/)
 throws(() => parseAndroidUpdateManifest({ ...valid, releaseNotes: ['x'.repeat(301)] }), /notas/)
 
-console.log('10 comprobaciones del manifiesto Android aprobadas')
+equal(hasPendingKnownUpdate(20, parseAndroidUpdateManifest(valid)), true)
+equal(hasPendingKnownUpdate(21, parseAndroidUpdateManifest(valid)), false)
+equal(canPresentAutomaticUpdate({ postponedThisSession: false, pendingOperations: false, anotherDialogOpen: false }), true)
+equal(canPresentAutomaticUpdate({ postponedThisSession: true, pendingOperations: false, anotherDialogOpen: false }), false)
+equal(canPresentAutomaticUpdate({ postponedThisSession: false, pendingOperations: true, anotherDialogOpen: false }), false)
+equal(canPresentAutomaticUpdate({ postponedThisSession: false, pendingOperations: false, anotherDialogOpen: true }), false)
+
+console.log('16 comprobaciones del manifiesto y sesión Android aprobadas')

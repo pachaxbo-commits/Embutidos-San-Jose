@@ -75,6 +75,8 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [lastSale, setLastSale] = useState<DistSale | null>(null)
   const [printState, setPrintState] = useState<{ ok: boolean; message: string; uncertain?: boolean } | null>(null)
   const [isPrinting, setIsPrinting] = useState(false)
+  const [isSharing, setIsSharing] = useState(false)
+  const [shareFeedback, setShareFeedback] = useState('')
   useEffect(() => {
     if (!lastSale?.pendingConfirmation) return
     const confirmed = data.sales.find(s => s.id === lastSale.id && !s.pendingConfirmation)
@@ -219,8 +221,8 @@ export function SellView({ session, data }: DistributionViewProps) {
         finally { setIsSubmitting(false) }
       }
       // Se evalúa al confirmar, no durante el render de React.
-      // eslint-disable-next-line react-hooks/purity
       const blockDays = data.supportSettings.creditBlockDays
+      // eslint-disable-next-line react-hooks/purity
       if (credit.oldestPendingAt && Date.parse(credit.oldestPendingAt) + blockDays * 86400000 <= Date.now()) { setError(`Venta bloqueada: el cliente tiene créditos pendientes de ${blockDays} días o más.`); return }
     }
     if (cart.length === 0) {
@@ -639,10 +641,11 @@ export function SellView({ session, data }: DistributionViewProps) {
                 {printState.message}
               </p>
             )}
-            <SecondaryButton full onClick={() => void shareSaleReceipt(lastSale, receiptContext)}>
-              <Send size={16} /> Compartir por WhatsApp
+            <SecondaryButton full disabled={isSharing} onClick={() => { setIsSharing(true); setShareFeedback(''); void shareSaleReceipt(lastSale, receiptContext).then(shared => setShareFeedback(shared ? 'Se abrieron las opciones para compartir.' : 'Se canceló el envío.')).catch(shareError => setShareFeedback((shareError as Error).message)).finally(() => setIsSharing(false)) }}>
+              <Send size={16} /> {isSharing ? 'Preparando imagen...' : 'Compartir por WhatsApp'}
             </SecondaryButton>
-            {session.role === 'admin' && <SecondaryButton full onClick={() => printLargeSaleReceipt(lastSale, receiptContext)}><Printer size={16} /> Imprimir en hoja normal</SecondaryButton>}
+            {shareFeedback && <p className="rounded-xl bg-slate-50 p-2 text-xs font-bold text-slate-700">{shareFeedback}</p>}
+            {session.role === 'admin' && <SecondaryButton full onClick={() => void printLargeSaleReceipt(lastSale, receiptContext).catch(printError => setShareFeedback((printError as Error).message))}><Printer size={16} /> Imprimir en hoja normal</SecondaryButton>}
           </div>
         )}
       </Modal>

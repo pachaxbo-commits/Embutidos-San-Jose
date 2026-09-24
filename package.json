@@ -18,6 +18,7 @@
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
+    "test:android-documents": "node scripts/test-android-document-flows.mjs",
     "test:web-updater": "node scripts/validate-web-updater.cjs",
     "prepare:android-update": "node scripts/prepare-android-update.mjs",
     "seed:demo": "node firebase/tests/seedDemoTenant.mjs",

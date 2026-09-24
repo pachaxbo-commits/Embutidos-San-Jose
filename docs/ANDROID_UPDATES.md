@@ -136,7 +136,7 @@ No sobrescribir una APK publicada con otro contenido bajo el mismo nombre. Prepa
 
 ## Qué ocurre en el teléfono
 
-1. La APK consulta el manifiesto al iniciar, como máximo una vez cada seis horas, o al solicitar una búsqueda manual.
+1. La APK consulta el manifiesto de forma asíncrona una vez al crear una nueva sesión/cold start razonable, después de cargar la aplicación. No consulta de nuevo por volver desde WhatsApp, impresión o un pause/resume.
 2. Si el `versionCode` remoto es mayor, muestra versión, tamaño y notas.
 3. Descarga por HTTPS sin cargar el archivo completo en memoria y muestra progreso.
 4. Comprueba tamaño, SHA-256, paquete, versión superior y certificado.
@@ -148,6 +148,10 @@ No sobrescribir una APK publicada con otro contenido bajo el mismo nombre. Prepa
 Si Play Protect muestra una revisión, se debe dejar que termine. Nunca desactivarlo ni intentar evitarlo.
 
 Con operaciones pendientes de sincronización, la interfaz impide comenzar la descarga y recomienda terminar la sincronización. Incluso una actualización obligatoria puede posponerse mientras existan operaciones pendientes.
+
+Si la actualización es opcional y se elige **Más tarde**, no vuelve a abrir el modal automáticamente durante esa sesión y deja un chip compacto **Nueva versión disponible**. Al tocarlo reabre el modal. El último manifiesto válido se conserva localmente para mantener el recordatorio si el siguiente inicio está temporalmente sin conexión; una búsqueda manual siempre consulta el servidor y omite ese respaldo.
+
+La presentación automática espera si hay operaciones pendientes u otro diálogo abierto. La consulta y cualquier fallo de red nunca bloquean el login ni el panel.
 
 ## Migración única 1.3.2 → 1.4.0
 
