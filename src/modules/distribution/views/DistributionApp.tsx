@@ -3,7 +3,8 @@ import { acknowledgeOperation } from '../data/operationQueue'
 import { ClaimsView } from './ClaimsView'
 import { QrView } from './QrView'
 import { WarehousesView } from './WarehousesView'
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import {
   Boxes,
   ClipboardList,
@@ -20,6 +21,7 @@ import {
   BarChart3,
   Printer,
   Settings2,
+  RefreshCw,
 } from 'lucide-react'
 import { getVisibleModules, SAN_JOSE_APP_CONFIG, type ModuleId } from '../../../config/appConfig'
 import { hasPermission } from '../../../services/permissionService'
@@ -46,6 +48,11 @@ import { UsersView } from './UsersView'
 import { SupportView } from './SupportView'
 import type { Permission, UserRole } from '../../../types'
 import type { DistributionData } from '../state/useDistributionStore'
+
+const IS_NATIVE_ANDROID = import.meta.env.MODE === 'android' && Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
+const AndroidUpdater = IS_NATIVE_ANDROID
+  ? lazy(() => import('../../../features/android-updater/AndroidUpdater'))
+  : null
 
 export interface DistributionSession {
   restaurantId: string
@@ -118,6 +125,7 @@ export function DistributionApp({
   const [currentModule, setCurrentModule] = useState<ModuleId>('dist.dashboard')
   const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [isSignOutOpen, setIsSignOutOpen] = useState(false)
+  const [manualUpdateRequest, setManualUpdateRequest] = useState(0)
   const [dayKeys, setDayKeys] = useState<string[]>([toDayKey(new Date())])
 
   const activeModule = modules.some((module) => module.id === currentModule)
@@ -191,6 +199,11 @@ export function DistributionApp({
     }
     setCurrentModule(id)
     window.scrollTo({ top: 0 })
+  }
+
+  const openAndroidUpdates = () => {
+    setIsMoreOpen(false)
+    setManualUpdateRequest(request => request + 1)
   }
 
   const viewProps: DistributionViewProps = { session, data }
@@ -296,6 +309,15 @@ export function DistributionApp({
           >
             <LogOut size={17} /> Cerrar sesion
           </button>
+          {AndroidUpdater && (
+            <button
+              type="button"
+              onClick={openAndroidUpdates}
+              className="flex min-h-[44px] items-center gap-2.5 rounded-2xl px-3 text-left text-sm font-bold text-slate-600 hover:bg-white"
+            >
+              <RefreshCw size={17} /> Buscar actualizaciones
+            </button>
+          )}
         </nav>
 
         <main className="min-w-0 flex-1 pb-bottom-nav">{data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}{syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}{data.operations.filter(o=>o.status==='queued').length>0&&<p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o=>o.status==='queued').length}. Esperando confirmación del servidor. No vuelvas a registrarlas.</p>}{data.operations.filter(o=>o.status==='rejected' && !o.acknowledged).map(o=><p key={o.id} role="alert" className="mb-2 rounded-xl bg-rose-50 p-3 text-sm">No se aplicó una operación: {o.error} <button className="ml-2 underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button></p>)}{renderModule()}</main>
@@ -375,6 +397,18 @@ export function DistributionApp({
               </button>
             )
           })}
+          {AndroidUpdater && (
+            <button
+              type="button"
+              onClick={openAndroidUpdates}
+              className="flex min-h-[56px] items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-3 text-left text-xs font-extrabold text-slate-800"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--primary-soft)] text-[var(--primary)]">
+                <RefreshCw size={16} />
+              </span>
+              Buscar actualizaciones
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -390,6 +424,14 @@ export function DistributionApp({
           </button>
         </div>
       </Modal>
+      {AndroidUpdater && (
+        <Suspense fallback={null}>
+          <AndroidUpdater
+            manualCheckRequest={manualUpdateRequest}
+            pendingOperations={data.operations.some(operation => operation.status === 'queued')}
+          />
+        </Suspense>
+      )}
     </div>
   )
 }

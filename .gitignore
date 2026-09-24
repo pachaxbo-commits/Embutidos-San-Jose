@@ -14,6 +14,9 @@ firebase-debug.log
 firebase-debug-*.log
 .emulator-data/
 PACHAX-SanJose-Demo.apk
+*.jks
+*.keystore
+android/signing.properties
 
 functions/node_modules/
 .vercel

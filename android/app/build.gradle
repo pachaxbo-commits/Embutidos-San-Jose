@@ -7,8 +7,8 @@ android {
         applicationId "com.pachax.flow"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 19
-        versionName "1.3.2"
+        versionCode 20
+        versionName "1.4.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,6 +18,10 @@ android {
     }
     buildTypes {
         release {
+            // Las APK ya instaladas usan este certificado. Se conserva para
+            // permitir actualizaciones encima de la aplicación existente.
+            // El script de preparación rechaza cualquier huella diferente.
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

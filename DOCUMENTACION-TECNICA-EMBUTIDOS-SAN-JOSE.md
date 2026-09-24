@@ -172,3 +172,13 @@ Estado al cerrar esta limpieza:
 - El encabezado térmico se envía como `EMBUTIDOS SAN JOSE` en ASCII porque la impresora física omite la `É` de CP850.
 - La prueba del motor verifica byte por byte que el ticket contenga la palabra `JOSE` completa, incluida la `E` final.
 - Android: `versionCode 19`, `versionName 1.3.2`.
+
+## Preparación del actualizador Android 1.4.0 (24 de septiembre de 2026)
+
+- Trabajo aislado en la rama `codex/android-updater`; no desplegar ni fusionar sin revisión y prueba real autorizada.
+- Actualizador exclusivo del runtime Android nativo. `npm run build` para Vercel no contiene el módulo; solo `npm run build:android` lo empaqueta para Capacitor.
+- Canal preparado en Firebase Hosting bajo `/updates/san-jose/`, todavía sin desplegar.
+- Descarga nativa con progreso y validación obligatoria de tamaño, SHA-256, paquete, `versionCode` superior y certificado antes de abrir el instalador oficial.
+- Firma histórica preservada: `%USERPROFILE%\.android\debug.keystore`, alias `AndroidDebugKey`, SHA-256 `68:72:F7:AA:28:E3:C4:58:EC:44:9F:2D:14:DF:DC:E5:F6:4F:0A:C0:43:32:69:85:6F:59:BA:32:50:C2:8F:AE`.
+- Android: `versionCode 20`, `versionName 1.4.0`.
+- Procedimiento completo y prohibiciones en `docs/ANDROID_UPDATES.md`.

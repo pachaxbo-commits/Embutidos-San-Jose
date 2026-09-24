@@ -8,6 +8,7 @@
     "dev:emulator": "vite --mode emulator",
     "emulators": "firebase emulators:start --only \"firestore,auth,functions\" --project demo-pachax-audit",
     "build": "tsc -b && vite build",
+    "build:android": "tsc -b && vite build --mode android",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -16,6 +17,9 @@
     "test:access": "node firebase/tests/exclusiveAccessRules.test.mjs",
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
+    "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
+    "test:web-updater": "node scripts/validate-web-updater.cjs",
+    "prepare:android-update": "node scripts/prepare-android-update.mjs",
     "seed:demo": "node firebase/tests/seedDemoTenant.mjs",
     "rules:load": "node firebase/tests/loadRules.mjs",
     "inspect:demo": "node firebase/tests/inspectDemo.mjs"

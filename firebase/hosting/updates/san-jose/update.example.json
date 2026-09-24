@@ -1,0 +1,12 @@
+{
+  "versionCode": 21,
+  "versionName": "1.4.1",
+  "apkUrl": "https://pachax-flow.web.app/updates/san-jose/apk/san-jose-1.4.1.apk",
+  "sha256": "REEMPLAZADO_AUTOMATICAMENTE_POR_EL_SCRIPT",
+  "sizeBytes": 0,
+  "publishedAt": "2026-09-24T00:00:00.000Z",
+  "releaseNotes": [
+    "Describe aquí los cambios visibles para los usuarios."
+  ],
+  "mandatory": false
+}
