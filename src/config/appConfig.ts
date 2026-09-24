@@ -39,7 +39,7 @@ export const SAN_JOSE_APP_CONFIG = {
     { id: 'dist.products', label: 'Productos', requiredPermission: 'dist.products.manage' },
     { id: 'dist.reports', label: 'Reportes', requiredPermission: 'dist.reports.view' },
     { id: 'dist.users', label: 'Usuarios', requiredPermission: 'dist.users.manage' },
-    { id: 'dist.support', label: 'Configuración', requiredPermission: 'support.settings.manage', navigableBy: ['admin', 'support'] },
+    { id: 'dist.support', label: 'Configuración', requiredPermission: 'support.settings.manage', navigableBy: ['support'] },
     { id: 'dist.claims', label: 'Cambios y devoluciones', requiredPermission: 'dist.users.manage' },
     { id: 'dist.qr', label: 'Verificar QR', requiredPermission: 'dist.users.manage' },
     { id: 'dist.warehouses', label: 'Almacenes', requiredPermission: 'dist.dispatch.create' },

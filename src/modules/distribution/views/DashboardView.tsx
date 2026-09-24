@@ -1,5 +1,6 @@
 import { StockAlerts } from './LotsAndHistory'
 import { useMemo, useState } from 'react'
+import { Search } from 'lucide-react'
 import { Screen } from '../../../components/ui/Screen'
 import {
   buildReconciliation,
@@ -14,14 +15,34 @@ import { setClosureVarianceReviewed } from '../data/distributionRepository'
 import { KpiCard, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
+import type { ModuleDefinition, ModuleId } from '../../../config/appConfig'
 
 
 /**
  * Panel de administracion: primero resultados, no una copia del Excel.
  * Solo consulta el rango pedido; nunca toda la historia.
  */
-export function DashboardView({ session, data }: DistributionViewProps) {
+const MODULE_SEARCH_TERMS: Partial<Record<ModuleId, string>> = {
+  'dist.inventory': 'inventario stock existencias lotes vencimientos almacén almacen',
+  'dist.warehouses': 'almacenes depósitos depositos',
+  'dist.dispatches': 'despachos entregas rutas vendedores',
+  'dist.sales': 'vender ventas cobro ticket',
+  'dist.credits': 'créditos creditos deuda cartera fiado',
+  'dist.collections': 'cobros abonos pagos',
+  'dist.customers': 'clientes compradores',
+  'dist.expenses': 'gastos egresos',
+  'dist.closure': 'cierre caja ruta devolución devolucion',
+  'dist.products': 'productos catálogo catalogo precios costos',
+  'dist.reports': 'reportes informes excel pdf rentabilidad ganancias',
+  'dist.users': 'usuarios personal permisos',
+  'dist.claims': 'cambios devoluciones reclamos',
+  'dist.qr': 'qr verificar pagos',
+  'printer-settings': 'impresora ticket bluetooth impresión impresion',
+}
+
+export function DashboardView({ session, data, modules = [], onNavigate }: DistributionViewProps & { modules?: ModuleDefinition[]; onNavigate?: (id: ModuleId) => void }) {
   const [routeFilter, setRouteFilter] = useState('')
+  const [moduleSearch, setModuleSearch] = useState('')
   const [reviewingClosureId, setReviewingClosureId] = useState('')
   const [reviewError, setReviewError] = useState<string | null>(null)
   const isWarehouse = session.role === 'warehouse'
@@ -80,6 +101,11 @@ export function DashboardView({ session, data }: DistributionViewProps) {
 
   const openRoutes = visibleOpenDispatches.length
   const closedRoutes = periodClosures.filter((closure) => closure.status === 'closed').length
+  const moduleMatches = useMemo(() => {
+    const term = moduleSearch.trim().toLocaleLowerCase('es')
+    if (!term) return []
+    return modules.filter(module => `${module.label} ${MODULE_SEARCH_TERMS[module.id] || ''}`.toLocaleLowerCase('es').includes(term)).slice(0, 6)
+  }, [moduleSearch, modules])
 
   /** Una fila por distribuidor con lo que la duena revisa cada dia */
   const byDistributor = useMemo(() => {
@@ -299,6 +325,11 @@ export function DashboardView({ session, data }: DistributionViewProps) {
 
   return (
     <Screen title="Panel" subtitle={describeRange(session.dayKeys)}>
+      {session.role === 'admin' && <div className="relative w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+        <label htmlFor="module-search" className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Buscar una sección</label>
+        <div className="relative mt-1.5"><Search size={17} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--primary)]" /><input id="module-search" value={moduleSearch} onChange={event => setModuleSearch(event.target.value)} placeholder="Ej.: créditos, almacén, reportes…" className="min-h-[44px] w-full rounded-2xl border-2 border-slate-300 bg-slate-50 pl-10 pr-3 text-sm font-semibold outline-none focus:border-[var(--primary)]" /></div>
+        {moduleSearch.trim() && <div className="mt-2 grid gap-1.5 sm:grid-cols-2">{moduleMatches.length ? moduleMatches.map(module => <button key={module.id} type="button" onClick={() => { onNavigate?.(module.id); setModuleSearch('') }} className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-3 text-left text-xs font-extrabold text-slate-800 hover:border-[var(--primary)] hover:bg-[var(--primary-soft)]">Ir a {module.label}</button>) : <p className="px-1 py-2 text-xs font-semibold text-slate-500">No se encontró una sección con ese nombre.</p>}</div>}
+      </div>}
       <StockAlerts data={data} />
       <div className="grid w-full min-w-0 gap-3">
         <RangePicker

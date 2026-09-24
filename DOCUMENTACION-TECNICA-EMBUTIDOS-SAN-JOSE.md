@@ -154,3 +154,15 @@ Estado al cerrar esta limpieza:
 - Acceso y formularios: ojo para contraseña, sin apertura automática del teclado y controles más visibles.
 - Pruebas obligatorias: compilación web, 67 operaciones/permisos en emulador, 21 comprobaciones exclusivas, 63 cálculos de dominio y verificaciones móviles de navegador/ticket.
 - Android: `versionCode 17`, `versionName 1.3.0`.
+
+## Actualización funcional 1.3.1 (24 de septiembre de 2026)
+
+- Venta obligatoria en dos pasos: primero cliente o venta rápida y después forma de pago.
+- Sin cliente admite efectivo, QR o mixto al contado; nunca crédito. En efectivo es obligatorio registrar lo recibido.
+- Selector móvil de clientes ampliado, con filas adaptables al contenido.
+- Configuración técnica visible únicamente para Soporte y buscador de secciones en el inicio de Administración.
+- Reportes PDF y Excel con filas de total en ventas, productos vendidos, créditos, cobros, gastos, arqueos y devoluciones.
+- Créditos y Cobros permiten descargar sus propios PDF y Excel.
+- Administración puede imprimir la venta confirmada en hoja normal; la vista de impresión cierra al terminar y usa margen de página propio para evitar `about:blank`.
+- Ticket de 58 mm con margen izquierdo restablecido, ancho imprimible explícito y columnas de seguridad para evitar cortes en el borde derecho.
+- Android: `versionCode 18`, `versionName 1.3.1`.

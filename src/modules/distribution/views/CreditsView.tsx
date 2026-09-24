@@ -7,7 +7,8 @@ import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../com
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { toDayKey, round2, validateCollection } from '../domain/engine'
 import { newOperationId, registerCollection } from '../data/distributionRepository'
-import { KpiCard, PrimaryButton, formatBs } from './shared'
+import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
+import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistReceivable } from '../types'
 
@@ -37,6 +38,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [paidOpen, setPaidOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
 
   const byCustomer = useMemo(() => {
     const map = new Map<string, CustomerCredit>()
@@ -66,6 +69,18 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   }, [byCustomer, search, data.customers])
 
   const totalOutstanding = round2(byCustomer.reduce((sum, entry) => sum + entry.balance, 0))
+
+  const exportCredits = async (kind: 'pdf' | 'excel') => {
+    setExporting(true); setExportError('')
+    try {
+      const days = period.length ? period : [...new Set(data.receivables.map(receivable => receivable.dayKey || toDayKey(receivable.createdAt)))]
+      const sheet = reportSheets(data, days).find(item => item.name === 'Créditos')!
+      const description = period.length ? `Créditos del periodo · ${period.join(' al ')}` : 'Cartera completa registrada'
+      if (kind === 'pdf') await exportPdf([sheet], description, 'SanJose-creditos.pdf')
+      else await exportExcel([sheet], description, 'SanJose-creditos.xlsx')
+    } catch (exportFailure) { setExportError((exportFailure as Error).message) }
+    finally { setExporting(false) }
+  }
 
   const openCollect = (receivable: DistReceivable) => {
     setCollectTarget(receivable)
@@ -125,6 +140,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
           <KpiCard label="Cartera pendiente" value={formatBs(totalOutstanding)} tone="warning" />
           <KpiCard label="Clientes con saldo" value={String(byCustomer.filter((entry) => entry.balance > 0).length)} />
         </div>
+        <div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={exporting} onClick={() => void exportCredits('pdf')}>Descargar PDF</SecondaryButton><SecondaryButton disabled={exporting} onClick={() => void exportCredits('excel')}>Descargar Excel</SecondaryButton></div>
+        {exportError && <p role="alert" className="text-xs font-bold text-rose-700">{exportError}</p>}
 
         <div className="relative w-full">
           <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />

@@ -84,6 +84,20 @@ export class EscPosBuilder {
     return this
   }
 
+  /** Restablece el margen izquierdo que algunas térmicas conservan entre trabajos. */
+  leftMarginDots(dots: number): this {
+    const value = Math.max(0, Math.min(65535, Math.round(dots)))
+    this.bytes.push(0x1d, 0x4c, value & 0xff, (value >> 8) & 0xff)
+    return this
+  }
+
+  /** Define el ancho imprimible para que el centrado ESC/POS use todo el rollo. */
+  printAreaWidthDots(dots: number): this {
+    const value = Math.max(1, Math.min(65535, Math.round(dots)))
+    this.bytes.push(0x1d, 0x57, value & 0xff, (value >> 8) & 0xff)
+    return this
+  }
+
   bold(enable: boolean): this {
     this.bytes.push(0x1b, 0x45, enable ? 0x01 : 0x00)
     return this

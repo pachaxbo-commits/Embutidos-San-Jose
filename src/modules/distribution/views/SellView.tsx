@@ -13,7 +13,7 @@ import {
   validateStockAvailability,
 } from '../domain/engine'
 import { newOperationId, registerSale, saveCustomer } from '../data/distributionRepository'
-import { printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
+import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
 import { useStockIndex } from '../state/useDistributionStore'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -57,10 +57,11 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [unitPrice, setUnitPrice] = useState('0')
   const [isPromotional, setIsPromotional] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
-  const [paymentKind, setPaymentKind] = useState<PaymentKind>('cash')
+  const [paymentKind, setPaymentKind] = useState<PaymentKind | ''>('')
   const [mixedCash, setMixedCash] = useState('0')
   const [mixedQr, setMixedQr] = useState('0')
   const [customerId, setCustomerId] = useState('')
+  const [customerChoiceMade, setCustomerChoiceMade] = useState(false)
   const [customerSearch, setCustomerSearch] = useState('')
   const [isCustomerOpen, setIsCustomerOpen] = useState(false)
   const [newCustomerName, setNewCustomerName] = useState('')
@@ -158,7 +159,8 @@ export function SellView({ session, data }: DistributionViewProps) {
   const resetSale = () => {
     setCart([])
     setCustomerId('')
-    setPaymentKind('cash')
+    setCustomerChoiceMade(false)
+    setPaymentKind('')
     setMixedCash('0')
     setMixedQr('0')
     setCashReceived('')
@@ -180,16 +182,32 @@ export function SellView({ session, data }: DistributionViewProps) {
       routeId: routeId || undefined,
     })
     setCustomerId(customer.id)
+    setCustomerChoiceMade(true)
     setNewCustomerName('')
     setNewCustomerPhone('')
     setNewCustomerIdentity('')
     setIsCustomerOpen(false)
+    setIsQuickCustomerOpen(false)
+    setIsCheckoutOpen(true)
     } catch (err) { setError((err as Error).message) }
   }
 
   const confirmSale = async () => {
     if (isSubmitting) return
     setError(null)
+
+    if (!customerChoiceMade) {
+      setError('Selecciona un cliente o la opción Sin cliente antes de cobrar.')
+      return
+    }
+    if (!paymentKind) {
+      setError('Selecciona una forma de pago.')
+      return
+    }
+    if (!customerId && paymentKind === 'credit') {
+      setError('Sin cliente no se permite vender a crédito.')
+      return
+    }
 
     if (selectedCustomer) {
       let credit = data.creditStatus.find(c => c.id === selectedCustomer.id)
@@ -231,8 +249,12 @@ export function SellView({ session, data }: DistributionViewProps) {
       setError('Una venta con credito necesita cliente.')
       return
     }
-    if (paymentKind === 'cash' && cashReceived.trim() && round2(Number(cashReceived)) < total) {
-      setError('El efectivo recibido no puede ser menor al total de la venta.')
+    if (paymentKind === 'cash' && !cashReceived.trim()) {
+      setError('Ingresa el efectivo recibido para calcular el cambio.')
+      return
+    }
+    if (paymentKind === 'cash' && (!Number.isFinite(Number(cashReceived)) || round2(Number(cashReceived)) < total)) {
+      setError('El efectivo recibido debe ser igual o mayor al total de la venta.')
       return
     }
 
@@ -271,8 +293,8 @@ export function SellView({ session, data }: DistributionViewProps) {
         cashAmount: split.cashAmount,
         qrAmount: split.qrAmount,
         creditAmount: split.creditAmount,
-        cashReceived: paymentKind === 'cash' ? round2(Number(cashReceived) || total) : split.cashAmount,
-        changeAmount: paymentKind === 'cash' ? round2(Math.max(0, (Number(cashReceived) || total) - total)) : 0,
+        cashReceived: paymentKind === 'cash' ? round2(Number(cashReceived)) : split.cashAmount,
+        changeAmount: paymentKind === 'cash' ? round2(Math.max(0, Number(cashReceived) - total)) : 0,
         note: note.trim(),
       })
 
@@ -385,7 +407,7 @@ export function SellView({ session, data }: DistributionViewProps) {
               </p>
               <p className="truncate text-lg font-black tabular-nums text-slate-900">{formatBs(total)}</p>
             </div>
-            <PrimaryButton onClick={() => setIsCheckoutOpen(true)}>
+            <PrimaryButton onClick={() => { setError(null); setIsCustomerOpen(true) }}>
               <ShoppingCart size={16} /> Cobrar
             </PrimaryButton>
           </div>
@@ -478,8 +500,16 @@ export function SellView({ session, data }: DistributionViewProps) {
             ))}
           </div>
 
-          <Field label="Forma de pago">
-            <Segmented value={paymentKind} options={PAYMENT_OPTIONS} onChange={setPaymentKind} />
+          <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 px-3 py-2.5">
+            <p className="text-[10px] font-extrabold uppercase text-emerald-700">Cliente seleccionado</p>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <p className="min-w-0 break-words text-xs font-black text-emerald-950">{selectedCustomer ? selectedCustomer.name : 'Sin cliente · venta rápida'}</p>
+              <button type="button" className="shrink-0 text-[11px] font-extrabold text-emerald-800 underline" onClick={() => { setIsCheckoutOpen(false); setIsCustomerOpen(true) }}>Cambiar</button>
+            </div>
+          </div>
+
+          <Field label="Forma de pago" required hint={!customerId ? 'Sin cliente permite efectivo, QR o mixto, siempre al contado.' : 'Selecciona una opción para continuar.'}>
+            <Segmented value={paymentKind} options={customerId ? PAYMENT_OPTIONS : PAYMENT_OPTIONS.filter(option => option.value !== 'credit')} onChange={setPaymentKind} />
           </Field>
 
           {paymentKind === 'mixed' && (
@@ -499,32 +529,25 @@ export function SellView({ session, data }: DistributionViewProps) {
           {paymentKind === 'cash' && <div className="grid grid-cols-2 gap-2"><Field label="Efectivo recibido (Bs)"><NumberInput value={cashReceived} min={0} placeholder={String(total)} onChange={event => setCashReceived(event.target.value)} /></Field><div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-3"><p className="text-[10px] font-extrabold uppercase text-emerald-700">Cambio a devolver</p><p className="mt-1 text-lg font-black text-emerald-800">{formatBs(changeAmount)}</p></div></div>}
           <Field label="Observaciones" hint="Se guarda con la venta, pero no aparecerá en el ticket."><TextArea value={note} onChange={event => setNote(event.target.value)} /></Field>
 
-          <Field
-            label="Cliente"
-            hint={paymentKind === 'credit' || mixedRemainder > 0 ? 'Obligatorio cuando hay credito.' : 'Opcional en venta al contado.'}
-          >
-            <SecondaryButton full onClick={() => setIsCustomerOpen(true)}>
-              {selectedCustomer ? `${selectedCustomer.name} · ${selectedCustomer.customerCode || selectedCustomer.identityNumber || ''}` : 'Seleccionar cliente'}
-            </SecondaryButton>
-          </Field>
-
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
         </div>
       </Modal>
 
       {/* Cliente */}
-      <Modal isOpen={isCustomerOpen} onClose={() => setIsCustomerOpen(false)} title="Cliente">
+      <Modal isOpen={isCustomerOpen} onClose={() => setIsCustomerOpen(false)} title="Seleccionar cliente" subtitle="Paso 1 de 2 · elige una opción para continuar" size="lg">
         <div className="grid gap-3">
           <div className="relative rounded-2xl bg-sky-50"><Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sky-700" /><TextInput value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Buscar por nombre, código o carnet..." className="border-2 border-sky-300 bg-sky-50 pl-10" /></div>
-          <div className="grid max-h-56 gap-1.5 overflow-y-auto">
+          <div className="grid max-h-[52dvh] gap-2 overflow-y-auto pr-1">
             <button
               type="button"
-              disabled={paymentKind === 'credit' || (paymentKind === 'mixed' && mixedRemainder > 0)}
               onClick={() => {
                 setCustomerId('')
+                setCustomerChoiceMade(true)
+                setPaymentKind('')
                 setIsCustomerOpen(false)
+                setIsCheckoutOpen(true)
               }}
-              className="min-h-[44px] rounded-2xl border-2 border-slate-300 bg-slate-50 px-3 text-left text-xs font-bold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+              className="min-h-[52px] rounded-2xl border-2 border-slate-300 bg-slate-50 px-3 py-2 text-left text-xs font-bold leading-snug text-slate-700"
             >
               Sin cliente (venta rapida al contado)
             </button>
@@ -534,12 +557,15 @@ export function SellView({ session, data }: DistributionViewProps) {
                 type="button"
                 onClick={() => {
                   setCustomerId(customer.id)
+                  setCustomerChoiceMade(true)
+                  setPaymentKind('')
                   setIsCustomerOpen(false)
+                  setIsCheckoutOpen(true)
                 }}
-                className={`min-h-[44px] rounded-2xl border-2 px-3 text-left text-xs font-bold ${customer.id === customerId ? 'border-emerald-500 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-800'}`}
+                className={`min-h-[52px] rounded-2xl border-2 px-3 py-2 text-left text-xs font-bold leading-snug ${customer.id === customerId ? 'border-emerald-500 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-800'}`}
               >
-                {customer.name} · {customer.customerCode || customer.identityNumber || 'CI pendiente'}
-                {customer.phone ? <span className="ml-2 text-slate-400">{customer.phone}</span> : null}
+                <span className="block break-words text-sm font-extrabold">{customer.name}</span>
+                <span className="mt-0.5 block break-words text-[11px] text-slate-500">{customer.customerCode || customer.identityNumber || 'CI pendiente'}{customer.phone ? ` · ${customer.phone}` : ''}</span>
               </button>
             ))}
           </div>
@@ -616,6 +642,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             <SecondaryButton full onClick={() => void shareSaleReceipt(lastSale, receiptContext)}>
               <Send size={16} /> Compartir por WhatsApp
             </SecondaryButton>
+            {session.role === 'admin' && <SecondaryButton full onClick={() => printLargeSaleReceipt(lastSale, receiptContext)}><Printer size={16} /> Imprimir en hoja normal</SecondaryButton>}
           </div>
         )}
       </Modal>

@@ -1,9 +1,11 @@
 import { CreditProducts } from './CreditProducts'
 import { RangePicker } from './RangePicker'
 import { useMemo } from 'react'
+import { useState } from 'react'
+import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { computeMoneySummary } from '../domain/engine'
-import { KpiCard, formatBs } from './shared'
+import { KpiCard, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 
 /**
@@ -11,7 +13,20 @@ import type { DistributionViewProps } from './DistributionApp'
  * financieros separados de las ventas.
  */
 export function CollectionsView({ session, data }: DistributionViewProps) {
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
   const summary = useMemo(() => computeMoneySummary([], data.collections, []), [data.collections])
+
+  const exportCollections = async (kind: 'pdf' | 'excel') => {
+    setExporting(true); setExportError('')
+    try {
+      const sheet = reportSheets(data, session.dayKeys).find(item => item.name === 'Cobros')!
+      const description = `Cobros del periodo · ${session.dayKeys.join(' al ')}`
+      if (kind === 'pdf') await exportPdf([sheet], description, 'SanJose-cobros.pdf')
+      else await exportExcel([sheet], description, 'SanJose-cobros.xlsx')
+    } catch (error) { setExportError((error as Error).message) }
+    finally { setExporting(false) }
+  }
 
   return (
     <Screen title="Cobros" subtitle="Cobranzas registradas en el periodo">
@@ -22,6 +37,8 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
           <KpiCard label="Efectivo" value={formatBs(summary.cashCollections)} />
           <KpiCard label="QR" value={formatBs(summary.qrCollections)} />
         </div>
+        <div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={exporting} onClick={() => void exportCollections('pdf')}>Descargar PDF</SecondaryButton><SecondaryButton disabled={exporting} onClick={() => void exportCollections('excel')}>Descargar Excel</SecondaryButton></div>
+        {exportError && <p role="alert" className="text-xs font-bold text-rose-700">{exportError}</p>}
 
         {data.collections.length === 0 ? (
           <EmptyBlock title="Sin cobros en el periodo" />

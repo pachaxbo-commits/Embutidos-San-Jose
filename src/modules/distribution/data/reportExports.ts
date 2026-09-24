@@ -298,7 +298,8 @@ export function reportSheets(
         "Crédito (Bs)",
         "Total (Bs)",
       ],
-      rows: sales.map((s) => [
+      rows: [
+        ...sales.map((s) => [
         reportDateTime(s.createdAt),
         reportReceiptNumber(s.id),
         reportPersonName(s.sellerName),
@@ -309,7 +310,9 @@ export function reportSheets(
         s.qrAmount,
         s.creditAmount,
         s.total,
-      ]),
+        ] as Cell[]),
+        ["TOTAL", "", "", "", "", "", round2(sales.reduce((n, s) => n + s.cashAmount, 0)), round2(sales.reduce((n, s) => n + s.qrAmount, 0)), round2(sales.reduce((n, s) => n + s.creditAmount, 0)), round2(sales.reduce((n, s) => n + s.total, 0))],
+      ],
     },
     {
       name: "Productos vendidos",
@@ -326,7 +329,8 @@ export function reportSheets(
         "Costo (Bs)",
         "Lotes",
       ],
-      rows: lines.map((l) => [
+      rows: [
+        ...lines.map((l) => [
         reportDate(l.sale.dayKey),
         reportReceiptNumber(l.sale.id),
         l.productNameSnapshot,
@@ -339,7 +343,9 @@ export function reportSheets(
         l.costTotal ?? null,
         l.allocations?.map((a) => `${a.lotCode}: ${a.quantity}`).join("; ") ||
           "Sin datos históricos",
-      ]),
+        ] as Cell[]),
+        ["TOTAL", "", "", "", "", "", "", "", round2(lines.reduce((n, l) => n + l.subtotal, 0)), lines.every(l => typeof l.costTotal === "number") ? round2(lines.reduce((n, l) => n + (l.costTotal || 0), 0)) : null, ""],
+      ],
     },
     {
       name: "Créditos",
@@ -354,7 +360,8 @@ export function reportSheets(
         "Saldo (Bs)",
         "Estado",
       ],
-      rows: credits.map((r) => [
+      rows: [
+        ...credits.map((r) => [
         reportDateTime(r.createdAt),
         r.customerName,
         r.customerCode || "",
@@ -366,7 +373,9 @@ export function reportSheets(
         r.creditedAmount || 0,
         r.balance,
         r.balance <= 0 ? "Pagado" : r.paidAmount > 0 ? "Parcial" : "Pendiente",
-      ]),
+        ] as Cell[]),
+        ["TOTAL", "", "", "", round2(credits.reduce((n, r) => n + r.originalAmount, 0)), round2(credits.reduce((n, r) => n + r.paidAmount, 0)), round2(credits.reduce((n, r) => n + (r.creditedAmount || 0), 0)), round2(credits.reduce((n, r) => n + r.balance, 0)), ""],
+      ],
     },
     {
       name: "Cobros",
@@ -380,7 +389,8 @@ export function reportSheets(
         "QR (Bs)",
         "Importe (Bs)",
       ],
-      rows: collections.map((c) => [
+      rows: [
+        ...collections.map((c) => [
         reportDateTime(c.createdAt),
         c.customerName,
         c.customerCode || "",
@@ -389,18 +399,23 @@ export function reportSheets(
         c.cashAmount ?? (c.method === "cash" ? c.amount : 0),
         c.qrAmount ?? (c.method === "qr" ? c.amount : 0),
         c.amount,
-      ]),
+        ] as Cell[]),
+        ["TOTAL", "", "", "", "", round2(collections.reduce((n, c) => n + (c.cashAmount ?? (c.method === "cash" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + (c.qrAmount ?? (c.method === "qr" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + c.amount, 0))],
+      ],
     },
     {
       name: "Gastos",
       headers: ["Fecha", "Ruta", "Responsable", "Concepto", "Importe (Bs)"],
-      rows: expenses.map((e) => [
+      rows: [
+        ...expenses.map((e) => [
         reportDateTime(e.createdAt),
         reportRecordName(e.routeName, "Ruta registrada"),
         reportPersonName(e.registeredByName),
         e.concept,
         e.amount,
-      ]),
+        ] as Cell[]),
+        ["TOTAL", "", "", "", round2(expenses.reduce((n, e) => n + e.amount, 0))],
+      ],
     },
     {
       name: "Arqueos",
@@ -413,10 +428,10 @@ export function reportSheets(
         "Declarado (Bs)",
         "Diferencia (Bs)",
       ],
-      rows: data.closures
-        .filter(inScope)
-        .filter((c) => !seller || c.distributorUid === seller)
-        .map((c) => [
+      rows: (() => {
+        const closures = data.closures.filter(inScope).filter((c) => !seller || c.distributorUid === seller)
+        return [
+          ...closures.map((c) => [
           reportDateTime(c.createdAt),
           reportPersonName(c.distributorName),
           reportRecordName(c.routeName, "Ruta registrada"),
@@ -424,7 +439,10 @@ export function reportSheets(
           c.expectedCash ?? null,
           c.physicalCashDeclared ?? null,
           c.cashDifference ?? null,
-        ]),
+          ] as Cell[]),
+          ["TOTAL", "", "", "", round2(closures.reduce((n, c) => n + (c.expectedCash || 0), 0)), round2(closures.reduce((n, c) => n + (c.physicalCashDeclared || 0), 0)), round2(closures.reduce((n, c) => n + (c.cashDifference || 0), 0))],
+        ]
+      })(),
     },
     {
       name: "Inventario por lote",
@@ -525,7 +543,8 @@ export function reportSheets(
         "QR recibido (Bs)",
         "QR devuelto (Bs)",
       ],
-      rows: claims.map((c) => [
+      rows: [
+        ...claims.map((c) => [
         reportDateTime(c.createdAt),
         c.customerName,
         c.productName,
@@ -540,7 +559,9 @@ export function reportSheets(
         c.cashOut,
         c.qrIn,
         c.qrOut,
-      ]),
+        ] as Cell[]),
+        ["TOTAL", "", "", "", "", "", "", round2(claims.reduce((n, c) => n + c.revenueDelta, 0)), round2(claims.reduce((n, c) => n + (c.additionalCost || 0), 0)), round2(claims.reduce((n, c) => n + c.debtReduction, 0)), round2(claims.reduce((n, c) => n + c.cashIn, 0)), round2(claims.reduce((n, c) => n + c.cashOut, 0)), round2(claims.reduce((n, c) => n + c.qrIn, 0)), round2(claims.reduce((n, c) => n + c.qrOut, 0))],
+      ],
     },
   ];
 }
@@ -581,6 +602,10 @@ export async function exportExcel(sheets: ReportSheet[], description: string, fi
     };
     for (let r = 5; r <= ws.rowCount; r++) {
       ws.getRow(r).alignment = { vertical: "top", wrapText: true };
+      if (ws.getCell(r, 1).value === "TOTAL") {
+        ws.getRow(r).font = { bold: true };
+        ws.getRow(r).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDECEE" } };
+      }
       ws.getRow(r).eachCell((c, col) => {
         if (typeof c.value === "number")
           c.numFmt = sheet.headers[col - 1].includes("Bs")
@@ -633,6 +658,12 @@ export async function exportPdf(
       margin: { top: 32, bottom: 16 },
       styles: { fontSize: 7, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [31, 41, 55] },
+      didParseCell: hook => {
+        if (hook.section === "body" && Array.isArray(hook.row.raw) && hook.row.raw[0] === "TOTAL") {
+          hook.cell.styles.fontStyle = "bold";
+          hook.cell.styles.fillColor = [253, 236, 238];
+        }
+      },
       didDrawPage: () => {
         header();
         pdf.setTextColor(30, 40, 50);

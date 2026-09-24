@@ -204,7 +204,7 @@ export function DistributionApp({
         return role === 'distributor' ? (
           <DistributorHomeView {...viewProps} onNavigate={selectModule} />
         ) : (
-          <DashboardView {...viewProps} />
+          <DashboardView {...viewProps} modules={modules} onNavigate={selectModule} />
         )
       case 'dist.inventory':
         return <InventoryView {...viewProps} />

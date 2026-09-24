@@ -38,10 +38,14 @@ export function buildReceiptBytes(
   paperWidth: '58mm' | '80mm' = '80mm',
   supportsPaperCut = paperWidth === '80mm',
 ): Uint8Array {
-  const cols = paperWidth === '58mm' ? 32 : 48
+  // Se dejan dos columnas de seguridad en 58 mm: varios cabezales económicos
+  // tienen 30 columnas realmente visibles aunque anuncien 32.
+  const cols = paperWidth === '58mm' ? 30 : 48
   const builder = new EscPosBuilder()
 
-  builder.init().alignCenter()
+  builder.init()
+  if (paperWidth === '58mm') builder.leftMarginDots(0).printAreaWidthDots(384)
+  builder.alignCenter()
 
   if (/san\s+jos[eé]/i.test(payload.restaurantName)) {
     const logo = paperWidth === '58mm' ? scaleMonochromeLogo(176) : SAN_JOSE_THERMAL_LOGO

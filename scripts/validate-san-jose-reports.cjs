@@ -54,7 +54,7 @@ const RAW_ENUMS = new Set([
       const sellerSummary = module.reportSheets(fixture, ['2026-09-17'], 'ruta-prueba', 'vendedor-prueba')[0]
       if (sellerSummary.rows[0][1] !== -10 || sellerSummary.rows[2][1] !== -10 || sellerSummary.rows[3][1] !== 0) throw new Error('Devolución de otro mes o gasto anulado alteró el resumen del vendedor')
       const claimSheet = module.reportSheets(fixture, ['2026-09-17'], 'ruta-prueba', 'vendedor-prueba').find(sheet => sheet.name === 'Cambios y devoluciones')
-      if (claimSheet.rows.length !== 1 || claimSheet.rows[0].length !== claimSheet.headers.length) throw new Error('La devolución no coincide con el PDF y Excel')
+      if (claimSheet.rows.length !== 2 || claimSheet.rows.some(row => row.length !== claimSheet.headers.length) || claimSheet.rows.at(-1)[0] !== 'TOTAL') throw new Error('La devolución o su total no coincide con el PDF y Excel')
       fixture.claims[0].sellerUid = undefined
       if (!module.reportAttributionError(fixture, ['2026-09-17'], 'ruta-prueba', 'vendedor-prueba')) throw new Error('Una devolución sin vendedor permitiría cifras parciales')
       window.qaData = data
