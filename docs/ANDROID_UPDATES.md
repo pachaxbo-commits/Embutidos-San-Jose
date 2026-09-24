@@ -6,20 +6,41 @@
 - La APK Android consulta Firebase Hosting y puede descargar una APK completa.
 - El actualizador se crea mediante carga dinámica únicamente cuando Capacitor confirma que el runtime es Android nativo. En navegador no consulta el manifiesto, no muestra botones y no invoca plugins Android.
 
-La primera APK que contiene el actualizador debe instalarse manualmente encima de la versión actual. Desde la siguiente versión, los teléfonos podrán detectar nuevas APK desde la propia aplicación.
+La versión 1.4.0 inicia una identidad de firma release definitiva. Debido al cambio desde la firma debug histórica de 1.3.2, esta primera migración exige desinstalar 1.3.2 e instalar 1.4.0 manualmente. Desde 1.4.0, todas las versiones deben usar exactamente la misma clave release y podrán instalarse encima.
 
 ## Identidad que no debe cambiar
 
 | Dato | Valor actual |
 |---|---|
 | Paquete / `applicationId` | `com.pachax.flow` |
-| Certificado SHA-256 | `68:72:F7:AA:28:E3:C4:58:EC:44:9F:2D:14:DF:DC:E5:F6:4F:0A:C0:43:32:69:85:6F:59:BA:32:50:C2:8F:AE` |
-| Keystore histórico | `%USERPROFILE%\.android\debug.keystore` (archivo local, nunca Git) |
-| Alias histórico | `AndroidDebugKey` |
+| Keystore definitivo | `%USERPROFILE%\.pachax\signing\pachax-san-jose-release.jks` (privado, nunca Git) |
+| Alias definitivo | `pachax-san-jose` |
+| Certificado SHA-1 definitivo | `CC:F0:3B:F5:09:E6:5F:1E:E3:D7:DA:8C:1F:12:9D:B9:59:0B:F5:E2` |
+| Certificado SHA-256 definitivo | `C8:7F:3A:B0:00:CF:0A:5D:1F:B7:F6:93:C9:42:6D:2C:17:3F:8A:CD:7E:4E:03:8B:2A:6A:3C:E8:43:C3:38:2B` |
+| Firma histórica 1.3.2 | `%USERPROFILE%\.android\debug.keystore`, alias `AndroidDebugKey`, solo respaldo |
 | Firebase Project ID | `pachax-flow` |
 | Canal de manifiesto | `https://pachax-flow.web.app/updates/san-jose/update.json` |
 
-El nombre del certificado no tiene que decir San José. Android exige el mismo paquete y el mismo certificado criptográfico; cambiar el keystore impediría actualizar las instalaciones existentes.
+Android exige el mismo paquete y certificado para instalar una actualización encima. La ruptura entre 1.3.2 y 1.4.0 es intencional y ocurre una sola vez. No volver a cambiar la clave desde 1.4.0.
+
+La clave definitiva fue creada el 24 de septiembre de 2026, vence el 14 de septiembre de 2066, utiliza RSA de 4096 bits y certificado `SHA256withRSA`.
+
+## Crear la clave definitiva sin exponer secretos
+
+Crear primero la carpeta privada y ejecutar `keytool` en una terminal interactiva. El comando no contiene contraseñas; `keytool` las solicitará sin escribirlas en Git ni documentación:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.pachax\signing"
+keytool -genkeypair -v -keystore "$env:USERPROFILE\.pachax\signing\pachax-san-jose-release.jks" -storetype JKS -alias pachax-san-jose -keyalg RSA -keysize 4096 -sigalg SHA256withRSA -validity 14600 -dname "CN=Embutidos San Jose, OU=Android Release, O=PACHAX, C=BO"
+```
+
+Usar contraseñas fuertes y custodiadas. Copiar `android/signing.properties.example` a `android/signing.properties` y completar ese archivo local; está ignorado por Git. También se admiten `SAN_JOSE_KEYSTORE_PATH`, `SAN_JOSE_KEYSTORE_PASSWORD`, `SAN_JOSE_KEY_ALIAS`, `SAN_JOSE_KEY_PASSWORD` y `SAN_JOSE_CERTIFICATE_SHA256`.
+
+Obtener SHA-1, SHA-256, fechas, algoritmo y tamaño sin revelar secretos:
+
+```powershell
+keytool -list -v -keystore "$env:USERPROFILE\.pachax\signing\pachax-san-jose-release.jks" -alias pachax-san-jose
+```
 
 ## Versión
 
@@ -55,7 +76,7 @@ Set-Location ..
 
 La salida habitual es `android/app/build/outputs/apk/release/app-release.apk`.
 
-En esta aplicación, `assembleRelease` conserva deliberadamente la misma firma histórica que las APK distribuidas. En otra computadora, el `debug.keystore` predeterminado normalmente será diferente. No se debe publicar hasta que el script de preparación acepte la huella exacta.
+`assembleRelease` falla de forma intencional si no existe la configuración privada release. Nunca cae a `signingConfigs.debug`. `assembleDebug` conserva el flujo debug normal.
 
 Comprobación manual:
 
@@ -63,7 +84,7 @@ Comprobación manual:
 & "$env:LOCALAPPDATA\Android\Sdk\build-tools\36.0.0\apksigner.bat" verify --verbose --print-certs android\app\build\outputs\apk\release\app-release.apk
 ```
 
-La huella SHA-256 debe coincidir exactamente con la tabla anterior. No es suficiente que el alias tenga el mismo nombre.
+La huella SHA-256 debe coincidir exactamente con `certificateSha256` en la configuración privada. No es suficiente que el alias tenga el mismo nombre.
 
 ## Preparar la publicación
 
@@ -122,17 +143,29 @@ No sobrescribir una APK publicada con otro contenido bajo el mismo nombre. Prepa
 5. Si alguna comprobación falla, borra la APK y no abre el instalador.
 6. Android puede pedir habilitar “Permitir desde esta fuente” para San José.
 7. Se abre el instalador oficial; el usuario confirma. No existe instalación silenciosa.
-8. Android instala encima de la app, por lo que conserva datos, sesión, IndexedDB, preferencias e impresora.
+8. Desde 1.4.0, Android instala encima de la app y conserva datos locales. La migración inicial desde 1.3.2 es la única excepción porque cambia la firma.
 
 Si Play Protect muestra una revisión, se debe dejar que termine. Nunca desactivarlo ni intentar evitarlo.
 
 Con operaciones pendientes de sincronización, la interfaz impide comenzar la descarga y recomienda terminar la sincronización. Incluso una actualización obligatoria puede posponerse mientras existan operaciones pendientes.
 
+## Migración única 1.3.2 → 1.4.0
+
+Antes de desinstalar, en el mismo teléfono y con Internet:
+
+1. Esperar a que desaparezca **Operaciones pendientes de validación** y a que el indicador muestre **Sincronizado**.
+2. Confirmar que no haya ventas, cobros, gastos ni otras operaciones marcadas como pendientes de confirmación.
+3. Cerrar la jornada/despacho que corresponda y revisar los datos desde Administración en otro dispositivo o en la web.
+4. No desinstalar si aparece **Sin conexión**, **Sincronizando**, un error rojo o una operación rechazada sin revisar.
+5. Anotar la impresora configurada (nombre, Bluetooth/MAC o IP y tamaño) porque su perfil local se pierde.
+
+Al desinstalar se borran la sesión, caché Firestore/IndexedDB, cualquier escritura todavía no sincronizada, los trabajos de impresión pendientes, perfiles de impresora y preferencias locales. Firestore recupera ventas confirmadas, créditos, cobros, stock, lotes, rutas, despachos, cierres, clientes, productos, usuarios y configuración empresarial después de iniciar sesión. Firebase Authentication conserva la cuenta, no la sesión local.
+
 ## Prueba real controlada
 
-1. Respaldar el keystore histórico fuera de Git y confirmar su huella.
-2. Instalar una APK A con el paquete y firma actuales; iniciar sesión y crear datos de prueba locales.
-3. Compilar APK B con `versionCode` superior y la misma firma.
+1. Respaldar el keystore definitivo fuera de Git y confirmar su huella.
+2. Migrar un teléfono de prueba de 1.3.2 a la nueva 1.4.0 siguiendo la lista anterior.
+3. Compilar una APK B con `versionCode` superior y exactamente la misma firma definitiva.
 4. Ejecutar el script de preparación y revisar APK, URL, tamaño, hash y manifiesto.
 5. Publicar Hosting solo en la prueba autorizada.
 6. Abrir APK A, entrar en **Más → Acerca de y actualizaciones** y buscar manualmente.
@@ -173,17 +206,18 @@ El nombre visible puede cambiarse después en Firebase Console: **Configuración
 
 ## Protección del keystore
 
+- Respaldar exactamente `%USERPROFILE%\.pachax\signing\pachax-san-jose-release.jks` y las credenciales en un gestor seguro independiente.
 - Nunca añadir `.jks`, `.keystore`, contraseñas, cuentas de servicio ni `signing.properties` a Git.
 - Mantener al menos dos respaldos cifrados y controlados fuera del repositorio.
 - Registrar de forma segura quién custodia la clave y cómo recuperar el respaldo.
-- Perder esta clave impediría publicar actualizaciones compatibles con los teléfonos existentes.
-- Para aplicaciones futuras es recomendable una clave independiente por aplicación. No cambiar la clave actual de San José.
+- Si se pierde esta clave, las instalaciones existentes de San José dejarán de aceptar futuras APK firmadas con una clave distinta.
+- La clave es exclusiva de Embutidos San José; no compartirla con otras aplicaciones PACHAX.
 
 ## Lista de prohibiciones
 
-- No desinstalar como paso normal de actualización.
+- No desinstalar después de completar la migración única 1.3.2 → 1.4.0.
 - No limpiar datos de la aplicación.
-- No crear un keystore nuevo para San José.
+- No crear otra clave ni reemplazar `pachax-san-jose-release.jks` después de distribuir 1.4.0.
 - No cambiar `com.pachax.flow`.
 - No aceptar URLs ingresadas por usuarios.
 - No omitir las validaciones del script.

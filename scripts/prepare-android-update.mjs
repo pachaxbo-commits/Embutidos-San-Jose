@@ -6,13 +6,13 @@ import { spawnSync } from 'node:child_process'
 import process from 'node:process'
 
 const EXPECTED_PACKAGE = 'com.pachax.flow'
-const EXPECTED_CERTIFICATE_SHA256 = '6872f7aa28e3c458ec449f2d14dfdce5f64f0ac0433269856f59ba3250c28fae'
 const LAST_DISTRIBUTED_VERSION_CODE = 19
 const HOSTING_ROOT = resolve('dist', 'updates', 'san-jose')
 const RELEASE_ROOT = resolve('output', 'android')
 
 const options = parseArguments(process.argv.slice(2))
 if (!options.apk) fail('Uso: npm run prepare:android-update -- --apk <archivo.apk> --notes "Detalle en español" [--mandatory]')
+const expectedCertificateSha256 = await loadExpectedCertificateSha256()
 const sourceApk = resolve(options.apk)
 if (!existsSync(sourceApk)) fail(`No existe la APK: ${sourceApk}`)
 
@@ -29,8 +29,32 @@ if (!Number.isSafeInteger(versionCode) || versionCode <= LAST_DISTRIBUTED_VERSIO
 
 const signing = run(tools.java, ['-jar', tools.apksignerJar, 'verify', '--verbose', '--print-certs', sourceApk])
 const certificate = capture(signing, /Signer #1 certificate SHA-256 digest:\s*([A-Fa-f0-9:]+)/, 'certificado SHA-256').replaceAll(':', '').toLowerCase()
-if (certificate !== EXPECTED_CERTIFICATE_SHA256) {
+if (certificate !== expectedCertificateSha256) {
   fail(`Certificado rechazado. Huella encontrada: ${certificate}. No se preparó ninguna actualización.`)
+}
+
+async function loadExpectedCertificateSha256() {
+  const environmentValue = process.env.SAN_JOSE_CERTIFICATE_SHA256?.trim()
+  let configuredValue = environmentValue || ''
+  const propertiesPath = resolve('android', 'signing.properties')
+  if (!configuredValue && existsSync(propertiesPath)) {
+    const properties = parseProperties(await readFile(propertiesPath, 'utf8'))
+    configuredValue = properties.certificateSha256 || ''
+  }
+  const normalized = configuredValue.replaceAll(':', '').trim().toLowerCase()
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    fail('Falta certificateSha256 válido en android/signing.properties o SAN_JOSE_CERTIFICATE_SHA256. No se acepta la firma histórica ni una firma desconocida.')
+  }
+  return normalized
+}
+
+function parseProperties(contents) {
+  return Object.fromEntries(contents.split(/\r?\n/).flatMap(line => {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) return []
+    const separator = trimmed.indexOf('=')
+    return separator < 1 ? [] : [[trimmed.slice(0, separator).trim(), trimmed.slice(separator + 1).trim()]]
+  }))
 }
 
 const previousManifestPath = join(HOSTING_ROOT, 'update.json')
