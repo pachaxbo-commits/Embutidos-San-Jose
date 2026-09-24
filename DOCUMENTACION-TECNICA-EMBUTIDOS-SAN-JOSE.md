@@ -166,3 +166,9 @@ Estado al cerrar esta limpieza:
 - Administración puede imprimir la venta confirmada en hoja normal; la vista de impresión cierra al terminar y usa margen de página propio para evitar `about:blank`.
 - Ticket de 58 mm con margen izquierdo restablecido, ancho imprimible explícito y columnas de seguridad para evitar cortes en el borde derecho.
 - Android: `versionCode 18`, `versionName 1.3.1`.
+
+## Corrección de impresión 1.3.2 (24 de septiembre de 2026)
+
+- El encabezado térmico se envía como `EMBUTIDOS SAN JOSE` en ASCII porque la impresora física omite la `É` de CP850.
+- La prueba del motor verifica byte por byte que el ticket contenga la palabra `JOSE` completa, incluida la `E` final.
+- Android: `versionCode 19`, `versionName 1.3.2`.

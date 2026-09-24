@@ -42,6 +42,12 @@ export function buildReceiptBytes(
   // tienen 30 columnas realmente visibles aunque anuncien 32.
   const cols = paperWidth === '58mm' ? 30 : 48
   const builder = new EscPosBuilder()
+  // Esta impresora concreta omite la É aunque se seleccione CP850. El nombre
+  // comercial del encabezado se envía deliberadamente en ASCII para que la E
+  // final nunca desaparezca en el papel.
+  const thermalRestaurantName = /san\s+jos[eé]/i.test(payload.restaurantName)
+    ? 'EMBUTIDOS SAN JOSE'
+    : payload.restaurantName
 
   builder.init()
   if (paperWidth === '58mm') builder.leftMarginDots(0).printAreaWidthDots(384)
@@ -69,7 +75,7 @@ export function buildReceiptBytes(
 
   // En 58 mm el nombre va en tamaño normal y negrita para evitar cortes feos.
   builder.bold(true).doubleSize(paperWidth === '80mm')
-  wrapWords(payload.restaurantName, paperWidth === '58mm' ? cols : Math.floor(cols / 2)).forEach(line => builder.line(line))
+  wrapWords(thermalRestaurantName, paperWidth === '58mm' ? cols : Math.floor(cols / 2)).forEach(line => builder.line(line))
   builder.doubleSize(false).bold(false)
   if (payload.branchName) builder.line(payload.branchName)
   if (payload.branchAddress) builder.line(payload.branchAddress)

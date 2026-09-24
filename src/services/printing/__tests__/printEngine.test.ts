@@ -316,10 +316,12 @@ export async function runPrintEngineTestSuite(): Promise<{ passed: number; faile
   try {
     const sanJosePayload = { ...samplePayload, restaurantName: 'Embutidos San José' }
     const bytes = Array.from(buildReceiptBytes(sanJosePayload, '80mm', true))
+    const asciiTitle = Array.from(new TextEncoder().encode('EMBUTIDOS SAN JOSE'))
+    const hasCompleteAsciiTitle = bytes.some((_, index) => asciiTitle.every((value, offset) => bytes[index + offset] === value))
     const hasRasterLogo = bytes.some((_, index) =>
       [0x1d, 0x76, 0x30, 0x00].every((byte, offset) => bytes[index + offset] === byte),
     )
-    assert(hasRasterLogo, 'Prueba 17: El ticket de San José incluye el logo monocromo ESC/POS')
+    assert(hasRasterLogo && hasCompleteAsciiTitle, 'Prueba 17: El ticket de San José incluye logo y el título ASCII completo, con la E final')
   } catch (e: any) {
     assert(false, `Prueba 17 Fallo: ${e.message}`)
   }
