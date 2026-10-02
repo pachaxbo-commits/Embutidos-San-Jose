@@ -14,8 +14,29 @@ import {
   reportUnitLabel,
 } from "../domain/reportLabels";
 import { saveReport } from "./reportFiles";
+import {
+  type ReportSheetId,
+  type ReportOption,
+  REPORT_OPTIONS,
+  ALL_REPORT_IDS,
+  SHEET_NAME_TO_ID,
+  ID_TO_SHEET_NAME,
+  defaultSheetIdForTab,
+  filterReportSheets,
+} from "../domain/reportSelection";
+export {
+  type ReportSheetId,
+  type ReportOption,
+  REPORT_OPTIONS,
+  ALL_REPORT_IDS,
+  SHEET_NAME_TO_ID,
+  ID_TO_SHEET_NAME,
+  defaultSheetIdForTab,
+  filterReportSheets,
+};
 type Cell = string | number | null;
 export interface ReportSheet {
+  id?: ReportSheetId;
   name: string;
   headers: string[];
   rows: Cell[][];
@@ -264,6 +285,7 @@ export function reportSheets(
   };
   return [
     {
+      id: 'summary',
       name: "Resumen",
       headers: ["Concepto", "Importe (Bs)"],
       rows: [
@@ -285,6 +307,7 @@ export function reportSheets(
       ],
     },
     {
+      id: 'sales',
       name: "Ventas",
       headers: [
         "Fecha y hora",
@@ -315,6 +338,7 @@ export function reportSheets(
       ],
     },
     {
+      id: 'products',
       name: "Productos vendidos",
       headers: [
         "Fecha",
@@ -348,6 +372,7 @@ export function reportSheets(
       ],
     },
     {
+      id: 'credits',
       name: "Créditos",
       headers: [
         "Fecha",
@@ -378,6 +403,7 @@ export function reportSheets(
       ],
     },
     {
+      id: 'collections',
       name: "Cobros",
       headers: [
         "Fecha",
@@ -404,6 +430,7 @@ export function reportSheets(
       ],
     },
     {
+      id: 'expenses',
       name: "Gastos",
       headers: ["Fecha", "Ruta", "Responsable", "Concepto", "Importe (Bs)"],
       rows: [
@@ -418,6 +445,7 @@ export function reportSheets(
       ],
     },
     {
+      id: 'closures',
       name: "Arqueos",
       headers: [
         "Fecha",
@@ -445,6 +473,7 @@ export function reportSheets(
       })(),
     },
     {
+      id: 'inventory',
       name: "Inventario por lote",
       headers: [
         "Producto",
@@ -480,6 +509,7 @@ export function reportSheets(
       ),
     },
     {
+      id: 'movements',
       name: "Movimientos",
       headers: [
         "Fecha",
@@ -503,6 +533,7 @@ export function reportSheets(
         ]),
     },
     {
+      id: 'transfers',
       name: "Transferencias",
       headers: [
         "Fecha",
@@ -526,6 +557,7 @@ export function reportSheets(
         ]),
     },
     {
+      id: 'claims',
       name: "Cambios y devoluciones",
       headers: [
         "Fecha",

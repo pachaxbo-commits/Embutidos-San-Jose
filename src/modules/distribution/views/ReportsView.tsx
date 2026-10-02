@@ -1,11 +1,21 @@
-import { exportExcel, exportPdf, reportAttributionError, reportSheets } from '../data/reportExports'
+import {
+  exportExcel,
+  exportPdf,
+  reportAttributionError,
+  reportSheets,
+  type ReportSheetId,
+  REPORT_OPTIONS,
+  ALL_REPORT_IDS,
+  defaultSheetIdForTab,
+  filterReportSheets,
+} from '../data/reportExports'
 import { reportCreditLabel, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
 import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
 import { Segmented, Field } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
-import { Printer, Send } from 'lucide-react'
+import { Check, FileSpreadsheet, FileText, Printer, Send } from 'lucide-react'
 import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
 import {
   computeMoneySummary,
@@ -16,7 +26,7 @@ import {
   round2,
   toDayKey,
 } from '../domain/engine'
-import { KpiCard, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
+import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
@@ -48,7 +58,68 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const [isSellerOpen, setIsSellerOpen] = useState(false)
   const [selectedSale, setSelectedSale] = useState<DistSale | null>(null)
   const [printFeedback, setPrintFeedback] = useState('')
+  const [pendingExportKind, setPendingExportKind] = useState<'Excel' | 'PDF' | null>(null)
+  const [selectedSheetIds, setSelectedSheetIds] = useState<Set<ReportSheetId>>(new Set())
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const attributionError = reportAttributionError(data, session.dayKeys, routeFilter, sellerFilter)
+
+  const handleOpenExportModal = (kind: 'Excel' | 'PDF') => {
+    setPendingExportKind(kind)
+    setSelectedSheetIds(new Set([defaultSheetIdForTab(tab)]))
+    setExportError('')
+    setIsExportModalOpen(true)
+  }
+
+  const handleToggleSheet = (id: ReportSheetId) => {
+    setSelectedSheetIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleSelectAll = () => {
+    setSelectedSheetIds(new Set(ALL_REPORT_IDS))
+  }
+
+  const handleClearSelection = () => {
+    setSelectedSheetIds(new Set())
+  }
+
+  const handleConfirmExport = async () => {
+    if (selectedSheetIds.size === 0 || !pendingExportKind) return
+    setExporting(true)
+    setExportError('')
+    try {
+      if (data.operations.some((o) => o.status === 'queued')) {
+        throw new Error('Espera la confirmación de las operaciones pendientes antes de exportar.')
+      }
+      const allSheets = reportSheets(data, session.dayKeys, routeFilter, sellerFilter)
+      const sheets = filterReportSheets(allSheets, selectedSheetIds)
+      if (sheets.length === 0) {
+        throw new Error('Selecciona al menos un reporte.')
+      }
+      const routeName = routeFilter
+        ? reportRecordName(data.routes.find((route) => route.id === routeFilter)?.name, 'Ruta seleccionada')
+        : 'Todas las rutas'
+      const sellerName = sellerFilter
+        ? reportPersonName(allSellers.find((seller) => seller.sellerUid === sellerFilter)?.sellerName)
+        : 'Todos los vendedores'
+      const description = `${describeRange(session.dayKeys)} · ruta: ${routeName} · vendedor: ${sellerName} · inventario: existencias actuales`
+
+      if (pendingExportKind === 'Excel') {
+        await exportExcel(sheets, description)
+      } else {
+        await exportPdf(sheets, description)
+      }
+      setIsExportModalOpen(false)
+    } catch (e) {
+      setExportError((e as Error).message)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const sales = useMemo(
     () =>
@@ -132,7 +203,26 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   return (
     <Screen title="Reportes" subtitle={describeRange(session.dayKeys)}>
       <div className="grid w-full min-w-0 gap-3">
-        <div className="flex flex-wrap gap-2">{(['Excel','PDF'] as const).map(kind=><button key={kind} disabled={exporting} className="rounded-xl border bg-white px-4 py-3 text-sm font-bold" onClick={async()=>{setExporting(true);setExportError('');try{if(data.operations.some(o=>o.status==='queued'))throw new Error('Espera la confirmación de las operaciones pendientes antes de exportar.');const sheets=reportSheets(data,session.dayKeys,routeFilter,sellerFilter);const routeName=routeFilter?reportRecordName(data.routes.find(route=>route.id===routeFilter)?.name,'Ruta seleccionada'):'Todas las rutas';const sellerName=sellerFilter?reportPersonName(allSellers.find(seller=>seller.sellerUid===sellerFilter)?.sellerName):'Todos los vendedores';const description=`${describeRange(session.dayKeys)} · ruta: ${routeName} · vendedor: ${sellerName} · inventario: existencias actuales`;if(kind==='Excel')await exportExcel(sheets,description);else await exportPdf(sheets,description)}catch(e){setExportError((e as Error).message)}finally{setExporting(false)}}}>{exporting?'Preparando...':kind==='Excel'?'Descargar Excel':'PDF para imprimir / compartir'}</button>)}</div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={exporting}
+            onClick={() => handleOpenExportModal('Excel')}
+            className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-extrabold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+          >
+            <FileSpreadsheet size={16} className="text-emerald-600" />
+            Descargar Excel
+          </button>
+          <button
+            type="button"
+            disabled={exporting}
+            onClick={() => handleOpenExportModal('PDF')}
+            className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-extrabold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+          >
+            <FileText size={16} className="text-rose-600" />
+            PDF para imprimir / compartir
+          </button>
+        </div>
         {exportError&&<p role="alert">{exportError}</p>}
         <SectionCard title="Costos y resultado del periodo">{attributionError ? <p role="alert" className="text-xs font-bold text-rose-700">{attributionError}</p> : <div className="grid gap-2 text-xs">{reportSheets(data,session.dayKeys,routeFilter,sellerFilter)[0].rows.map((row,i)=><p key={i} className="flex justify-between gap-3"><span>{row[0]}</span><strong>{typeof row[1]==='number'?formatBs(row[1]):row[1]===null?'No corresponde o falta costo':row[1]}</strong></p>)}</div>}</SectionCard>
         <RangePicker
@@ -324,8 +414,134 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         selectedValue={sellerFilter}
         onSelect={setSellerFilter}
       />
-      <Modal isOpen={Boolean(selectedSale)} onClose={() => { setSelectedSale(null); setPrintFeedback('') }} title="Comprobante de venta" subtitle={selectedSale ? `${new Date(selectedSale.createdAt).toLocaleString('es-BO')} · ${formatBs(selectedSale.total)}` : ''}>
-        {selectedSale && <div className="grid gap-2"><p className="rounded-2xl bg-slate-50 p-3 text-xs font-semibold text-slate-700">{selectedSale.customerName || 'Cliente ocasional'} · {selectedSale.lines.length} producto(s)</p><SecondaryButton full onClick={() => void printSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptHeader: data.supportSettings.receiptHeader, receiptFooter: data.supportSettings.receiptFooter, taxId: data.supportSettings.taxId, address: data.supportSettings.address, phone: data.supportSettings.phone, routeName: '', distributorName: '' }, true).then(result => setPrintFeedback(result.message))}><Printer size={16} /> Reimprimir ticket</SecondaryButton><SecondaryButton full onClick={() => void printLargeSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptFooter: data.supportSettings.receiptFooter, routeName: '', distributorName: '' }).catch(printError => setPrintFeedback((printError as Error).message))}><Printer size={16} /> Imprimir en hoja</SecondaryButton><SecondaryButton full onClick={() => void shareSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptFooter: data.supportSettings.receiptFooter, routeName: '', distributorName: '' }).then(shared => setPrintFeedback(shared ? 'Se abrieron las opciones para compartir.' : 'Se canceló el envío.')).catch(shareError => setPrintFeedback((shareError as Error).message))}><Send size={16} /> Compartir imagen</SecondaryButton>{printFeedback && <p className="rounded-xl bg-amber-50 p-2 text-xs font-bold text-amber-800">{printFeedback}</p>}</div>}
+      <Modal
+        isOpen={Boolean(selectedSale)}
+        onClose={() => {
+          setSelectedSale(null)
+          setPrintFeedback('')
+        }}
+        title="Comprobante de venta"
+        subtitle={selectedSale ? `${new Date(selectedSale.createdAt).toLocaleString('es-BO')} · ${formatBs(selectedSale.total)}` : ''}
+      >
+        {selectedSale && (
+          <div className="grid gap-2">
+            <p className="rounded-2xl bg-slate-50 p-3 text-xs font-semibold text-slate-700">
+              {selectedSale.customerName || 'Cliente ocasional'} · {selectedSale.lines.length} producto(s)
+            </p>
+            <SecondaryButton full onClick={() => void printSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptHeader: data.supportSettings.receiptHeader, receiptFooter: data.supportSettings.receiptFooter, taxId: data.supportSettings.taxId, address: data.supportSettings.address, phone: data.supportSettings.phone, routeName: '', distributorName: '' }, true).then(result => setPrintFeedback(result.message))}>
+              <Printer size={16} /> Reimprimir ticket
+            </SecondaryButton>
+            <SecondaryButton full onClick={() => void printLargeSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptFooter: data.supportSettings.receiptFooter, routeName: '', distributorName: '' }).catch(printError => setPrintFeedback((printError as Error).message))}>
+              <Printer size={16} /> Imprimir en hoja
+            </SecondaryButton>
+            <SecondaryButton full onClick={() => void shareSaleReceipt(selectedSale, { companyName: data.supportSettings.companyName, receiptFooter: data.supportSettings.receiptFooter, routeName: '', distributorName: '' }).then(shared => setPrintFeedback(shared ? 'Se abrieron las opciones para compartir.' : 'Se canceló el envío.')).catch(shareError => setPrintFeedback((shareError as Error).message))}>
+              <Send size={16} /> Compartir imagen
+            </SecondaryButton>
+            {printFeedback && <p className="rounded-xl bg-amber-50 p-2 text-xs font-bold text-amber-800">{printFeedback}</p>}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={isExportModalOpen}
+        onClose={() => {
+          if (!exporting) setIsExportModalOpen(false)
+        }}
+        title="Seleccionar reportes"
+        subtitle={
+          pendingExportKind === 'Excel'
+            ? 'Elige qué reportes incluir en el archivo Excel'
+            : 'Elige qué reportes incluir en el documento PDF'
+        }
+        footer={
+          <div className="flex w-full gap-2">
+            <SecondaryButton
+              disabled={exporting}
+              onClick={() => setIsExportModalOpen(false)}
+            >
+              Cancelar
+            </SecondaryButton>
+            <PrimaryButton
+              full
+              disabled={selectedSheetIds.size === 0 || exporting}
+              onClick={handleConfirmExport}
+            >
+              {exporting
+                ? 'Generando...'
+                : pendingExportKind === 'Excel'
+                  ? 'Descargar Excel'
+                  : 'Generar PDF'}
+            </PrimaryButton>
+          </div>
+        }
+      >
+        <div className="grid gap-3">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+            <span className="text-xs font-bold text-slate-500">
+              {selectedSheetIds.size} de {REPORT_OPTIONS.length} seleccionados
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={exporting}
+                onClick={handleSelectAll}
+                className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-extrabold text-slate-700 transition hover:bg-slate-200 active:scale-95"
+              >
+                Seleccionar todos
+              </button>
+              <button
+                type="button"
+                disabled={exporting}
+                onClick={handleClearSelection}
+                className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-extrabold text-slate-700 transition hover:bg-slate-200 active:scale-95"
+              >
+                Limpiar selección
+              </button>
+            </div>
+          </div>
+
+          {selectedSheetIds.size === 0 && (
+            <p role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-900">
+              Selecciona al menos un reporte.
+            </p>
+          )}
+
+          {exportError && (
+            <p role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-bold text-rose-700">
+              {exportError}
+            </p>
+          )}
+
+          <div className="grid max-h-[50vh] gap-2 overflow-y-auto pr-1">
+            {REPORT_OPTIONS.map((option) => {
+              const isChecked = selectedSheetIds.has(option.id)
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  disabled={exporting}
+                  onClick={() => handleToggleSheet(option.id)}
+                  className={`flex min-h-[52px] w-full items-center gap-3.5 rounded-2xl border p-3.5 text-left transition ${
+                    isChecked
+                      ? 'border-[var(--primary)] bg-rose-50/50 text-slate-900 shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <span
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border-2 transition ${
+                      isChecked
+                        ? 'border-[var(--primary)] bg-[var(--primary)] text-white'
+                        : 'border-slate-300 bg-white'
+                    }`}
+                  >
+                    {isChecked && <Check size={16} strokeWidth={3} />}
+                  </span>
+                  <span className="text-sm font-extrabold">{option.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
       </Modal>
     </Screen>
   )
