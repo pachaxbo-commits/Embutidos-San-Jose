@@ -16,6 +16,7 @@
     "test:rules": "node firebase/tests/serverOperations.test.mjs",
     "test:access": "node firebase/tests/exclusiveAccessRules.test.mjs",
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
+    "test:closure-regression": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureRegression.test.ts",
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
     "test:android-documents": "node scripts/test-android-document-flows.mjs",

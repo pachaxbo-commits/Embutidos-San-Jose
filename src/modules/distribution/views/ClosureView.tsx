@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Unlock } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Unlock } from 'lucide-react'
 import { Field, NumberInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -35,6 +35,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [cashDrafts, setCashDrafts] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const isSubmittingRef = useRef(false)
+  const [justClosedRouteName, setJustClosedRouteName] = useState<string | null>(null)
   const [isDispatchOpen, setIsDispatchOpen] = useState(false)
   const [historyOpenId, setHistoryOpenId] = useState<string | null>(null)
   const [reviewingClosureId, setReviewingClosureId] = useState('')
@@ -145,42 +147,68 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   }
 
   const submit = async (status: DistClosure['status']) => {
-    if (!dispatch || isSubmitting) return
+    if (!dispatch || isSubmittingRef.current) return
+    isSubmittingRef.current = true
+    setIsSubmitting(true)
     setError(null)
 
     const closure = buildClosureDoc(status)
-    if (!closure) return
+    if (!closure) {
+      isSubmittingRef.current = false
+      setIsSubmitting(false)
+      return
+    }
 
     if (status === 'warehouse_done') {
       const sinDeclarar = productRows.filter((row) => !isDeclared(row.productId))
       if (sinDeclarar.length > 0) {
         setError(`Falta declarar el retorno de: ${sinDeclarar.map((row) => row.productName).join(', ')}.`)
+        isSubmittingRef.current = false
+        setIsSubmitting(false)
         return
       }
     }
 
-    if (Object.values(parsedReturns).some(q => !Number.isFinite(q) || q < 0)) { setError('No se permiten retornos negativos.'); return }
-    if (status === 'closed' && !returnsAlreadyApplied) { setError('Almacen debe confirmar primero el retorno fisico.'); return }
+    if (Object.values(parsedReturns).some(q => !Number.isFinite(q) || q < 0)) {
+      setError('No se permiten retornos negativos.')
+      isSubmittingRef.current = false
+      setIsSubmitting(false)
+      return
+    }
+    if (status === 'closed' && !returnsAlreadyApplied) {
+      setError('Almacén debe confirmar primero el retorno físico.')
+      isSubmittingRef.current = false
+      setIsSubmitting(false)
+      return
+    }
     if (status === 'closed' && (!declaredCash || !Number.isFinite(Number(declaredCash)) || Number(declaredCash) < 0)) {
-      setError('Ingresa el efectivo fisico declarado antes de cerrar la ruta.')
+      setError('Ingresa el efectivo físico declarado antes de cerrar la ruta.')
+      isSubmittingRef.current = false
+      setIsSubmitting(false)
       return
     }
 
-    setIsSubmitting(true)
     try {
       await saveClosure({ closure, applyStockReturn: status === 'warehouse_done' && !returnsAlreadyApplied })
+      if (status === 'closed') {
+        setJustClosedRouteName(dispatch.routeName)
+      }
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo guardar el cierre.')
     } finally {
+      isSubmittingRef.current = false
       setIsSubmitting(false)
     }
   }
+
+  const getClosureSortTimestamp = (closure: DistClosure) =>
+    closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt || ''
 
   const historicalClosures = data.closures
     .filter(closure => session.role !== 'distributor' || closure.distributorUid === session.uid || closure.returnDeclaredBy === session.uid)
     .filter(closure => session.role !== 'warehouse' || (closure.warehouseId || 'central') === (session.warehouseId || 'central'))
     .slice()
-    .sort((a, b) => (b.closedAt || b.warehouseClosedAt || b.createdAt).localeCompare(a.closedAt || a.warehouseClosedAt || a.createdAt))
+    .sort((a, b) => getClosureSortTimestamp(b).localeCompare(getClosureSortTimestamp(a)))
 
   const closureHistory = (
     <SectionCard title="Historial de cierres">
@@ -188,9 +216,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         {historicalClosures.map(closure => {
           const expanded = historyOpenId === closure.id
           const hasProductDifference = closure.products.some(row => Math.abs(Number(row.variance) || 0) > 0.001)
+          const closureTimestamp = closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt
           return <article key={closure.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
             <button type="button" onClick={() => setHistoryOpenId(expanded ? null : closure.id)} className="flex min-h-[62px] w-full items-center gap-3 p-3 text-left" aria-expanded={expanded}>
-              <span className="min-w-0 flex-1"><strong className="block break-words text-sm text-slate-900">{closure.routeName || 'Ruta registrada'} · {closure.distributorName || 'Distribuidor'}</strong><span className="mt-0.5 block text-[11px] font-semibold text-slate-500">{new Date(closure.closedAt || closure.warehouseClosedAt || closure.createdAt).toLocaleString('es-BO')}</span><span className="mt-1 block text-[10px] font-extrabold text-[var(--primary)]">{CLOSURE_STATUS[closure.status] || 'Estado pendiente'}</span></span>
+              <span className="min-w-0 flex-1"><strong className="block break-words text-sm text-slate-900">{closure.routeName || 'Ruta registrada'} · {closure.distributorName || 'Distribuidor'}</strong><span className="mt-0.5 block text-[11px] font-semibold text-slate-500">{closureTimestamp ? new Date(closureTimestamp).toLocaleString('es-BO') : 'Sin fecha registrada'}</span><span className="mt-1 block text-[10px] font-extrabold text-[var(--primary)]">{CLOSURE_STATUS[closure.status] || 'Estado pendiente'}</span></span>
               {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
             </button>
             {expanded && <div className="grid gap-3 border-t border-slate-100 p-3">
@@ -223,6 +252,15 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   if (!dispatch) {
     return (
       <Screen title="Cierre de ruta">
+        {justClosedRouteName && (
+          <div className="flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 mb-3">
+            <CheckCircle2 size={20} className="shrink-0 text-emerald-600" />
+            <div className="min-w-0 flex-1">
+              <strong className="block text-sm font-bold">Ruta cerrada correctamente ({justClosedRouteName})</strong>
+              <span className="block text-xs text-emerald-700">La ruta fue finalizada y conciliada. El registro se encuentra disponible en el historial de cierres.</span>
+            </div>
+          </div>
+        )}
         {isDistributor && (
           <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">
             Para cerrar tu ruta, primero declaras cuánto producto devuelves. Almacén cuenta y confirma físicamente esa devolución; después se habilita el cierre final del efectivo.
@@ -241,6 +279,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   return (
     <Screen title="Cierre de ruta" subtitle={`${dispatch.routeName} · ${dispatch.distributorName}`}>
       <div className="grid w-full min-w-0 gap-3">
+        {justClosedRouteName && (
+          <div role="status" className="flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900">
+            <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
+            <span className="text-xs font-bold">Ruta "{justClosedRouteName}" cerrada exitosamente.</span>
+          </div>
+        )}
         {availableDispatches.length > 1 && (
           <Field label="Ruta a cerrar">
             <ChoiceButton label={`${dispatch.routeName} · ${dispatch.distributorName}`} placeholder="Selecciona despacho" onClick={() => setIsDispatchOpen(true)} />
@@ -351,22 +395,56 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
         {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
 
-        {isDistributor && !returnsAlreadyApplied && <SecondaryButton full disabled={isSubmitting || !loaded} onClick={async () => {
-          if (productRows.some(row => !isDeclared(row.productId))) { setError('Declara todos los productos, incluso si retornas cero.'); return }
-          setIsSubmitting(true)
-          try { await declareRouteReturn(dispatch, parsedReturns); setError(null) } catch (e) { setError((e as Error).message) } finally { setIsSubmitting(false) }
-        }}>Declarar retorno para almacen</SecondaryButton>}
-        {existingClosure?.returnDeclaredAt && <p className="text-xs text-emerald-700">Retorno declarado. {returnsAlreadyApplied ? 'Recepcion confirmada por almacen.' : 'Pendiente de recepcion en almacen.'}</p>}
+        {isDistributor && !returnsAlreadyApplied && (
+          <SecondaryButton
+            full
+            disabled={isSubmitting || !loaded}
+            onClick={async () => {
+              if (isSubmittingRef.current) return
+              if (productRows.some(row => !isDeclared(row.productId))) {
+                setError('Declara todos los productos, incluso si retornas cero.')
+                return
+              }
+              isSubmittingRef.current = true
+              setIsSubmitting(true)
+              try {
+                await declareRouteReturn(dispatch, parsedReturns)
+                setError(null)
+              } catch (e) {
+                setError((e as Error).message)
+              } finally {
+                isSubmittingRef.current = false
+                setIsSubmitting(false)
+              }
+            }}
+          >
+            {isSubmitting ? 'Enviando devolución…' : 'Declarar retorno para almacén'}
+          </SecondaryButton>
+        )}
+        {existingClosure?.returnDeclaredAt && (
+          <p className="text-xs text-emerald-700">
+            Retorno declarado. {returnsAlreadyApplied ? 'Recepción confirmada por almacén.' : 'Pendiente de recepción en almacén.'}
+          </p>
+        )}
         <div className="grid gap-2 sm:grid-cols-2">
           {canRegisterReturn && (
-            <SecondaryButton full disabled={isSubmitting || !loaded || returnsAlreadyApplied} onClick={() => void submit('warehouse_done')}>
+            <SecondaryButton
+              full
+              disabled={isSubmitting || !loaded || returnsAlreadyApplied}
+              onClick={() => void submit('warehouse_done')}
+            >
               <PackageCheck size={16} />
-              {returnsAlreadyApplied ? 'Retorno ya registrado' : 'Guardar retorno de almacen'}
+              {isSubmitting ? 'Confirmando devolución…' : returnsAlreadyApplied ? 'Retorno ya registrado' : 'Guardar retorno de almacén'}
             </SecondaryButton>
           )}
           {canCloseMoney && (
-            <PrimaryButton full disabled={isSubmitting || !loaded || !returnsAlreadyApplied} onClick={() => void submit('closed')}>
-              <Lock size={16} /> Cerrar ruta
+            <PrimaryButton
+              full
+              disabled={isSubmitting || !loaded || !returnsAlreadyApplied || existingClosure?.status === 'closed'}
+              onClick={() => void submit('closed')}
+            >
+              <Lock size={16} />
+              {isSubmitting ? 'Cerrando ruta…' : existingClosure?.status === 'closed' ? 'Ruta cerrada correctamente' : 'Cerrar ruta'}
             </PrimaryButton>
           )}
         </div>

@@ -5,6 +5,7 @@ import { DistributionApp } from './modules/distribution/views/DistributionApp'
 import { DistributionPrinterModal } from './modules/distribution/views/DistributionPrinterModal'
 import { useAuthStore } from './store/authStore'
 import { SAN_JOSE_ID, SAN_JOSE_NAME } from './config/sanJose'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import type { UserRole } from './types'
 
 function DistributionShell(props: {
@@ -38,10 +39,14 @@ function App() {
   if (auth.status !== 'authorized' || auth.restaurantId !== SAN_JOSE_ID || !auth.member?.active) {
     return <UnauthorizedView email={auth.userEmail} message={auth.error ?? 'Este usuario no tiene acceso a Embutidos San José.'} onSignOut={auth.signOut} />
   }
-  return <DistributionShell restaurantId={SAN_JOSE_ID} restaurantName={SAN_JOSE_NAME}
-    key={`${SAN_JOSE_ID}:${auth.member.uid}`} warehouseId={auth.member.warehouseId}
-    uid={auth.member.uid} userName={auth.userDisplayName ?? auth.userEmail ?? 'Usuario'}
-    role={auth.member.role} routeId={auth.member.routeId ?? null} onSignOut={auth.signOut} />
+  return (
+    <ErrorBoundary>
+      <DistributionShell restaurantId={SAN_JOSE_ID} restaurantName={SAN_JOSE_NAME}
+        key={`${SAN_JOSE_ID}:${auth.member.uid}`} warehouseId={auth.member.warehouseId}
+        uid={auth.member.uid} userName={auth.userDisplayName ?? auth.userEmail ?? 'Usuario'}
+        role={auth.member.role} routeId={auth.member.routeId ?? null} onSignOut={auth.signOut} />
+    </ErrorBoundary>
+  )
 }
 
 export default App

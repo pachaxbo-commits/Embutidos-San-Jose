@@ -119,19 +119,34 @@ export async function verifyQr(sourceType: 'sale' | 'collection' | 'claim', sour
   })
 }
 
+import { normalizeClosure } from '../domain/closurePeriod'
+export { normalizeClosure }
+
 /** Declarar retorno no modifica stock; almacen confirma la recepcion posteriormente. */
 export async function declareRouteReturn(dispatch: DistDispatch, quantities: Record<string, number>) {
-  if (Object.values(quantities).some(q => !Number.isFinite(q) || q < 0)) throw new Error('Las cantidades deben ser positivas o cero.')
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Declarar la devolución requiere conexión a Internet.')
+  }
+  if (Object.values(quantities).some(q => !Number.isFinite(q) || q < 0)) {
+    throw new Error('Las cantidades deben ser positivas o cero.')
+  }
   const ctx = await getContext()
   const id = `closure_${dispatch.id}`
+  const now = new Date().toISOString()
   const batch = writeBatch(ctx.db)
   batch.set(docRef(ctx, DIST_COLLECTIONS.closures, id), {
-    id, restaurantId: ctx.restaurantId, dispatchId: dispatch.id, routeId: dispatch.routeId,
-    distributorUid: dispatch.distributorUid, distributorName: dispatch.distributorName,
-    declaredReturns: quantities, returnDeclaredBy: ctx.uid, returnDeclaredAt: new Date().toISOString(),
+    id,
+    restaurantId: ctx.restaurantId,
+    dispatchId: dispatch.id,
+    routeId: dispatch.routeId,
+    distributorUid: dispatch.distributorUid,
+    distributorName: dispatch.distributorName,
+    declaredReturns: quantities,
+    returnDeclaredBy: ctx.uid,
+    returnDeclaredAt: now,
     dayKey: dispatch.dayKey,
   }, { merge: true })
-  commitInBackground(batch, newOperationId('return_declaration'), 'declaracion de retorno')
+  await batch.commit()
 }
 const APPLIED_OPERATIONS_KEY = 'pachax_dist_applied_operations'
 
@@ -473,9 +488,9 @@ export function subscribeClosures(
     ctx => distributorUid
       ? query(collectionRef(ctx, DIST_COLLECTIONS.closures), where('distributorUid', '==', distributorUid))
       : routeId ? query(collectionRef(ctx, DIST_COLLECTIONS.closures), where('routeId', '==', routeId)) : collectionRef(ctx, DIST_COLLECTIONS.closures),
-    // Una declaración todavía no tiene conciliación física. La lista vacía
-    // permite consultarla sin confundirla con una recepción confirmada.
-    rows => onData(rows.map(row => ({ ...row, products: Array.isArray(row.products) ? row.products : [] }))),
+    // Normaliza completamente cada cierre (sea parcial o histórico) para evitar
+    // campos incompletos y excepciones de renderizado en el cliente.
+    rows => onData(rows.map(row => normalizeClosure(row as Partial<DistClosure> & { id: string }))),
     onError,
   )
 }

@@ -28,6 +28,7 @@ import { hasPermission } from '../../../services/permissionService'
 import { applyAppTheme } from '../../../lib/appTheme'
 import { BottomNav, type BottomNavItem } from '../../../components/ui/BottomNav'
 import { Modal } from '../../../components/ui/Modal'
+import { ErrorBoundary } from '../../../components/ErrorBoundary'
 import { useBackButtonBridge } from '../../../hooks/useBackHandler'
 import { buildDayRange, useDistributionData, useSyncStatus } from '../state/useDistributionStore'
 import { toDayKey } from '../domain/engine'
@@ -320,7 +321,7 @@ export function DistributionApp({
           )}
         </nav>
 
-        <main className="min-w-0 flex-1 pb-bottom-nav">{data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}{syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}{data.operations.filter(o=>o.status==='queued').length>0&&<p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o=>o.status==='queued').length}. Esperando confirmación del servidor. No vuelvas a registrarlas.</p>}{data.operations.filter(o=>o.status==='rejected' && !o.acknowledged).map(o=><p key={o.id} role="alert" className="mb-2 rounded-xl bg-rose-50 p-3 text-sm">No se aplicó una operación: {o.error} <button className="ml-2 underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button></p>)}{renderModule()}</main>
+        <main className="min-w-0 flex-1 pb-bottom-nav">{data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}{syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}{data.operations.filter(o=>o.status==='queued').length>0&&<p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o=>o.status==='queued').length}. Esperando confirmación del servidor. No vuelvas a registrarlas.</p>}{data.operations.filter(o=>o.status==='rejected' && !o.acknowledged).map(o=><p key={o.id} role="alert" className="mb-2 rounded-xl bg-rose-50 p-3 text-sm">No se aplicó una operación: {o.error} <button className="ml-2 underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button></p>)}<ErrorBoundary key={activeModule} onReset={() => selectModule('dist.dashboard')}>{renderModule()}</ErrorBoundary></main>
       </div>
 
       <BottomNav
