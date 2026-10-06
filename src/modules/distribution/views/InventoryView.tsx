@@ -13,7 +13,7 @@ import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
-import { exportExcel, exportPdf, inventoryHistorySheet, warehouseReportSheets } from '../data/reportExports'
+import { currentStockSheets, exportExcel, exportPdf, inventoryHistorySheet } from '../data/reportExports'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
@@ -97,7 +97,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     if (historyExporting) return
     setHistoryExporting(format)
     try {
-      const sheets = warehouseReportSheets(data, [toDayKey()]).filter(s => s.name.includes('Existencias') || s.name.includes('Lotes'))
+      const sheets = currentStockSheets(data, warehouseId)
       const description = `Existencias actuales · ${warehouseName} · Emitido ${new Date().toLocaleString('es-BO')}`
       if (format === 'pdf') await exportPdf(sheets, description, 'SanJose-existencias-actuales.pdf')
       else await exportExcel(sheets, description, 'SanJose-existencias-actuales.xlsx')

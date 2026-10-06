@@ -303,62 +303,87 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               const product = data.products.find(p => p.id === row.productId)
               const presentation = product ? getProductPresentation(product) : ''
               return (
-                <div key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
+                <div key={row.productId} className="w-full min-w-0 rounded-xl border border-slate-200 bg-white p-2.5 shadow-xs hover:border-slate-300 transition-colors">
+                  {/* Fila 1: Nombre + Detalle + Estado/Diferencia badge */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <p className="min-w-0 line-clamp-2 break-normal text-xs font-black leading-snug text-slate-900">{row.productName}</p>
-                      {presentation && (
-                        <p className="mt-0.5 line-clamp-1 break-normal text-[10px] font-semibold text-slate-500">{presentation}</p>
+                      <div className="flex flex-wrap items-baseline gap-x-1.5">
+                        <span className="line-clamp-2 text-xs font-black leading-snug text-slate-900">{row.productName}</span>
+                        {presentation && (
+                          <span className="line-clamp-1 text-[10px] font-semibold text-slate-500">({presentation})</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="shrink-0">
+                      {isDeclared(row.productId) ? (
+                        <VarianceBadge variance={row.variance} unitType={row.unitType} />
+                      ) : (
+                        <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[9px] font-black text-slate-500">
+                          SIN DECLARAR
+                        </span>
                       )}
                     </div>
-                    {/* Sin retorno declarado no se afirma que falte: solo falta el dato. */}
-                    {isDeclared(row.productId) ? (
-                      <VarianceBadge variance={row.variance} unitType={row.unitType} />
-                    ) : (
-                      <span className="inline-flex shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-500">
-                        SIN DECLARAR
-                      </span>
-                    )}
                   </div>
 
-                  <dl className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+                  {/* Fila 2: Tira horizontal de 4 métricas */}
+                  <div className="mt-1.5 flex items-center justify-between rounded-lg bg-slate-50 px-2 py-1 text-[10px] text-slate-600 border border-slate-100">
                     <div>
-                      <dt className="text-[10px] font-bold uppercase text-slate-400">Enviado</dt>
-                      <dd className="text-xs font-black tabular-nums text-slate-800">
-                        {formatQty(row.initialDispatch, row.unitType)}
-                      </dd>
+                      <span className="text-[9px] text-slate-400">Env: </span>
+                      <span className="font-bold tabular-nums text-slate-700">{formatQty(row.initialDispatch, row.unitType)}</span>
                     </div>
+                    <span className="text-slate-300">·</span>
                     <div>
-                      <dt className="text-[10px] font-bold uppercase text-slate-400">Aumentos</dt>
-                      <dd className="text-xs font-black tabular-nums text-slate-800">
-                        {formatQty(row.additions, row.unitType)}
-                      </dd>
+                      <span className="text-[9px] text-slate-400">Aum: </span>
+                      <span className="font-bold tabular-nums text-slate-700">{formatQty(row.additions, row.unitType)}</span>
                     </div>
+                    <span className="text-slate-300">·</span>
                     <div>
-                      <dt className="text-[10px] font-bold uppercase text-slate-400">Vendido</dt>
-                      <dd className="text-xs font-black tabular-nums text-slate-800">{formatQty(row.sold, row.unitType)}</dd>
+                      <span className="text-[9px] text-slate-400">Ven: </span>
+                      <span className="font-bold tabular-nums text-slate-700">{formatQty(row.sold, row.unitType)}</span>
                     </div>
+                    <span className="text-slate-300">·</span>
                     <div>
-                      <dt className="text-[10px] font-bold uppercase text-slate-400">Debe volver</dt>
-                      <dd className="text-xs font-black tabular-nums text-slate-800">
-                        {formatQty(row.expectedReturn, row.unitType)}
-                      </dd>
+                      <span className="text-[9px] text-slate-400 font-semibold">Debe volver: </span>
+                      <span className="font-black tabular-nums text-indigo-700">{formatQty(row.expectedReturn, row.unitType)}</span>
                     </div>
-                  </dl>
+                  </div>
 
-                  <div className="mt-2.5 border-t border-slate-100 pt-2">
-                    <Field label="Retornado físicamente">
+                  {/* Fila 3: Input de devolución con botones rápidos [0] [Todo (W)] */}
+                  <div className="mt-2 flex items-center justify-between gap-1.5 pt-1.5 border-t border-slate-100">
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mr-0.5">Retorno:</span>
+                      <button
+                        type="button"
+                        disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
+                        onClick={() => setReturns((current) => ({ ...current, [row.productId]: '0' }))}
+                        className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 active:scale-95 disabled:opacity-40 transition-colors"
+                        title="Declarar retorno 0"
+                      >
+                        0
+                      </button>
+                      <button
+                        type="button"
+                        disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
+                        onClick={() => setReturns((current) => ({ ...current, [row.productId]: String(row.expectedReturn) }))}
+                        className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 active:scale-95 disabled:opacity-40 transition-colors"
+                        title={`Declarar retorno esperado (${row.expectedReturn})`}
+                      >
+                        Todo ({row.expectedReturn})
+                      </button>
+                    </div>
+                    <div className="w-24 sm:w-28 shrink-0">
                       <NumberInput
                         value={returns[row.productId] ?? ''}
                         min={0}
                         step={row.unitType === 'kg' ? 0.1 : 1}
                         disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
                         placeholder="0"
+                        className="!min-h-[34px] py-1 px-2.5 text-right font-black text-xs"
                         onChange={(event) =>
                           setReturns((current) => ({ ...current, [row.productId]: event.target.value }))
                         }
                       />
-                    </Field>
+                    </div>
                   </div>
                 </div>
               )

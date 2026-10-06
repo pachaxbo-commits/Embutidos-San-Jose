@@ -91,6 +91,55 @@ export function formatDispatchTextSummary(dispatch: DistDispatch): string {
   return `${header}\n\n*CARGA INICIAL:*\n${initialLines}${additionsText}${consolidated}\n\n_Generado el ${new Date().toLocaleString('es-BO')}_`
 }
 
+export function getDispatchEmailSubject(dispatch: DistDispatch): string {
+  return `Despacho ${dispatch.routeName} - ${dispatch.distributorName} (${dispatch.id.slice(-6).toUpperCase()})`
+}
+
+export function formatDispatchEmailBody(dispatch: DistDispatch): string {
+  const loaded = computeLoadedByProduct(dispatch)
+  const header = `EMBUTIDOS SAN JOSÉ
+HOJA DE DESPACHO EN RUTA
+Despacho: ${dispatch.id.slice(-6).toUpperCase()}
+Ruta: ${dispatch.routeName}
+Distribuidor: ${dispatch.distributorName}
+Fecha y hora: ${new Date(dispatch.createdAt).toLocaleString('es-BO')}
+Almacén: ${dispatch.warehouseResponsibleName || 'Almacén Central'}`
+
+  const initialLines = dispatch.lines.map(
+    (l) => `• ${l.productName}: ${l.quantity} ${l.unitType === 'kg' ? 'kg' : 'paq'}`,
+  ).join('\n')
+
+  let additionsText = ''
+  if (dispatch.additions && dispatch.additions.length > 0) {
+    additionsText = '\n\nAUMENTOS REGISTRADOS:\n' + dispatch.additions.map((a, i) => {
+      const time = new Date(a.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })
+      const resp = a.warehouseResponsibleName || a.createdByName || 'Almacén'
+      const lines = a.quantityByProduct.map(
+        (q) => `  + ${q.productName}: ${q.quantity} ${q.unitType === 'kg' ? 'kg' : 'paq'}`,
+      ).join('\n')
+      return `Aumento #${i + 1} (${time} · ${resp}):\n${lines}`
+    }).join('\n')
+  }
+
+  const consolidated = '\n\nTOTAL A RENDICIÓN:\n' + [...loaded.values()].map(
+    (row) => `• ${row.productName}: ${row.totalLoaded} ${row.unitType === 'kg' ? 'kg' : 'paq'}`,
+  ).join('\n')
+
+  return `${header}\n\nCARGA INICIAL:\n${initialLines}${additionsText}${consolidated}\n\nGenerado el ${new Date().toLocaleString('es-BO')} · Embutidos San José`
+}
+
+export function getGmailComposeUrl(subject: string, body: string): string {
+  return `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+}
+
+export function getOutlookComposeUrl(subject: string, body: string): string {
+  return `https://outlook.live.com/mail/0/deeplink/compose?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+}
+
+export function getMailtoUrl(subject: string, body: string): string {
+  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+}
+
 export async function generateDispatchPdf(dispatch: DistDispatch, products: DistProduct[] = []) {
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([
     import('jspdf'),

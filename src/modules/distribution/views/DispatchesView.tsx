@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Check, Download, FileText, Mail, MessageCircle, PackagePlus, Printer, Search, Send, Trash2, Truck } from 'lucide-react'
+import { Check, Copy, Download, FileText, Mail, MessageCircle, PackagePlus, Printer, Search, Send, Trash2, Truck } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -16,6 +16,11 @@ import {
   downloadDispatchPdf,
   shareDispatch,
   formatDispatchTextSummary,
+  formatDispatchEmailBody,
+  getDispatchEmailSubject,
+  getGmailComposeUrl,
+  getOutlookComposeUrl,
+  getMailtoUrl,
 } from '../data/distributionDocumentPrintService'
 import { Capacitor } from '@capacitor/core'
 
@@ -50,6 +55,30 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [isDistributorPickerOpen, setIsDistributorPickerOpen] = useState(false)
   const [isWarehousePickerOpen, setIsWarehousePickerOpen] = useState(false)
   const [sharingDispatch, setSharingDispatch] = useState<DistDispatch | null>(null)
+  const [isEmailView, setIsEmailView] = useState(false)
+  const [copiedText, setCopiedText] = useState(false)
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const textArea = document.createElement('textarea')
+        textArea.value = text
+        textArea.style.position = 'fixed'
+        textArea.style.opacity = '0'
+        document.body.appendChild(textArea)
+        textArea.focus()
+        textArea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textArea)
+      }
+      setCopiedText(true)
+      setTimeout(() => setCopiedText(false), 2500)
+    } catch {
+      // ignore
+    }
+  }
 
   const distributors = useMemo(
     () => members.filter((member) => member.role === 'distributor' && member.active !== false),
@@ -392,67 +421,159 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
       <Modal
         isOpen={Boolean(sharingDispatch)}
-        onClose={() => setSharingDispatch(null)}
-        title="Compartir despacho"
+        onClose={() => {
+          setSharingDispatch(null)
+          setIsEmailView(false)
+          setCopiedText(false)
+        }}
+        title={isEmailView ? 'Enviar por correo' : 'Compartir despacho'}
         subtitle={sharingDispatch ? `${sharingDispatch.routeName} · ${sharingDispatch.distributorName}` : ''}
         size="md"
         footer={
-          <SecondaryButton full onClick={() => setSharingDispatch(null)}>
-            Cerrar
+          <SecondaryButton
+            full
+            onClick={() => {
+              if (isEmailView) {
+                setIsEmailView(false)
+              } else {
+                setSharingDispatch(null)
+                setCopiedText(false)
+              }
+            }}
+          >
+            {isEmailView ? 'Volver a opciones' : 'Cerrar'}
           </SecondaryButton>
         }
       >
         {sharingDispatch && (
           <div className="grid gap-3">
-            <p className="text-xs text-slate-600">
-              Selecciona cómo deseas compartir o exportar este despacho:
-            </p>
-            <div className="grid gap-2">
-              <a
-                href={`https://web.whatsapp.com/send?text=${encodeURIComponent(formatDispatchTextSummary(sharingDispatch))}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100"
-              >
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-white">
-                  <MessageCircle size={18} />
-                </div>
-                <div>
-                  <p className="font-extrabold">WhatsApp Web</p>
-                  <p className="text-[11px] font-normal text-emerald-700">Abrir chat en navegador con el resumen de carga</p>
-                </div>
-              </a>
+            {isEmailView ? (
+              <>
+                <p className="text-xs text-slate-600">
+                  Elige tu servicio de correo habitual o copia el texto formateado:
+                </p>
+                <div className="grid gap-2">
+                  <a
+                    href={getGmailComposeUrl(
+                      getDispatchEmailSubject(sharingDispatch),
+                      formatDispatchEmailBody(sharingDispatch),
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-800 transition hover:bg-red-100"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-600 text-white">
+                      <Mail size={18} />
+                    </div>
+                    <div>
+                      <p className="font-extrabold">Gmail Web</p>
+                      <p className="text-[11px] font-normal text-red-700">Abrir en navegador con asunto y carga lista</p>
+                    </div>
+                  </a>
 
-              <a
-                href={`mailto:?subject=${encodeURIComponent(`Despacho ${sharingDispatch.routeName} - ${sharingDispatch.distributorName}`)}&body=${encodeURIComponent(formatDispatchTextSummary(sharingDispatch))}`}
-                className="flex items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs font-bold text-blue-800 transition hover:bg-blue-100"
-              >
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500 text-white">
-                  <Mail size={18} />
-                </div>
-                <div>
-                  <p className="font-extrabold">Correo electrónico</p>
-                  <p className="text-[11px] font-normal text-blue-700">Enviar resumen de despacho por correo</p>
-                </div>
-              </a>
+                  <a
+                    href={getOutlookComposeUrl(
+                      getDispatchEmailSubject(sharingDispatch),
+                      formatDispatchEmailBody(sharingDispatch),
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 rounded-2xl border border-sky-200 bg-sky-50 p-3 text-xs font-bold text-sky-800 transition hover:bg-sky-100"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white">
+                      <Mail size={18} />
+                    </div>
+                    <div>
+                      <p className="font-extrabold">Outlook Web</p>
+                      <p className="text-[11px] font-normal text-sky-700">Abrir en Outlook online listo para enviar</p>
+                    </div>
+                  </a>
 
-              <button
-                type="button"
-                onClick={() => {
-                  downloadDispatchPdf(sharingDispatch)
-                  setSharingDispatch(null)
-                }}
-                className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-100"
-              >
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-700 text-white">
-                  <Download size={18} />
+                  <a
+                    href={getMailtoUrl(
+                      getDispatchEmailSubject(sharingDispatch),
+                      formatDispatchEmailBody(sharingDispatch),
+                    )}
+                    className="flex items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs font-bold text-blue-800 transition hover:bg-blue-100"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white">
+                      <Mail size={18} />
+                    </div>
+                    <div>
+                      <p className="font-extrabold">Correo predeterminado</p>
+                      <p className="text-[11px] font-normal text-blue-700">Abrir app local de Windows o navegador</p>
+                    </div>
+                  </a>
+
+                  <button
+                    type="button"
+                    onClick={() => void copyToClipboard(formatDispatchEmailBody(sharingDispatch))}
+                    className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-100"
+                  >
+                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition ${copiedText ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-white'}`}>
+                      {copiedText ? <Check size={18} /> : <Copy size={18} />}
+                    </div>
+                    <div>
+                      <p className="font-extrabold">{copiedText ? '¡Texto copiado al portapapeles!' : 'Copiar texto para correo'}</p>
+                      <p className="text-[11px] font-normal text-slate-600">Pega el resumen directamente en cualquier mensaje</p>
+                    </div>
+                  </button>
                 </div>
-                <div>
-                  <p className="font-extrabold">Descargar PDF</p>
-                  <p className="text-[11px] font-normal text-slate-600">Guardar documento oficial con aumentos y firmas</p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-slate-600">
+                  Selecciona cómo deseas compartir o exportar este despacho:
+                </p>
+                <div className="grid gap-2">
+                  <a
+                    href={`https://web.whatsapp.com/send?text=${encodeURIComponent(formatDispatchTextSummary(sharingDispatch))}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-white">
+                      <MessageCircle size={18} />
+                    </div>
+                    <div>
+                      <p className="font-extrabold">WhatsApp Web</p>
+                      <p className="text-[11px] font-normal text-emerald-700">Abrir chat en navegador con el resumen de carga</p>
+                    </div>
+                  </a>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsEmailView(true)}
+                    className="flex items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-3 text-left text-xs font-bold text-blue-800 transition hover:bg-blue-100"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500 text-white">
+                      <Mail size={18} />
+                    </div>
+                    <div>
+                      <p className="font-extrabold">Correo electrónico</p>
+                      <p className="text-[11px] font-normal text-blue-700">Gmail Web, Outlook Web o cliente local</p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      downloadDispatchPdf(sharingDispatch)
+                      setSharingDispatch(null)
+                    }}
+                    className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-100"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-700 text-white">
+                      <Download size={18} />
+                    </div>
+                    <div>
+                      <p className="font-extrabold">Descargar PDF</p>
+                      <p className="text-[11px] font-normal text-slate-600">Guardar documento oficial con aumentos y firmas</p>
+                    </div>
+                  </button>
                 </div>
-              </button>
-            </div>
+              </>
+            )}
           </div>
         )}
       </Modal>
