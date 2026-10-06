@@ -36,9 +36,10 @@ import type {
   DistSale,
   DistSaleLine,
   DistStockMovement,
-  DistLot, DistTransfer, DistClaim, DistCreditStatus, DistAdjustmentRequest,
+  DistLot, DistTransfer, DistClaim, DistCreditStatus, DistCreditOverride, DistAdjustmentRequest,
   PaymentKind,
   SourceLocation,
+  UnitType,
 } from '../types'
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from './supportMaintenance'
 
@@ -433,7 +434,11 @@ export function subscribeSales(
   onError?: (error: Error) => void,
   distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistSale>(DIST_COLLECTIONS.sales, dayKeys, routeId, onData, onError, distributorUid ? { field: 'sellerUid', uid: distributorUid } : undefined)
+  return subscribeDayScoped<DistSale>(DIST_COLLECTIONS.sales, dayKeys, routeId, rows => onData(rows.map(row => row.effectiveSnapshot ? { ...row, ...row.effectiveSnapshot } : row)), onError, distributorUid ? { field: 'sellerUid', uid: distributorUid } : undefined)
+}
+
+export async function correctSale(input: { saleId: string; reason: string; lines: DistSaleLine[]; paymentKind: PaymentKind; cashAmount: number; qrAmount: number; creditAmount: number }): Promise<void> {
+  await submitOperation('editSale', input, newOperationId('sale-correction'))
 }
 
 export function subscribeCollections(
@@ -518,6 +523,14 @@ export async function saveProduct(product: Omit<DistProduct, 'restaurantId' | 'c
   commitInBackground(batch, `product_${product.id}_${now}`, 'producto')
 }
 
+export async function changeProductUnit(productId: string, unitType: UnitType): Promise<void> {
+  await submitOperation('changeProductUnit', { productId, unitType }, newOperationId('product-unit'))
+}
+
+export async function openWarehouseShift(warehouseId: string, responsibleName: string): Promise<void> {
+  await submitOperation('warehouseShift', { warehouseId, responsibleName }, newOperationId('warehouse-shift'))
+}
+
 export async function saveRoute(route: Omit<DistRoute, 'restaurantId' | 'createdAt'> & { createdAt?: string }) {
   const context = await getContext()
   const batch = writeBatch(context.db)
@@ -596,7 +609,7 @@ export async function saveCustomer(input: CustomerInput): Promise<DistCustomer> 
 
 /** Ingreso de mercaderia al almacen central */
 export async function registerIntake(lines: DistDispatchLine[], note: string, operationId = newOperationId('intake')) {
-  await submitOperation('intake', { lines, note }, operationId)
+  await submitOperation('intake', { lines, note, warehouseResponsibleName: localStorage.getItem('sanjose_warehouse_responsible') || '' }, operationId)
   return operationId
 }
 
@@ -607,12 +620,12 @@ export async function registerAdjustment(
   operationId = newOperationId('adjust'),
   warehouseId = 'central',
 ) {
-  await submitOperation('adjustment', { line, note, warehouseId }, operationId)
+  await submitOperation('adjustment', { line, note, warehouseId, warehouseResponsibleName: localStorage.getItem('sanjose_warehouse_responsible') || '' }, operationId)
   return operationId
 }
 
 export async function requestAdjustment(line: DistDispatchLine, note: string, operationId = newOperationId('adjust-request'), warehouseId = 'central') {
-  await submitOperation('adjustmentRequest', { line, note, warehouseId }, operationId)
+  await submitOperation('adjustmentRequest', { line, note, warehouseId, warehouseResponsibleName: localStorage.getItem('sanjose_warehouse_responsible') || '' }, operationId)
   return operationId
 }
 
@@ -633,6 +646,7 @@ export interface ConfirmDispatchInput {
   lines: DistDispatchLine[]
   observation?: string
   warehouseId?: string
+  warehouseResponsibleName: string
   operationId?: string
 }
 
@@ -648,6 +662,7 @@ export interface AddDispatchLoadInput {
   lines: DistDispatchLine[]
   registeredByName: string
   note?: string
+  warehouseResponsibleName: string
   operationId?: string
 }
 
@@ -701,6 +716,7 @@ export async function registerSale(input: RegisterSaleInput): Promise<DistSale> 
 export interface RegisterCollectionInput {
   operationId: string
   receivable: DistReceivable
+  customerId?: string
   amount: number
   method: 'cash' | 'qr' | 'mixed'
   cashAmount: number
@@ -709,6 +725,14 @@ export interface RegisterCollectionInput {
   collectedByName: string
   routeId: string
   note?: string
+}
+
+export async function registerOpeningBalance(input: { customerId: string; amount: number; sourceDate: string; note: string; routeId?: string }): Promise<DistReceivable> {
+  return submitOperation<DistReceivable>('openingBalance', input, newOperationId('opening-balance'))
+}
+
+export async function setCreditOverride(input: { customerId: string; days?: number; reason?: string; revoke?: boolean }): Promise<void> {
+  await submitOperation('creditOverride', input, newOperationId('credit-override'))
 }
 
 /**
@@ -771,12 +795,13 @@ export interface SaveClosureInput {
  *   de modo que la ruta queda en cero y nunca se descuenta dos veces central.
  */
 export async function saveClosure(input: SaveClosureInput): Promise<string> {
-  await submitOperation('closure', { ...input, mode: input.applyStockReturn ? 'warehouse' : 'money' }, newOperationId('closure'))
+  await submitOperation('closure', { ...input, mode: input.applyStockReturn ? 'warehouse' : 'money', warehouseResponsibleName: localStorage.getItem('sanjose_warehouse_responsible') || '' }, newOperationId('closure'))
   return input.closure.id
 }
 
 /** Reapertura administrativa de una ruta cerrada */
 export async function reopenClosure(closure: DistClosure, _reopenedBy: string): Promise<void> {
+  void _reopenedBy
   await submitOperation('reopen', { closureId: closure.id }, newOperationId('reopen'))
 }
 
@@ -821,6 +846,7 @@ export function subscribeAdjustmentRequests(onData: (rows: DistAdjustmentRequest
   return subscribeQuery<DistAdjustmentRequest>(ctx => collectionRef(ctx, DIST_COLLECTIONS.adjustmentRequests), onData, onError)
 }
 export function subscribeCreditStatus(onData: (rows: DistCreditStatus[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistCreditStatus>(ctx => collectionRef(ctx, 'distCreditStatus'), onData, onError) }
+export function subscribeCreditOverrides(onData: (rows: DistCreditOverride[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistCreditOverride>(ctx => collectionRef(ctx, 'distCreditOverrides'), onData, onError) }
 export async function registerClaim(payload: Record<string, unknown>, operationId: string) { return submitOperation<DistClaim>('claim', payload, operationId) }
 
 export function dismissSyncError() {

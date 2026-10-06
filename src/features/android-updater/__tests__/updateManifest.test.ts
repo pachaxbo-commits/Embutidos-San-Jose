@@ -42,14 +42,15 @@ equal(canPresentAutomaticUpdate({ postponedThisSession: true, pendingOperations:
 equal(canPresentAutomaticUpdate({ postponedThisSession: false, pendingOperations: true, anotherDialogOpen: false }), false)
 equal(canPresentAutomaticUpdate({ postponedThisSession: false, pendingOperations: false, anotherDialogOpen: true }), false)
 
-const manifest25 = parseAndroidUpdateManifest({
+const manifest26 = parseAndroidUpdateManifest({
   ...valid,
-  versionCode: 25,
-  versionName: '1.4.5',
+  versionCode: 26,
+  versionName: '1.4.6',
 })
-equal(hasNewerAndroidVersion(22, manifest25), true)
-equal(hasNewerAndroidVersion(23, manifest25), true)
-equal(hasNewerAndroidVersion(24, manifest25), true)
-equal(hasNewerAndroidVersion(25, manifest25), false)
+equal(hasNewerAndroidVersion(22, manifest26), true)
+equal(hasNewerAndroidVersion(23, manifest26), true)
+equal(hasNewerAndroidVersion(24, manifest26), true)
+equal(hasNewerAndroidVersion(25, manifest26), true)
+equal(hasNewerAndroidVersion(26, manifest26), false)
 
-console.log('20 comprobaciones del manifiesto y sesión Android aprobadas')
+console.log('21 comprobaciones del manifiesto y sesión Android aprobadas')

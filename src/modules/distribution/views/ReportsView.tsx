@@ -12,7 +12,7 @@ import {
 import { reportCreditLabel, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
 import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
-import { Segmented, Field } from '../../../components/ui/Form'
+import { Field } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { Check, FileSpreadsheet, FileText, Printer, Send } from 'lucide-react'
@@ -31,16 +31,28 @@ import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
 
-type ReportTab = 'resumen' | 'ventas' | 'productos' | 'creditos' | 'cobros' | 'gastos' | 'arqueos'
+type ReportTab = 'resumen' | 'ventas' | 'productos' | 'kardex' | 'clientes' | 'dinero' | 'creditos' | 'cobros' | 'gastos' | 'arqueos' | 'inventario' | 'movimientos'
 
 const TABS: { value: ReportTab; label: string }[] = [
   { value: 'resumen', label: 'Resumen' },
   { value: 'ventas', label: 'Ventas' },
   { value: 'productos', label: 'Productos' },
+  { value: 'kardex', label: 'Kardex de ventas' },
+  { value: 'clientes', label: 'Compras por cliente' },
+  { value: 'dinero', label: 'Movimiento de dinero' },
   { value: 'creditos', label: 'Creditos' },
   { value: 'cobros', label: 'Cobros' },
   { value: 'gastos', label: 'Gastos' },
   { value: 'arqueos', label: 'Arqueos' },
+  { value: 'inventario', label: 'Existencias actuales' },
+  { value: 'movimientos', label: 'Movimientos' },
+]
+const REPORT_GROUPS: { label: string; tabs: ReportTab[] }[] = [
+  { label: 'A · Resultado del negocio', tabs: ['resumen'] },
+  { label: 'B · Movimiento de dinero', tabs: ['dinero', 'cobros', 'gastos', 'arqueos'] },
+  { label: 'C · Ventas', tabs: ['ventas', 'productos', 'kardex', 'clientes'] },
+  { label: 'D · Créditos', tabs: ['creditos'] },
+  { label: 'E · Inventario', tabs: ['inventario', 'movimientos'] },
 ]
 
 /**
@@ -251,7 +263,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
           varias filas en pantallas angostas. Forzar min-w-max las estiraba y
           generaba desplazamiento horizontal.
         */}
-        <Segmented value={tab} onChange={setTab} options={TABS} />
+        <div className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3">{REPORT_GROUPS.map(group => <div key={group.label}><p className="mb-1 text-[10px] font-black uppercase tracking-wide text-slate-500">{group.label}</p><div className="flex flex-wrap gap-1.5">{group.tabs.map(value => <button key={value} type="button" onClick={() => setTab(value)} className={`min-h-[38px] rounded-xl px-3 text-xs font-extrabold ${tab===value?'bg-[var(--primary)] text-white':'bg-slate-100 text-slate-700'}`}>{TABS.find(item=>item.value===value)?.label}</button>)}</div></div>)}</div>
 
         {/* --- Resumen por vendedor --- */}
         {tab === 'resumen' &&
@@ -317,6 +329,16 @@ export function ReportsView({ session, data }: DistributionViewProps) {
               titleOf={(row) => row.productName}
             />
           ))}
+
+        {(['kardex', 'clientes', 'dinero', 'inventario', 'movimientos'] as ReportTab[]).includes(tab) && (() => {
+          const id = tab === 'kardex' ? 'salesKardex' : tab === 'clientes' ? 'customerPurchases' : tab === 'dinero' ? 'cashFlow' : tab === 'inventario' ? 'inventory' : 'movements'
+          const sheet = reportSheets(data, session.dayKeys, routeFilter, sellerFilter).find(item => item.id === id)
+          if (!sheet || sheet.rows.length <= 1) return <EmptyBlock title="Sin datos en el periodo" description="Cambia las fechas o los filtros." />
+          return <SectionCard title={sheet.name}>
+            <p className="mb-3 text-[11px] font-semibold text-slate-500">Vista resumida. Usa PDF o Excel para consultar todas las columnas y totales.</p>
+            <div className="grid gap-2">{sheet.rows.slice(0, 30).map((row, index) => <div key={index} className="rounded-xl bg-slate-50 p-2 text-[11px] font-semibold text-slate-700">{row.filter(value => value !== '').slice(0, 5).join(' · ')}</div>)}</div>
+          </SectionCard>
+        })()}
 
         {tab === 'creditos' &&
           (data.receivables.length === 0 ? (

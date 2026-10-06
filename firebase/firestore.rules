@@ -193,6 +193,9 @@ service cloud.firestore {
         && request.resource.data.createdBy == request.auth.uid && request.resource.data.status == 'queued'
         && request.resource.data.payload is map
         && ((request.resource.data.type in ['sale','collection','expense','creditStatus'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
+          || (request.resource.data.type in ['openingBalance','creditOverride','changeProductUnit'] && distAdmin(restaurantId))
+          || (request.resource.data.type == 'editSale' && (distAdmin(restaurantId) || distDistributor(restaurantId)))
+          || (request.resource.data.type == 'warehouseShift' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
           || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
@@ -219,6 +222,19 @@ service cloud.firestore {
     }
     match /restaurants/{restaurantId}/distCreditStatus/{customerId} {
       allow read: if distWorker(restaurantId);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distCreditOverrides/{customerId} {
+      allow read: if distAdmin(restaurantId) || distDistributor(restaurantId);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distSaleCorrections/{correctionId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
+        || (distDistributor(restaurantId) && resource.data.get('sellerUid', '') == request.auth.uid);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distWarehouseShifts/{shiftId} {
+      allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId);
       allow write: if false;
     }
 

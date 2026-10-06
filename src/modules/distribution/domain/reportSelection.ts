@@ -2,6 +2,9 @@ export type ReportSheetId =
   | 'summary'
   | 'sales'
   | 'products'
+  | 'salesKardex'
+  | 'customerPurchases'
+  | 'cashFlow'
   | 'credits'
   | 'collections'
   | 'expenses'
@@ -21,11 +24,14 @@ export const REPORT_OPTIONS: readonly ReportOption[] = [
   { id: 'summary', label: 'Resumen', sheetName: 'Resumen' },
   { id: 'sales', label: 'Ventas', sheetName: 'Ventas' },
   { id: 'products', label: 'Productos vendidos', sheetName: 'Productos vendidos' },
+  { id: 'salesKardex', label: 'Kardex de ventas por producto', sheetName: 'Kardex de ventas' },
+  { id: 'customerPurchases', label: 'Compras por cliente y producto', sheetName: 'Compras por cliente' },
+  { id: 'cashFlow', label: 'Movimiento de efectivo', sheetName: 'Movimiento de efectivo' },
   { id: 'credits', label: 'Créditos', sheetName: 'Créditos' },
   { id: 'collections', label: 'Cobros', sheetName: 'Cobros' },
   { id: 'expenses', label: 'Gastos', sheetName: 'Gastos' },
   { id: 'closures', label: 'Arqueos', sheetName: 'Arqueos' },
-  { id: 'inventory', label: 'Inventario por lote', sheetName: 'Inventario por lote' },
+  { id: 'inventory', label: 'Existencias actuales', sheetName: 'Existencias actuales' },
   { id: 'movements', label: 'Movimientos', sheetName: 'Movimientos' },
   { id: 'transfers', label: 'Transferencias', sheetName: 'Transferencias' },
   { id: 'claims', label: 'Cambios y devoluciones', sheetName: 'Cambios y devoluciones' },
@@ -52,6 +58,16 @@ export function defaultSheetIdForTab(tab: string): ReportSheetId {
       return 'sales'
     case 'productos':
       return 'products'
+    case 'kardex':
+      return 'salesKardex'
+    case 'clientes':
+      return 'customerPurchases'
+    case 'dinero':
+      return 'cashFlow'
+    case 'inventario':
+      return 'inventory'
+    case 'movimientos':
+      return 'movements'
     case 'creditos':
       return 'credits'
     case 'cobros':

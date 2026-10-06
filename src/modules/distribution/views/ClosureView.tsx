@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Unlock } from 'lucide-react'
-import { Field, NumberInput } from '../../../components/ui/Form'
+import { CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
+import { Field, NumberInput, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { buildReconciliation, computeMoneySummary, round2, toDayKey } from '../domain/engine'
@@ -9,6 +9,7 @@ import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, fo
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
 import { printClosureTicket, printOperationalSheet } from '../data/distributionDocumentPrintService'
+import { exportPdf } from '../data/reportExports'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   draft: 'Devolución declarada; espera confirmación de almacén',
@@ -25,6 +26,7 @@ const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
  * QR y credito no entran al efectivo fisico.
  */
 export function ClosureView({ session, data }: DistributionViewProps) {
+  const [productSearch, setProductSearch] = useState('')
   const isDistributor = session.role === 'distributor'
   const availableDispatches = data.openDispatches.filter(d => session.role !== 'warehouse' || (d.warehouseId || 'central') === (session.warehouseId || 'central'))
   const canRegisterReturn = session.can('dist.return.register')
@@ -227,7 +229,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
               {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => void reopenClosure(closure, session.uid).catch(e => setError(e.message))}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton>
                 <SecondaryButton onClick={() => {
                   void printOperationalSheet(
@@ -241,6 +243,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                     ] : [],
                   ).catch(printError => setError(printError.message))
                 }}><FileText size={15} /> Hoja de cierre</SecondaryButton>
+                <SecondaryButton onClick={() => void exportPdf([{name:'Cierre de ruta',headers:['Producto','Entregado','Vendido','Debía volver','Devuelto','Diferencia'],rows:[...closure.products.map(row=>[row.productName,formatQty(row.totalLoaded,row.unitType),formatQty(row.sold,row.unitType),formatQty(row.expectedReturn,row.unitType),formatQty(row.actualReturn,row.unitType),formatQty(row.variance,row.unitType)]),['EFECTIVO','','','','Esperado',formatBs(closure.expectedCash)],['','','','','Declarado',formatBs(closure.physicalCashDeclared)],['','','','','Diferencia',formatBs(closure.cashDifference)]]}],`${closure.routeName} · ${closure.distributorName} · Encargado almacén: ${closure.warehouseResponsibleName || 'registro anterior'} · Generado ${new Date().toLocaleString('es-BO')}`,`Cierre-${closure.dayKey || 'ruta'}.pdf`).catch(pdfError=>setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
               </div>
             </div>}
           </article>
@@ -292,9 +295,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         )}
 
         <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">{isDistributor ? 'Para cerrar tu ruta, primero declara cuánto producto devuelves. Almacén debe contar y confirmar físicamente esa devolución; después se habilita el cierre final del efectivo.' : 'El distribuidor declara las cantidades. Almacén confirma la recepción física y después se habilita el cierre final. Confirmar y cerrar requieren conexión.'}</p>
-        <SectionCard title="Producto">
-          <div className="grid gap-2">
-            {productRows.map((row) => (
+        <SectionCard title="Productos devueltos">
+          <div className="relative mb-3"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={productSearch} onChange={event => setProductSearch(event.target.value)} placeholder="Buscar producto sin perder cantidades..." className="pl-9" /></div>
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+            {productRows.filter(row => row.productName.toLowerCase().includes(productSearch.trim().toLowerCase())).map((row) => (
               <div key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 p-3">
                 <div className="flex items-start justify-between gap-2">
                   <p className="min-w-0 break-words text-xs font-extrabold text-slate-900">{row.productName}</p>

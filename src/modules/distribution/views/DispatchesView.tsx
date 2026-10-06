@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Check, FileText, PackagePlus, Printer, Search, Trash2, Truck } from 'lucide-react'
+import { Check, FileText, PackagePlus, Printer, Search, Send, Trash2, Truck } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
-import { Field, NumberInput, TextArea, TextInput } from '../../../components/ui/Form'
+import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { computeLoadedByProduct, round2, validateStockAvailability } from '../domain/engine'
@@ -10,11 +10,13 @@ import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistDispatch, DistDispatchLine } from '../types'
-import { printDispatchTicket, printOperationalSheet } from '../data/distributionDocumentPrintService'
+import { printDispatchTicket, printOperationalSheet, shareDispatch } from '../data/distributionDocumentPrintService'
 
 interface DraftLine {
+  id: string
   productId: string
   quantity: string
+  lotId: string
 }
 
 /**
@@ -32,6 +34,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [routeId, setRouteId] = useState('')
   const [distributorUid, setDistributorUid] = useState('')
   const [observation, setObservation] = useState('')
+  const [warehouseResponsibleName, setWarehouseResponsibleName] = useState(() => localStorage.getItem('sanjose_warehouse_responsible') || session.userName)
   const [draftLines, setDraftLines] = useState<DraftLine[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -89,6 +92,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         productName: product.presentation ? `${product.name} - ${product.presentation}` : product.name,
         unitType: product.unitType,
         quantity,
+        lotId: draft.lotId,
       })
     }
     return lines
@@ -109,6 +113,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       setError('Agrega al menos un producto con cantidad.')
       return
     }
+    if (lines.some(line => !line.lotId)) { setError('Selecciona el lote exacto de cada producto.'); return }
+    if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
     const stockError = validateStockAvailability(lines, central)
     if (stockError) {
@@ -129,8 +135,10 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         distributorName: distributor?.displayName ?? 'Sin asignar',
         lines,
         observation,
+        warehouseResponsibleName: warehouseResponsibleName.trim(),
         operationId: newOperationId('disp'),
       })
+      localStorage.setItem('sanjose_warehouse_responsible', warehouseResponsibleName.trim())
       setIsNewOpen(false)
       resetDraft()
     } catch (submitError) {
@@ -149,6 +157,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       setError('Agrega al menos un producto con cantidad.')
       return
     }
+    if (lines.some(line => !line.lotId)) { setError('Selecciona el lote exacto de cada producto.'); return }
+    if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
     const stockError = validateStockAvailability(lines, central)
     if (stockError) {
@@ -163,6 +173,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         lines,
         registeredByName: session.userName,
         note: observation,
+        warehouseResponsibleName: warehouseResponsibleName.trim(),
         operationId: newOperationId('add'),
       })
       setAdditionTarget(null)
@@ -182,10 +193,12 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         {draftLines.map((line) => {
           const product = activeProducts.find(item => item.id === line.productId)
           if (!product) return null
-          return <div key={line.productId} className="grid grid-cols-[minmax(0,1fr)_96px_40px] items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2.5">
-            <div className="min-w-0"><p className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-500">Disponible: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p></div>
-            <NumberInput aria-label={`Cantidad de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cant.'} onChange={event => setDraftLines(current => current.map(item => item.productId === line.productId ? { ...item, quantity: event.target.value } : item))} className="px-2 text-center" />
-            <button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.productId !== line.productId))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button>
+          const lotLocation = effectiveWarehouse === 'central' ? 'central' : `warehouse__${effectiveWarehouse}`
+          const lots = data.lots.filter(lot => lot.productId === product.id && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= new Date().toLocaleDateString('en-CA'))).sort((a,b) => (a.expiresOn || '9999').localeCompare(b.expiresOn || '9999'))
+          return <div key={line.id} className="grid grid-cols-[minmax(0,1fr)_88px_40px] items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2.5">
+            <div className="min-w-0"><p className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-500">Disponible: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p><SelectInput aria-label={`Lote de ${product.name}`} value={line.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, lotId: event.target.value } : item))} className="mt-2 text-xs"><option value="">Selecciona lote</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · vence {lot.expiresOn || 'sin fecha'} · {formatQty(lot.quantities[lotLocation], product.unitType)}</option>)}</SelectInput><button type="button" className="mt-1 text-[10px] font-extrabold text-[var(--primary)]" onClick={() => setDraftLines(current => [...current,{id:newOperationId('draft'),productId:product.id,quantity:'',lotId:''}])}>+ Usar otro lote</button></div>
+            <NumberInput aria-label={`Cantidad de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cant.'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} className="px-2 text-center" />
+            <button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button>
           </div>
         })}
         {draftLines.length === 0 && <p className="rounded-2xl border border-dashed border-slate-300 px-4 py-6 text-center text-xs font-semibold text-slate-500">Todavía no seleccionaste productos.</p>}
@@ -196,6 +209,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       <Field label="Observacion">
         <TextArea value={observation} onChange={(event) => setObservation(event.target.value)} />
       </Field>
+      <Field label="Encargado de almacén del turno" required hint="Quedará registrado en el despacho y sus impresiones."><TextInput value={warehouseResponsibleName} onChange={event => setWarehouseResponsibleName(event.target.value)} placeholder="Nombre completo" /></Field>
       {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
     </div>
   )
@@ -262,18 +276,18 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
               {dispatch.additions.length > 0 && (
                 <div className="mt-2 rounded-2xl border border-dashed border-slate-200 p-2">
-                  <p className="mb-1 text-[10px] font-extrabold uppercase text-slate-400">Historial de aumentos</p>
+                  <p className="mb-1 text-[10px] font-extrabold uppercase text-slate-400">Carga inicial y aumentos separados</p>
                   {dispatch.additions.map((addition) => (
-                    <p key={addition.id} className="text-[11px] font-semibold text-slate-500">
-                      {new Date(addition.createdAt).toLocaleString('es-BO')} · {addition.createdByName} ·{' '}
+                    <p key={addition.id} className="my-1 rounded-xl bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
+                      <strong>AUMENTADO · {new Date(addition.createdAt).toLocaleTimeString('es-BO',{hour:'2-digit',minute:'2-digit'})}</strong> · {addition.warehouseResponsibleName || addition.createdByName} ·{' '}
                       {addition.quantityByProduct
-                        .map((line) => `${line.productName} +${formatQty(line.quantity, line.unitType)}`)
+                        .map((line) => `${line.productName} +${formatQty(line.quantity, line.unitType)} · lote ${line.allocations?.map(item => item.lotCode).join(', ') || line.lotCode || 'registro anterior'}`)
                         .join(', ')}
                     </p>
                   ))}
                 </div>
               )}
-              <div className="mt-2 grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton><SecondaryButton onClick={() => void printOperationalSheet('Despacho entregado', `${dispatch.routeName} · ${dispatch.distributorName}`, [...loaded.values()].map(row => ({ name: row.productName, detail: formatQty(row.totalLoaded, row.unitType) }))).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja</SecondaryButton></div>
+              <div className="mt-2 grid grid-cols-3 gap-2"><SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton><SecondaryButton onClick={() => void printOperationalSheet('Despacho entregado', `${dispatch.routeName} · ${dispatch.distributorName} · Encargado: ${dispatch.warehouseResponsibleName || 'registro anterior'}`, [...loaded.values()].map(row => ({ name: row.productName, detail: formatQty(row.totalLoaded, row.unitType) }))).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja</SecondaryButton><SecondaryButton onClick={() => void shareDispatch(dispatch).catch(shareError => setError(shareError.message))}><Send size={15} /> Compartir</SecondaryButton></div>
             </SectionCard>
           )
         })}
@@ -339,11 +353,11 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               const draft = draftLines.find(line => line.productId === product.id)
               return <div key={product.id} className={`min-w-0 overflow-hidden rounded-2xl border ${draft ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}>
                 {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} onError={(event) => { event.currentTarget.style.display = 'none' }} className="aspect-[16/8] w-full object-cover" />}
-                <button type="button" onClick={() => setDraftLines(current => draft ? current.filter(line => line.productId !== product.id) : [...current, { productId: product.id, quantity: '' }])} className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
+                <button type="button" onClick={() => setDraftLines(current => draft ? current.filter(line => line.productId !== product.id) : [...current, { id: newOperationId('draft'), productId: product.id, quantity: '', lotId: '' }])} className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
                   <span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span>
                   <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>{formatQty(central.get(product.id) ?? 0, product.unitType)}</span>{draft && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--primary)] text-white"><Check size={13} /></span>}</span>
                 </button>
-                {draft && <div className="border-t border-[var(--primary)]/15 p-2"><NumberInput value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={`Cantidad (${product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u'})`} onChange={event => setDraftLines(current => current.map(line => line.productId === product.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /></div>}
+                {draft && <div className="border-t border-[var(--primary)]/15 p-2"><NumberInput value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={`Cantidad (${product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u'})`} onChange={event => setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /></div>}
               </div>
             })}
           </div>

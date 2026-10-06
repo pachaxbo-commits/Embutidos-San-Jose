@@ -2,7 +2,7 @@ import type { PendingOperation } from '../data/operationQueue'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   getSyncState,
-  subscribeLots, subscribeOperations, subscribeMovements, subscribeTransfers, subscribeClaims, subscribeCreditStatus,
+  subscribeLots, subscribeOperations, subscribeMovements, subscribeTransfers, subscribeClaims, subscribeCreditStatus, subscribeCreditOverrides,
   subscribeWarehouses,
   subscribeQrVerifications,
   subscribeBalances,
@@ -22,7 +22,7 @@ import {
 import { centralBalanceId, routeBalanceId, toDayKey } from '../domain/engine'
 import type {
   DistBalance,
-  DistLot, DistStockMovement, DistTransfer, DistClaim, DistCreditStatus, DistAdjustmentRequest,
+  DistLot, DistStockMovement, DistTransfer, DistClaim, DistCreditStatus, DistCreditOverride, DistAdjustmentRequest,
   DistWarehouse,
   DistQrVerification,
   DistClosure,
@@ -81,7 +81,7 @@ export function buildDayRange(from: Date, to: Date): string[] {
 
 export interface DistributionData {
   supportSettings: SupportSettings
-  lots: DistLot[]; operations: PendingOperation[]; movements: DistStockMovement[]; transfers: DistTransfer[]; claims: DistClaim[]; creditStatus: DistCreditStatus[];
+  lots: DistLot[]; operations: PendingOperation[]; movements: DistStockMovement[]; transfers: DistTransfer[]; claims: DistClaim[]; creditStatus: DistCreditStatus[]; creditOverrides: DistCreditOverride[];
   warehouses: DistWarehouse[]
   qrVerifications: DistQrVerification[]
   adjustmentRequests: DistAdjustmentRequest[]
@@ -107,6 +107,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [transfers, setTransfers] = useState<DistTransfer[]>([])
   const [claims, setClaims] = useState<DistClaim[]>([])
   const [creditStatus, setCreditStatus] = useState<DistCreditStatus[]>([])
+  const [creditOverrides, setCreditOverrides] = useState<DistCreditOverride[]>([])
   const [warehouses, setWarehouses] = useState<DistWarehouse[]>([])
   const [qrVerifications, setQrVerifications] = useState<DistQrVerification[]>([])
   const [adjustmentRequests, setAdjustmentRequests] = useState<DistAdjustmentRequest[]>([])
@@ -141,7 +142,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   useEffect(() => {
     if (!enabled) return
     const unsubscribers = [
-      subscribeLots(setLots, onError), subscribeOperations(setOperations, onError), subscribeCreditStatus(setCreditStatus, onError),
+      subscribeLots(setLots, onError), subscribeOperations(setOperations, onError), subscribeCreditStatus(setCreditStatus, onError), subscribeCreditOverrides(setCreditOverrides, onError),
       subscribeSupportSettings(setSupportSettings, onError),
       ...(routeId === null ? [subscribeMovements(setMovements, onError), subscribeTransfers(setTransfers, onError)] : []),
       ...(canReadFinance ? [subscribeClaims(routeId, setClaims, onError)] : []),
@@ -238,7 +239,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   })
   return {
     supportSettings,
-    lots, operations, movements, transfers, claims, creditStatus,
+    lots, operations, movements, transfers, claims, creditStatus, creditOverrides,
     warehouses,
     qrVerifications,
     adjustmentRequests,

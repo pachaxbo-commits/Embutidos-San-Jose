@@ -61,6 +61,10 @@ class Operation {
     );
     return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
   }
+  async all(col) {
+    const snap = await this.tx.get(this.root.collection(col));
+    return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+  }
   put(col, id, value) {
     this.writes.set(`${col}/${id}`, {
       ref: this.ref(col, id),
@@ -82,6 +86,11 @@ class Operation {
       this.member.role === "admin",
       "Solo Administración puede realizar esta operación.",
     );
+  }
+  responsibleName() {
+    return this.member.role === "warehouse" && this.command.payload?.warehouseResponsibleName?.trim()
+      ? this.command.payload.warehouseResponsibleName.trim()
+      : this.member.displayName || this.actor;
   }
   owns(loc) {
     check(
@@ -215,16 +224,25 @@ class Operation {
     this.move(e, loc, -quantity);
     return allocations;
   }
-  async moveStock(pid, from, to, q) {
+  async moveStock(pid, from, to, q, options = {}) {
     const e = await this.loadStock(pid, from);
     await this.loadStock(pid, to);
-    const parts = await this.take(pid, from, q);
+    const parts = await this.take(pid, from, q, options);
     for (const a of parts) {
       const l = e.lots.find((x) => x.id === a.lotId);
       l.quantities[to] = round((l.quantities[to] || 0) + a.quantity);
     }
     this.move(e, to, q);
     return parts;
+  }
+  async restore(pid, loc, allocations) {
+    const e = await this.loadStock(pid, loc);
+    for (const part of allocations || []) {
+      const lot = e.lots.find(item => item.id === part.lotId);
+      check(lot, "No se encontró el lote original de la venta.");
+      lot.quantities[loc] = round((lot.quantities[loc] || 0) + part.quantity);
+      this.move(e, loc, part.quantity);
+    }
   }
   ledger(pid, q, from, to, type, extra = {}) {
     const e = this.stock.get(pid);
@@ -255,7 +273,7 @@ class Operation {
       ).slice(7),
       refId: this.id,
       refType: "operation",
-      responsibleName: this.member.displayName || this.actor,
+      responsibleName: this.responsibleName(),
       responsibleRole: this.member.role,
       ...extra,
     });
@@ -371,9 +389,13 @@ async function dispatch(o, p, addition = false) {
     );
   }
   check(Array.isArray(p.lines) && p.lines.length, "Agrega productos.");
+  // Compatibilidad temporal: 1.4.5 no envía este campo. La interfaz 1.4.6 lo
+  // exige, pero el servidor conserva como responsable al usuario autenticado.
+  const warehouseResponsibleName = p.warehouseResponsibleName?.trim() || o.member.displayName || o.actor;
   const lines = [];
   for (const l of p.lines) {
-    const allocations = await o.moveStock(l.productId, from, to, l.quantity);
+    // 1.4.6 envía lotId explícito; 1.4.5 continúa temporalmente con FEFO.
+    const allocations = await o.moveStock(l.productId, from, to, l.quantity, l.lotId ? { lotId: l.lotId } : {});
     const product = o.stock.get(l.productId).p;
     lines.push({
       productId: l.productId,
@@ -401,6 +423,7 @@ async function dispatch(o, p, addition = false) {
         createdBy: o.actor,
         createdByName: o.member.displayName || o.actor,
         note: p.note || "",
+        warehouseResponsibleName,
       },
     ];
     o.put("distDispatches", current.id, current);
@@ -416,8 +439,10 @@ async function dispatch(o, p, addition = false) {
     warehouseId: wh,
     status: "open",
     lines,
+    linesProductIds: [...new Set(lines.map(line => line.productId))],
     additions: [],
     observation: p.observation || "",
+    warehouseResponsibleName,
   };
   o.put("distDispatches", o.id, d);
   return d;
@@ -463,8 +488,10 @@ async function sale(o, p) {
     const creditBlockDays = Number.isInteger(supportConfig?.creditBlockDays)
       ? supportConfig.creditBlockDays
       : 7;
+    const override = await o.read("distCreditOverrides", p.customerId);
+    const overrideActive = override && !override.revokedAt && Date.parse(override.activeUntil) > Date.now();
     check(
-      !debts.some(
+      overrideActive || !debts.some(
         (d) =>
           d.balance > 0 &&
           new Date(d.createdAt).getTime() + creditBlockDays * 86400000 <= Date.now(),
@@ -492,6 +519,8 @@ async function sale(o, p) {
     lines.push({
       productId: l.productId,
       productNameSnapshot: product.name,
+      presentationSnapshot: product.presentation || product.category || "",
+      descriptionSnapshot: product.description || "",
       unitType: product.unitType,
       quantity: l.quantity,
       actualUnitPrice: round(l.actualUnitPrice),
@@ -559,17 +588,20 @@ async function sale(o, p) {
   return s;
 }
 async function collection(o, p) {
-  const r = await o.read("distReceivables", p.receivable.id);
-  check(r, "La deuda no existe.");
   check(
     o.member.role === "admin" ||
       o.member.role === "distributor",
     "No puedes cobrar esta deuda.",
   );
-  check(
-    Number.isFinite(p.amount) && p.amount > 0 && p.amount <= r.balance,
-    "El cobro supera el saldo pendiente.",
-  );
+  // Compatibilidad con 1.4.5: enviaba únicamente el id de una cuenta.
+  const legacyReceivable = p.receivable?.id ? await o.read("distReceivables", p.receivable.id) : null;
+  const customerId = p.customerId || p.receivable?.customerId || legacyReceivable?.customerId;
+  check(customerId, "Selecciona un cliente.");
+  const debts = (await o.query("distReceivables", "customerId", customerId))
+    .filter((row) => Number(row.balance) > 0)
+    .sort((a, b) => (a.sourceDate || a.createdAt).localeCompare(b.sourceDate || b.createdAt) || a.id.localeCompare(b.id));
+  const portfolioBalance = round(debts.reduce((sum, row) => sum + row.balance, 0));
+  check(Number.isFinite(p.amount) && p.amount > 0 && p.amount <= portfolioBalance, "El cobro supera el saldo total pendiente.");
   check(["cash", "qr", "mixed"].includes(p.method), "Método de pago inválido.");
   const cashAmount = round(Number.isFinite(p.cashAmount) ? p.cashAmount : p.method === "cash" ? p.amount : 0);
   const qrAmount = round(Number.isFinite(p.qrAmount) ? p.qrAmount : p.method === "qr" ? p.amount : 0);
@@ -584,10 +616,19 @@ async function collection(o, p) {
       (p.method === "mixed" && cashAmount > 0 && qrAmount > 0),
     "Revisa la forma y el desglose del cobro.",
   );
-  r.paidAmount = round(r.paidAmount + p.amount);
-  r.balance = round(r.balance - p.amount);
-  r.status = r.balance === 0 ? "PAID" : "PARTIAL";
-  o.put("distReceivables", r.id, r);
+  let remaining = round(p.amount);
+  const allocations = [];
+  for (const r of debts) {
+    if (remaining <= 0) break;
+    const applied = round(Math.min(remaining, r.balance));
+    r.paidAmount = round((r.paidAmount || 0) + applied);
+    r.balance = round(r.balance - applied);
+    r.status = r.balance === 0 ? "PAID" : "PARTIAL";
+    o.put("distReceivables", r.id, r);
+    allocations.push({ receivableId: r.id, amount: applied, sourceType: r.sourceType || "sale" });
+    remaining = round(remaining - applied);
+  }
+  const firstDebt = debts[0];
   const collectionRouteId =
     o.member.role === "distributor" ? o.member.routeId : p.routeId || r.routeId;
   check(collectionRouteId, "El cobrador no tiene una ruta asignada.");
@@ -595,15 +636,16 @@ async function collection(o, p) {
     id: o.id,
     ...o.base(),
     operationId: o.id,
-    receivableId: r.id,
-    saleLines: r.saleLines || [],
-    customerId: r.customerId,
-    customerName: r.customerName,
-    customerCode: r.customerCode || "",
+    receivableId: allocations[0]?.receivableId || "",
+    allocations,
+    saleLines: firstDebt.saleLines || [],
+    customerId: firstDebt.customerId,
+    customerName: firstDebt.customerName,
+    customerCode: firstDebt.customerCode || "",
     // El efectivo pertenece a la ruta del usuario que lo recibe. Se conserva
     // aparte la ruta donde nació la deuda para auditoría de la venta original.
     routeId: collectionRouteId,
-    originRouteId: r.routeId,
+    originRouteId: firstDebt.routeId,
     collectedByUid: o.actor,
     collectedByName: o.member.displayName || o.actor,
     amount: p.amount,
@@ -615,6 +657,102 @@ async function collection(o, p) {
   o.put("distCollections", o.id, c);
   return c;
 }
+async function openingBalance(o, p) {
+  o.admin();
+  const customer = await o.read("distCustomers", p.customerId);
+  check(customer?.active, "Selecciona un cliente activo.");
+  check(Number.isFinite(p.amount) && p.amount > 0, "Indica un saldo válido.");
+  check(validDate(p.sourceDate), "Indica la fecha de la deuda anterior.");
+  check(p.note?.trim(), "Describe el origen de la deuda anterior.");
+  const row = { id: o.id, ...o.base(), sourceType: "opening_balance", sourceDate: p.sourceDate, saleId: "", customerId: customer.id, customerName: customer.name, customerCode: customer.identityNumber || "", routeId: p.routeId || customer.routeId || "administracion", distributorUid: o.actor, distributorName: o.member.displayName || o.actor, originalAmount: round(p.amount), paidAmount: 0, balance: round(p.amount), status: "OPEN", note: p.note.trim() };
+  o.put("distReceivables", o.id, row);
+  return row;
+}
+async function creditOverride(o, p) {
+  o.admin();
+  const customer = await o.read("distCustomers", p.customerId);
+  check(customer, "Cliente inexistente.");
+  if (p.revoke === true) {
+    const current = await o.read("distCreditOverrides", customer.id);
+    check(current && !current.revokedAt, "No existe una autorización activa.");
+    const revoked = { ...current, revokedAt: o.now, revokedBy: o.actor };
+    o.put("distCreditOverrides", customer.id, revoked); return revoked;
+  }
+  check(Number.isInteger(p.days) && p.days >= 1 && p.days <= 90, "Duración inválida.");
+  check(p.reason?.trim(), "Indica el motivo de la autorización.");
+  const value = { id: customer.id, restaurantId: "sanjose", customerId: customer.id, activeUntil: new Date(Date.now() + p.days * 86400000).toISOString(), reason: p.reason.trim(), grantedAt: o.now, grantedBy: o.actor, grantedByName: o.member.displayName || o.actor };
+  o.put("distCreditOverrides", customer.id, value); return value;
+}
+async function changeProductUnit(o, p) {
+  o.admin();
+  check(["kg", "unit", "package"].includes(p.unitType), "Unidad inválida.");
+  const product = await o.read("distProducts", p.productId);
+  check(product, "Producto inexistente.");
+  if (product.unitType === p.unitType) return product;
+  const balances = await o.query("distBalances", "productId", product.id);
+  const movements = await o.query("distStockMovements", "productId", product.id);
+  const sales = (await o.all("distSales")).filter(row => (row.lines || []).some(line => line.productId === product.id));
+  check(!balances.some(row => Math.abs(Number(row.quantity) || 0) > 0.0001), "No se puede cambiar la unidad porque el producto tiene existencias.");
+  check(movements.length === 0 && sales.length === 0, "No se puede cambiar la unidad porque existe historial. Crea otro producto.");
+  const updated = { ...product, unitType: p.unitType, approximateWeightKg: p.unitType === "kg" ? null : product.approximateWeightKg ?? null, updatedAt: o.now, updatedBy: o.actor };
+  o.put("distProducts", product.id, updated); return updated;
+}
+async function warehouseShift(o, p) {
+  check(["admin", "warehouse"].includes(o.member.role), "Sin permiso para abrir turno de almacén.");
+  const warehouseId = p.warehouseId || o.member.warehouseId || "central";
+  o.owns(location("warehouse", warehouseId));
+  check(p.responsibleName?.trim(), "Escribe el nombre del encargado.");
+  const active = (await o.query("distWarehouseShifts", "warehouseId", warehouseId)).filter(row => row.active);
+  for (const row of active) o.put("distWarehouseShifts", row.id, { ...row, active: false, closedAt: o.now, closedBy: o.actor });
+  const value = { id: o.id, ...o.base(), warehouseId, responsibleName: p.responsibleName.trim(), openedAt: o.now, openedBy: o.actor, active: true };
+  o.put("distWarehouseShifts", o.id, value); return value;
+}
+async function editSale(o, p) {
+  check(["admin", "distributor"].includes(o.member.role), "Sin permiso para corregir ventas.");
+  check(p.reason?.trim(), "La razón de la edición es obligatoria.");
+  const sale = await o.read("distSales", p.saleId);
+  check(sale, "Venta inexistente.");
+  check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes corregir tus propias ventas.");
+  const dispatch = sale.dispatchId ? await o.read("distDispatches", sale.dispatchId) : null;
+  check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. Usa un flujo administrativo posterior al cierre.");
+  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount };
+  const claims = await o.query("distClaims", "saleId", sale.id);
+  check(claims.length === 0, "La venta tiene cambios o devoluciones y requiere revisión administrativa especializada.");
+  check(Array.isArray(p.lines) && p.lines.length, "La venta debe conservar al menos un producto.");
+  check(previous.lines.every(line => Array.isArray(line.allocations)), "Esta venta histórica no tiene lotes auditables y requiere revisión administrativa.");
+  const loc = sale.sourceLocation === "route" ? location("route", sale.routeId) : "central";
+  for (const line of previous.lines) await o.restore(line.productId, loc, line.allocations);
+  const lines = [];
+  for (const input of p.lines) {
+    const product = await o.product(input.productId);
+    const quantity = o.amount(input.quantity, product);
+    check(Number.isFinite(input.actualUnitPrice) && input.actualUnitPrice > 0, "Precio inválido.");
+    const allocations = await o.take(product.id, loc, quantity);
+    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice: round(product.referencePrice), isPromotional: round(input.actualUnitPrice) !== round(product.referencePrice), subtotal: round(quantity * input.actualUnitPrice), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
+  }
+  const productIds = [...new Set([...previous.lines, ...lines].map(line => line.productId))];
+  const stockDeltas = productIds.map(productId => ({ productId, quantity: round(lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0) - previous.lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0)) }));
+  for (const delta of stockDeltas) {
+    if (delta.quantity > 0) o.ledger(delta.productId, delta.quantity, loc, null, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
+    if (delta.quantity < 0) o.ledger(delta.productId, -delta.quantity, null, loc, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
+  }
+  const total = round(lines.reduce((sum, line) => sum + line.subtotal, 0));
+  const cashAmount = round(Number(p.cashAmount) || 0), qrAmount = round(Number(p.qrAmount) || 0), creditAmount = round(Number(p.creditAmount) || 0);
+  check(["cash", "qr", "credit", "mixed"].includes(p.paymentKind), "Forma de pago inválida.");
+  check(Math.abs(total - cashAmount - qrAmount - creditAmount) < 0.01 && [cashAmount, qrAmount, creditAmount].every(value => value >= 0), "Los pagos corregidos no coinciden con el total.");
+  check(!creditAmount || sale.customerId, "El crédito necesita un cliente.");
+  const receivable = await o.read("distReceivables", sale.id);
+  const alreadyPaid = receivable?.paidAmount || 0;
+  check(creditAmount >= alreadyPaid, "El crédito corregido no puede ser menor a lo ya cobrado.");
+  if (creditAmount > 0) o.put("distReceivables", sale.id, { ...(receivable || { id: sale.id, ...o.base(), saleId: sale.id, sourceType: "sale", customerId: sale.customerId, customerName: sale.customerName, customerCode: sale.customerCode, routeId: sale.routeId, distributorUid: sale.sellerUid, distributorName: sale.sellerName, paidAmount: 0 }), saleLines: lines, originalAmount: creditAmount, balance: round(creditAmount - alreadyPaid), status: creditAmount === alreadyPaid ? "PAID" : alreadyPaid > 0 ? "PARTIAL" : "OPEN" });
+  else if (receivable) o.put("distReceivables", sale.id, { ...receivable, originalAmount: 0, balance: 0, status: "PAID", saleLines: lines });
+  const revision = Number(sale.revision || 0) + 1;
+  const corrected = { lines, total, paymentKind: p.paymentKind, cashAmount, qrAmount, creditAmount };
+  const correction = { id: o.id, ...o.base(), saleId: sale.id, sellerUid: sale.sellerUid, revision, reason: p.reason.trim(), original: previous, corrected, stockDeltas, moneyDelta: round(total - previous.total), creditDelta: round(creditAmount - previous.creditAmount), correctedByName: o.member.displayName || o.actor };
+  o.put("distSaleCorrections", o.id, correction);
+  o.put("distSales", sale.id, { ...sale, effectiveSnapshot: corrected, latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(), revision });
+  return correction;
+}
 const handlers = {
   intake,
   transfer,
@@ -622,6 +760,11 @@ const handlers = {
   addition: (o, p) => dispatch(o, p, true),
   sale,
   collection,
+  openingBalance,
+  creditOverride,
+  changeProductUnit,
+  warehouseShift,
+  editSale,
 };
 async function processCommand(db, ref) {
   return db.runTransaction(async (tx) => {
@@ -817,7 +960,9 @@ async function closure(o, p) {
     previous = (await o.read("distClosures", id)) || {};
   const route = location("route", d.routeId),
     warehouse = location("warehouse", d.warehouseId || "central");
-  const sales = await o.query("distSales", "dispatchId", d.id);
+  const sales = (await o.query("distSales", "dispatchId", d.id)).map((sale) =>
+    sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
+  );
   if (p.mode === "warehouse") {
     o.owns(warehouse);
     check(!previous.warehouseClosedBy, "El retorno ya se confirmó.");
@@ -930,6 +1075,7 @@ async function closure(o, p) {
       products: rows,
       warehouseClosedBy: o.actor,
       warehouseClosedAt: o.now,
+      warehouseResponsibleName: p.warehouseResponsibleName?.trim() || o.responsibleName(),
     };
     o.put("distClosures", id, c);
     return c;
@@ -997,7 +1143,10 @@ async function claim(o, p) {
   check(["exchange", "return"].includes(p.kind), "Tipo de reclamo inválido.");
   const s = await o.read("distSales", p.saleId);
   check(s, "No existe la venta original.");
-  const orig = s.lines.filter((l) => l.productId === p.productId);
+  const effectiveSale = s.effectiveSnapshot
+    ? { ...s, ...s.effectiveSnapshot }
+    : s;
+  const orig = effectiveSale.lines.filter((l) => l.productId === p.productId);
   check(orig.length, "El producto no pertenece a esta venta.");
   const product = await o.read("distProducts", p.productId);
   check(product, "Producto inexistente.");

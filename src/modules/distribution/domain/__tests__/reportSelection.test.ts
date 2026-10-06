@@ -23,7 +23,7 @@ export async function runReportSelectionTestSuite() {
     }
   }
 
-  // Creación de las 11 hojas mock que simulan las generadas por reportSheets(...)
+  // Hojas mock que simulan las generadas por reportSheets(...)
   const mockAllSheets = REPORT_OPTIONS.map((opt) => ({
     id: opt.id,
     name: opt.sheetName,
@@ -46,7 +46,7 @@ export async function runReportSelectionTestSuite() {
 
   // 3. Seleccionar todos -> devuelve todas las hojas
   const allSelected = filterReportSheets(mockAllSheets, ALL_REPORT_IDS)
-  assert(allSelected.length === 11, 'seleccionar todos devuelve las 11 hojas de reportes')
+  assert(allSelected.length === REPORT_OPTIONS.length, 'seleccionar todos devuelve todas las hojas de reportes')
   assert(
     allSelected.map((s) => s.id).join(',') === ALL_REPORT_IDS.join(','),
     'todas las hojas coinciden con la totalidad del catálogo',
@@ -91,11 +91,11 @@ export async function runReportSelectionTestSuite() {
   const legacySheetsWithoutId = [
     { name: 'Ventas', headers: ['H1'], rows: [] },
     { name: 'Cobros', headers: ['H1'], rows: [] },
-    { name: 'Inventario por lote', headers: ['H1'], rows: [] },
+    { name: 'Existencias actuales', headers: ['H1'], rows: [] },
   ]
   const legacyFiltered = filterReportSheets(legacySheetsWithoutId, ['sales', 'inventory'])
   assert(legacyFiltered.length === 2, 'filterReportSheets resuelve por .name si .id no está presente')
-  assert(legacyFiltered[0].name === 'Ventas' && legacyFiltered[1].name === 'Inventario por lote', 'hojas resueltas por nombre corresponden exactamente')
+  assert(legacyFiltered[0].name === 'Ventas' && legacyFiltered[1].name === 'Existencias actuales', 'hojas resueltas por nombre corresponden exactamente')
 
   // 9. Misma fuente para Excel y PDF: ambos reciben el resultado de filterReportSheets
   const excelTargetSheets = filterReportSheets(mockAllSheets, ['sales', 'claims'])

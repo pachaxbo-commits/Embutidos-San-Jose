@@ -1,4 +1,4 @@
-import { dismissSyncError } from '../data/distributionRepository'
+import { dismissSyncError, openWarehouseShift } from '../data/distributionRepository'
 import { acknowledgeOperation } from '../data/operationQueue'
 import { ClaimsView } from './ClaimsView'
 import { QrView } from './QrView'
@@ -28,11 +28,12 @@ import { hasPermission } from '../../../services/permissionService'
 import { applyAppTheme } from '../../../lib/appTheme'
 import { BottomNav, type BottomNavItem } from '../../../components/ui/BottomNav'
 import { Modal } from '../../../components/ui/Modal'
+import { TextInput } from '../../../components/ui/Form'
 import { ErrorBoundary } from '../../../components/ErrorBoundary'
 import { useBackButtonBridge } from '../../../hooks/useBackHandler'
 import { buildDayRange, useDistributionData, useSyncStatus } from '../state/useDistributionStore'
 import { toDayKey } from '../domain/engine'
-import { SyncStatusPill } from './shared'
+import { PrimaryButton, SyncStatusPill } from './shared'
 import { DashboardView } from './DashboardView'
 import { DistributorHomeView } from './DistributorHomeView'
 import { InventoryView } from './InventoryView'
@@ -116,6 +117,11 @@ export function DistributionApp({
   onSignOut: () => Promise<void>
   onOpenPrinterSettings: () => void
 }) {
+  const shiftStorageKey = `sanjose_warehouse_shift_${toDayKey(new Date())}`
+  const [warehouseResponsible, setWarehouseResponsible] = useState(() => localStorage.getItem('sanjose_warehouse_responsible') || '')
+  const [needsWarehouseShift, setNeedsWarehouseShift] = useState(() => role === 'warehouse' && localStorage.getItem(shiftStorageKey) !== 'ok')
+  const [shiftError, setShiftError] = useState('')
+  const [savingShift, setSavingShift] = useState(false)
   useEffect(() => {
     applyAppTheme(SAN_JOSE_APP_CONFIG.theme)
   }, [])
@@ -433,6 +439,7 @@ export function DistributionApp({
           />
         </Suspense>
       )}
+      <Modal isOpen={needsWarehouseShift} onClose={() => undefined} title="Encargado de almacén de hoy" subtitle="Este nombre quedará en los movimientos, despachos y cierres del turno." footer={<PrimaryButton full disabled={savingShift} onClick={async () => { if (!warehouseResponsible.trim()) { setShiftError('Escribe el nombre del encargado.'); return } setSavingShift(true); try { await openWarehouseShift(warehouseId, warehouseResponsible.trim()); localStorage.setItem('sanjose_warehouse_responsible', warehouseResponsible.trim()); localStorage.setItem(shiftStorageKey, 'ok'); setNeedsWarehouseShift(false) } catch(e) { setShiftError((e as Error).message) } finally { setSavingShift(false) } }}>{savingShift ? 'Guardando…' : 'Comenzar turno'}</PrimaryButton>}><TextInput value={warehouseResponsible} onChange={event => setWarehouseResponsible(event.target.value)} placeholder="Nombre completo" />{shiftError && <p className="mt-2 text-xs font-bold text-rose-700">{shiftError}</p>}</Modal>
     </div>
   )
 }

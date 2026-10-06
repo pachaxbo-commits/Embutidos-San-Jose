@@ -20,6 +20,7 @@ export type StockMovementType =
   | 'dispatch' // salida a ruta
   | 'dispatch_addition' // aumento de carga sobre despacho abierto
   | 'sale' // venta (descuenta ruta o central)
+  | 'sale_correction'
   | 'return' // retorno fisico de ruta a central
   | 'adjustment' // ajuste manual de almacen
   | 'shortage' // faltante detectado en conciliacion
@@ -48,6 +49,8 @@ export interface DistProduct {
   /** Presentacion o categoria comercial: "Al vacio", "Granel", ... */
   category: string
   presentation?: string
+  /** Descripción comercial opcional, congelada en cada venta futura. */
+  description?: string
   unitType: UnitType
   productionCost?: number
   minimumStock?: number
@@ -152,6 +155,15 @@ export interface DistDispatchLine {
   productName: string
   unitType: UnitType
   quantity: number
+  allocations?: DistLotAllocation[]
+}
+
+export interface DistLotAllocation {
+  lotId: string
+  lotCode: string
+  expiresOn: string
+  quantity: number
+  productionCost: number | null
 }
 
 export interface DistDispatchAddition {
@@ -161,6 +173,7 @@ export interface DistDispatchAddition {
   createdBy: string
   createdByName: string
   note?: string
+  warehouseResponsibleName?: string
 }
 
 export type DispatchStatus = 'open' | 'closed'
@@ -177,6 +190,7 @@ export interface DistDispatch extends DistBaseDoc {
   observation?: string
   closedAt?: string
   closureId?: string
+  warehouseResponsibleName?: string
 }
 
 export interface DistSaleLine {
@@ -184,6 +198,8 @@ export interface DistSaleLine {
   allocations?: { lotId: string; lotCode: string; expiresOn: string; quantity: number; productionCost: number | null }[]
   productId: string
   productNameSnapshot: string
+  presentationSnapshot?: string
+  descriptionSnapshot?: string
   quantity: number
   unitType: UnitType
   /** Precio realmente aplicado, congelado historicamente */
@@ -208,6 +224,7 @@ export interface DistSale extends DistBaseDoc {
   customerId?: string
   customerName?: string
   lines: DistSaleLine[]
+  linesProductIds?: string[]
   total: number
   paymentKind: PaymentKind
   cashAmount: number
@@ -216,6 +233,26 @@ export interface DistSale extends DistBaseDoc {
   cashReceived?: number
   changeAmount?: number
   note?: string
+  /** La venta original no se reemplaza: esta referencia apunta a la última corrección auditada. */
+  latestCorrectionId?: string
+  editedAt?: string
+  editedBy?: string
+  editReason?: string
+  revision?: number
+  /** Resultado vigente; los campos originales del documento no se sobrescriben. */
+  effectiveSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
+}
+
+export interface DistSaleCorrection extends DistBaseDoc {
+  saleId: string
+  revision: number
+  reason: string
+  original: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
+  corrected: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
+  stockDeltas: Array<{ productId: string; quantity: number; allocations?: DistLotAllocation[] }>
+  moneyDelta: number
+  creditDelta: number
+  correctedByName: string
 }
 
 export type ReceivableStatus = 'OPEN' | 'PARTIAL' | 'PAID'
@@ -224,7 +261,9 @@ export interface DistReceivable extends DistBaseDoc {
   creditedAmount?: number
   saleLines?: DistSaleLine[]
   customerCode?: string
-  saleId: string
+  saleId?: string
+  sourceType?: 'sale' | 'opening_balance'
+  sourceDate?: string
   customerId: string
   customerName: string
   routeId: string
@@ -241,7 +280,8 @@ export interface DistCollection extends DistBaseDoc {
   saleLines?: DistSaleLine[]
   customerCode?: string
   operationId: string
-  receivableId: string
+  receivableId?: string
+  allocations?: Array<{ receivableId: string; amount: number; sourceType?: 'sale' | 'opening_balance' }>
   customerId: string
   customerName: string
   routeId: string
@@ -308,6 +348,7 @@ export interface DistClosure extends DistBaseDoc {
   cashDifference: number
   warehouseClosedBy?: string
   warehouseClosedAt?: string
+  warehouseResponsibleName?: string
   closedBy?: string
   closedAt?: string
   reopenedBy?: string
@@ -345,3 +386,5 @@ export interface DistLot {
 export interface DistTransfer { id: string; fromWarehouseId: string; toWarehouseId: string; line: DistDispatchLine; createdAt: string; createdBy: string; responsibleName?: string; note?: string }
 export interface DistClaim { id: string; kind: 'exchange'|'return'; saleId: string; sellerUid?: string; sellerName?: string; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName: string;quantity: number;unitType: UnitType;total: number} | null }
 export interface DistCreditStatus { id: string; oldestPendingAt: string | null; checkedAt: string }
+export interface DistCreditOverride { id: string; customerId: string; activeUntil: string; reason: string; grantedAt: string; grantedBy: string; grantedByName: string; revokedAt?: string; revokedBy?: string }
+export interface DistWarehouseShift { id: string; warehouseId: string; responsibleName: string; openedAt: string; openedBy: string; closedAt?: string; closedBy?: string; active: boolean }

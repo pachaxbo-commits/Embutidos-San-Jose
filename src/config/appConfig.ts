@@ -28,7 +28,7 @@ export interface AppTheme {
 export const SAN_JOSE_APP_CONFIG = {
   modules: [
     { id: 'dist.dashboard', label: 'Inicio', requiredPermission: 'dist.dashboard.view' },
-    { id: 'dist.sales', label: 'Vender', requiredPermission: 'dist.sale.create' },
+    { id: 'dist.sales', label: 'Ventas', requiredPermission: 'dist.sale.create' },
     { id: 'dist.credits', label: 'Creditos', requiredPermission: 'dist.credit.view' },
     { id: 'dist.expenses', label: 'Gastos', requiredPermission: 'dist.expense.create' },
     { id: 'dist.closure', label: 'Cierre', anyOfPermissions: ['dist.closure.money', 'dist.closure.warehouse'] },

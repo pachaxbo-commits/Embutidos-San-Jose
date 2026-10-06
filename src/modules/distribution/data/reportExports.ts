@@ -372,6 +372,50 @@ export function reportSheets(
       ],
     },
     {
+      id: 'salesKardex',
+      name: "Kardex de ventas",
+      headers: ["Fecha y hora", "Producto", "Presentación", "Cliente", "Vendedor", "Ruta", "Cantidad", "Unidad", "Precio (Bs)", "Importe (Bs)", "Comprobante"],
+      rows: [
+        ...lines.slice().sort((a, b) => a.productNameSnapshot.localeCompare(b.productNameSnapshot) || a.sale.createdAt.localeCompare(b.sale.createdAt)).map(l => [
+          reportDateTime(l.sale.createdAt), l.productNameSnapshot, l.presentationSnapshot || "", l.sale.customerName || "Contado", reportPersonName(l.sale.sellerName), reportRecordName(l.sale.routeName, "Ruta registrada"), l.quantity, reportUnitLabel(l.unitType), l.actualUnitPrice, l.subtotal, reportReceiptNumber(l.sale.id),
+        ] as Cell[]),
+        ["TOTAL", "", "", "", "", "", "", "", "", round2(lines.reduce((sum, line) => sum + line.subtotal, 0)), ""],
+      ],
+    },
+    {
+      id: 'customerPurchases',
+      name: "Compras por cliente",
+      headers: ["Cliente", "CI", "Producto", "Presentación", "Cantidad", "Unidad", "Peso aproximado (kg)", "Importe (Bs)"],
+      rows: (() => {
+        const grouped = new Map();
+        for (const line of lines) {
+          const customer = line.sale.customerName || "Contado sin cliente";
+          const key = `${line.sale.customerId || "cash"}__${line.productId}__${line.unitType}`;
+          const product = data.products.find(item => item.id === line.productId);
+          const current = grouped.get(key) || { customer, ci: line.sale.customerCode || "", product: line.productNameSnapshot, presentation: line.presentationSnapshot || "", quantity: 0, unit: line.unitType, approximateKg: 0, hasApproximation: false, amount: 0 };
+          current.quantity = round2(current.quantity + line.quantity);
+          current.amount = round2(current.amount + line.subtotal);
+          if (line.unitType === "kg") { current.approximateKg = round2(current.approximateKg + line.quantity); current.hasApproximation = true; }
+          else if (Number(product?.approximateWeightKg) > 0) { current.approximateKg = round2(current.approximateKg + line.quantity * Number(product?.approximateWeightKg)); current.hasApproximation = true; }
+          grouped.set(key, current);
+        }
+        const rows = [...grouped.values()].sort((a, b) => a.customer.localeCompare(b.customer) || a.product.localeCompare(b.product));
+        return [...rows.map(row => [row.customer, row.ci, row.product, row.presentation, row.quantity, reportUnitLabel(row.unit), row.hasApproximation ? row.approximateKg : "No disponible", row.amount] as Cell[]), ["TOTAL", "", "", "", "", "", "", round2(rows.reduce((sum, row) => sum + row.amount, 0))]];
+      })(),
+    },
+    {
+      id: 'cashFlow',
+      name: "Movimiento de efectivo",
+      headers: ["Concepto", "Efectivo (Bs)", "QR (Bs)", "Total (Bs)"],
+      rows: [
+        ["Cobros de ventas", round2(sales.reduce((n, s) => n + s.cashAmount, 0)), round2(sales.reduce((n, s) => n + s.qrAmount, 0)), round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0))],
+        ["Cobros de cartera", round2(collections.reduce((n, c) => n + (c.cashAmount ?? (c.method === "cash" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + (c.qrAmount ?? (c.method === "qr" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + c.amount, 0))],
+        ["Cambios y devoluciones", round2(claims.reduce((n, c) => n + c.cashIn - c.cashOut, 0)), round2(claims.reduce((n, c) => n + c.qrIn - c.qrOut, 0)), round2(claims.reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0))],
+        ["Gastos", -spent, 0, -spent],
+        ["FLUJO NETO", "", "", round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + collections.reduce((n, c) => n + c.amount, 0) + claims.reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent)],
+      ],
+    },
+    {
       id: 'credits',
       name: "Créditos",
       headers: [
@@ -474,39 +518,24 @@ export function reportSheets(
     },
     {
       id: 'inventory',
-      name: "Inventario por lote",
+      name: "Existencias actuales",
       headers: [
         "Producto",
-        "Lote",
-        "Elaboración",
-        "Vencimiento",
-        "Ubicación",
-        "Cantidad",
+        "Presentación",
         "Unidad",
-        "Estado",
+        "Ubicación",
+        "Stock físico",
+        "Disponible",
+        "No disponible",
+        "Lotes",
       ],
-      rows: data.lots.flatMap((l) =>
-        Object.entries(l.quantities)
-          .filter(([, q]) => q > 0)
-          .map(
-            ([loc, q]) =>
-              [
-                l.productName,
-                l.lotCode,
-                l.manufacturedOn,
-                l.expiresOn,
-                locationName(loc),
-                q,
-                reportUnitLabel(l.unitType),
-                l.quarantined
-                  ? "Separado"
-                  : l.expiresOn &&
-                      l.expiresOn < new Date().toLocaleDateString("en-CA")
-                    ? "Vencido"
-                    : "Disponible",
-              ] as Cell[],
-          ),
-      ),
+      rows: data.balances.filter(balance => balance.quantity > 0).map(balance => {
+        const loc = balance.locationKind === 'route' ? `route__${balance.routeId}` : balance.warehouseId && balance.warehouseId !== 'central' ? `warehouse__${balance.warehouseId}` : 'central'
+        const lots = data.lots.filter(lot => lot.productId === balance.productId && (lot.quantities[loc] || 0) > 0)
+        const unavailable = round2(lots.filter(lot => lot.quarantined || (lot.expiresOn && lot.expiresOn < new Date().toLocaleDateString('en-CA'))).reduce((sum, lot) => sum + (lot.quantities[loc] || 0), 0))
+        const product = data.products.find(item => item.id === balance.productId)
+        return [balance.productName, product?.presentation || product?.category || '', reportUnitLabel(balance.unitType), locationName(loc), balance.quantity, round2(balance.quantity - unavailable), unavailable, lots.map(lot => `${lot.lotCode} (${lot.quantities[loc]})`).join('; ') || 'Stock anterior sin lote'] as Cell[]
+      }),
     },
     {
       id: 'movements',

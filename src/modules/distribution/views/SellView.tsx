@@ -1,7 +1,7 @@
 import { submitOperation } from '../data/operationQueue'
 import type { DistCreditStatus } from '../types'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Plus, Printer, Search, Send, ShoppingCart, Trash2, UserPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, History, Pencil, Plus, Printer, Search, Send, ShoppingCart, Trash2, UserPlus } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -12,7 +12,7 @@ import {
   validateSalePayment,
   validateStockAvailability,
 } from '../domain/engine'
-import { newOperationId, registerSale, saveCustomer } from '../data/distributionRepository'
+import { correctSale, newOperationId, registerSale, saveCustomer } from '../data/distributionRepository'
 import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
 import { useStockIndex } from '../state/useDistributionStore'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs, formatQty } from './shared'
@@ -53,7 +53,7 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [search, setSearch] = useState('')
   const [cart, setCart] = useState<CartLine[]>([])
   const [editingProduct, setEditingProduct] = useState<DistProduct | null>(null)
-  const [quantity, setQuantity] = useState('1')
+  const [quantity, setQuantity] = useState('0')
   const [unitPrice, setUnitPrice] = useState('0')
   const [isPromotional, setIsPromotional] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
@@ -77,6 +77,11 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [isPrinting, setIsPrinting] = useState(false)
   const [isSharing, setIsSharing] = useState(false)
   const [shareFeedback, setShareFeedback] = useState('')
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [historySearch, setHistorySearch] = useState('')
+  const [correctionTarget, setCorrectionTarget] = useState<DistSale | null>(null)
+  const [correctionQuantities, setCorrectionQuantities] = useState<Record<string, string>>({})
+  const [correctionReason, setCorrectionReason] = useState('')
   useEffect(() => {
     if (!lastSale?.pendingConfirmation) return
     const confirmed = data.sales.find(s => s.id === lastSale.id && !s.pendingConfirmation)
@@ -90,6 +95,7 @@ export function SellView({ session, data }: DistributionViewProps) {
   const operationIdRef = useRef<string | null>(null)
 
   const activeProducts = useMemo(() => data.products.filter((product) => product.active !== false && (availableStock.get(product.id) ?? 0) > 0), [data.products, availableStock])
+  const historySales = useMemo(() => { const term = historySearch.trim().toLowerCase(); return data.sales.filter(sale => !term || [sale.customerName, sale.sellerName, sale.routeName, ...sale.lines.map(line => line.productNameSnapshot)].join(' ').toLowerCase().includes(term)).sort((a,b) => b.createdAt.localeCompare(a.createdAt)) }, [data.sales, historySearch])
 
   const filteredProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -116,7 +122,7 @@ export function SellView({ session, data }: DistributionViewProps) {
   const openProduct = (product: DistProduct) => {
     setError(null)
     setEditingProduct(product)
-    setQuantity('1')
+    setQuantity('0')
     setUnitPrice(String(product.referencePrice))
     setIsPromotional(false)
   }
@@ -139,9 +145,9 @@ export function SellView({ session, data }: DistributionViewProps) {
       {
         lineId: newOperationId('line'),
         productId: editingProduct.id,
-        productNameSnapshot: editingProduct.presentation
-          ? `${editingProduct.name} - ${editingProduct.presentation}`
-          : editingProduct.name,
+        productNameSnapshot: editingProduct.name,
+        presentationSnapshot: editingProduct.presentation || editingProduct.category || '',
+        descriptionSnapshot: editingProduct.description || '',
         quantity: qty,
         unitType: editingProduct.unitType,
         actualUnitPrice: price,
@@ -222,8 +228,10 @@ export function SellView({ session, data }: DistributionViewProps) {
       }
       // Se evalúa al confirmar, no durante el render de React.
       const blockDays = data.supportSettings.creditBlockDays
+      // La validación ocurre dentro del evento Confirmar, no durante el render.
+      const override = data.creditOverrides.find(item => item.customerId === selectedCustomer.id && !item.revokedAt && Date.parse(item.activeUntil) > Date.now())
       // eslint-disable-next-line react-hooks/purity
-      if (credit.oldestPendingAt && Date.parse(credit.oldestPendingAt) + blockDays * 86400000 <= Date.now()) { setError(`Venta bloqueada: el cliente tiene créditos pendientes de ${blockDays} días o más.`); return }
+      if (!override && credit.oldestPendingAt && Date.parse(credit.oldestPendingAt) + blockDays * 86400000 <= Date.now()) { setError(`Venta bloqueada: el cliente tiene créditos pendientes de ${blockDays} días o más.`); return }
     }
     if (cart.length === 0) {
       setError('Agrega al menos un producto.')
@@ -289,7 +297,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         customerId: customerId || undefined,
         customerName: selectedCustomer?.name,
         customerCode: selectedCustomer?.customerCode || selectedCustomer?.identityNumber,
-        lines: cart.map(line => ({ productId: line.productId, productNameSnapshot: line.productNameSnapshot, quantity: line.quantity, unitType: line.unitType, actualUnitPrice: line.actualUnitPrice, referenceUnitPrice: line.referenceUnitPrice, isPromotional: line.isPromotional, subtotal: line.subtotal })),
+        lines: cart.map(line => ({ productId: line.productId, productNameSnapshot: line.productNameSnapshot, presentationSnapshot: line.presentationSnapshot, descriptionSnapshot: line.descriptionSnapshot, quantity: line.quantity, unitType: line.unitType, actualUnitPrice: line.actualUnitPrice, referenceUnitPrice: line.referenceUnitPrice, isPromotional: line.isPromotional, subtotal: line.subtotal })),
         total,
         paymentKind,
         cashAmount: split.cashAmount,
@@ -330,7 +338,7 @@ export function SellView({ session, data }: DistributionViewProps) {
 
   return (
     <Screen
-      title="Vender"
+      title="Ventas"
       subtitle={
         isDistributor
           ? openDispatch
@@ -338,6 +346,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             : 'Sin despacho abierto'
           : 'Venta directa desde almacen central'
       }
+      actions={<SecondaryButton onClick={() => setIsHistoryOpen(true)}><History size={16} /> Historial</SecondaryButton>}
     >
       <div className="flex w-full min-w-0 flex-col gap-3">
         {!isDistributor && (
@@ -482,6 +491,7 @@ export function SellView({ session, data }: DistributionViewProps) {
               <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
                 <div className="min-w-0">
                   <p className="break-words text-xs font-extrabold text-slate-900">{line.productNameSnapshot}</p>
+                  {(line.presentationSnapshot || line.descriptionSnapshot) && <p className="break-words text-[10px] font-semibold text-slate-500">{[line.presentationSnapshot, line.descriptionSnapshot].filter(Boolean).join(' · ')}</p>}
                   <p className="text-[11px] font-semibold text-slate-500">
                     {formatQty(line.quantity, line.unitType)} × {formatBs(line.actualUnitPrice)}
                   </p>
@@ -596,6 +606,10 @@ export function SellView({ session, data }: DistributionViewProps) {
       </Modal>
 
       {/* Venta confirmada */}
+      <Modal isOpen={isHistoryOpen} onClose={() => setIsHistoryOpen(false)} title="Historial de ventas" subtitle="Operación diaria, reimpresión y correcciones auditadas" size="lg"><div className="grid gap-3"><div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput className="pl-9" value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Buscar cliente, producto o vendedor" /></div>{historySales.map(sale => <article key={sale.id} className={`rounded-2xl border p-3 ${sale.latestCorrectionId ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}><div className="flex items-start justify-between gap-2"><div><p className="text-xs font-extrabold">{sale.customerName || 'Contado sin cliente'} · {formatBs(sale.total)}</p><p className="text-[10px] font-semibold text-slate-500">{new Date(sale.createdAt).toLocaleString('es-BO')} · {sale.sellerName}</p>{sale.latestCorrectionId && <p className="mt-1 text-[10px] font-black text-amber-800">EDITADA · {sale.editReason} · {sale.editedAt ? new Date(sale.editedAt).toLocaleString('es-BO') : ''}</p>}</div></div><p className="my-2 text-[11px] text-slate-600">{sale.lines.map(line => `${formatQty(line.quantity,line.unitType)} ${line.productNameSnapshot}`).join(' · ')}</p><div className="grid grid-cols-3 gap-2"><SecondaryButton onClick={() => void printSaleReceipt(sale, receiptContext, true)}>Ticket</SecondaryButton><SecondaryButton onClick={() => void shareSaleReceipt(sale, receiptContext)}>Compartir</SecondaryButton>{(!isDistributor || data.openDispatches.some(dispatch => dispatch.id === sale.dispatchId)) && <SecondaryButton onClick={() => { setCorrectionTarget(sale); setCorrectionReason(''); setCorrectionQuantities(Object.fromEntries(data.products.map(product => [product.id, String(sale.lines.filter(line => line.productId === product.id).reduce((sum,line) => sum + line.quantity, 0) || 0)]))) }}><Pencil size={14} /> Corregir</SecondaryButton>}</div></article>)}</div></Modal>
+
+      <Modal isOpen={Boolean(correctionTarget)} onClose={() => setCorrectionTarget(null)} title="Corrección auditada de venta" subtitle="La venta original y cada revisión quedarán conservadas" size="lg" footer={<PrimaryButton full disabled={isSubmitting} onClick={async () => { if (!correctionTarget || !correctionReason.trim()) { setError('La razón de la edición es obligatoria.'); return } const lines = data.products.map(product => ({ product, quantity: round2(Number(correctionQuantities[product.id]) || 0) })).filter(item => item.quantity > 0).map(({product,quantity}) => ({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category, descriptionSnapshot: product.description, quantity, unitType: product.unitType, actualUnitPrice: correctionTarget.lines.find(line => line.productId === product.id)?.actualUnitPrice || product.referencePrice, subtotal: round2(quantity * (correctionTarget.lines.find(line => line.productId === product.id)?.actualUnitPrice || product.referencePrice)) })); if (!lines.length) { setError('La venta debe conservar al menos un producto.'); return } const newTotal = round2(lines.reduce((sum,line) => sum + line.subtotal,0)); const oldTotal = correctionTarget.total || 1; const cashAmount = round2(newTotal * correctionTarget.cashAmount / oldTotal); const qrAmount = round2(newTotal * correctionTarget.qrAmount / oldTotal); const creditAmount = round2(newTotal - cashAmount - qrAmount); setIsSubmitting(true); try { await correctSale({ saleId: correctionTarget.id, reason: correctionReason.trim(), lines, paymentKind: correctionTarget.paymentKind, cashAmount, qrAmount, creditAmount }); setCorrectionTarget(null) } catch(e) { setError((e as Error).message) } finally { setIsSubmitting(false) } }}>Guardar corrección</PrimaryButton>}><div className="grid gap-3"><p className="rounded-xl bg-amber-50 p-3 text-xs font-semibold text-amber-900">Usa 0 para quitar un producto. Puedes aumentar cantidades o agregar otro producto. El servidor recalculará stock, lotes, importes y crédito en una sola transacción.</p><div className="grid grid-cols-2 gap-2">{data.products.filter(product => product.active !== false).map(product => <Field key={product.id} label={product.name}><NumberInput min={0} step={product.unitType === 'kg' ? 0.01 : 1} value={correctionQuantities[product.id] || '0'} onChange={e => setCorrectionQuantities(current => ({...current,[product.id]:e.target.value}))} /></Field>)}</div><Field label="Razón de la edición" required><TextArea value={correctionReason} onChange={e => setCorrectionReason(e.target.value)} placeholder="Explica qué dato estaba equivocado y por qué se corrige" /></Field>{error && <p className="text-xs font-bold text-rose-700">{error}</p>}</div></Modal>
+
       <Modal
         isOpen={Boolean(lastSale)}
         onClose={resetSale}

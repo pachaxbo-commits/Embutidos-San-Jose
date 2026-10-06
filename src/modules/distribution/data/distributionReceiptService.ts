@@ -61,7 +61,7 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
       quantity: line.quantity,
       unitLabel: line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u',
       lineTotal: line.subtotal,
-      modifiersText: line.isPromotional ? [`PRECIO PROMOCIONAL - OFICIAL ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)} Bs`] : undefined,
+      modifiersText: [line.presentationSnapshot, line.descriptionSnapshot, line.isPromotional ? `PRECIO PROMOCIONAL - OFICIAL ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)} Bs` : ''].filter(Boolean) as string[],
     })),
     subtotal: sale.total,
     discountTotal: 0,
