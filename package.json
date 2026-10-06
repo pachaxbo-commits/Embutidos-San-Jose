@@ -19,6 +19,7 @@
     "test:closure-regression": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureRegression.test.ts",
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "test:report-selection": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportSelection.test.ts",
+    "test:customer-purchases": "node --experimental-strip-types src/modules/distribution/domain/__tests__/customerPurchases.test.ts",
     "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
     "test:android-documents": "node scripts/test-android-document-flows.mjs",
     "test:web-updater": "node scripts/validate-web-updater.cjs",

@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import { ImagePlus, Pencil, Plus, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
-import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
+import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2 } from '../domain/engine'
 import { unitForCategory } from '../domain/productUnits'
 import { changeProductUnit, deleteProduct, saveProduct, saveRoute } from '../data/distributionRepository'
 import { prepareProductPhoto } from '../data/productPhoto'
 import { SAN_JOSE_PRODUCTS, SAN_JOSE_ROUTES } from '../seed/sanJoseSeed'
+import { getProductPresentation } from '../domain/productPresentation'
 import { PrimaryButton, SecondaryButton, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct, UnitType } from '../types'
@@ -23,7 +24,6 @@ export function ProductsView({ data }: DistributionViewProps) {
   const [name, setName] = useState('')
   const [category, setCategory] = useState('Al vacio')
   const [presentation, setPresentation] = useState('')
-  const [description, setDescription] = useState('')
   const [unitType, setUnitType] = useState<UnitType>('package')
   const [price, setPrice] = useState('0')
   const [weight, setWeight] = useState('')
@@ -52,7 +52,6 @@ export function ProductsView({ data }: DistributionViewProps) {
     setName('')
     setCategory('Al vacio')
     setPresentation('')
-    setDescription('')
     setUnitType('package')
     setPrice('0')
     setWeight('')
@@ -67,8 +66,7 @@ export function ProductsView({ data }: DistributionViewProps) {
     setEditing(product)
     setName(product.name)
     setCategory(product.category)
-    setPresentation(product.presentation ?? '')
-    setDescription(product.description ?? '')
+    setPresentation(product.presentation?.trim() || product.description?.trim() || '')
     setUnitType(product.unitType)
     setPrice(String(product.referencePrice))
     setCost(String(product.productionCost || 0)); setMinimum(String(product.minimumStock || 0))
@@ -104,13 +102,14 @@ export function ProductsView({ data }: DistributionViewProps) {
     if ([price, cost, minimum].some(v => !Number.isFinite(Number(v)) || Number(v) < 0)) { setError('Precio, costo y mínimo deben ser números positivos o cero.'); return }
     try {
     if (editing && unitType !== editing.unitType) await changeProductUnit(editing.id, unitType)
+    const cleanPresentation = presentation.trim()
     await saveProduct({
       id,
       name: name.trim(),
       photoDataUrl,
       category,
-      presentation: presentation.trim(),
-      description: description.trim(),
+      presentation: cleanPresentation,
+      description: cleanPresentation,
       unitType,
       referencePrice: round2(Number(price)),
       productionCost: round2(Number(cost)), minimumStock: round2(Number(minimum)),
@@ -196,7 +195,14 @@ export function ProductsView({ data }: DistributionViewProps) {
               {deleteMode && <span className="absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-rose-600 text-white shadow"><Trash2 size={15} /></span>}
               {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} onError={(event) => { event.currentTarget.style.display = 'none' }} className="aspect-[16/9] w-full object-cover" />}
               <div className="flex min-w-0 flex-1 flex-col justify-between gap-2 p-3">
-                <p className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</p>
+                <div className="min-w-0">
+                  <p className="break-words text-xs font-extrabold leading-snug text-slate-900">{product.name}</p>
+                  {getProductPresentation(product) && (
+                    <p className="mt-0.5 break-words text-[11px] font-medium text-slate-500 line-clamp-1">
+                      {getProductPresentation(product)}
+                    </p>
+                  )}
+                </div>
                 <div className="flex flex-wrap items-end justify-between gap-1.5">
                   <span className="text-[10px] font-semibold text-slate-500">{formatQty(stock, product.unitType)} disponibles</span>
                   <span className="text-sm font-black tabular-nums" style={{ color: 'var(--primary)' }}>{formatBs(product.referencePrice)}</span>
@@ -239,11 +245,8 @@ export function ProductsView({ data }: DistributionViewProps) {
           <Field label="Categoria / presentacion comercial">
             <Segmented value={category} onChange={changeCategory} options={[{ value: 'Al vacio', label: 'Al vacío' }, { value: 'Granel', label: 'Granel' }, { value: 'Otros', label: 'Otros' }]} />
           </Field>
-          <Field label="Detalle de presentacion" hint="Ej: sachet 200 g, 10 unidades 12 cm">
-            <TextInput value={presentation} onChange={(event) => setPresentation(event.target.value)} />
-          </Field>
-          <Field label="Descripción comercial" hint="Opcional. Se mostrará al elegir el producto y quedará guardada en la venta.">
-            <TextArea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ej: ahumado suave, paquete familiar" />
+          <Field label="Detalle de presentación" hint="Ej: Paquete al vacío de 500 g, Granel, Sachet de 200 g">
+            <TextInput value={presentation} onChange={(event) => setPresentation(event.target.value)} placeholder="Ej: Paquete al vacío de 500 g" />
           </Field>
           <Field label="Unidad de venta" hint="Si el producto tiene existencias o historial, el sistema rechazará el cambio para proteger los cálculos anteriores.">
             <Segmented value={unitType} onChange={setUnitType} options={[{ value: 'kg', label: 'Granel (kg)' }, { value: 'package', label: 'Paquete' }, { value: 'unit', label: 'Unidad' }]} />
