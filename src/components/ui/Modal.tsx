@@ -30,6 +30,8 @@ const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
  * - el pie de acciones queda siempre accesible
  * - el boton fisico "atras" cierra primero el modal
  */
+let activeModalsCount = 0
+
 export function Modal({
   isOpen,
   onClose,
@@ -47,10 +49,13 @@ export function Modal({
 
   useEffect(() => {
     if (!isOpen) return
-    const previousOverflow = document.body.style.overflow
+    activeModalsCount++
     document.body.style.overflow = 'hidden'
     return () => {
-      document.body.style.overflow = previousOverflow
+      activeModalsCount = Math.max(0, activeModalsCount - 1)
+      if (activeModalsCount === 0) {
+        document.body.style.overflow = ''
+      }
     }
   }, [isOpen])
 

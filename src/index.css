@@ -51,6 +51,7 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  overflow-y: auto;
 }
 
 #root {

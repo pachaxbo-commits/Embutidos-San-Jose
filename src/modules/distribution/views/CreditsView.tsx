@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, HandCoins, History, Search, ShieldAlert } from 'lucide-react'
+import { ChevronDown, ChevronRight, HandCoins, History, Search, ShieldAlert, UserPlus } from 'lucide-react'
 import { RangePicker } from './RangePicker'
 import { Modal } from '../../../components/ui/Modal'
+import { ChoiceButton } from '../../../components/ui/ChoiceModal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { toDayKey, round2 } from '../domain/engine'
-import { newOperationId, registerCollection, registerOpeningBalance, setCreditOverride } from '../data/distributionRepository'
+import { newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride } from '../data/distributionRepository'
 import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -50,6 +51,30 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [paidOpen, setPaidOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
+
+  const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false)
+  const [customerPickerSearch, setCustomerPickerSearch] = useState('')
+  const [isNewCustomerOpen, setIsNewCustomerOpen] = useState(false)
+  const [newCustName, setNewCustName] = useState('')
+  const [newCustCI, setNewCustCI] = useState('')
+  const [newCustPhone, setNewCustPhone] = useState('')
+  const [newCustAddress, setNewCustAddress] = useState('')
+  const [newCustRouteId, setNewCustRouteId] = useState('')
+  const [isCreatingCustomer, setIsCreatingCustomer] = useState(false)
+  const [customerCreateError, setCustomerCreateError] = useState<string | null>(null)
+
+  const filteredPickerCustomers = useMemo(() => {
+    const term = customerPickerSearch.trim().toLowerCase()
+    const active = data.customers.filter((c) => c.active !== false)
+    if (!term) return active
+    return active.filter(
+      (c) =>
+        c.name.toLowerCase().includes(term) ||
+        (c.identityNumber && c.identityNumber.toLowerCase().includes(term)) ||
+        (c.customerCode && c.customerCode.toLowerCase().includes(term)) ||
+        (c.phone && c.phone.toLowerCase().includes(term)),
+    )
+  }, [data.customers, customerPickerSearch])
 
   const byCustomer = useMemo(() => {
     const map = new Map<string, CustomerCredit>()
@@ -601,21 +626,24 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         }
       >
         <div className="grid gap-3">
-          <Field label="Cliente" required>
-            <select
-              className="min-h-[44px] w-full rounded-2xl border-2 border-slate-300 px-3 text-xs font-bold text-slate-800"
-              value={openingCustomerId}
-              onChange={(e) => setOpeningCustomerId(e.target.value)}
-            >
-              <option value="">Selecciona cliente</option>
-              {data.customers
-                .filter((c) => c.active !== false)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} {c.identityNumber ? `· ${c.identityNumber}` : ''}
-                  </option>
-                ))}
-            </select>
+          <Field label="Cliente" required hint="Selecciona un cliente existente o regístralo al instante.">
+            <ChoiceButton
+              placeholder="Buscar o seleccionar cliente..."
+              label={data.customers.find((c) => c.id === openingCustomerId)?.name}
+              description={
+                data.customers.find((c) => c.id === openingCustomerId)
+                  ? `CI: ${data.customers.find((c) => c.id === openingCustomerId)?.identityNumber || 'Sin CI'}${
+                      data.customers.find((c) => c.id === openingCustomerId)?.phone
+                        ? ` · Tel: ${data.customers.find((c) => c.id === openingCustomerId)?.phone}`
+                        : ''
+                    }`
+                  : undefined
+              }
+              onClick={() => {
+                setCustomerPickerSearch('')
+                setIsCustomerPickerOpen(true)
+              }}
+            />
           </Field>
           <Field label="Monto (Bs)" required>
             <NumberInput value={openingAmount} min={0} onChange={(e) => setOpeningAmount(e.target.value)} />
@@ -631,6 +659,217 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             />
           </Field>
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
+        </div>
+      </Modal>
+
+      {/* Modal de Búsqueda y Selección de Cliente para Saldo Anterior */}
+      <Modal
+        isOpen={isCustomerPickerOpen}
+        onClose={() => {
+          setIsCustomerPickerOpen(false)
+          setCustomerPickerSearch('')
+        }}
+        title="Selecciona el cliente"
+        subtitle="Busca por nombre, carnet/código o teléfono"
+        size="lg"
+        footer={
+          <div className="flex w-full items-center justify-between gap-2">
+            <SecondaryButton onClick={() => setIsCustomerPickerOpen(false)}>
+              Cancelar
+            </SecondaryButton>
+            <PrimaryButton
+              onClick={() => {
+                setNewCustName(customerPickerSearch.trim())
+                setNewCustCI('')
+                setNewCustPhone('')
+                setNewCustAddress('')
+                setNewCustRouteId('')
+                setCustomerCreateError(null)
+                setIsNewCustomerOpen(true)
+              }}
+            >
+              <UserPlus size={15} /> + REGISTRAR CLIENTE
+            </PrimaryButton>
+          </div>
+        }
+      >
+        <div className="grid gap-3">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <TextInput
+                value={customerPickerSearch}
+                onChange={(e) => setCustomerPickerSearch(e.target.value)}
+                placeholder="Buscar por nombre, CI o teléfono..."
+                className="pl-9"
+              />
+            </div>
+            <PrimaryButton
+              onClick={() => {
+                setNewCustName(customerPickerSearch.trim())
+                setNewCustCI('')
+                setNewCustPhone('')
+                setNewCustAddress('')
+                setNewCustRouteId('')
+                setCustomerCreateError(null)
+                setIsNewCustomerOpen(true)
+              }}
+            >
+              <UserPlus size={15} /> + REGISTRAR
+            </PrimaryButton>
+          </div>
+
+          <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+            {filteredPickerCustomers.map((cust) => {
+              const isSelected = cust.id === openingCustomerId
+              return (
+                <button
+                  key={cust.id}
+                  type="button"
+                  onClick={() => {
+                    setOpeningCustomerId(cust.id)
+                    setIsCustomerPickerOpen(false)
+                    setCustomerPickerSearch('')
+                  }}
+                  className={`flex w-full items-center justify-between rounded-2xl border p-3 text-left transition ${
+                    isSelected
+                      ? 'border-[var(--primary)] bg-[var(--primary-soft)]'
+                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-slate-900">{cust.name}</p>
+                    <p className="text-[11px] font-semibold text-slate-500">
+                      CI: {cust.identityNumber || cust.customerCode || 'Sin carnet'}
+                      {cust.phone ? ` · Tel: ${cust.phone}` : ''}
+                      {cust.address ? ` · ${cust.address}` : ''}
+                    </p>
+                  </div>
+                  {isSelected && (
+                    <span className="rounded-full bg-[var(--primary)] px-2 py-0.5 text-[10px] font-black text-white">
+                      SELECCIONADO
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+            {filteredPickerCustomers.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center">
+                <p className="text-xs font-semibold text-slate-600">
+                  No se encontró ningún cliente con ese dato.
+                </p>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Puedes registrarlo de inmediato sin salir de esta pantalla.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewCustName(customerPickerSearch.trim())
+                    setNewCustCI('')
+                    setNewCustPhone('')
+                    setNewCustAddress('')
+                    setNewCustRouteId('')
+                    setCustomerCreateError(null)
+                    setIsNewCustomerOpen(true)
+                  }}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-[var(--primary)] px-3 py-1.5 text-xs font-black text-white"
+                >
+                  <UserPlus size={14} /> Registrar como nuevo cliente
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal de Registro Rápido de Cliente */}
+      <Modal
+        isOpen={isNewCustomerOpen}
+        onClose={() => setIsNewCustomerOpen(false)}
+        title="Registrar nuevo cliente"
+        subtitle="Se creará en el sistema y quedará seleccionado para el saldo anterior"
+        footer={
+          <PrimaryButton
+            full
+            disabled={isCreatingCustomer}
+            onClick={async () => {
+              if (!newCustName.trim()) {
+                setCustomerCreateError('El nombre del cliente es obligatorio.')
+                return
+              }
+              if (!newCustCI.trim()) {
+                setCustomerCreateError('El CI / Carnet es obligatorio para registrar un cliente.')
+                return
+              }
+              setIsCreatingCustomer(true)
+              setCustomerCreateError(null)
+              try {
+                const created = await saveCustomer({
+                  name: newCustName.trim(),
+                  identityNumber: newCustCI.trim(),
+                  phone: newCustPhone.trim(),
+                  address: newCustAddress.trim(),
+                  routeId: newCustRouteId || undefined,
+                })
+                setOpeningCustomerId(created.id)
+                setIsNewCustomerOpen(false)
+                setIsCustomerPickerOpen(false)
+                setToast(`Cliente ${created.name} registrado y seleccionado.`)
+              } catch (e) {
+                setCustomerCreateError((e as Error).message)
+              } finally {
+                setIsCreatingCustomer(false)
+              }
+            }}
+          >
+            {isCreatingCustomer ? 'Guardando cliente...' : 'Guardar y seleccionar cliente'}
+          </PrimaryButton>
+        }
+      >
+        <div className="grid gap-3">
+          <Field label="Nombre completo" required>
+            <TextInput
+              value={newCustName}
+              onChange={(e) => setNewCustName(e.target.value)}
+              placeholder="Ej: Doña María Pérez"
+            />
+          </Field>
+          <Field label="Carnet de Identidad (CI)" required hint="Número único de identificación">
+            <TextInput
+              value={newCustCI}
+              onChange={(e) => setNewCustCI(e.target.value)}
+              placeholder="Ej: 4892019"
+            />
+          </Field>
+          <Field label="Teléfono / Celular">
+            <TextInput
+              value={newCustPhone}
+              onChange={(e) => setNewCustPhone(e.target.value)}
+              placeholder="Ej: 71234567"
+            />
+          </Field>
+          <Field label="Dirección o referencia">
+            <TextInput
+              value={newCustAddress}
+              onChange={(e) => setNewCustAddress(e.target.value)}
+              placeholder="Ej: Calle Bolívar #123, Puesto 4"
+            />
+          </Field>
+          <Field label="Ruta asignada">
+            <select
+              className="min-h-[44px] w-full rounded-2xl border-2 border-slate-300 px-3 text-xs font-bold text-slate-800"
+              value={newCustRouteId}
+              onChange={(e) => setNewCustRouteId(e.target.value)}
+            >
+              <option value="">Sin ruta asignada (General)</option>
+              {data.routes.filter(r => r.active !== false).map(r => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </Field>
+          {customerCreateError && (
+            <p className="text-xs font-bold text-rose-600">{customerCreateError}</p>
+          )}
         </div>
       </Modal>
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AlertTriangle, ChevronRight } from "lucide-react";
 import { Field, TextInput, NumberInput } from "../../../components/ui/Form";
 import { Modal } from "../../../components/ui/Modal";
 import { PrimaryButton, SectionCard, formatQty } from "./shared";
@@ -22,57 +23,211 @@ const MOVEMENT_LABELS: Record<string, string> = {
   exchange: "Cambio de producto",
   customer_return: "Devolución de cliente",
 };
+
 export function StockAlerts({ data }: Pick<DistributionViewProps, "data">) {
+  const [modalOpen, setModalOpen] = useState(false);
   const today = toDayKey();
   const limit = new Date();
-  const alertDays = data.supportSettings.expiryAlertDays;
+  const alertDays = data.supportSettings.expiryAlertDays || 7;
   limit.setDate(limit.getDate() + alertDays);
   const last = toDayKey(limit);
-  const lots = data.lots.filter(
-    (l) =>
-      l.expiresOn &&
-      l.expiresOn <= last &&
-      Object.values(l.quantities).some((q) => q > 0),
+
+  const lotsExpired: DistLot[] = [];
+  const lotsExpiringSoon: DistLot[] = [];
+
+  for (const l of data.lots) {
+    if (!l.expiresOn) continue;
+    const totalQty = Object.values(l.quantities || {}).reduce((a, b) => a + b, 0);
+    if (totalQty <= 0) continue;
+
+    if (l.expiresOn < today) {
+      lotsExpired.push(l);
+    } else if (l.expiresOn <= last) {
+      lotsExpiringSoon.push(l);
+    }
+  }
+
+  const emptyProducts = data.products.filter(
+    (p) =>
+      p.active &&
+      (p.minimumStock || 0) > 0 &&
+      !data.balances.some((b) => b.productId === p.id && b.locationKind === "central")
   );
-  const low = data.balances.filter(
+
+  const lowBalances = data.balances.filter(
     (b) =>
       b.locationKind === "central" &&
       (b.availableQuantity ?? b.quantity) <=
-        (data.products.find((p) => p.id === b.productId)?.minimumStock || 0),
+        (data.products.find((p) => p.id === b.productId)?.minimumStock || 0)
   );
-  const emptyProducts = data.products.filter(p => p.active && (p.minimumStock || 0) > 0 && !data.balances.some(b => b.productId === p.id && b.locationKind === 'central'))
-  if (!lots.length && !low.length && !emptyProducts.length) return null;
+
+  const totalAlerts = lotsExpired.length + lotsExpiringSoon.length + emptyProducts.length + lowBalances.length;
+  if (totalAlerts === 0) return null;
+
+  const hasExpired = lotsExpired.length > 0;
+
   return (
-    <SectionCard title="Avisos de inventario">
-      <div className="grid gap-2 text-xs">
-        {lots.map((l) => (
-          <p
-            key={l.id}
-            className={
-              l.expiresOn < today ? "font-bold text-rose-700" : "text-amber-800"
-            }
-          >
-            {l.expiresOn < today ? "VENCIDO" : `Vence en los próximos ${alertDays} días`}:{" "}
-            {l.productName} · lote {l.lotCode} · {l.expiresOn} ·{" "}
-            {formatQty(
-              Object.values(l.quantities).reduce((a, b) => a + b, 0),
-              l.unitType,
+    <>
+      <button
+        type="button"
+        onClick={() => setModalOpen(true)}
+        className={`w-full text-left rounded-xl border p-2.5 sm:p-3 transition shadow-xs flex items-center justify-between gap-3 ${
+          hasExpired
+            ? "border-rose-300 bg-rose-50/90 hover:bg-rose-100/90 text-rose-950"
+            : "border-amber-300 bg-amber-50/90 hover:bg-amber-100/90 text-amber-950"
+        }`}
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="relative flex shrink-0 items-center justify-center">
+            {hasExpired && (
+              <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-600"></span>
+              </span>
             )}
-          </p>
-        ))}
-        {emptyProducts.map(p => <p key={p.id} className="text-rose-700">Stock mínimo: {p.name} · sin existencias registradas · mínimo {formatQty(p.minimumStock || 0,p.unitType)}</p>)}
-        {low.map((b) => (
-          <p key={b.id} className="text-rose-700">
-            Stock mínimo: {b.productName} ·{" "}
-            {b.warehouseId === "central" || !b.warehouseId
-              ? "Central"
-              : data.warehouses.find((w) => w.id === b.warehouseId)?.name}{" "}
-            · disponibles{" "}
-            {formatQty(b.availableQuantity ?? b.quantity, b.unitType)}
-          </p>
-        ))}
-      </div>
-    </SectionCard>
+            <div className={`p-1.5 rounded-lg ${hasExpired ? "bg-rose-200/80 text-rose-700" : "bg-amber-200/80 text-amber-700"}`}>
+              <AlertTriangle size={18} />
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black uppercase tracking-wider">
+                {totalAlerts} {totalAlerts === 1 ? "ALERTA DE INVENTARIO" : "ALERTAS DE INVENTARIO"}
+              </span>
+              {hasExpired && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white animate-pulse">
+                  {lotsExpired.length} {lotsExpired.length === 1 ? "vencido" : "vencidos"}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] font-semibold text-slate-600 truncate mt-0.5">
+              {[
+                lotsExpired.length > 0 && `${lotsExpired.length} vencidos`,
+                lotsExpiringSoon.length > 0 && `${lotsExpiringSoon.length} por vencer`,
+                (lowBalances.length + emptyProducts.length) > 0 && `${lowBalances.length + emptyProducts.length} stock bajo`,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          </div>
+        </div>
+
+        <div className="shrink-0 flex items-center gap-1 text-xs font-black text-slate-700">
+          <span>Ver alertas</span>
+          <ChevronRight size={16} />
+        </div>
+      </button>
+
+      <Modal isOpen={modalOpen} title="Alertas de inventario" onClose={() => setModalOpen(false)}>
+          <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+            {lotsExpired.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[11px] font-black uppercase">
+                    Vencidos ({lotsExpired.length})
+                  </span>
+                </div>
+                <div className="grid gap-2">
+                  {lotsExpired.map((l) => {
+                    const totalQty = Object.values(l.quantities || {}).reduce((a, b) => a + b, 0);
+                    return (
+                      <div key={l.id} className="rounded-xl border border-rose-200 bg-rose-50/60 p-2.5 text-xs">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-black text-rose-950">{l.productName}</span>
+                          <span className="font-black text-rose-700 shrink-0">
+                            {formatQty(totalQty, l.unitType)}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-rose-800">
+                          <span>Lote: <strong>{l.lotCode}</strong></span>
+                          <span>Venció el: <strong>{l.expiresOn}</strong></span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {lotsExpiringSoon.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 text-[11px] font-black uppercase">
+                    Próximos a vencer ({lotsExpiringSoon.length})
+                  </span>
+                </div>
+                <div className="grid gap-2">
+                  {lotsExpiringSoon.map((l) => {
+                    const totalQty = Object.values(l.quantities || {}).reduce((a, b) => a + b, 0);
+                    const diffMs = new Date(l.expiresOn).getTime() - new Date(today).getTime();
+                    const diffDays = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+                    const remainingLabel = diffDays === 0 ? "Vence hoy" : `Vence en ${diffDays} ${diffDays === 1 ? "día" : "días"}`;
+                    return (
+                      <div key={l.id} className="rounded-xl border border-amber-200 bg-amber-50/60 p-2.5 text-xs">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-black text-amber-950">{l.productName}</span>
+                          <span className="font-black text-amber-800 shrink-0">
+                            {formatQty(totalQty, l.unitType)}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-amber-800">
+                          <span>Lote: <strong>{l.lotCode}</strong></span>
+                          <span className="font-bold text-amber-900">
+                            {remainingLabel} ({l.expiresOn})
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {(emptyProducts.length > 0 || lowBalances.length > 0) && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-md bg-yellow-100 text-yellow-900 text-[11px] font-black uppercase">
+                    Stock bajo ({emptyProducts.length + lowBalances.length})
+                  </span>
+                </div>
+                <div className="grid gap-2">
+                  {emptyProducts.map((p) => (
+                    <div key={p.id} className="rounded-xl border border-yellow-200 bg-yellow-50/60 p-2.5 text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-black text-yellow-950">{p.name}</span>
+                        <span className="font-black text-rose-700 shrink-0">Sin existencias</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-yellow-900">
+                        Almacén Central · Mínimo configurado: <strong>{formatQty(p.minimumStock || 0, p.unitType)}</strong>
+                      </div>
+                    </div>
+                  ))}
+                  {lowBalances.map((b) => {
+                    const product = data.products.find((p) => p.id === b.productId);
+                    const minStock = product?.minimumStock || 0;
+                    const whName = b.warehouseId === "central" || !b.warehouseId
+                      ? "Central"
+                      : data.warehouses.find((w) => w.id === b.warehouseId)?.name || "Central";
+                    return (
+                      <div key={b.id} className="rounded-xl border border-yellow-200 bg-yellow-50/60 p-2.5 text-xs">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-black text-yellow-950">{b.productName}</span>
+                          <span className="font-black text-amber-900 shrink-0">
+                            {formatQty(b.availableQuantity ?? b.quantity, b.unitType)} disp.
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[11px] text-yellow-900">
+                          {whName} · Mínimo configurado: <strong>{formatQty(minStock, b.unitType)}</strong>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
+    </>
   );
 }
 export function LotsAndHistory({ data, session }: DistributionViewProps) {
