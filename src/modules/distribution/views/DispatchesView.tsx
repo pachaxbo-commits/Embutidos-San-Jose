@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Check, FileText, PackagePlus, Printer, Search, Send, Trash2, Truck } from 'lucide-react'
+import { Check, Download, FileText, Mail, MessageCircle, PackagePlus, Printer, Search, Send, Trash2, Truck } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -10,7 +10,14 @@ import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistDispatch, DistDispatchLine } from '../types'
-import { printDispatchTicket, printOperationalSheet, shareDispatch } from '../data/distributionDocumentPrintService'
+import {
+  printDispatchTicket,
+  printDispatchSheet,
+  downloadDispatchPdf,
+  shareDispatch,
+  formatDispatchTextSummary,
+} from '../data/distributionDocumentPrintService'
+import { Capacitor } from '@capacitor/core'
 
 interface DraftLine {
   id: string
@@ -42,6 +49,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [isProductPickerOpen, setIsProductPickerOpen] = useState(false)
   const [isDistributorPickerOpen, setIsDistributorPickerOpen] = useState(false)
   const [isWarehousePickerOpen, setIsWarehousePickerOpen] = useState(false)
+  const [sharingDispatch, setSharingDispatch] = useState<DistDispatch | null>(null)
 
   const distributors = useMemo(
     () => members.filter((member) => member.role === 'distributor' && member.active !== false),
@@ -287,7 +295,25 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                   ))}
                 </div>
               )}
-              <div className="mt-2 grid grid-cols-3 gap-2"><SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton><SecondaryButton onClick={() => void printOperationalSheet('Despacho entregado', `${dispatch.routeName} · ${dispatch.distributorName} · Encargado: ${dispatch.warehouseResponsibleName || 'registro anterior'}`, [...loaded.values()].map(row => ({ name: row.productName, detail: formatQty(row.totalLoaded, row.unitType) }))).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja</SecondaryButton><SecondaryButton onClick={() => void shareDispatch(dispatch).catch(shareError => setError(shareError.message))}><Send size={15} /> Compartir</SecondaryButton></div>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}>
+                  <Printer size={15} /> Ticket
+                </SecondaryButton>
+                <SecondaryButton onClick={() => void printDispatchSheet(dispatch).catch(printError => setError(printError.message))}>
+                  <FileText size={15} /> Hoja
+                </SecondaryButton>
+                <SecondaryButton
+                  onClick={() => {
+                    if (Capacitor.isNativePlatform()) {
+                      void shareDispatch(dispatch).catch(shareError => setError(shareError.message))
+                    } else {
+                      setSharingDispatch(dispatch)
+                    }
+                  }}
+                >
+                  <Send size={15} /> Compartir
+                </SecondaryButton>
+              </div>
             </SectionCard>
           )
         })}
@@ -362,6 +388,73 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
             })}
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(sharingDispatch)}
+        onClose={() => setSharingDispatch(null)}
+        title="Compartir despacho"
+        subtitle={sharingDispatch ? `${sharingDispatch.routeName} · ${sharingDispatch.distributorName}` : ''}
+        size="md"
+        footer={
+          <SecondaryButton full onClick={() => setSharingDispatch(null)}>
+            Cerrar
+          </SecondaryButton>
+        }
+      >
+        {sharingDispatch && (
+          <div className="grid gap-3">
+            <p className="text-xs text-slate-600">
+              Selecciona cómo deseas compartir o exportar este despacho:
+            </p>
+            <div className="grid gap-2">
+              <a
+                href={`https://web.whatsapp.com/send?text=${encodeURIComponent(formatDispatchTextSummary(sharingDispatch))}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100"
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-white">
+                  <MessageCircle size={18} />
+                </div>
+                <div>
+                  <p className="font-extrabold">WhatsApp Web</p>
+                  <p className="text-[11px] font-normal text-emerald-700">Abrir chat en navegador con el resumen de carga</p>
+                </div>
+              </a>
+
+              <a
+                href={`mailto:?subject=${encodeURIComponent(`Despacho ${sharingDispatch.routeName} - ${sharingDispatch.distributorName}`)}&body=${encodeURIComponent(formatDispatchTextSummary(sharingDispatch))}`}
+                className="flex items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs font-bold text-blue-800 transition hover:bg-blue-100"
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500 text-white">
+                  <Mail size={18} />
+                </div>
+                <div>
+                  <p className="font-extrabold">Correo electrónico</p>
+                  <p className="text-[11px] font-normal text-blue-700">Enviar resumen de despacho por correo</p>
+                </div>
+              </a>
+
+              <button
+                type="button"
+                onClick={() => {
+                  downloadDispatchPdf(sharingDispatch)
+                  setSharingDispatch(null)
+                }}
+                className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-100"
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-700 text-white">
+                  <Download size={18} />
+                </div>
+                <div>
+                  <p className="font-extrabold">Descargar PDF</p>
+                  <p className="text-[11px] font-normal text-slate-600">Guardar documento oficial con aumentos y firmas</p>
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </Screen>
   )

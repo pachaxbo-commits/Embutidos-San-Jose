@@ -630,7 +630,7 @@ async function collection(o, p) {
   }
   const firstDebt = debts[0];
   const collectionRouteId =
-    o.member.role === "distributor" ? o.member.routeId : p.routeId || r.routeId;
+    o.member.role === "distributor" ? o.member.routeId : p.routeId || firstDebt?.routeId;
   check(collectionRouteId, "El cobrador no tiene una ruta asignada.");
   const c = {
     id: o.id,

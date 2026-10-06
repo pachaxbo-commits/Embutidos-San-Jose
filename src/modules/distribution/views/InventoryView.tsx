@@ -1,6 +1,6 @@
 import { LotsAndHistory } from './LotsAndHistory'
 import { useMemo, useRef, useState } from 'react'
-import { Download, FileSpreadsheet, History, ListTree, PackagePlus, SlidersHorizontal } from 'lucide-react'
+import { FileSpreadsheet, History, ListTree, PackagePlus, Printer, SlidersHorizontal } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -13,7 +13,7 @@ import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
-import { exportExcel, exportPdf, inventoryHistorySheet } from '../data/reportExports'
+import { exportExcel, exportPdf, inventoryHistorySheet, warehouseReportSheets } from '../data/reportExports'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
@@ -88,6 +88,21 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       else await exportExcel([generalHistorySheet], description, 'SanJose-historial-inventario.xlsx')
     } catch (downloadError) {
       setError((downloadError as Error).message || 'No se pudo generar el historial de inventario.')
+    } finally {
+      setHistoryExporting(null)
+    }
+  }
+
+  const downloadCurrentStock = async (format: 'pdf' | 'excel') => {
+    if (historyExporting) return
+    setHistoryExporting(format)
+    try {
+      const sheets = warehouseReportSheets(data, [toDayKey()]).filter(s => s.name.includes('Existencias') || s.name.includes('Lotes'))
+      const description = `Existencias actuales · ${warehouseName} · Emitido ${new Date().toLocaleString('es-BO')}`
+      if (format === 'pdf') await exportPdf(sheets, description, 'SanJose-existencias-actuales.pdf')
+      else await exportExcel(sheets, description, 'SanJose-existencias-actuales.xlsx')
+    } catch (downloadError) {
+      setError((downloadError as Error).message || 'No se pudo generar las existencias actuales.')
     } finally {
       setHistoryExporting(null)
     }
@@ -264,15 +279,85 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       </div>
 
       <LotsAndHistory session={session} data={data} />
-      <Modal isOpen={isGeneralHistoryOpen} onClose={() => setIsGeneralHistoryOpen(false)} title="Historial general de inventario" subtitle={warehouseName}>
-        <div className="grid gap-3">
-          <RangePicker dayKeys={historyDays} onChange={setHistoryDays} />
-          <div className="grid grid-cols-2 gap-2">
-            <button type="button" disabled={generalMovements.length === 0 || Boolean(historyExporting)} onClick={() => void downloadGeneralHistory('pdf')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] px-3 text-xs font-extrabold text-white disabled:opacity-40"><Download size={15} /> {historyExporting === 'pdf' ? 'Generando…' : 'Descargar PDF'}</button>
-            <button type="button" disabled={generalMovements.length === 0 || Boolean(historyExporting)} onClick={() => void downloadGeneralHistory('excel')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 text-xs font-extrabold text-slate-700 disabled:opacity-40"><FileSpreadsheet size={15} /> {historyExporting === 'excel' ? 'Generando…' : 'Descargar Excel'}</button>
+      <Modal isOpen={isGeneralHistoryOpen} onClose={() => setIsGeneralHistoryOpen(false)} title="Historial general de inventario" subtitle={warehouseName} size="lg">
+        <div className="grid gap-4">
+          <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/60 p-4">
+            <div className="mb-1.5 flex items-center gap-2">
+              <PackagePlus size={18} className="text-emerald-700" />
+              <h4 className="text-xs font-black uppercase tracking-wider text-emerald-950">Existencias actuales</h4>
+            </div>
+            <p className="mb-3 text-xs font-semibold text-emerald-800">
+              Muestra el stock físico actual por producto, almacén y lote. Refleja las existencias en tiempo real sin mezclar con movimientos pasados.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={Boolean(historyExporting)}
+                onClick={() => void downloadCurrentStock('pdf')}
+                className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl bg-emerald-700 px-3 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-800 disabled:opacity-40"
+              >
+                <Printer size={15} /> Imprimir existencias actuales (PDF)
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(historyExporting)}
+                onClick={() => void downloadCurrentStock('excel')}
+                className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-emerald-300 bg-white px-3 text-xs font-extrabold text-emerald-900 shadow-sm hover:bg-emerald-50 disabled:opacity-40"
+              >
+                <FileSpreadsheet size={15} /> Descargar Excel existencias
+              </button>
+            </div>
           </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-1.5 flex items-center gap-2">
+              <History size={18} className="text-slate-700" />
+              <h4 className="text-xs font-black uppercase tracking-wider text-slate-900">Historial de movimientos</h4>
+            </div>
+            <p className="mb-3 text-xs font-semibold text-slate-600">
+              Historial de ingresos, despachos, transferencias y bajas ocurridas en el periodo seleccionado.
+            </p>
+            <RangePicker dayKeys={historyDays} onChange={setHistoryDays} />
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={generalMovements.length === 0 || Boolean(historyExporting)}
+                onClick={() => void downloadGeneralHistory('pdf')}
+                className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] px-3 text-xs font-extrabold text-white shadow-sm hover:bg-slate-800 disabled:opacity-40"
+              >
+                <Printer size={15} /> Imprimir movimientos (PDF)
+              </button>
+              <button
+                type="button"
+                disabled={generalMovements.length === 0 || Boolean(historyExporting)}
+                onClick={() => void downloadGeneralHistory('excel')}
+                className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 text-xs font-extrabold text-slate-700 shadow-sm hover:bg-slate-100 disabled:opacity-40"
+              >
+                <FileSpreadsheet size={15} /> Descargar Excel movimientos
+              </button>
+            </div>
+          </div>
+
           <p className="text-[11px] font-semibold text-slate-500">{describeRange(historyDays)} · {generalMovements.length} movimientos</p>
-          <div className="grid gap-2 md:grid-cols-2">{generalMovements.map(({ movement, delta }) => <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-xs font-extrabold text-slate-900">{movement.productName}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p></div><strong className={`shrink-0 text-sm tabular-nums ${delta > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{delta > 0 ? '+' : ''}{formatQty(delta, movement.unitType)}</strong></div><p className="mt-2 text-[11px] font-bold text-slate-700">{MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'}</p><p className="mt-1 break-words text-[10px] text-slate-500">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}</p><p className="mt-1 break-words text-[10px] text-slate-500">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Usuario'} · {visiblePersonName(movement.responsibleName)}</p>{movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}</article>)}</div>
+          <div className="grid max-h-[360px] gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+            {generalMovements.map(({ movement, delta }) => (
+              <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="break-words text-xs font-extrabold text-slate-900">{movement.productName}</p>
+                    <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p>
+                  </div>
+                  <strong className={`shrink-0 text-sm tabular-nums ${delta > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {delta > 0 ? '+' : ''}{formatQty(delta, movement.unitType)}
+                  </strong>
+                </div>
+                <p className="mt-2 text-[11px] font-bold text-slate-700">{MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'}</p>
+                <p className="mt-1 break-words text-[10px] text-slate-500">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}</p>
+                <p className="mt-1 break-words text-[10px] text-slate-500">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Usuario'} · {visiblePersonName(movement.responsibleName)}</p>
+                {movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}
+              </article>
+            ))}
+          </div>
           {generalMovements.length === 0 && <EmptyBlock title="Sin movimientos en este periodo" description="Prueba otro rango de fechas." />}
         </div>
       </Modal>

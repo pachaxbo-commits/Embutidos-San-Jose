@@ -715,8 +715,10 @@ export async function registerSale(input: RegisterSaleInput): Promise<DistSale> 
 
 export interface RegisterCollectionInput {
   operationId: string
-  receivable: DistReceivable
+  receivable?: DistReceivable
+  receivableId?: string
   customerId?: string
+  customerName?: string
   amount: number
   method: 'cash' | 'qr' | 'mixed'
   cashAmount: number
@@ -737,11 +739,29 @@ export async function setCreditOverride(input: { customerId: string; days?: numb
 
 /**
  * Un cobro es un movimiento financiero, no una venta: no toca stock ni
- * salesTotal. Reduce el saldo de la cuenta por cobrar y conserva el historial.
+ * salesTotal. Reduce el saldo de la cartera del cliente y conserva el historial.
  */
 export async function registerCollection(input: RegisterCollectionInput): Promise<DistCollection> {
   const context = await getContext()
-  const provisional = { ...baseDocFields(context, new Date().toISOString()), id: input.operationId, operationId: input.operationId, receivableId: input.receivable.id, customerId: input.receivable.customerId, customerName: input.receivable.customerName, routeId: input.routeId, collectedByUid: context.uid, collectedByName: input.collectedByName, amount: input.amount, method: input.method, cashAmount: input.cashAmount, qrAmount: input.qrAmount } as DistCollection
+  const customerId = input.customerId || input.receivable?.customerId || ''
+  const customerName = input.customerName || input.receivable?.customerName || ''
+  const receivableId = input.receivable?.id || input.receivableId || ''
+  const provisional = {
+    ...baseDocFields(context, new Date().toISOString()),
+    id: input.operationId,
+    operationId: input.operationId,
+    receivableId,
+    customerId,
+    customerName,
+    routeId: input.routeId,
+    collectedByUid: context.uid,
+    collectedByName: input.collectedByName,
+    amount: input.amount,
+    method: input.method,
+    cashAmount: input.cashAmount,
+    qrAmount: input.qrAmount,
+    note: input.note || '',
+  } as DistCollection
   return submitOperation<DistCollection>('collection', input, input.operationId, provisional)
 }
 

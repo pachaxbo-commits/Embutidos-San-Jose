@@ -8,6 +8,7 @@ import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
 import { printHtmlDocument } from '../../../services/printing/documentPrintService'
+import { getLinePresentation } from '../domain/productPresentation'
 
 /**
  * Recibo de venta de distribucion.
@@ -61,7 +62,10 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
       quantity: line.quantity,
       unitLabel: line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u',
       lineTotal: line.subtotal,
-      modifiersText: [line.presentationSnapshot, line.descriptionSnapshot, line.isPromotional ? `PRECIO PROMOCIONAL - OFICIAL ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)} Bs` : ''].filter(Boolean) as string[],
+      modifiersText: [
+        getLinePresentation(line),
+        line.isPromotional ? `PRECIO PROMOCIONAL (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})` : '',
+      ].filter(Boolean) as string[],
     })),
     subtotal: sale.total,
     discountTotal: 0,
@@ -146,8 +150,9 @@ export async function printSaleReceipt(sale: DistSale, context: ReceiptContext, 
 
 async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): Promise<File> {
   const width = 720
-  const rowHeight = 74
-  const height = 430 + sale.lines.length * rowHeight + (sale.changeAmount ? 56 : 0)
+  const rowHeight = 76
+  const presentationLines = sale.lines.filter(l => Boolean(getLinePresentation(l))).length
+  const height = 430 + sale.lines.length * rowHeight + presentationLines * 24 + (sale.changeAmount ? 56 : 0)
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
@@ -165,9 +170,16 @@ async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): P
   let y = 275
   ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(42, y - 20); ctx.lineTo(width - 42, y - 20); ctx.stroke()
   for (const line of sale.lines) {
+    const presentation = getLinePresentation(line)
     ctx.fillStyle = '#111827'; ctx.font = '700 20px Arial'; ctx.fillText(line.productNameSnapshot.slice(0, 52), 42, y)
-    ctx.font = '18px Arial'; ctx.fillStyle = line.isPromotional ? '#b45309' : '#475569'; ctx.fillText(`${line.quantity} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'} x Bs ${round2(line.actualUnitPrice).toFixed(2)}${line.isPromotional ? ` · PROMO (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})` : ''}`, 42, y + 30)
-    ctx.textAlign = 'right'; ctx.fillStyle = '#111827'; ctx.font = '700 20px Arial'; ctx.fillText(`Bs ${round2(line.subtotal).toFixed(2)}`, width - 42, y + 30); ctx.textAlign = 'left'; y += rowHeight
+    if (presentation) {
+      y += 24
+      ctx.font = '16px Arial'; ctx.fillStyle = '#64748b'; ctx.fillText(presentation, 42, y)
+    }
+    y += 28
+    ctx.font = '18px Arial'; ctx.fillStyle = line.isPromotional ? '#b45309' : '#475569'
+    ctx.fillText(`${line.quantity} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'} × Bs ${round2(line.actualUnitPrice).toFixed(2)}${line.isPromotional ? ` · PROMO (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})` : ''}`, 42, y)
+    ctx.textAlign = 'right'; ctx.fillStyle = '#111827'; ctx.font = '700 20px Arial'; ctx.fillText(`Bs ${round2(line.subtotal).toFixed(2)}`, width - 42, y); ctx.textAlign = 'left'; y += 32
   }
   ctx.strokeStyle = '#e2e8f0'; ctx.beginPath(); ctx.moveTo(42, y - 28); ctx.lineTo(width - 42, y - 28); ctx.stroke()
   ctx.fillStyle = '#111827'; ctx.font = '800 32px Arial'; ctx.fillText('TOTAL', 42, y + 8); ctx.textAlign = 'right'; ctx.fillStyle = '#c8102e'; ctx.fillText(`Bs ${round2(sale.total).toFixed(2)}`, width - 42, y + 8)
@@ -244,7 +256,10 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message
 /** Comprobante en hoja para impresora normal. No incluye rutas, vendedor ni observaciones. */
 export async function printLargeSaleReceipt(sale: DistSale, context: ReceiptContext): Promise<void> {
   const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] || character)
-  const rows = sale.lines.map(line => `<tr><td><strong>${escape(line.productNameSnapshot)}</strong>${line.isPromotional ? `<small>Precio promocional (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})</small>` : ''}</td><td>${escape(line.quantity)} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'}</td><td>Bs ${round2(line.actualUnitPrice).toFixed(2)}</td><td>Bs ${round2(line.subtotal).toFixed(2)}</td></tr>`).join('')
-  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comprobante San José</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;padding:18mm}.head{border-bottom:4px solid #c8102e;display:flex;align-items:center;gap:22px;padding-bottom:18px}.head img{width:105px;height:70px;object-fit:contain}.head h1{font-size:26px;margin:0}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:24px 0;padding:16px;background:#fff7f5;border-radius:12px}table{width:100%;border-collapse:collapse}th{background:#c8102e;color:#fff;text-align:left;padding:11px}td{padding:12px;border-bottom:1px solid #e2e8f0}td:nth-child(n+2),th:nth-child(n+2){text-align:right}small{display:block;color:#b45309;margin-top:4px}.total{margin-top:20px;text-align:right;font-size:28px;font-weight:800;color:#c8102e}.payments{text-align:right;line-height:1.6}.foot{text-align:center;color:#64748b;margin-top:42px}</style></head><body><header class="head"><img src="/brand/san-jose-logo.png"><div><h1>${escape(context.companyName)}</h1><p>Comprobante de venta</p></div></header><section class="meta"><div><strong>Comprobante:</strong> ${escape(sale.id.slice(-6).toUpperCase())}</div><div><strong>Fecha:</strong> ${escape(new Date(sale.createdAt).toLocaleString('es-BO'))}</div><div><strong>Cliente:</strong> ${escape(sale.customerName || 'Cliente ocasional')}</div><div><strong>CI:</strong> ${escape(sale.customerCode || '-')}</div></section><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${rows}</tbody></table><div class="total">TOTAL: Bs ${round2(sale.total).toFixed(2)}</div><div class="payments">${sale.cashAmount > 0 ? `Efectivo: Bs ${round2(sale.cashAmount).toFixed(2)}<br>` : ''}${sale.qrAmount > 0 ? `QR: Bs ${round2(sale.qrAmount).toFixed(2)}<br>` : ''}${sale.creditAmount > 0 ? `Crédito: Bs ${round2(sale.creditAmount).toFixed(2)}<br>` : ''}${sale.changeAmount ? `<strong>Cambio devuelto: Bs ${round2(sale.changeAmount).toFixed(2)}</strong>` : ''}</div><p class="foot">${escape(context.receiptFooter || 'Gracias por su preferencia')}</p></body></html>`
+  const rows = sale.lines.map(line => {
+    const pres = getLinePresentation(line)
+    return `<tr><td><strong>${escape(line.productNameSnapshot)}</strong>${pres ? `<div style="font-size:12px;color:#64748b;margin-top:2px">${escape(pres)}</div>` : ''}${line.isPromotional ? `<small>Precio promocional (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})</small>` : ''}</td><td>${escape(line.quantity)} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'}</td><td>Bs ${round2(line.actualUnitPrice).toFixed(2)}</td><td>Bs ${round2(line.subtotal).toFixed(2)}</td></tr>`
+  }).join('')
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comprobante San José</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;padding:18mm}.head{border-bottom:4px solid #c8102e;display:flex;align-items:center;gap:22px;padding-bottom:18px}.head img{width:105px;height:70px;object-fit:contain}.head h1{font-size:26px;margin:0}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:24px 0;padding:16px;background:#fff7f5;border-radius:12px}table{width:100%;border-collapse:collapse}th{background:#c8102e;color:#fff;text-align:left;padding:11px}td{padding:12px;border-bottom:1px solid #e2e8f0}td:nth-child(n+2),th:nth-child(n+2){text-align:right}small{display:block;color:#b45309;margin-top:4px}.total{margin-top:20px;text-align:right;font-size:28px;font-weight:800;color:#c8102e}.payments{text-align:right;line-height:1.6}.foot{text-align:center;color:#64748b;margin-top:42px;font-size:11px}</style></head><body><header class="head"><img src="/brand/san-jose-logo.png"><div><h1>${escape(context.companyName)}</h1><p>Comprobante de venta</p></div></header><section class="meta"><div><strong>Comprobante:</strong> ${escape(sale.id.slice(-6).toUpperCase())}</div><div><strong>Fecha:</strong> ${escape(new Date(sale.createdAt).toLocaleString('es-BO'))}</div><div><strong>Cliente:</strong> ${escape(sale.customerName || 'Cliente ocasional')}</div><div><strong>CI:</strong> ${escape(sale.customerCode || '-')}</div></section><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${rows}</tbody></table><div class="total">TOTAL: Bs ${round2(sale.total).toFixed(2)}</div><div class="payments">${sale.cashAmount > 0 ? `Efectivo: Bs ${round2(sale.cashAmount).toFixed(2)}<br>` : ''}${sale.qrAmount > 0 ? `QR: Bs ${round2(sale.qrAmount).toFixed(2)}<br>` : ''}${sale.creditAmount > 0 ? `Crédito: Bs ${round2(sale.creditAmount).toFixed(2)}<br>` : ''}${sale.changeAmount ? `<strong>Cambio devuelto: Bs ${round2(sale.changeAmount).toFixed(2)}</strong>` : ''}</div><p class="foot">${escape(context.receiptFooter || 'Gracias por su preferencia')} · Generado el ${new Date().toLocaleString('es-BO')}</p></body></html>`
   await printHtmlDocument(html, `Venta ${sale.id.slice(-6).toUpperCase()}`)
 }

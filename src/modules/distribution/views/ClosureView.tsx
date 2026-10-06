@@ -10,6 +10,7 @@ import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
 import { printClosureTicket, printOperationalSheet } from '../data/distributionDocumentPrintService'
 import { exportPdf } from '../data/reportExports'
+import { getProductPresentation } from '../domain/productPresentation'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   draft: 'Devolución declarada; espera confirmación de almacén',
@@ -297,62 +298,71 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">{isDistributor ? 'Para cerrar tu ruta, primero declara cuánto producto devuelves. Almacén debe contar y confirmar físicamente esa devolución; después se habilita el cierre final del efectivo.' : 'El distribuidor declara las cantidades. Almacén confirma la recepción física y después se habilita el cierre final. Confirmar y cerrar requieren conexión.'}</p>
         <SectionCard title="Productos devueltos">
           <div className="relative mb-3"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={productSearch} onChange={event => setProductSearch(event.target.value)} placeholder="Buscar producto sin perder cantidades..." className="pl-9" /></div>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
-            {productRows.filter(row => row.productName.toLowerCase().includes(productSearch.trim().toLowerCase())).map((row) => (
-              <div key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="min-w-0 break-words text-xs font-extrabold text-slate-900">{row.productName}</p>
-                  {/* Sin retorno declarado no se afirma que falte: solo falta el dato. */}
-                  {isDeclared(row.productId) ? (
-                    <VarianceBadge variance={row.variance} unitType={row.unitType} />
-                  ) : (
-                    <span className="inline-flex shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-500">
-                      SIN DECLARAR
-                    </span>
-                  )}
-                </div>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {productRows.filter(row => row.productName.toLowerCase().includes(productSearch.trim().toLowerCase())).map((row) => {
+              const product = data.products.find(p => p.id === row.productId)
+              const presentation = product ? getProductPresentation(product) : ''
+              return (
+                <div key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="min-w-0 line-clamp-2 break-normal text-xs font-black leading-snug text-slate-900">{row.productName}</p>
+                      {presentation && (
+                        <p className="mt-0.5 line-clamp-1 break-normal text-[10px] font-semibold text-slate-500">{presentation}</p>
+                      )}
+                    </div>
+                    {/* Sin retorno declarado no se afirma que falte: solo falta el dato. */}
+                    {isDeclared(row.productId) ? (
+                      <VarianceBadge variance={row.variance} unitType={row.unitType} />
+                    ) : (
+                      <span className="inline-flex shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                        SIN DECLARAR
+                      </span>
+                    )}
+                  </div>
 
-                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
-                  <div>
-                    <dt className="text-[10px] font-bold uppercase text-slate-400">Enviado</dt>
-                    <dd className="text-xs font-black tabular-nums text-slate-800">
-                      {formatQty(row.initialDispatch, row.unitType)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] font-bold uppercase text-slate-400">Aumentos</dt>
-                    <dd className="text-xs font-black tabular-nums text-slate-800">
-                      {formatQty(row.additions, row.unitType)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] font-bold uppercase text-slate-400">Vendido</dt>
-                    <dd className="text-xs font-black tabular-nums text-slate-800">{formatQty(row.sold, row.unitType)}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-[10px] font-bold uppercase text-slate-400">Debe retornar</dt>
-                    <dd className="text-xs font-black tabular-nums text-slate-800">
-                      {formatQty(row.expectedReturn, row.unitType)}
-                    </dd>
-                  </div>
-                </dl>
+                  <dl className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Enviado</dt>
+                      <dd className="text-xs font-black tabular-nums text-slate-800">
+                        {formatQty(row.initialDispatch, row.unitType)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Aumentos</dt>
+                      <dd className="text-xs font-black tabular-nums text-slate-800">
+                        {formatQty(row.additions, row.unitType)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Vendido</dt>
+                      <dd className="text-xs font-black tabular-nums text-slate-800">{formatQty(row.sold, row.unitType)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Debe volver</dt>
+                      <dd className="text-xs font-black tabular-nums text-slate-800">
+                        {formatQty(row.expectedReturn, row.unitType)}
+                      </dd>
+                    </div>
+                  </dl>
 
-                <div className="mt-2">
-                  <Field label="Retornado">
-                    <NumberInput
-                      value={returns[row.productId] ?? ''}
-                      min={0}
-                      step={row.unitType === 'kg' ? 0.1 : 1}
-                      disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
-                      placeholder="0"
-                      onChange={(event) =>
-                        setReturns((current) => ({ ...current, [row.productId]: event.target.value }))
-                      }
-                    />
-                  </Field>
+                  <div className="mt-2.5 border-t border-slate-100 pt-2">
+                    <Field label="Retornado físicamente">
+                      <NumberInput
+                        value={returns[row.productId] ?? ''}
+                        min={0}
+                        step={row.unitType === 'kg' ? 0.1 : 1}
+                        disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
+                        placeholder="0"
+                        onChange={(event) =>
+                          setReturns((current) => ({ ...current, [row.productId]: event.target.value }))
+                        }
+                      />
+                    </Field>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </SectionCard>
 

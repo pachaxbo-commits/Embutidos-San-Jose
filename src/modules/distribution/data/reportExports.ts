@@ -1,6 +1,7 @@
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer } from "../types";
 import { round2, toDayKey } from "../domain/engine";
+import { aggregateCustomerPurchases } from "../domain/customerPurchases";
 import {
   reportClosureLabel,
   reportDate,
@@ -290,12 +291,12 @@ export function reportSheets(
       headers: ["Concepto", "Importe (Bs)"],
       rows: [
         ["Ventas netas de cambios y devoluciones", revenue],
-        ["Costo de lo vendido y reemplazos", costKnown ? cost : null],
+        ["Costo de producción registrado de lo vendido y reemplazos", costKnown ? cost : null],
         ["Margen bruto", costKnown ? round2(revenue - cost) : null],
-        ["Gastos registrados", spent],
-        ["Pérdidas de inventario", seller ? null : costKnown ? lossCost : null],
+        ["Gastos de ruta registrados", spent],
+        ["Pérdidas y mermas de inventario", seller ? null : costKnown ? lossCost : null],
         [
-          "Resultado operativo",
+          "Resultado operativo estimado / Ganancia operativa estimada",
           seller ? null : costKnown ? round2(revenue - cost - spent - lossCost) : null,
         ],
         [
@@ -385,22 +386,41 @@ export function reportSheets(
     {
       id: 'customerPurchases',
       name: "Compras por cliente",
-      headers: ["Cliente", "CI", "Producto", "Presentación", "Cantidad", "Unidad", "Peso aproximado (kg)", "Importe (Bs)"],
+      headers: ["Cliente", "CI / Código", "Producto", "Presentación", "Cantidad", "Unidad", "Kg exactos", "Kg estimados", "Kg equivalentes", "Importe (Bs)"],
       rows: (() => {
-        const grouped = new Map();
-        for (const line of lines) {
-          const customer = line.sale.customerName || "Contado sin cliente";
-          const key = `${line.sale.customerId || "cash"}__${line.productId}__${line.unitType}`;
-          const product = data.products.find(item => item.id === line.productId);
-          const current = grouped.get(key) || { customer, ci: line.sale.customerCode || "", product: line.productNameSnapshot, presentation: line.presentationSnapshot || "", quantity: 0, unit: line.unitType, approximateKg: 0, hasApproximation: false, amount: 0 };
-          current.quantity = round2(current.quantity + line.quantity);
-          current.amount = round2(current.amount + line.subtotal);
-          if (line.unitType === "kg") { current.approximateKg = round2(current.approximateKg + line.quantity); current.hasApproximation = true; }
-          else if (Number(product?.approximateWeightKg) > 0) { current.approximateKg = round2(current.approximateKg + line.quantity * Number(product?.approximateWeightKg)); current.hasApproximation = true; }
-          grouped.set(key, current);
+        const agg = aggregateCustomerPurchases(data, days, route, seller);
+        const rows: Cell[][] = [];
+        for (const client of agg.clients) {
+          for (const prod of client.products) {
+            rows.push([
+              client.customerName,
+              client.customerCode || "",
+              prod.productName,
+              prod.presentation,
+              prod.quantity,
+              reportUnitLabel(prod.unitType),
+              prod.exactKg > 0 ? prod.exactKg : "-",
+              prod.estimatedKg > 0 ? prod.estimatedKg : "-",
+              prod.totalEquivalentKg > 0 ? prod.totalEquivalentKg : "-",
+              prod.totalBs,
+            ]);
+          }
         }
-        const rows = [...grouped.values()].sort((a, b) => a.customer.localeCompare(b.customer) || a.product.localeCompare(b.product));
-        return [...rows.map(row => [row.customer, row.ci, row.product, row.presentation, row.quantity, reportUnitLabel(row.unit), row.hasApproximation ? row.approximateKg : "No disponible", row.amount] as Cell[]), ["TOTAL", "", "", "", "", "", "", round2(rows.reduce((sum, row) => sum + row.amount, 0))]];
+        return [
+          ...rows,
+          [
+            "TOTAL",
+            "",
+            "",
+            "",
+            "",
+            "",
+            agg.grandTotalExactKg > 0 ? agg.grandTotalExactKg : "-",
+            agg.grandTotalEstimatedKg > 0 ? agg.grandTotalEstimatedKg : "-",
+            agg.grandTotalEquivalentKg > 0 ? agg.grandTotalEquivalentKg : "-",
+            agg.grandTotalBs,
+          ],
+        ];
       })(),
     },
     {
@@ -719,6 +739,9 @@ export async function exportPdf(
       margin: { top: 32, bottom: 16 },
       styles: { fontSize: 7, cellPadding: 2, overflow: "linebreak" },
       headStyles: { fillColor: [31, 41, 55] },
+      columnStyles: s.name === "Kardex de ventas" ? {
+        10: { minCellWidth: 26, cellWidth: 'wrap' }
+      } : undefined,
       didParseCell: hook => {
         if (hook.section === "body" && Array.isArray(hook.row.raw) && hook.row.raw[0] === "TOTAL") {
           hook.cell.styles.fontStyle = "bold";
@@ -732,6 +755,7 @@ export async function exportPdf(
         pdf.setFontSize(11);
         pdf.text(s.name, 14, 35);
         pdf.setFontSize(8);
+        pdf.text(`Generado: ${new Date().toLocaleString("es-BO")}`, 14, 200);
         pdf.text(`Página ${pdf.getNumberOfPages()}`, 270, 200);
       },
     });

@@ -1,7 +1,7 @@
 import { submitOperation } from '../data/operationQueue'
 import type { DistCreditStatus } from '../types'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, History, Pencil, Plus, Printer, Search, Send, ShoppingCart, Trash2, UserPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, History, Minus, Pencil, Plus, Printer, Search, Send, ShieldAlert, ShoppingCart, Trash2, UserPlus } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -18,6 +18,7 @@ import { useStockIndex } from '../state/useDistributionStore'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct, DistSale, DistSaleLine, PaymentKind } from '../types'
+import { getProductPresentation } from '../domain/productPresentation'
 
 interface CartLine extends DistSaleLine {
   lineId: string
@@ -82,6 +83,8 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [correctionTarget, setCorrectionTarget] = useState<DistSale | null>(null)
   const [correctionQuantities, setCorrectionQuantities] = useState<Record<string, string>>({})
   const [correctionReason, setCorrectionReason] = useState('')
+  const [correctionSearch, setCorrectionSearch] = useState('')
+  const [nowMs] = useState(() => Date.now())
   useEffect(() => {
     if (!lastSale?.pendingConfirmation) return
     const confirmed = data.sales.find(s => s.id === lastSale.id && !s.pendingConfirmation)
@@ -146,7 +149,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         lineId: newOperationId('line'),
         productId: editingProduct.id,
         productNameSnapshot: editingProduct.name,
-        presentationSnapshot: editingProduct.presentation || editingProduct.category || '',
+        presentationSnapshot: getProductPresentation(editingProduct),
         descriptionSnapshot: editingProduct.description || '',
         quantity: qty,
         unitType: editingProduct.unitType,
@@ -335,6 +338,124 @@ export function SellView({ session, data }: DistributionViewProps) {
 
   const mixedRemainder = round2(total - (Number(mixedCash) || 0) - (Number(mixedQr) || 0))
   const changeAmount = paymentKind === 'cash' ? round2(Math.max(0, (Number(cashReceived) || 0) - total)) : 0
+  const activeCustomerOverride = selectedCustomer
+    ? data.creditOverrides.find(
+        (item) => item.customerId === selectedCustomer.id && !item.revokedAt && Date.parse(item.activeUntil) > nowMs,
+      )
+    : null
+
+  const correctionProducts = useMemo(() => {
+    if (!correctionTarget) return []
+    const dispatch = data.openDispatches.find((d) => d.id === correctionTarget.dispatchId) || (isDistributor ? openDispatch : null)
+    let allowedIds: Set<string>
+    if (dispatch) {
+      allowedIds = new Set<string>()
+      dispatch.lines.forEach((l) => allowedIds.add(l.productId))
+      dispatch.additions.forEach((a) => a.quantityByProduct.forEach((l) => allowedIds.add(l.productId)))
+      correctionTarget.lines.forEach((l) => allowedIds.add(l.productId))
+    } else {
+      allowedIds = new Set(
+        data.products
+          .filter(
+            (p) =>
+              p.active !== false &&
+              ((availableStock.get(p.id) ?? 0) > 0 || correctionTarget.lines.some((l) => l.productId === p.id)),
+          )
+          .map((p) => p.id),
+      )
+    }
+
+    const term = correctionSearch.trim().toLowerCase()
+    return data.products
+      .filter((p) => allowedIds.has(p.id) && p.active !== false)
+      .filter(
+        (p) =>
+          !term ||
+          p.name.toLowerCase().includes(term) ||
+          (p.presentation || '').toLowerCase().includes(term) ||
+          p.category.toLowerCase().includes(term),
+      )
+  }, [correctionTarget, data.openDispatches, data.products, isDistributor, openDispatch, availableStock, correctionSearch])
+
+  const correctionLines = useMemo(() => {
+    if (!correctionTarget) return []
+    return data.products
+      .map((product) => {
+        const qty = round2(Number(correctionQuantities[product.id]) || 0)
+        const originalLine = correctionTarget.lines.find((l) => l.productId === product.id)
+        const price = originalLine?.actualUnitPrice ?? product.referencePrice
+        return {
+          product,
+          quantity: qty,
+          unitPrice: price,
+          subtotal: round2(qty * price),
+          originalQuantity: originalLine ? originalLine.quantity : 0,
+        }
+      })
+      .filter((item) => item.quantity > 0)
+  }, [correctionTarget, correctionQuantities, data.products])
+
+  const newCorrectionTotal = round2(correctionLines.reduce((sum, l) => sum + l.subtotal, 0))
+
+  const submitCorrection = async () => {
+    if (!correctionTarget || isSubmitting) return
+    if (!correctionReason.trim()) {
+      setError('La razón de la edición es obligatoria.')
+      return
+    }
+    if (correctionLines.length === 0) {
+      setError('La venta debe conservar al menos un producto.')
+      return
+    }
+
+    for (const line of correctionLines) {
+      const increase = round2(line.quantity - line.originalQuantity)
+      if (increase > 0) {
+        const stock = availableStock.get(line.product.id) ?? 0
+        if (increase > stock) {
+          setError(
+            `Stock insuficiente en tu camión para ${line.product.name}. Aumentas +${formatQty(increase, line.product.unitType)}, pero solo hay ${formatQty(stock, line.product.unitType)} disponibles.`,
+          )
+          return
+        }
+      }
+    }
+
+    const lines: DistSaleLine[] = correctionLines.map((item) => ({
+      productId: item.product.id,
+      productNameSnapshot: item.product.name,
+      presentationSnapshot: getProductPresentation(item.product),
+      descriptionSnapshot: item.product.description,
+      quantity: item.quantity,
+      unitType: item.product.unitType,
+      actualUnitPrice: item.unitPrice,
+      subtotal: item.subtotal,
+    }))
+
+    const oldTotal = correctionTarget.total || 1
+    const cashAmount = round2((newCorrectionTotal * correctionTarget.cashAmount) / oldTotal)
+    const qrAmount = round2((newCorrectionTotal * correctionTarget.qrAmount) / oldTotal)
+    const creditAmount = round2(newCorrectionTotal - cashAmount - qrAmount)
+
+    setIsSubmitting(true)
+    try {
+      await correctSale({
+        saleId: correctionTarget.id,
+        reason: correctionReason.trim(),
+        lines,
+        paymentKind: correctionTarget.paymentKind,
+        cashAmount,
+        qrAmount,
+        creditAmount,
+      })
+      setCorrectionTarget(null)
+      setError(null)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
   return (
     <Screen
@@ -384,6 +505,9 @@ export function SellView({ session, data }: DistributionViewProps) {
                 {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} onError={(event) => { event.currentTarget.style.display = 'none' }} className="aspect-[16/9] w-full object-cover" />}
                 <span className="flex min-w-0 flex-1 flex-col justify-between gap-2 p-3">
                   <span className="block text-xs font-extrabold leading-snug text-slate-900">{product.name}</span>
+                  {getProductPresentation(product) && (
+                    <span className="block text-[10px] font-semibold text-slate-500">{getProductPresentation(product)}</span>
+                  )}
                   <span className="flex flex-wrap items-end justify-between gap-1">
                     <span className={`text-[10px] font-bold tabular-nums ${stock > 0 ? 'text-slate-500' : 'text-rose-600'}`}>
                       {stock > 0 ? `${formatQty(stock, product.unitType)} disponibles` : 'Sin existencia'}
@@ -520,6 +644,21 @@ export function SellView({ session, data }: DistributionViewProps) {
             </div>
           </div>
 
+          {activeCustomerOverride && (
+            <div className="rounded-2xl border-2 border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-sm">
+              <div className="flex items-center gap-1.5 font-black uppercase tracking-wide text-amber-800 text-[11px]">
+                <ShieldAlert size={15} /> AUTORIZADO TEMPORALMENTE
+              </div>
+              <p className="mt-0.5 font-bold text-[11px]">
+                Por: {activeCustomerOverride.grantedByName || 'Administración'} · Válido hasta:{' '}
+                {new Date(activeCustomerOverride.activeUntil).toLocaleString('es-BO')}
+              </p>
+              {activeCustomerOverride.reason && (
+                <p className="mt-0.5 text-[10px] text-amber-700 italic">Motivo: {activeCustomerOverride.reason}</p>
+              )}
+            </div>
+          )}
+
           <Field label="Forma de pago" required hint={!customerId ? 'Sin cliente permite efectivo, QR o mixto, siempre al contado.' : 'Selecciona una opción para continuar.'}>
             <Segmented value={paymentKind} options={customerId ? PAYMENT_OPTIONS : PAYMENT_OPTIONS.filter(option => option.value !== 'credit')} onChange={setPaymentKind} />
           </Field>
@@ -563,23 +702,38 @@ export function SellView({ session, data }: DistributionViewProps) {
             >
               Sin cliente (venta rapida al contado)
             </button>
-            {filteredCustomers.map((customer) => (
-              <button
-                key={customer.id}
-                type="button"
-                onClick={() => {
-                  setCustomerId(customer.id)
-                  setCustomerChoiceMade(true)
-                  setPaymentKind('')
-                  setIsCustomerOpen(false)
-                  setIsCheckoutOpen(true)
-                }}
-                className={`min-h-[52px] rounded-2xl border-2 px-3 py-2 text-left text-xs font-bold leading-snug ${customer.id === customerId ? 'border-emerald-500 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-800'}`}
-              >
-                <span className="block break-words text-sm font-extrabold">{customer.name}</span>
-                <span className="mt-0.5 block break-words text-[11px] text-slate-500">{customer.customerCode || customer.identityNumber || 'CI pendiente'}{customer.phone ? ` · ${customer.phone}` : ''}</span>
-              </button>
-            ))}
+            {filteredCustomers.map((customer) => {
+              const isCustOverride = data.creditOverrides.some(
+                (item) => item.customerId === customer.id && !item.revokedAt && Date.parse(item.activeUntil) > nowMs,
+              )
+              return (
+                <button
+                  key={customer.id}
+                  type="button"
+                  onClick={() => {
+                    setCustomerId(customer.id)
+                    setCustomerChoiceMade(true)
+                    setPaymentKind('')
+                    setIsCustomerOpen(false)
+                    setIsCheckoutOpen(true)
+                  }}
+                  className={`min-h-[52px] rounded-2xl border-2 px-3 py-2 text-left text-xs font-bold leading-snug ${customer.id === customerId ? 'border-emerald-500 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-800'}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="block break-words text-sm font-extrabold">{customer.name}</span>
+                    {isCustOverride && (
+                      <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-black text-amber-800">
+                        AUTORIZADO
+                      </span>
+                    )}
+                  </div>
+                  <span className="mt-0.5 block break-words text-[11px] text-slate-500">
+                    {customer.customerCode || customer.identityNumber || 'CI pendiente'}
+                    {customer.phone ? ` · ${customer.phone}` : ''}
+                  </span>
+                </button>
+              )
+            })}
           </div>
 
           <div className="rounded-2xl border-2 border-amber-300 bg-amber-50 p-3">
@@ -606,9 +760,218 @@ export function SellView({ session, data }: DistributionViewProps) {
       </Modal>
 
       {/* Venta confirmada */}
-      <Modal isOpen={isHistoryOpen} onClose={() => setIsHistoryOpen(false)} title="Historial de ventas" subtitle="Operación diaria, reimpresión y correcciones auditadas" size="lg"><div className="grid gap-3"><div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput className="pl-9" value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Buscar cliente, producto o vendedor" /></div>{historySales.map(sale => <article key={sale.id} className={`rounded-2xl border p-3 ${sale.latestCorrectionId ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}><div className="flex items-start justify-between gap-2"><div><p className="text-xs font-extrabold">{sale.customerName || 'Contado sin cliente'} · {formatBs(sale.total)}</p><p className="text-[10px] font-semibold text-slate-500">{new Date(sale.createdAt).toLocaleString('es-BO')} · {sale.sellerName}</p>{sale.latestCorrectionId && <p className="mt-1 text-[10px] font-black text-amber-800">EDITADA · {sale.editReason} · {sale.editedAt ? new Date(sale.editedAt).toLocaleString('es-BO') : ''}</p>}</div></div><p className="my-2 text-[11px] text-slate-600">{sale.lines.map(line => `${formatQty(line.quantity,line.unitType)} ${line.productNameSnapshot}`).join(' · ')}</p><div className="grid grid-cols-3 gap-2"><SecondaryButton onClick={() => void printSaleReceipt(sale, receiptContext, true)}>Ticket</SecondaryButton><SecondaryButton onClick={() => void shareSaleReceipt(sale, receiptContext)}>Compartir</SecondaryButton>{(!isDistributor || data.openDispatches.some(dispatch => dispatch.id === sale.dispatchId)) && <SecondaryButton onClick={() => { setCorrectionTarget(sale); setCorrectionReason(''); setCorrectionQuantities(Object.fromEntries(data.products.map(product => [product.id, String(sale.lines.filter(line => line.productId === product.id).reduce((sum,line) => sum + line.quantity, 0) || 0)]))) }}><Pencil size={14} /> Corregir</SecondaryButton>}</div></article>)}</div></Modal>
+      <Modal isOpen={isHistoryOpen} onClose={() => setIsHistoryOpen(false)} title="Historial de ventas" subtitle="Operación diaria, reimpresión y correcciones auditadas" size="lg">
+        <div className="grid gap-3">
+          <div className="relative">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <TextInput className="pl-9" value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Buscar cliente, producto o vendedor" />
+          </div>
+          {historySales.map(sale => (
+            <article key={sale.id} className={`rounded-2xl border p-3 ${sale.latestCorrectionId ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs font-extrabold">{sale.customerName || 'Contado sin cliente'} · {formatBs(sale.total)}</p>
+                  <p className="text-[10px] font-semibold text-slate-500">{new Date(sale.createdAt).toLocaleString('es-BO')} · {sale.sellerName}</p>
+                  {sale.latestCorrectionId && (
+                    <p className="mt-1 text-[10px] font-black text-amber-800">
+                      EDITADA · {sale.editReason} · {sale.editedAt ? new Date(sale.editedAt).toLocaleString('es-BO') : ''}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <p className="my-2 text-[11px] text-slate-600">
+                {sale.lines.map(line => `${formatQty(line.quantity, line.unitType)} ${line.productNameSnapshot}`).join(' · ')}
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                <SecondaryButton onClick={() => void printSaleReceipt(sale, receiptContext, true)}>Ticket</SecondaryButton>
+                <SecondaryButton onClick={() => void shareSaleReceipt(sale, receiptContext)}>Compartir</SecondaryButton>
+                {(!isDistributor || data.openDispatches.some(dispatch => dispatch.id === sale.dispatchId)) && (
+                  <SecondaryButton
+                    onClick={() => {
+                      setCorrectionTarget(sale)
+                      setCorrectionReason('')
+                      setCorrectionSearch('')
+                      setError(null)
+                      const init: Record<string, string> = {}
+                      sale.lines.forEach(l => {
+                        init[l.productId] = String(l.quantity)
+                      })
+                      setCorrectionQuantities(init)
+                    }}
+                  >
+                    <Pencil size={14} /> Corregir
+                  </SecondaryButton>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+      </Modal>
 
-      <Modal isOpen={Boolean(correctionTarget)} onClose={() => setCorrectionTarget(null)} title="Corrección auditada de venta" subtitle="La venta original y cada revisión quedarán conservadas" size="lg" footer={<PrimaryButton full disabled={isSubmitting} onClick={async () => { if (!correctionTarget || !correctionReason.trim()) { setError('La razón de la edición es obligatoria.'); return } const lines = data.products.map(product => ({ product, quantity: round2(Number(correctionQuantities[product.id]) || 0) })).filter(item => item.quantity > 0).map(({product,quantity}) => ({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category, descriptionSnapshot: product.description, quantity, unitType: product.unitType, actualUnitPrice: correctionTarget.lines.find(line => line.productId === product.id)?.actualUnitPrice || product.referencePrice, subtotal: round2(quantity * (correctionTarget.lines.find(line => line.productId === product.id)?.actualUnitPrice || product.referencePrice)) })); if (!lines.length) { setError('La venta debe conservar al menos un producto.'); return } const newTotal = round2(lines.reduce((sum,line) => sum + line.subtotal,0)); const oldTotal = correctionTarget.total || 1; const cashAmount = round2(newTotal * correctionTarget.cashAmount / oldTotal); const qrAmount = round2(newTotal * correctionTarget.qrAmount / oldTotal); const creditAmount = round2(newTotal - cashAmount - qrAmount); setIsSubmitting(true); try { await correctSale({ saleId: correctionTarget.id, reason: correctionReason.trim(), lines, paymentKind: correctionTarget.paymentKind, cashAmount, qrAmount, creditAmount }); setCorrectionTarget(null) } catch(e) { setError((e as Error).message) } finally { setIsSubmitting(false) } }}>Guardar corrección</PrimaryButton>}><div className="grid gap-3"><p className="rounded-xl bg-amber-50 p-3 text-xs font-semibold text-amber-900">Usa 0 para quitar un producto. Puedes aumentar cantidades o agregar otro producto. El servidor recalculará stock, lotes, importes y crédito en una sola transacción.</p><div className="grid grid-cols-2 gap-2">{data.products.filter(product => product.active !== false).map(product => <Field key={product.id} label={product.name}><NumberInput min={0} step={product.unitType === 'kg' ? 0.01 : 1} value={correctionQuantities[product.id] || '0'} onChange={e => setCorrectionQuantities(current => ({...current,[product.id]:e.target.value}))} /></Field>)}</div><Field label="Razón de la edición" required><TextArea value={correctionReason} onChange={e => setCorrectionReason(e.target.value)} placeholder="Explica qué dato estaba equivocado y por qué se corrige" /></Field>{error && <p className="text-xs font-bold text-rose-700">{error}</p>}</div></Modal>
+      <Modal
+        isOpen={Boolean(correctionTarget)}
+        onClose={() => setCorrectionTarget(null)}
+        title="Corrección auditada de venta"
+        subtitle={
+          correctionTarget
+            ? `${correctionTarget.customerName || 'Venta contado'} · Total original ${formatBs(correctionTarget.total)}`
+            : ''
+        }
+        size="lg"
+        footer={
+          <PrimaryButton full disabled={isSubmitting} onClick={() => void submitCorrection()}>
+            {isSubmitting ? 'Guardando...' : `Confirmar corrección · Nuevo total ${formatBs(newCorrectionTotal)}`}
+          </PrimaryButton>
+        }
+      >
+        <div className="grid gap-3">
+          <p className="rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-xs font-semibold text-amber-900">
+            Solo se muestran los productos asignados al despacho de tu ruta. Puedes aumentar, reducir o poner en 0 para quitar productos. Toda modificación queda registrada en el historial de auditoría.
+          </p>
+
+          <div className="relative">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <TextInput
+              value={correctionSearch}
+              onChange={(e) => setCorrectionSearch(e.target.value)}
+              placeholder="Buscar producto en tu despacho..."
+              className="pl-9"
+            />
+          </div>
+
+          <div className="grid max-h-[50dvh] gap-2 overflow-y-auto pr-1">
+            {correctionProducts.map((product) => {
+              const originalLine = correctionTarget?.lines.find((l) => l.productId === product.id)
+              const originalQty = originalLine ? originalLine.quantity : 0
+              const currentVal = correctionQuantities[product.id] ?? '0'
+              const currentNum = round2(Number(currentVal) || 0)
+              const unitPrice = originalLine?.actualUnitPrice ?? product.referencePrice
+              const stock = availableStock.get(product.id) ?? 0
+              const step = product.unitType === 'kg' ? 0.1 : 1
+              const increase = round2(Math.max(0, currentNum - originalQty))
+              const isOverStock = isDistributor && increase > stock
+
+              return (
+                <div
+                  key={product.id}
+                  className={`min-w-0 rounded-2xl border p-3 transition ${
+                    currentNum > 0
+                      ? isOverStock
+                        ? 'border-rose-300 bg-rose-50/60'
+                        : 'border-[var(--primary)] bg-[var(--primary-soft)]/20'
+                      : 'border-slate-200 bg-white'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                      {product.photoDataUrl && (
+                        <img
+                          src={product.photoDataUrl}
+                          alt={product.name}
+                          className="h-12 w-12 shrink-0 rounded-xl object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none'
+                          }}
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <p className="break-words text-xs font-black text-slate-900">{product.name}</p>
+                        {getProductPresentation(product) && (
+                          <p className="break-words text-[10px] font-semibold text-slate-500">
+                            {getProductPresentation(product)}
+                          </p>
+                        )}
+                        <p className="mt-0.5 text-[10px] font-bold text-slate-600">
+                          En venta original: {formatQty(originalQty, product.unitType)} · Precio: {formatBs(unitPrice)}
+                        </p>
+                        <p className={`text-[10px] font-bold ${isOverStock ? 'text-rose-700' : 'text-slate-500'}`}>
+                          Disponible en ruta: {formatQty(stock, product.unitType)}
+                          {increase > 0 && ` (+${formatQty(increase, product.unitType)} adicionales)`}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 text-right">
+                      <p className="text-xs font-black tabular-nums text-slate-900">
+                        {formatBs(round2(currentNum * unitPrice))}
+                      </p>
+                      {currentNum > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setCorrectionQuantities((c) => ({ ...c, [product.id]: '0' }))}
+                          className="mt-1 text-[10px] font-bold text-rose-600 hover:underline"
+                        >
+                          Quitar (0)
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-2.5 flex items-center justify-end gap-2 border-t border-slate-200/60 pt-2">
+                    <button
+                      type="button"
+                      disabled={currentNum <= 0}
+                      onClick={() =>
+                        setCorrectionQuantities((c) => ({
+                          ...c,
+                          [product.id]: String(Math.max(0, round2(currentNum - step))),
+                        }))
+                      }
+                      className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 disabled:opacity-30"
+                    >
+                      <Minus size={14} />
+                    </button>
+
+                    <div className="w-24">
+                      <NumberInput
+                        min={0}
+                        step={step}
+                        value={currentVal}
+                        onChange={(e) =>
+                          setCorrectionQuantities((c) => ({
+                            ...c,
+                            [product.id]: e.target.value,
+                          }))
+                        }
+                        className="h-8 text-center text-xs font-bold"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCorrectionQuantities((c) => ({
+                          ...c,
+                          [product.id]: String(round2(currentNum + step)),
+                        }))
+                      }
+                      className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-white hover:bg-slate-800"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+            {correctionProducts.length === 0 && (
+              <EmptyBlock
+                title="Sin productos de despacho"
+                description="No hay productos de tu despacho que coincidan con la búsqueda."
+              />
+            )}
+          </div>
+
+          <Field label="Motivo de la corrección" required hint="Explica detalladamente por qué se realiza esta modificación.">
+            <TextArea
+              value={correctionReason}
+              onChange={(e) => setCorrectionReason(e.target.value)}
+              placeholder="Ej: Se corrigió la cantidad porque el cliente devolvió 2 paquetes en el momento de entrega."
+            />
+          </Field>
+
+          {error && <p className="text-xs font-bold text-rose-700">{error}</p>}
+        </div>
+      </Modal>
 
       <Modal
         isOpen={Boolean(lastSale)}
