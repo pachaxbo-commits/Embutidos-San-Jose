@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react'
-import { AlertTriangle, Check, Copy, Download, FileText, Mail, MessageCircle, PackagePlus, Pencil, Printer, RotateCcw, Search, Send, Trash2, Truck } from 'lucide-react'
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, Copy, Download, FileText, Mail, MessageCircle, Minus, PackagePlus, Pencil, Plus, Printer, RotateCcw, Search, Send, Trash2, Truck, Undo2 } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { computeLoadedByProduct, round2, validateStockAvailability } from '../domain/engine'
-import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, warehouseBalanceId } from '../data/distributionRepository'
+import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -58,25 +58,14 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [isEmailView, setIsEmailView] = useState(false)
   const [copiedText, setCopiedText] = useState(false)
 
-  interface PendingCorrection {
-    targetType: 'initial' | 'addition'
-    additionId?: string
-    additionIndex?: number
-    productId?: string
-    productName: string
-    lotCode?: string
-    unitType: 'kg' | 'package' | 'unit'
-    currentQuantity: number
-    newQuantity: number
-    voidAddition?: boolean
-  }
-
   const [correctionTarget, setCorrectionTarget] = useState<DistDispatch | null>(null)
-  const [selectedCorrection, setSelectedCorrection] = useState<PendingCorrection | null>(null)
+  const [initialDrafts, setInitialDrafts] = useState<Record<string, number>>({})
+  const [additionDrafts, setAdditionDrafts] = useState<Record<string, Record<string, number>>>({})
+  const [voidedAdditions, setVoidedAdditions] = useState<Set<string>>(new Set())
+  const [isReviewingCorrection, setIsReviewingCorrection] = useState(false)
   const [correctionReason, setCorrectionReason] = useState('')
   const [correctionError, setCorrectionError] = useState<string | null>(null)
   const [isSubmittingCorrection, setIsSubmittingCorrection] = useState(false)
-  const [isConfirmingCorrection, setIsConfirmingCorrection] = useState(false)
 
   const canCorrect = (session.role === 'admin' || session.role === 'warehouse') && session.can('dist.dispatch.create')
 
@@ -95,108 +84,255 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
   const openCorrectionModal = (dispatch: DistDispatch) => {
     setCorrectionTarget(dispatch)
-    setSelectedCorrection(null)
     setCorrectionReason('')
     setCorrectionError(null)
-    setIsConfirmingCorrection(false)
+    setIsReviewingCorrection(false)
+    const init: Record<string, number> = {}
+    for (const line of dispatch.lines || []) {
+      init[line.productId] = line.quantity
+    }
+    setInitialDrafts(init)
+    const adds: Record<string, Record<string, number>> = {}
+    for (const add of dispatch.additions || []) {
+      if (add.voided) continue
+      adds[add.id] = {}
+      for (const line of add.quantityByProduct || []) {
+        adds[add.id][line.productId] = line.quantity
+      }
+    }
+    setAdditionDrafts(adds)
+    setVoidedAdditions(new Set())
   }
 
-  const handleStartInitialLineCorrection = (line: DistDispatchLine) => {
-    const lotCode = line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode || 'Lote original'
-    setSelectedCorrection({
-      targetType: 'initial',
-      productId: line.productId,
-      productName: line.productName,
-      lotCode,
-      unitType: line.unitType,
-      currentQuantity: line.quantity,
-      newQuantity: line.quantity,
-    })
-    setCorrectionReason('')
-    setCorrectionError(null)
-    setIsConfirmingCorrection(true)
+  const updateInitialDraft = (productId: string, val: number) => {
+    setInitialDrafts((prev) => ({
+      ...prev,
+      [productId]: Math.max(0, round2(val)),
+    }))
   }
 
-  const handleStartAdditionLineCorrection = (
-    addition: DistDispatch['additions'][0],
-    additionIndex: number,
-    line: DistDispatch['additions'][0]['quantityByProduct'][0],
-  ) => {
-    const lotCode = line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode || 'Lote original'
-    setSelectedCorrection({
-      targetType: 'addition',
-      additionId: addition.id,
-      additionIndex,
-      productId: line.productId,
-      productName: line.productName,
-      lotCode,
-      unitType: line.unitType,
-      currentQuantity: line.quantity,
-      newQuantity: line.quantity,
-    })
-    setCorrectionReason('')
-    setCorrectionError(null)
-    setIsConfirmingCorrection(true)
+  const updateAdditionDraft = (additionId: string, productId: string, val: number) => {
+    setAdditionDrafts((prev) => ({
+      ...prev,
+      [additionId]: {
+        ...(prev[additionId] || {}),
+        [productId]: Math.max(0, round2(val)),
+      },
+    }))
   }
 
-  const handleStartVoidAddition = (
-    addition: DistDispatch['additions'][0],
-    additionIndex: number,
-  ) => {
-    setSelectedCorrection({
-      targetType: 'addition',
-      additionId: addition.id,
-      additionIndex,
-      productName: `Aumento #${additionIndex} completo (${addition.quantityByProduct.map((p) => p.productName).join(', ')})`,
-      lotCode: 'Todos los lotes del aumento',
-      unitType: 'unit',
-      currentQuantity: round2(addition.quantityByProduct.reduce((acc, p) => acc + p.quantity, 0)),
-      newQuantity: 0,
-      voidAddition: true,
+  const toggleVoidAddition = (additionId: string) => {
+    setVoidedAdditions((prev) => {
+      const next = new Set(prev)
+      if (next.has(additionId)) {
+        next.delete(additionId)
+      } else {
+        next.add(additionId)
+      }
+      return next
     })
-    setCorrectionReason('')
+  }
+
+  const getPendingChanges = () => {
+    if (!correctionTarget) {
+      return { initialDiffs: [], additionDiffs: [], voidedAdditionsList: [], totalCount: 0 }
+    }
+
+    const initialDiffs: Array<{
+      targetType: 'initial' | 'addition'
+      additionId?: string
+      additionIndex?: number
+      productId: string
+      productName: string
+      presentation?: string
+      unitType: 'kg' | 'package' | 'unit'
+      oldQuantity: number
+      newQuantity: number
+      delta: number
+      lotCode?: string
+    }> = []
+
+    for (const line of correctionTarget.lines || []) {
+      const newQty = initialDrafts[line.productId] ?? line.quantity
+      if (round2(newQty) !== round2(line.quantity)) {
+        const prod = data.products.find((p) => p.id === line.productId)
+        initialDiffs.push({
+          targetType: 'initial',
+          productId: line.productId,
+          productName: line.productName,
+          presentation: prod?.presentation,
+          unitType: line.unitType,
+          oldQuantity: line.quantity,
+          newQuantity: newQty,
+          delta: round2(newQty - line.quantity),
+          lotCode: line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode,
+        })
+      }
+    }
+
+    const voidedAdditionsList: Array<{
+      additionId: string
+      additionIndex: number
+      time: string
+      responsible: string
+      lines: Array<{
+        productId: string
+        productName: string
+        presentation?: string
+        unitType: 'kg' | 'package' | 'unit'
+        quantity: number
+      }>
+    }> = []
+
+    const additionDiffs: Array<{
+      targetType: 'initial' | 'addition'
+      additionId: string
+      additionIndex: number
+      productId: string
+      productName: string
+      presentation?: string
+      unitType: 'kg' | 'package' | 'unit'
+      oldQuantity: number
+      newQuantity: number
+      delta: number
+      lotCode?: string
+    }> = []
+
+    let addIdx = 0
+    for (const add of correctionTarget.additions || []) {
+      if (add.voided) continue
+      addIdx++
+      if (voidedAdditions.has(add.id)) {
+        voidedAdditionsList.push({
+          additionId: add.id,
+          additionIndex: addIdx,
+          time: new Date(add.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }),
+          responsible: add.warehouseResponsibleName || add.createdByName || 'Almacén',
+          lines: add.quantityByProduct.map((l) => {
+            const prod = data.products.find((p) => p.id === l.productId)
+            return {
+              productId: l.productId,
+              productName: l.productName,
+              presentation: prod?.presentation,
+              unitType: l.unitType,
+              quantity: l.quantity,
+            }
+          }),
+        })
+      } else {
+        for (const line of add.quantityByProduct || []) {
+          const newQty = additionDrafts[add.id]?.[line.productId] ?? line.quantity
+          if (round2(newQty) !== round2(line.quantity)) {
+            const prod = data.products.find((p) => p.id === line.productId)
+            additionDiffs.push({
+              targetType: 'addition',
+              additionId: add.id,
+              additionIndex: addIdx,
+              productId: line.productId,
+              productName: line.productName,
+              presentation: prod?.presentation,
+              unitType: line.unitType,
+              oldQuantity: line.quantity,
+              newQuantity: newQty,
+              delta: round2(newQty - line.quantity),
+              lotCode: line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode,
+            })
+          }
+        }
+      }
+    }
+
+    const totalCount = initialDiffs.length + additionDiffs.length + voidedAdditionsList.length
+    return { initialDiffs, additionDiffs, voidedAdditionsList, totalCount }
+  }
+
+  const handleProceedToReview = () => {
     setCorrectionError(null)
-    setIsConfirmingCorrection(true)
+    const { initialDiffs, additionDiffs, voidedAdditionsList, totalCount } = getPendingChanges()
+    if (totalCount === 0) {
+      setCorrectionError('No has realizado ningún cambio en las cantidades del despacho.')
+      return
+    }
+
+    // Pre-validar contra ventas y stock disponible en almacén
+    const loadedMap = computeLoadedByProduct(correctionTarget!)
+    const netDeltaByProduct = new Map<string, number>()
+
+    for (const d of initialDiffs) {
+      netDeltaByProduct.set(d.productId, round2((netDeltaByProduct.get(d.productId) || 0) + d.delta))
+    }
+    for (const d of additionDiffs) {
+      netDeltaByProduct.set(d.productId, round2((netDeltaByProduct.get(d.productId) || 0) + d.delta))
+    }
+    for (const va of voidedAdditionsList) {
+      for (const l of va.lines) {
+        netDeltaByProduct.set(l.productId, round2((netDeltaByProduct.get(l.productId) || 0) - l.quantity))
+      }
+    }
+
+    for (const [pid, delta] of netDeltaByProduct.entries()) {
+      const curLoaded = loadedMap.get(pid)?.totalLoaded || 0
+      const newLoaded = round2(curLoaded + delta)
+      const totalSold = getProductSalesInDispatch(correctionTarget!.id, pid)
+      const prod = data.products.find((p) => p.id === pid)
+      const name = prod?.name || 'este producto'
+
+      if (delta < 0 && newLoaded < totalSold) {
+        setCorrectionError(
+          `No puedes reducir la carga de ${name} a ${formatQty(newLoaded, prod?.unitType || 'kg')} porque ya se registraron ${formatQty(totalSold, prod?.unitType || 'kg')} vendidos.`
+        )
+        return
+      }
+
+      if (delta > 0) {
+        const availableInWh = central.get(pid) || 0
+        if (availableInWh < delta) {
+          setCorrectionError(
+            `Stock insuficiente en almacén para aumentar ${name}. Disponible: ${formatQty(availableInWh, prod?.unitType || 'kg')}, adicional requerido: ${formatQty(delta, prod?.unitType || 'kg')}.`
+          )
+          return
+        }
+      }
+    }
+
+    setIsReviewingCorrection(true)
   }
 
   const handleSubmitCorrection = async () => {
-    if (isSubmittingCorrection || !correctionTarget || !selectedCorrection) return
+    if (isSubmittingCorrection || !correctionTarget) return
     if (!correctionReason.trim()) {
       setCorrectionError('El motivo de la corrección es obligatorio.')
       return
     }
-    if (!selectedCorrection.voidAddition && selectedCorrection.newQuantity >= selectedCorrection.currentQuantity) {
-      setCorrectionError('Solo se permite mantener o disminuir la cantidad cargada.')
+
+    const { initialDiffs, additionDiffs, voidedAdditionsList, totalCount } = getPendingChanges()
+    if (totalCount === 0) {
+      setCorrectionError('No hay cambios pendientes para guardar.')
       return
     }
 
-    const loadedMap = computeLoadedByProduct(correctionTarget)
-    if (selectedCorrection.voidAddition && selectedCorrection.additionId) {
-      const add = (correctionTarget.additions || []).find((a) => a.id === selectedCorrection.additionId)
-      if (add) {
-        for (const line of add.quantityByProduct) {
-          const curLoaded = loadedMap.get(line.productId)?.totalLoaded || 0
-          const totalSold = getProductSalesInDispatch(correctionTarget.id, line.productId)
-          const newLoaded = round2(curLoaded - line.quantity)
-          if (newLoaded < totalSold) {
-            setCorrectionError(
-              `No puedes anular este aumento: para ${line.productName} la carga quedaría en ${newLoaded} pero ya se registraron ${totalSold} vendidos.`
-            )
-            return
-          }
-        }
-      }
-    } else if (selectedCorrection.productId) {
-      const curLoaded = loadedMap.get(selectedCorrection.productId)?.totalLoaded || 0
-      const returnQty = round2(selectedCorrection.currentQuantity - selectedCorrection.newQuantity)
-      const newLoaded = round2(curLoaded - returnQty)
-      const totalSold = getProductSalesInDispatch(correctionTarget.id, selectedCorrection.productId)
-      if (newLoaded < totalSold) {
-        setCorrectionError(
-          `No puedes reducir la carga a ${newLoaded} porque ya se registraron ${totalSold} vendidos.`
-        )
-        return
-      }
+    const changes: DispatchCorrectionChange[] = []
+    for (const d of initialDiffs) {
+      changes.push({
+        targetType: 'initial',
+        productId: d.productId,
+        newQuantity: round2(d.newQuantity),
+      })
+    }
+    for (const d of additionDiffs) {
+      changes.push({
+        targetType: 'addition',
+        additionId: d.additionId,
+        productId: d.productId,
+        newQuantity: round2(d.newQuantity),
+      })
+    }
+    for (const va of voidedAdditionsList) {
+      changes.push({
+        targetType: 'addition',
+        additionId: va.additionId,
+        voidAddition: true,
+      })
     }
 
     setIsSubmittingCorrection(true)
@@ -204,18 +340,13 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     try {
       await correctDispatch({
         dispatchId: correctionTarget.id,
-        targetType: selectedCorrection.targetType,
-        additionId: selectedCorrection.additionId,
-        productId: selectedCorrection.productId,
-        newQuantity: selectedCorrection.voidAddition ? 0 : round2(selectedCorrection.newQuantity),
-        voidAddition: selectedCorrection.voidAddition,
         reason: correctionReason.trim(),
+        changes,
       })
       setCorrectionTarget(null)
-      setSelectedCorrection(null)
+      setIsReviewingCorrection(false)
       setCorrectionReason('')
       setCorrectionError(null)
-      setIsConfirmingCorrection(false)
     } catch (err) {
       setCorrectionError((err as Error).message || 'No se pudo registrar la corrección.')
     } finally {
@@ -520,12 +651,24 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                           </span>
                           <span className="text-[10px] font-semibold text-slate-400">Por: {corr.correctedByName || corr.correctedBy}</span>
                         </div>
-                        <p className="mt-1 font-black text-slate-900">
-                          {corr.productName}: {formatQty(corr.oldQuantity, corr.unitType)} → {formatQty(corr.newQuantity, corr.unitType)}
-                        </p>
-                        <p className="text-[11px] font-bold text-emerald-700">
-                          Reintegrado: {formatQty(corr.returnedQuantity, corr.unitType)} {corr.lotCode ? `· Lote ${corr.lotCode}` : ''}
-                        </p>
+                        {corr.newQuantity === 0 ? (
+                          <p className="mt-1 font-black text-rose-700">
+                            {corr.productName}: {formatQty(corr.oldQuantity, corr.unitType)} → ELIMINADO ({formatQty(corr.returnedQuantity || corr.oldQuantity, corr.unitType)} devueltos a almacén)
+                          </p>
+                        ) : (corr.addedQuantity || 0) > 0 ? (
+                          <p className="mt-1 font-black text-blue-700">
+                            {corr.productName}: {formatQty(corr.oldQuantity, corr.unitType)} → {formatQty(corr.newQuantity, corr.unitType)} (+{formatQty(corr.addedQuantity || 0, corr.unitType)} tomados de almacén)
+                          </p>
+                        ) : (
+                          <p className="mt-1 font-black text-slate-900">
+                            {corr.productName}: {formatQty(corr.oldQuantity, corr.unitType)} → {formatQty(corr.newQuantity, corr.unitType)} (-{formatQty(corr.returnedQuantity || 0, corr.unitType)} devueltos a almacén)
+                          </p>
+                        )}
+                        {corr.lotCode && (
+                          <p className="text-[11px] font-semibold text-slate-500">
+                            Lote: {corr.lotCode}
+                          </p>
+                        )}
                         <p className="mt-0.5 text-[11px] italic text-slate-600">
                           Motivo: {corr.reason}
                         </p>
@@ -793,26 +936,25 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         onClose={() => {
           if (!isSubmittingCorrection) {
             setCorrectionTarget(null)
-            setSelectedCorrection(null)
+            setIsReviewingCorrection(false)
             setCorrectionReason('')
             setCorrectionError(null)
-            setIsConfirmingCorrection(false)
           }
         }}
-        title={isConfirmingCorrection ? 'Confirmar corrección' : 'Corregir despacho'}
+        title={isReviewingCorrection ? 'Revisar corrección' : 'Corregir despacho'}
         subtitle={correctionTarget ? `${correctionTarget.routeName} · ${correctionTarget.distributorName}` : ''}
         size="lg"
         footer={
-          isConfirmingCorrection && selectedCorrection ? (
+          isReviewingCorrection ? (
             <div className="grid w-full grid-cols-2 gap-2">
               <SecondaryButton
                 disabled={isSubmittingCorrection}
                 onClick={() => {
-                  setIsConfirmingCorrection(false)
+                  setIsReviewingCorrection(false)
                   setCorrectionError(null)
                 }}
               >
-                Volver
+                Volver a editar
               </SecondaryButton>
               <PrimaryButton
                 disabled={isSubmittingCorrection}
@@ -822,179 +964,302 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               </PrimaryButton>
             </div>
           ) : (
-            <SecondaryButton full onClick={() => setCorrectionTarget(null)}>
-              Cerrar
-            </SecondaryButton>
+            (() => {
+              const { totalCount } = getPendingChanges()
+              return (
+                <div className="grid w-full grid-cols-2 gap-2">
+                  <SecondaryButton onClick={() => setCorrectionTarget(null)}>
+                    Cerrar
+                  </SecondaryButton>
+                  <PrimaryButton
+                    disabled={totalCount === 0}
+                    onClick={handleProceedToReview}
+                  >
+                    Revisar ({totalCount} {totalCount === 1 ? 'cambio' : 'cambios'})
+                  </PrimaryButton>
+                </div>
+              )
+            })()
           )
         }
       >
-        {correctionTarget && !isConfirmingCorrection && (
-          <div className="grid gap-3">
-            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-3 text-xs text-blue-900">
-              <p className="font-extrabold">Operación auditada</p>
+        {correctionTarget && !isReviewingCorrection && (
+          <div className="grid gap-3.5">
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/80 p-3 text-xs text-blue-900">
+              <p className="font-extrabold">Corrección auditada de despacho</p>
               <p className="mt-0.5 text-[11px] text-blue-800">
-                Solo se permite mantener o disminuir cantidades ingresadas por error. El stock reintegrado volverá automáticamente a su lote de origen en el almacén.
+                Usa los botones <strong>[-]</strong> <strong>[+]</strong> o edita el campo directamente. Las cantidades reducidas o eliminadas vuelven automáticamente a su lote en el almacén; los aumentos toman stock disponible.
               </p>
             </div>
 
-            {/* SECCIÓN 1: CARGA INICIAL */}
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3">
-              <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-700">Carga inicial</p>
-              <div className="grid gap-2">
+            {/* BLOQUE 1: CARGA INICIAL */}
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 sm:p-4">
+              <div className="mb-2.5 flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-black uppercase tracking-wide text-slate-800">Carga inicial</h4>
+                  <p className="text-[11px] font-semibold text-slate-500">Productos despachados al inicio de la ruta</p>
+                </div>
+                <span className="rounded-lg bg-slate-200/80 px-2 py-0.5 text-[10px] font-extrabold text-slate-700">
+                  {correctionTarget.lines.length} producto{correctionTarget.lines.length === 1 ? '' : 's'}
+                </span>
+              </div>
+
+              <div className="grid gap-2.5">
                 {correctionTarget.lines.map((line) => {
+                  const prod = data.products.find((p) => p.id === line.productId)
                   const lotCode = line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode || 'Lote original'
                   const totalSold = getProductSalesInDispatch(correctionTarget.id, line.productId)
+                  const curVal = initialDrafts[line.productId] ?? line.quantity
+                  const diff = round2(curVal - line.quantity)
+                  const step = line.unitType === 'kg' ? 0.01 : 1
+
                   return (
-                    <div key={line.productId} className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-2.5 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <p className="text-xs font-black text-slate-900">{line.productName}</p>
-                        <p className="text-[11px] font-semibold text-slate-500">
-                          Lote: {lotCode} · Cantidad actual: <strong className="text-slate-800">{formatQty(line.quantity, line.unitType)}</strong>
-                        </p>
-                        {totalSold > 0 && (
-                          <p className="text-[10px] font-bold text-amber-700">
-                            Vendido registrado: {formatQty(totalSold, line.unitType)}
+                    <div key={line.productId} className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="text-xs font-black text-slate-900">{line.productName}</p>
+                          {prod?.presentation && (
+                            <p className="text-[11px] font-medium text-slate-500">{prod.presentation}</p>
+                          )}
+                          <p className="text-[10px] font-semibold text-slate-400">
+                            Lote: {lotCode} · Carga original: <span className="font-extrabold text-slate-700">{formatQty(line.quantity, line.unitType)}</span>
                           </p>
-                        )}
-                      </div>
-                      <div className="shrink-0">
-                        <SecondaryButton
-                          disabled={line.quantity <= 0}
-                          onClick={() => handleStartInitialLineCorrection(line)}
+                          {totalSold > 0 && (
+                            <p className="text-[10px] font-bold text-amber-700">
+                              Vendido registrado: {formatQty(totalSold, line.unitType)}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => updateInitialDraft(line.productId, 0)}
+                          className="self-start rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-bold text-rose-700 transition hover:bg-rose-100 sm:self-auto"
                         >
-                          <Pencil size={13} /> Corregir
-                        </SecondaryButton>
+                          Eliminar producto del despacho
+                        </button>
                       </div>
+
+                      {/* Controles interactivos: [-] [ Input ] [+] */}
+                      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                        <div className="flex items-center rounded-xl border border-slate-300 bg-slate-50 p-1">
+                          <button
+                            type="button"
+                            disabled={curVal <= 0}
+                            onClick={() => updateInitialDraft(line.productId, curVal - step)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-700 shadow-xs transition hover:bg-slate-100 disabled:opacity-40"
+                            aria-label={`Disminuir ${line.productName}`}
+                          >
+                            <Minus size={14} />
+                          </button>
+                          <input
+                            type="number"
+                            min={0}
+                            step={step}
+                            value={curVal}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value)
+                              updateInitialDraft(line.productId, isNaN(val) ? 0 : val)
+                            }}
+                            className="w-20 bg-transparent px-2 text-center text-xs font-black text-slate-900 focus:outline-none"
+                            aria-label={`Cantidad corregida de ${line.productName}`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => updateInitialDraft(line.productId, curVal + step)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-700 shadow-xs transition hover:bg-slate-100"
+                            aria-label={`Aumentar ${line.productName}`}
+                          >
+                            <Plus size={14} />
+                          </button>
+                        </div>
+
+                        {/* Indicador textual dinámico */}
+                        <div className="min-w-0 text-xs">
+                          {curVal === 0 && line.quantity > 0 ? (
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-2 py-1 text-[11px] font-black text-rose-700">
+                              <Trash2 size={12} /> SE ELIMINARÁ (devuelve {formatQty(line.quantity, line.unitType)} al almacén)
+                            </span>
+                          ) : diff < 0 ? (
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2 py-1 text-[11px] font-black text-emerald-700">
+                              <ArrowDownRight size={12} /> DEVUELVE {formatQty(Math.abs(diff), line.unitType)} al almacén
+                            </span>
+                          ) : diff > 0 ? (
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700">
+                              <ArrowUpRight size={12} /> AGREGA +{formatQty(diff, line.unitType)} del almacén
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-slate-400">Sin cambios</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {totalSold > 0 && curVal < totalSold && (
+                        <p className="mt-1.5 flex items-center gap-1 text-[10px] font-extrabold text-rose-600">
+                          <AlertTriangle size={12} /> No se puede reducir por debajo de lo vendido ({formatQty(totalSold, line.unitType)})
+                        </p>
+                      )}
                     </div>
                   )
                 })}
               </div>
             </div>
 
-            {/* SECCIÓN 2: AUMENTOS */}
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3">
-              <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-700">Aumentos de carga</p>
-              {(() => {
-                const activeAdditions = (correctionTarget.additions || []).filter((a) => !a.voided)
-                if (activeAdditions.length === 0) {
-                  return <p className="text-center text-xs font-medium text-slate-400 py-3">No hay aumentos activos en este despacho.</p>
-                }
-                return (
-                  <div className="grid gap-2.5">
+            {/* BLOQUE 2: AUMENTOS DE CARGA */}
+            {(() => {
+              const activeAdditions = (correctionTarget.additions || []).filter((a) => !a.voided)
+              if (activeAdditions.length === 0) return null
+
+              return (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3 sm:p-4">
+                  <div className="mb-2.5 flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wide text-amber-900">Aumentos de carga</h4>
+                      <p className="text-[11px] font-semibold text-amber-800">Cargas adicionales registradas durante la jornada</p>
+                    </div>
+                    <span className="rounded-lg bg-amber-200/80 px-2 py-0.5 text-[10px] font-extrabold text-amber-900">
+                      {activeAdditions.length} aumento{activeAdditions.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  <div className="grid gap-3">
                     {activeAdditions.map((addition, idx) => {
+                      const isVoided = voidedAdditions.has(addition.id)
                       const time = new Date(addition.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })
                       const resp = addition.warehouseResponsibleName || addition.createdByName || 'Almacén'
+
                       return (
-                        <div key={addition.id} className="rounded-xl border border-amber-200 bg-amber-50/50 p-2.5">
-                          <div className="mb-2 flex items-center justify-between">
-                            <span className="text-xs font-extrabold text-amber-900">
-                              Aumento #{idx + 1} ({time} · {resp})
-                            </span>
+                        <div key={addition.id} className={`rounded-xl border p-3 shadow-xs transition ${isVoided ? 'border-rose-300 bg-rose-50/60' : 'border-amber-200 bg-white'}`}>
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                            <div>
+                              <span className="text-xs font-extrabold text-amber-900">
+                                Aumento #{idx + 1} ({time} · {resp})
+                              </span>
+                              {addition.note && (
+                                <p className="text-[10px] italic text-slate-500">Nota: {addition.note}</p>
+                              )}
+                            </div>
                             <button
                               type="button"
-                              onClick={() => handleStartVoidAddition(addition, idx + 1)}
-                              className="rounded-lg border border-rose-300 bg-rose-50 px-2 py-1 text-[11px] font-bold text-rose-700 transition hover:bg-rose-100"
+                              onClick={() => toggleVoidAddition(addition.id)}
+                              className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${isVoided ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100' : 'border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
                             >
-                              Quitar aumento
+                              {isVoided ? (
+                                <>
+                                  <Undo2 size={12} /> Deshacer anulación
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 size={12} /> Eliminar aumento completo
+                                </>
+                              )}
                             </button>
                           </div>
-                          <div className="grid gap-1.5">
-                            {addition.quantityByProduct.map((line) => {
-                              const lotCode = line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode || 'Lote original'
-                              const totalSold = getProductSalesInDispatch(correctionTarget.id, line.productId)
-                              return (
-                                <div key={line.productId} className="flex flex-col gap-1.5 rounded-lg border border-slate-200 bg-white p-2 sm:flex-row sm:items-center sm:justify-between">
-                                  <div className="min-w-0">
-                                    <p className="text-xs font-extrabold text-slate-900">{line.productName}</p>
-                                    <p className="text-[11px] text-slate-500">
-                                      Lote: {lotCode} · Cantidad: <strong className="text-slate-800">+{formatQty(line.quantity, line.unitType)}</strong>
-                                    </p>
-                                    {totalSold > 0 && (
-                                      <p className="text-[10px] font-bold text-amber-700">
-                                        Vendido total registrado: {formatQty(totalSold, line.unitType)}
+
+                          {isVoided ? (
+                            <div className="mt-2.5 rounded-lg border border-rose-200 bg-rose-100/70 p-2.5 text-xs text-rose-800">
+                              <p className="font-extrabold">Este aumento se anulará completamente</p>
+                              <p className="mt-0.5 text-[11px]">
+                                Todos los productos volverán al almacén ({addition.quantityByProduct.map((p) => `${p.productName} ${formatQty(p.quantity, p.unitType)}`).join(', ')}).
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="mt-2.5 grid gap-2">
+                              {addition.quantityByProduct.map((line) => {
+                                const prod = data.products.find((p) => p.id === line.productId)
+                                const lotCode = line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode || 'Lote original'
+                                const totalSold = getProductSalesInDispatch(correctionTarget.id, line.productId)
+                                const curVal = additionDrafts[addition.id]?.[line.productId] ?? line.quantity
+                                const diff = round2(curVal - line.quantity)
+                                const step = line.unitType === 'kg' ? 0.01 : 1
+
+                                return (
+                                  <div key={line.productId} className="rounded-lg border border-slate-100 bg-slate-50/70 p-2.5">
+                                    <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-black text-slate-900">{line.productName}</p>
+                                        {prod?.presentation && (
+                                          <p className="text-[11px] font-medium text-slate-500">{prod.presentation}</p>
+                                        )}
+                                        <p className="text-[10px] font-semibold text-slate-400">
+                                          Lote: {lotCode} · Aumentado original: <span className="font-extrabold text-slate-700">+{formatQty(line.quantity, line.unitType)}</span>
+                                        </p>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => updateAdditionDraft(addition.id, line.productId, 0)}
+                                        className="self-start rounded-lg border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700 transition hover:bg-rose-100 sm:self-auto"
+                                      >
+                                        Eliminar de este aumento
+                                      </button>
+                                    </div>
+
+                                    {/* Stepper por producto dentro del aumento */}
+                                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                                      <div className="flex items-center rounded-xl border border-slate-300 bg-white p-0.5">
+                                        <button
+                                          type="button"
+                                          disabled={curVal <= 0}
+                                          onClick={() => updateAdditionDraft(addition.id, line.productId, curVal - step)}
+                                          className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+                                        >
+                                          <Minus size={13} />
+                                        </button>
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          step={step}
+                                          value={curVal}
+                                          onChange={(e) => {
+                                            const val = parseFloat(e.target.value)
+                                            updateAdditionDraft(addition.id, line.productId, isNaN(val) ? 0 : val)
+                                          }}
+                                          className="w-16 bg-transparent px-1 text-center text-xs font-black text-slate-900 focus:outline-none"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => updateAdditionDraft(addition.id, line.productId, curVal + step)}
+                                          className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-700 transition hover:bg-slate-100"
+                                        >
+                                          <Plus size={13} />
+                                        </button>
+                                      </div>
+
+                                      {/* Indicador */}
+                                      <div className="min-w-0 text-xs">
+                                        {curVal === 0 && line.quantity > 0 ? (
+                                          <span className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-2 py-0.5 text-[11px] font-black text-rose-700">
+                                            <Trash2 size={11} /> SE ELIMINARÁ (devuelve +{formatQty(line.quantity, line.unitType)})
+                                          </span>
+                                        ) : diff < 0 ? (
+                                          <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2 py-0.5 text-[11px] font-black text-emerald-700">
+                                            <ArrowDownRight size={11} /> DEVUELVE {formatQty(Math.abs(diff), line.unitType)}
+                                          </span>
+                                        ) : diff > 0 ? (
+                                          <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-0.5 text-[11px] font-black text-blue-700">
+                                            <ArrowUpRight size={11} /> AGREGA +{formatQty(diff, line.unitType)}
+                                          </span>
+                                        ) : (
+                                          <span className="text-[11px] font-semibold text-slate-400">Sin cambios</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {totalSold > 0 && curVal < totalSold && (
+                                      <p className="mt-1 text-[10px] font-bold text-amber-700">
+                                        Total vendido registrado en la ruta: {formatQty(totalSold, line.unitType)}
                                       </p>
                                     )}
                                   </div>
-                                  <div className="shrink-0">
-                                    <SecondaryButton
-                                      disabled={line.quantity <= 0}
-                                      onClick={() => handleStartAdditionLineCorrection(addition, idx + 1, line)}
-                                    >
-                                      <Pencil size={13} /> Corregir
-                                    </SecondaryButton>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
+                                )
+                              })}
+                            </div>
+                          )}
                         </div>
                       )
                     })}
                   </div>
-                )
-              })()}
-            </div>
-          </div>
-        )}
-
-        {correctionTarget && isConfirmingCorrection && selectedCorrection && (
-          <div className="grid gap-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
-              <p className="text-[11px] font-extrabold uppercase tracking-wide text-slate-500">
-                {selectedCorrection.targetType === 'addition' ? `Aumento #${selectedCorrection.additionIndex || 1}` : 'Carga inicial'}
-              </p>
-              <h3 className="mt-0.5 text-sm font-black text-slate-900">{selectedCorrection.productName}</h3>
-              <p className="mt-0.5 text-xs text-slate-600 font-semibold">
-                Lote de origen: {selectedCorrection.lotCode || 'Lote original'}
-              </p>
-
-              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-xl border border-slate-200 bg-white p-2">
-                  <p className="text-[10px] font-bold text-slate-500 uppercase">Cantidad actual</p>
-                  <p className="text-sm font-black text-slate-900">
-                    {formatQty(selectedCorrection.currentQuantity, selectedCorrection.unitType)}
-                  </p>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-white p-2">
-                  <p className="text-[10px] font-bold text-slate-500 uppercase">Nueva cantidad</p>
-                  <p className="text-sm font-black text-slate-900">
-                    {selectedCorrection.voidAddition ? '0' : formatQty(selectedCorrection.newQuantity, selectedCorrection.unitType)}
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-2 rounded-xl bg-emerald-50 border border-emerald-200 p-2 text-xs font-bold text-emerald-800">
-                Se reintegrarán al almacén:{' '}
-                {selectedCorrection.voidAddition
-                  ? formatQty(selectedCorrection.currentQuantity, selectedCorrection.unitType)
-                  : formatQty(round2(selectedCorrection.currentQuantity - selectedCorrection.newQuantity), selectedCorrection.unitType)}{' '}
-                ({selectedCorrection.lotCode || 'Lote de origen'})
-              </div>
-            </div>
-
-            {!selectedCorrection.voidAddition && (
-              <Field label="Nueva cantidad cargada" required hint="Solo puedes mantener o disminuir la cantidad.">
-                <NumberInput
-                  value={selectedCorrection.newQuantity}
-                  min={0}
-                  max={selectedCorrection.currentQuantity}
-                  step={selectedCorrection.unitType === 'kg' ? 0.01 : 1}
-                  onChange={(e) => {
-                    const val = Number(e.target.value)
-                    setSelectedCorrection((curr) => curr ? { ...curr, newQuantity: isNaN(val) ? 0 : val } : null)
-                  }}
-                />
-              </Field>
-            )}
-
-            <Field label="Motivo de la corrección" required hint="Obligatorio. Quedará registrado en la auditoría del despacho.">
-              <TextArea
-                value={correctionReason}
-                onChange={(e) => setCorrectionReason(e.target.value)}
-                placeholder="Ej: Error de digitación, producto cargado por error, no salió de almacén..."
-                rows={3}
-              />
-            </Field>
+              )
+            })()}
 
             {correctionError && (
               <div className="flex items-start gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-bold text-rose-700">
@@ -1003,6 +1268,125 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               </div>
             )}
           </div>
+        )}
+
+        {/* PANTALLA DE REVISIÓN PREVIA */}
+        {correctionTarget && isReviewingCorrection && (
+          (() => {
+            const { initialDiffs, additionDiffs, voidedAdditionsList } = getPendingChanges()
+            const reductions = [...initialDiffs, ...additionDiffs].filter((d) => d.delta < 0)
+            const increases = [...initialDiffs, ...additionDiffs].filter((d) => d.delta > 0)
+
+            return (
+              <div className="grid gap-3.5">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                  <p className="font-extrabold text-slate-900">Resumen de cambios a aplicar</p>
+                  <p className="mt-0.5 text-[11px] text-slate-600">
+                    Revisa las modificaciones antes de confirmar. Esta operación es auditada y quedará registrada en el historial del despacho.
+                  </p>
+                </div>
+
+                {/* 1. Reducciones y eliminaciones */}
+                {reductions.length > 0 && (
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3">
+                    <p className="mb-2 text-xs font-black uppercase text-emerald-900">
+                      Mercadería devuelta al almacén ({reductions.length} {reductions.length === 1 ? 'producto' : 'productos'})
+                    </p>
+                    <div className="grid gap-1.5">
+                      {reductions.map((r, i) => (
+                        <div key={i} className="flex items-center justify-between rounded-xl border border-emerald-200/80 bg-white p-2 text-xs">
+                          <div className="min-w-0">
+                            <p className="font-extrabold text-slate-900">
+                              {r.productName} {r.presentation ? `(${r.presentation})` : ''}
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              {r.targetType === 'addition' ? `Aumento #${r.additionIndex}` : 'Carga inicial'} · {formatQty(r.oldQuantity, r.unitType)} → {formatQty(r.newQuantity, r.unitType)}
+                            </p>
+                          </div>
+                          <span className="shrink-0 text-right text-xs font-black text-emerald-700">
+                            Devuelve: {formatQty(Math.abs(r.delta), r.unitType)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. Aumentos */}
+                {increases.length > 0 && (
+                  <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-3">
+                    <p className="mb-2 text-xs font-black uppercase text-blue-900">
+                      Carga adicional tomada de almacén ({increases.length} {increases.length === 1 ? 'producto' : 'productos'})
+                    </p>
+                    <div className="grid gap-1.5">
+                      {increases.map((inc, i) => {
+                        const whStock = central.get(inc.productId) ?? 0
+                        return (
+                          <div key={i} className="flex items-center justify-between rounded-xl border border-blue-200/80 bg-white p-2 text-xs">
+                            <div className="min-w-0">
+                              <p className="font-extrabold text-slate-900">
+                                {inc.productName} {inc.presentation ? `(${inc.presentation})` : ''}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                {inc.targetType === 'addition' ? `Aumento #${inc.additionIndex}` : 'Carga inicial'} · {formatQty(inc.oldQuantity, inc.unitType)} → {formatQty(inc.newQuantity, inc.unitType)}
+                              </p>
+                              <p className="text-[10px] font-semibold text-blue-600">
+                                Stock disponible en almacén: {formatQty(whStock, inc.unitType)}
+                              </p>
+                            </div>
+                            <span className="shrink-0 text-right text-xs font-black text-blue-700">
+                              Agrega: +{formatQty(inc.delta, inc.unitType)}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. Aumentos anulados completamente */}
+                {voidedAdditionsList.length > 0 && (
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50/50 p-3">
+                    <p className="mb-2 text-xs font-black uppercase text-rose-900">
+                      Aumentos anulados completamente ({voidedAdditionsList.length})
+                    </p>
+                    <div className="grid gap-1.5">
+                      {voidedAdditionsList.map((va, i) => (
+                        <div key={i} className="rounded-xl border border-rose-200/80 bg-white p-2.5 text-xs">
+                          <p className="font-black text-rose-900">
+                            Aumento #{va.additionIndex} ({va.time} · {va.responsible})
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-slate-600">
+                            Se anulará por completo y retornará todo el stock al almacén:
+                          </p>
+                          <p className="mt-1 text-[11px] font-bold text-slate-800">
+                            {va.lines.map((l) => `${l.productName} (${formatQty(l.quantity, l.unitType)})`).join(', ')}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Motivo obligatorio */}
+                <Field label="Motivo de la corrección" required hint="Obligatorio. Quedará registrado en la auditoría permanente.">
+                  <TextArea
+                    value={correctionReason}
+                    onChange={(e) => setCorrectionReason(e.target.value)}
+                    placeholder="Ej: Error de conteo físico, corrección de digitación, producto no subió al camión..."
+                    rows={3}
+                  />
+                </Field>
+
+                {correctionError && (
+                  <div className="flex items-start gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-bold text-rose-700">
+                    <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+                    <span>{correctionError}</span>
+                  </div>
+                )}
+              </div>
+            )
+          })()
         )}
       </Modal>
 

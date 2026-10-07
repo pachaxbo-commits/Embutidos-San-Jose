@@ -673,18 +673,28 @@ export async function addDispatchLoad(input: AddDispatchLoadInput): Promise<stri
   return id
 }
 
-export interface CorrectDispatchInput {
-  dispatchId: string
+export interface DispatchCorrectionChange {
   targetType: 'initial' | 'addition'
   additionId?: string
   productId?: string
   newQuantity?: number
   voidAddition?: boolean
+  lotId?: string
+}
+
+export interface CorrectDispatchInput {
+  dispatchId: string
+  targetType?: 'initial' | 'addition'
+  additionId?: string
+  productId?: string
+  newQuantity?: number
+  voidAddition?: boolean
   reason: string
+  changes?: DispatchCorrectionChange[]
   operationId?: string
 }
 
-/** Corrección auditada de despacho o aumento de carga (reintegra stock al lote de origen). */
+/** Corrección auditada de despacho o aumento de carga (reintegra stock al lote de origen o añade stock de almacén). */
 export async function correctDispatch(input: CorrectDispatchInput): Promise<string> {
   const id = input.operationId || newOperationId('disp-corr')
   await submitOperation('correctDispatch', input, id)

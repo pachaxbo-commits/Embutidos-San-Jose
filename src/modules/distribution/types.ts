@@ -190,7 +190,8 @@ export interface DistDispatchCorrection {
   productName: string
   oldQuantity: number
   newQuantity: number
-  returnedQuantity: number
+  returnedQuantity?: number
+  addedQuantity?: number
   unitType: UnitType
   lotCode?: string
   lotId?: string

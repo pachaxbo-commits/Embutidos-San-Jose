@@ -535,10 +535,6 @@ async function correctDispatch(o, p) {
   );
   check(p.dispatchId?.trim(), "Falta el identificador del despacho.");
   check(p.reason?.trim(), "El motivo de la corrección es obligatorio.");
-  check(
-    ["initial", "addition"].includes(p.targetType),
-    "Tipo de corrección inválido.",
-  );
 
   const d = await o.read("distDispatches", p.dispatchId);
   check(d, "Despacho inexistente.");
@@ -547,8 +543,12 @@ async function correctDispatch(o, p) {
     "Este despacho ya fue cerrado y no puede modificarse.",
   );
 
+  const changes = Array.isArray(p.changes) && p.changes.length > 0 ? p.changes : [p];
+  check(changes.length > 0, "No se enviaron cambios para corregir.");
+
   const wh = d.warehouseId || "central";
   const warehouse = location("warehouse", wh);
+  const route = location("route", d.routeId);
   if (o.member.role === "warehouse") {
     o.owns(warehouse);
   }
@@ -560,164 +560,93 @@ async function correctDispatch(o, p) {
   const loadedMap = getDispatchLoadedMap(d);
   d.corrections = d.corrections || [];
 
-  if (p.targetType === "initial") {
-    check(p.productId?.trim(), "Falta el identificador del producto.");
-    const line = (d.lines || []).find((l) => l.productId === p.productId);
-    check(line, "El producto no se encuentra en la carga inicial.");
-    const oldQty = line.quantity;
-    const product = await o.product(p.productId);
-    const newQty = o.amount(p.newQuantity, product);
-    check(newQty >= 0, "La cantidad no puede ser negativa.");
+  // Pre-validaciones y cálculo neto de variación por producto
+  const netDeltaByProduct = new Map();
+  for (const c of changes) {
     check(
-      newQty <= oldQty,
-      "Solo se permite mantener o reducir la cantidad cargada.",
+      ["initial", "addition"].includes(c.targetType),
+      "Tipo de corrección inválido.",
     );
-    const returnQty = round(oldQty - newQty);
+    if (c.targetType === "initial") {
+      check(c.productId?.trim(), "Falta el identificador del producto.");
+      const line = (d.lines || []).find((l) => l.productId === c.productId);
+      check(line, "El producto no se encuentra en la carga inicial.");
+      const oldQty = line.quantity;
+      const product = await o.product(c.productId);
+      const newQty = o.amount(c.newQuantity, product);
+      check(newQty >= 0, "La cantidad no puede ser negativa.");
+      const delta = round(newQty - oldQty);
+      netDeltaByProduct.set(
+        c.productId,
+        round((netDeltaByProduct.get(c.productId) || 0) + delta),
+      );
+    } else if (c.targetType === "addition") {
+      check(c.additionId?.trim(), "Identificador de aumento requerido.");
+      const addition = (d.additions || []).find((a) => a.id === c.additionId);
+      check(addition, "El aumento de carga no existe.");
+      check(!addition.voided, "Este aumento ya fue anulado anteriormente.");
 
-    if (returnQty > 0) {
-      const currentTotalLoaded = loadedMap.get(p.productId) || 0;
-      const newTotalLoaded = round(currentTotalLoaded - returnQty);
+      if (c.voidAddition === true) {
+        for (const line of addition.quantityByProduct || []) {
+          const oldQty = line.quantity;
+          if (oldQty <= 0) continue;
+          const delta = -oldQty;
+          netDeltaByProduct.set(
+            line.productId,
+            round((netDeltaByProduct.get(line.productId) || 0) + delta),
+          );
+        }
+      } else {
+        check(c.productId?.trim(), "Falta el identificador del producto.");
+        const line = (addition.quantityByProduct || []).find(
+          (l) => l.productId === c.productId,
+        );
+        check(line, "El producto no se encuentra en este aumento.");
+        const oldQty = line.quantity;
+        const product = await o.product(c.productId);
+        const newQty = o.amount(c.newQuantity, product);
+        check(newQty >= 0, "La cantidad no puede ser negativa.");
+        const delta = round(newQty - oldQty);
+        netDeltaByProduct.set(
+          c.productId,
+          round((netDeltaByProduct.get(c.productId) || 0) + delta),
+        );
+      }
+    }
+  }
+
+  // Comprobar que ninguna reducción viole las ventas ya registradas
+  for (const [pid, delta] of netDeltaByProduct.entries()) {
+    if (delta < 0) {
+      const currentLoaded = loadedMap.get(pid) || 0;
+      const newLoaded = round(currentLoaded + delta);
       const totalSold = round(
         sales.reduce(
           (sum, s) =>
             sum +
             (s.lines || [])
-              .filter((l) => l.productId === p.productId)
+              .filter((l) => l.productId === pid)
               .reduce((n, l) => n + l.quantity, 0),
           0,
         ),
       );
       check(
-        newTotalLoaded >= totalSold,
-        `No puedes reducir la carga a ${newTotalLoaded} porque ya se registraron ${totalSold} vendidos.`,
+        newLoaded >= totalSold,
+        `No puedes reducir la carga a ${newLoaded} porque ya se registraron ${totalSold} vendidos.`,
       );
-
-      const allocationsReturned = await revertLineStock(
-        o,
-        d,
-        line,
-        returnQty,
-        p.reason,
-      );
-      line.quantity = newQty;
-
-      d.corrections.push({
-        id: `${o.id}__corr_${d.corrections.length + 1}`,
-        operationId: o.id,
-        targetType: "initial",
-        productId: p.productId,
-        productName: line.productName,
-        oldQuantity: oldQty,
-        newQuantity: newQty,
-        returnedQuantity: returnQty,
-        unitType: line.unitType,
-        lotCode:
-          allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
-          line.lotCode ||
-          "",
-        lotId: allocationsReturned[0]?.lotId || line.lotId || "",
-        reason: p.reason.trim(),
-        correctedBy: o.actor,
-        correctedByName: o.member.displayName || o.actor,
-        correctedAt: o.now,
-      });
     }
-  } else if (p.targetType === "addition") {
-    check(p.additionId?.trim(), "Identificador de aumento requerido.");
-    const addition = (d.additions || []).find((a) => a.id === p.additionId);
-    check(addition, "El aumento de carga no existe.");
-    check(!addition.voided, "Este aumento ya fue anulado anteriormente.");
+  }
 
-    if (p.voidAddition === true) {
-      for (const line of addition.quantityByProduct || []) {
-        const oldQty = line.quantity;
-        if (oldQty <= 0) continue;
-        const currentTotalLoaded = loadedMap.get(line.productId) || 0;
-        const newTotalLoaded = round(currentTotalLoaded - oldQty);
-        const totalSold = round(
-          sales.reduce(
-            (sum, s) =>
-              sum +
-              (s.lines || [])
-                .filter((l) => l.productId === line.productId)
-                .reduce((n, l) => n + l.quantity, 0),
-            0,
-          ),
-        );
-        check(
-          newTotalLoaded >= totalSold,
-          `No puedes reducir la carga a ${newTotalLoaded} porque ya se registraron ${totalSold} vendidos.`,
-        );
-
-        const allocationsReturned = await revertLineStock(
-          o,
-          d,
-          line,
-          oldQty,
-          p.reason,
-        );
-        line.quantity = 0;
-
-        d.corrections.push({
-          id: `${o.id}__corr_${d.corrections.length + 1}`,
-          operationId: o.id,
-          targetType: "addition",
-          additionId: addition.id,
-          productId: line.productId,
-          productName: line.productName,
-          oldQuantity: oldQty,
-          newQuantity: 0,
-          returnedQuantity: oldQty,
-          unitType: line.unitType,
-          lotCode:
-            allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
-            line.lotCode ||
-            "",
-          lotId: allocationsReturned[0]?.lotId || line.lotId || "",
-          reason: p.reason.trim(),
-          correctedBy: o.actor,
-          correctedByName: o.member.displayName || o.actor,
-          correctedAt: o.now,
-        });
-      }
-      addition.voided = true;
-      addition.voidedAt = o.now;
-      addition.voidedBy = o.actor;
-      addition.voidReason = p.reason.trim();
-    } else {
-      check(p.productId?.trim(), "Falta el identificador del producto.");
-      const line = (addition.quantityByProduct || []).find(
-        (l) => l.productId === p.productId,
-      );
-      check(line, "El producto no se encuentra en este aumento.");
+  // Aplicación secuencial de los cambios
+  for (const c of changes) {
+    if (c.targetType === "initial") {
+      const line = (d.lines || []).find((l) => l.productId === c.productId);
       const oldQty = line.quantity;
-      const product = await o.product(p.productId);
-      const newQty = o.amount(p.newQuantity, product);
-      check(newQty >= 0, "La cantidad no puede ser negativa.");
-      check(
-        newQty <= oldQty,
-        "Solo se permite mantener o reducir la cantidad cargada.",
-      );
-      const returnQty = round(oldQty - newQty);
+      const product = await o.product(c.productId);
+      const newQty = o.amount(c.newQuantity, product);
 
-      if (returnQty > 0) {
-        const currentTotalLoaded = loadedMap.get(p.productId) || 0;
-        const newTotalLoaded = round(currentTotalLoaded - returnQty);
-        const totalSold = round(
-          sales.reduce(
-            (sum, s) =>
-              sum +
-              (s.lines || [])
-                .filter((l) => l.productId === p.productId)
-                .reduce((n, l) => n + l.quantity, 0),
-            0,
-          ),
-        );
-        check(
-          newTotalLoaded >= totalSold,
-          `No puedes reducir la carga a ${newTotalLoaded} porque ya se registraron ${totalSold} vendidos.`,
-        );
-
+      if (newQty < oldQty) {
+        const returnQty = round(oldQty - newQty);
         const allocationsReturned = await revertLineStock(
           o,
           d,
@@ -730,9 +659,8 @@ async function correctDispatch(o, p) {
         d.corrections.push({
           id: `${o.id}__corr_${d.corrections.length + 1}`,
           operationId: o.id,
-          targetType: "addition",
-          additionId: addition.id,
-          productId: p.productId,
+          targetType: "initial",
+          productId: c.productId,
           productName: line.productName,
           oldQuantity: oldQty,
           newQuantity: newQty,
@@ -748,6 +676,252 @@ async function correctDispatch(o, p) {
           correctedByName: o.member.displayName || o.actor,
           correctedAt: o.now,
         });
+      } else if (newQty > oldQty) {
+        const addQty = round(newQty - oldQty);
+        let allocationsAdded;
+        try {
+          if (c.lotId || line.lotId) {
+            allocationsAdded = await o.moveStock(
+              line.productId,
+              warehouse,
+              route,
+              addQty,
+              { lotId: c.lotId || line.lotId },
+            );
+          } else {
+            allocationsAdded = await o.moveStock(
+              line.productId,
+              warehouse,
+              route,
+              addQty,
+            );
+          }
+        } catch (lotErr) {
+          if (c.lotId || line.lotId) {
+            allocationsAdded = await o.moveStock(
+              line.productId,
+              warehouse,
+              route,
+              addQty,
+            );
+          } else {
+            throw lotErr;
+          }
+        }
+
+        line.quantity = newQty;
+        line.allocations = line.allocations || [];
+        for (const addAlloc of allocationsAdded) {
+          const existing = line.allocations.find((a) => a.lotId === addAlloc.lotId);
+          if (existing) {
+            existing.quantity = round(existing.quantity + addAlloc.quantity);
+          } else {
+            line.allocations.push({ ...addAlloc });
+          }
+        }
+
+        o.ledger(
+          line.productId,
+          addQty,
+          warehouse,
+          route,
+          "dispatch_correction",
+          {
+            refId: d.id,
+            note: p.reason.trim(),
+            allocations: allocationsAdded,
+            lotCode:
+              allocationsAdded.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+              line.lotCode ||
+              "",
+          },
+        );
+
+        d.corrections.push({
+          id: `${o.id}__corr_${d.corrections.length + 1}`,
+          operationId: o.id,
+          targetType: "initial",
+          productId: c.productId,
+          productName: line.productName,
+          oldQuantity: oldQty,
+          newQuantity: newQty,
+          addedQuantity: addQty,
+          unitType: line.unitType,
+          lotCode:
+            allocationsAdded.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+            line.lotCode ||
+            "",
+          lotId: allocationsAdded[0]?.lotId || line.lotId || "",
+          reason: p.reason.trim(),
+          correctedBy: o.actor,
+          correctedByName: o.member.displayName || o.actor,
+          correctedAt: o.now,
+        });
+      }
+    } else if (c.targetType === "addition") {
+      const addition = (d.additions || []).find((a) => a.id === c.additionId);
+      if (c.voidAddition === true) {
+        for (const line of addition.quantityByProduct || []) {
+          const oldQty = line.quantity;
+          if (oldQty <= 0) continue;
+          const allocationsReturned = await revertLineStock(
+            o,
+            d,
+            line,
+            oldQty,
+            p.reason,
+          );
+          line.quantity = 0;
+
+          d.corrections.push({
+            id: `${o.id}__corr_${d.corrections.length + 1}`,
+            operationId: o.id,
+            targetType: "addition",
+            additionId: addition.id,
+            productId: line.productId,
+            productName: line.productName,
+            oldQuantity: oldQty,
+            newQuantity: 0,
+            returnedQuantity: oldQty,
+            unitType: line.unitType,
+            lotCode:
+              allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+              line.lotCode ||
+              "",
+            lotId: allocationsReturned[0]?.lotId || line.lotId || "",
+            reason: p.reason.trim(),
+            correctedBy: o.actor,
+            correctedByName: o.member.displayName || o.actor,
+            correctedAt: o.now,
+          });
+        }
+        addition.voided = true;
+        addition.voidedAt = o.now;
+        addition.voidedBy = o.actor;
+        addition.voidReason = p.reason.trim();
+      } else {
+        const line = (addition.quantityByProduct || []).find(
+          (l) => l.productId === c.productId,
+        );
+        const oldQty = line.quantity;
+        const product = await o.product(c.productId);
+        const newQty = o.amount(c.newQuantity, product);
+
+        if (newQty < oldQty) {
+          const returnQty = round(oldQty - newQty);
+          const allocationsReturned = await revertLineStock(
+            o,
+            d,
+            line,
+            returnQty,
+            p.reason,
+          );
+          line.quantity = newQty;
+
+          d.corrections.push({
+            id: `${o.id}__corr_${d.corrections.length + 1}`,
+            operationId: o.id,
+            targetType: "addition",
+            additionId: addition.id,
+            productId: c.productId,
+            productName: line.productName,
+            oldQuantity: oldQty,
+            newQuantity: newQty,
+            returnedQuantity: returnQty,
+            unitType: line.unitType,
+            lotCode:
+              allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+              line.lotCode ||
+              "",
+            lotId: allocationsReturned[0]?.lotId || line.lotId || "",
+            reason: p.reason.trim(),
+            correctedBy: o.actor,
+            correctedByName: o.member.displayName || o.actor,
+            correctedAt: o.now,
+          });
+        } else if (newQty > oldQty) {
+          const addQty = round(newQty - oldQty);
+          let allocationsAdded;
+          try {
+            if (c.lotId || line.lotId) {
+              allocationsAdded = await o.moveStock(
+                line.productId,
+                warehouse,
+                route,
+                addQty,
+                { lotId: c.lotId || line.lotId },
+              );
+            } else {
+              allocationsAdded = await o.moveStock(
+                line.productId,
+                warehouse,
+                route,
+                addQty,
+              );
+            }
+          } catch (lotErr) {
+            if (c.lotId || line.lotId) {
+              allocationsAdded = await o.moveStock(
+                line.productId,
+                warehouse,
+                route,
+                addQty,
+              );
+            } else {
+              throw lotErr;
+            }
+          }
+
+          line.quantity = newQty;
+          line.allocations = line.allocations || [];
+          for (const addAlloc of allocationsAdded) {
+            const existing = line.allocations.find((a) => a.lotId === addAlloc.lotId);
+            if (existing) {
+              existing.quantity = round(existing.quantity + addAlloc.quantity);
+            } else {
+              line.allocations.push({ ...addAlloc });
+            }
+          }
+
+          o.ledger(
+            line.productId,
+            addQty,
+            warehouse,
+            route,
+            "dispatch_correction",
+            {
+              refId: d.id,
+              note: p.reason.trim(),
+              allocations: allocationsAdded,
+              lotCode:
+                allocationsAdded.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+                line.lotCode ||
+                "",
+            },
+          );
+
+          d.corrections.push({
+            id: `${o.id}__corr_${d.corrections.length + 1}`,
+            operationId: o.id,
+            targetType: "addition",
+            additionId: addition.id,
+            productId: c.productId,
+            productName: line.productName,
+            oldQuantity: oldQty,
+            newQuantity: newQty,
+            addedQuantity: addQty,
+            unitType: line.unitType,
+            lotCode:
+              allocationsAdded.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+              line.lotCode ||
+              "",
+            lotId: allocationsAdded[0]?.lotId || line.lotId || "",
+            reason: p.reason.trim(),
+            correctedBy: o.actor,
+            correctedByName: o.member.displayName || o.actor,
+            correctedAt: o.now,
+          });
+        }
       }
     }
   }

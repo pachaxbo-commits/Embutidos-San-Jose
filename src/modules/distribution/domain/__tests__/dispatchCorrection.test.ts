@@ -14,11 +14,11 @@ import { computeLoadedByProduct, round2 } from '../engine.ts'
 import type { DistDispatch, DistDispatchAddition, DistLotAllocation } from '../../types.ts'
 
 /**
- * Suite de pruebas unitarias para la corrección auditada de despachos y aumentos (v1.4.9).
- * Valida los 9 casos requeridos por la auditoría técnica.
+ * Suite de pruebas unitarias para la corrección auditada de despachos y aumentos (v1.4.10).
+ * Valida los 12 casos requeridos por la auditoría técnica.
  */
 export async function runDispatchCorrectionTestSuite() {
-  console.log('--- Iniciando pruebas de corrección auditada de despachos (1.4.9) ---')
+  console.log('--- Iniciando pruebas de corrección auditada de despachos (1.4.10) ---')
 
   function makeDispatch(partial: Partial<DistDispatch> & Pick<DistDispatch, 'id' | 'lines'>): DistDispatch {
     return {
@@ -146,10 +146,9 @@ export async function runDispatchCorrectionTestSuite() {
       const oldQty = line.quantity
       const targetNewQty = round2(newQuantity ?? oldQty)
       if (targetNewQty < 0) throw new Error('La cantidad no puede ser negativa.')
-      if (targetNewQty > oldQty) throw new Error('Solo se permite mantener o reducir la cantidad cargada.')
 
-      const returnQty = round2(oldQty - targetNewQty)
-      if (returnQty > 0) {
+      if (targetNewQty < oldQty) {
+        const returnQty = round2(oldQty - targetNewQty)
         const curLoaded = loadedMap.get(productId)?.totalLoaded || 0
         const newLoaded = round2(curLoaded - returnQty)
         if (newLoaded < salesRecordedForProduct) {
@@ -173,6 +172,41 @@ export async function runDispatchCorrectionTestSuite() {
           unitType: line.unitType,
           lotCode: returned.map((r) => r.lotCode).join(', '),
           lotId: returned[0]?.lotId || '',
+          reason: reason.trim(),
+          correctedBy: 'user_admin',
+          correctedByName: 'Admin Test',
+          correctedAt: new Date().toISOString(),
+        })
+      } else if (targetNewQty > oldQty) {
+        const addQty = round2(targetNewQty - oldQty)
+        const lotId = line.lotId || line.allocations?.[0]?.lotId || 'lot-cho-1'
+        const currentStock = lotBalances.get(lotId) || 0
+        if (currentStock < addQty) {
+          throw new Error(`Stock apto insuficiente de ${line.productName}. Revisa lotes vencidos o cantidades.`)
+        }
+        lotBalances.set(lotId, round2(currentStock - addQty))
+        line.quantity = targetNewQty
+        line.allocations = line.allocations || []
+        line.allocations.push({
+          lotId,
+          lotCode: line.lotCode || 'LOTE-DIRECTO',
+          expiresOn: '2026-10-30',
+          quantity: addQty,
+          productionCost: 5,
+        })
+
+        d.corrections.push({
+          id: `corr_${Date.now()}_${d.corrections.length + 1}`,
+          operationId: 'op_test',
+          targetType: 'initial',
+          productId,
+          productName: line.productName,
+          oldQuantity: oldQty,
+          newQuantity: targetNewQty,
+          addedQuantity: addQty,
+          unitType: line.unitType,
+          lotCode: line.lotCode || 'LOTE-DIRECTO',
+          lotId,
           reason: reason.trim(),
           correctedBy: 'user_admin',
           correctedByName: 'Admin Test',
@@ -232,10 +266,9 @@ export async function runDispatchCorrectionTestSuite() {
         const oldQty = line.quantity
         const targetNewQty = round2(newQuantity ?? oldQty)
         if (targetNewQty < 0) throw new Error('La cantidad no puede ser negativa.')
-        if (targetNewQty > oldQty) throw new Error('Solo se permite mantener o reducir la cantidad cargada.')
 
-        const returnQty = round2(oldQty - targetNewQty)
-        if (returnQty > 0) {
+        if (targetNewQty < oldQty) {
+          const returnQty = round2(oldQty - targetNewQty)
           const curLoaded = loadedMap.get(productId)?.totalLoaded || 0
           const newLoaded = round2(curLoaded - returnQty)
           if (newLoaded < salesRecordedForProduct) {
@@ -260,6 +293,42 @@ export async function runDispatchCorrectionTestSuite() {
             unitType: line.unitType,
             lotCode: returned.map((r) => r.lotCode).join(', '),
             lotId: returned[0]?.lotId || '',
+            reason: reason.trim(),
+            correctedBy: 'user_admin',
+            correctedByName: 'Admin Test',
+            correctedAt: new Date().toISOString(),
+          })
+        } else if (targetNewQty > oldQty) {
+          const addQty = round2(targetNewQty - oldQty)
+          const lotId = line.lotId || line.allocations?.[0]?.lotId || 'lot-mort-1'
+          const currentStock = lotBalances.get(lotId) || 0
+          if (currentStock < addQty) {
+            throw new Error(`Stock apto insuficiente de ${line.productName}. Revisa lotes vencidos o cantidades.`)
+          }
+          lotBalances.set(lotId, round2(currentStock - addQty))
+          line.quantity = targetNewQty
+          line.allocations = line.allocations || []
+          line.allocations.push({
+            lotId,
+            lotCode: line.lotCode || 'LOTE-DIRECTO',
+            expiresOn: '2026-10-30',
+            quantity: addQty,
+            productionCost: 4,
+          })
+
+          d.corrections.push({
+            id: `corr_${Date.now()}_${d.corrections.length + 1}`,
+            operationId: 'op_test',
+            targetType: 'addition',
+            additionId: addition.id,
+            productId,
+            productName: line.productName,
+            oldQuantity: oldQty,
+            newQuantity: targetNewQty,
+            addedQuantity: addQty,
+            unitType: line.unitType,
+            lotCode: line.lotCode || 'LOTE-DIRECTO',
+            lotId,
             reason: reason.trim(),
             correctedBy: 'user_admin',
             correctedByName: 'Admin Test',
@@ -589,7 +658,155 @@ export async function runDispatchCorrectionTestSuite() {
   assert.equal(difference, 0, 'Caso 9: Conciliación de cierre cuadra con carga corregida (20 kg = 15 venta + 5 retorno)')
   console.log('  ✓ Caso 9: Cierre, PDF, inventario y ruta coinciden en el estado efectivo')
 
-  console.log('\n--- TODAS LAS 9 PRUEBAS DE CORRECCIÓN DE DESPACHO PASARON EXITOSAMENTE (100%) ---')
+  // =========================================================================
+  // CASO 10: Aumentar carga en corrección: 20 kg a 25 kg (+5 kg tomados de almacén)
+  // =========================================================================
+  const lotBalances10 = new Map<string, number>([['lot-cho-1', 30]])
+  const dispatch10 = makeDispatch({
+    id: 'disp-010',
+    lines: [
+      {
+        productId: 'prod-chorizo',
+        productName: 'Chorizo Parrillero',
+        unitType: 'kg',
+        quantity: 20,
+        lotId: 'lot-cho-1',
+        allocations: [{ lotId: 'lot-cho-1', lotCode: 'L-051026', expiresOn: '2026-10-30', quantity: 20, productionCost: 5 }],
+      },
+    ],
+  })
+
+  applyCorrection({
+    dispatch: dispatch10,
+    targetType: 'initial',
+    productId: 'prod-chorizo',
+    newQuantity: 25,
+    reason: 'Aumento de carga por mayor demanda en ruta',
+    actorRole: 'admin',
+    lotBalances: lotBalances10,
+  })
+
+  assert.equal(dispatch10.lines[0].quantity, 25, 'Caso 10: Carga en ruta aumenta a 25 kg')
+  assert.equal(lotBalances10.get('lot-cho-1'), 25, 'Caso 10: Stock de almacén se debita en 5 kg (30 -> 25)')
+  const lastCorr10 = dispatch10.corrections?.[dispatch10.corrections.length - 1]
+  assert.equal(lastCorr10?.addedQuantity, 5, 'Caso 10: Auditoría registra 5 kg añadidos')
+  assert.equal(lastCorr10?.newQuantity, 25, 'Caso 10: Auditoría registra nueva cantidad de 25 kg')
+  console.log('  ✓ Caso 10: Aumentar carga en corrección: 20 kg a 25 kg (+5 kg tomados de almacén)')
+
+  // =========================================================================
+  // CASO 11: Aumentar carga sin stock en almacén -> RECHAZADO por falta de stock
+  // =========================================================================
+  const lotBalances11 = new Map<string, number>([['lot-cho-1', 2]])
+  const dispatch11 = makeDispatch({
+    id: 'disp-011',
+    lines: [
+      {
+        productId: 'prod-chorizo',
+        productName: 'Chorizo Parrillero',
+        unitType: 'kg',
+        quantity: 20,
+        lotId: 'lot-cho-1',
+        allocations: [{ lotId: 'lot-cho-1', lotCode: 'L-051026', expiresOn: '2026-10-30', quantity: 20, productionCost: 5 }],
+      },
+    ],
+  })
+
+  let error11 = ''
+  try {
+    applyCorrection({
+      dispatch: dispatch11,
+      targetType: 'initial',
+      productId: 'prod-chorizo',
+      newQuantity: 25,
+      reason: 'Intento de aumento sin stock suficiente en almacén',
+      actorRole: 'admin',
+      lotBalances: lotBalances11,
+    })
+  } catch (err) {
+    error11 = (err as Error).message
+  }
+  assert.ok(
+    error11.includes('Stock apto insuficiente'),
+    `Caso 11: Rechazo esperado por stock insuficiente. Error: ${error11}`
+  )
+  assert.equal(dispatch11.lines[0].quantity, 20, 'Caso 11: Carga en ruta permanece intacta en 20 kg')
+  assert.equal(lotBalances11.get('lot-cho-1'), 2, 'Caso 11: Stock de almacén permanece intacto en 2 kg')
+  console.log('  ✓ Caso 11: Aumentar carga sin stock en almacén rechazado por falta de stock')
+
+  // =========================================================================
+  // CASO 12: Eliminar producto completo del despacho (nueva cantidad = 0)
+  // =========================================================================
+  // 12A: Sin ventas registradas -> PERMITIDO (devuelve todo el stock al almacén)
+  const lotBalances12 = new Map<string, number>([['lot-sal-1', 15]])
+  const dispatch12 = makeDispatch({
+    id: 'disp-012',
+    lines: [
+      {
+        productId: 'prod-salchicha',
+        productName: 'Salchicha Viena',
+        unitType: 'kg',
+        quantity: 10,
+        lotId: 'lot-sal-1',
+        allocations: [{ lotId: 'lot-sal-1', lotCode: 'S-1010', expiresOn: '2026-10-30', quantity: 10, productionCost: 5 }],
+      },
+    ],
+  })
+
+  applyCorrection({
+    dispatch: dispatch12,
+    targetType: 'initial',
+    productId: 'prod-salchicha',
+    newQuantity: 0,
+    reason: 'Producto cargado por error, se elimina completamente del despacho',
+    actorRole: 'admin',
+    salesRecordedForProduct: 0,
+    lotBalances: lotBalances12,
+  })
+
+  assert.equal(dispatch12.lines[0].quantity, 0, 'Caso 12A: Carga en ruta queda en 0 kg (eliminado)')
+  assert.equal(lotBalances12.get('lot-sal-1'), 25, 'Caso 12A: Almacén recupera los 10 kg completos (15 -> 25)')
+  const lastCorr12 = dispatch12.corrections?.[dispatch12.corrections.length - 1]
+  assert.equal(lastCorr12?.returnedQuantity, 10, 'Caso 12A: Auditoría registra 10 kg devueltos')
+  assert.equal(lastCorr12?.newQuantity, 0, 'Caso 12A: Auditoría registra nueva cantidad = 0')
+
+  // 12B: Con ventas registradas (3 kg vendidos) -> RECHAZADO
+  const dispatch12WithSales = makeDispatch({
+    id: 'disp-012b',
+    lines: [
+      {
+        productId: 'prod-salchicha',
+        productName: 'Salchicha Viena',
+        unitType: 'kg',
+        quantity: 10,
+        lotId: 'lot-sal-1',
+        allocations: [{ lotId: 'lot-sal-1', lotCode: 'S-1010', expiresOn: '2026-10-30', quantity: 10, productionCost: 5 }],
+      },
+    ],
+  })
+
+  let error12b = ''
+  try {
+    applyCorrection({
+      dispatch: dispatch12WithSales,
+      targetType: 'initial',
+      productId: 'prod-salchicha',
+      newQuantity: 0,
+      reason: 'Intento de eliminar producto con ventas registradas',
+      actorRole: 'admin',
+      salesRecordedForProduct: 3,
+      lotBalances: lotBalances12,
+    })
+  } catch (err) {
+    error12b = (err as Error).message
+  }
+  assert.ok(
+    error12b.includes('No puedes reducir la carga a 0 porque ya se registraron 3 vendidos.'),
+    `Caso 12B: Rechazo esperado por ventas existentes. Error: ${error12b}`
+  )
+  assert.equal(dispatch12WithSales.lines[0].quantity, 10, 'Caso 12B: Carga permanece en 10 kg')
+  console.log('  ✓ Caso 12: Eliminar producto completo (0 ventas -> devuelto; con ventas -> bloqueado)')
+
+  console.log('\n--- TODAS LAS 12 PRUEBAS DE CORRECCIÓN DE DESPACHO PASARON EXITOSAMENTE (100%) ---')
 }
 
 const nodeProcess = (globalThis as { process?: { exitCode?: number } }).process
