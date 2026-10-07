@@ -1,7 +1,27 @@
 import { submitOperation } from '../data/operationQueue'
 import type { DistCreditStatus } from '../types'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, History, Minus, Pencil, Plus, Printer, Search, Send, ShieldAlert, ShoppingCart, Trash2, UserPlus } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  Ban,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  History,
+  Minus,
+  Pencil,
+  Plus,
+  Printer,
+  RotateCcw,
+  Search,
+  Send,
+  ShieldAlert,
+  Trash2,
+  UserPlus,
+  X,
+} from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -17,8 +37,12 @@ import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../da
 import { useStockIndex } from '../state/useDistributionStore'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
-import type { DistProduct, DistSale, DistSaleLine, PaymentKind } from '../types'
+import type { DistProduct, DistSale, DistSaleLine, PaymentKind, UnitType } from '../types'
 import { getProductPresentation } from '../domain/productPresentation'
+import {
+  checkSaleCorrectionAvailability,
+  getSaleAuditSummary,
+} from '../domain/saleCorrectionAudit'
 
 interface CartLine extends DistSaleLine {
   lineId: string
@@ -30,6 +54,45 @@ const PAYMENT_OPTIONS: { value: PaymentKind; label: string }[] = [
   { value: 'credit', label: 'Credito' },
   { value: 'mixed', label: 'Mixto' },
 ]
+
+function SaleStepIndicator({ currentStep }: { currentStep: 1 | 2 | 3 }) {
+  return (
+    <div className="mx-auto mb-3 flex w-full max-w-sm select-none items-center justify-between gap-1 rounded-2xl bg-slate-100 p-1 text-[11px] font-black">
+      <div
+        className={`flex items-center gap-1 rounded-xl px-2.5 py-1 transition ${
+          currentStep === 1
+            ? 'bg-[var(--primary)] text-white shadow-xs'
+            : 'text-slate-500'
+        }`}
+      >
+        <span>1</span>
+        <span>Productos</span>
+      </div>
+      <ChevronRight size={13} className="shrink-0 text-slate-400" />
+      <div
+        className={`flex items-center gap-1 rounded-xl px-2.5 py-1 transition ${
+          currentStep === 2
+            ? 'bg-[var(--primary)] text-white shadow-xs'
+            : 'text-slate-500'
+        }`}
+      >
+        <span>2</span>
+        <span>Cliente</span>
+      </div>
+      <ChevronRight size={13} className="shrink-0 text-slate-400" />
+      <div
+        className={`flex items-center gap-1 rounded-xl px-2.5 py-1 transition ${
+          currentStep === 3
+            ? 'bg-[var(--primary)] text-white shadow-xs'
+            : 'text-slate-500'
+        }`}
+      >
+        <span>3</span>
+        <span>Pago</span>
+      </div>
+    </div>
+  )
+}
 
 /**
  * Venta rapida pensada para la calle: buscar, cantidad, precio editable,
@@ -84,7 +147,46 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [correctionQuantities, setCorrectionQuantities] = useState<Record<string, string>>({})
   const [correctionReason, setCorrectionReason] = useState('')
   const [correctionSearch, setCorrectionSearch] = useState('')
+  const [productPendingRemoval, setProductPendingRemoval] = useState<DistProduct | null>(null)
+  const [correctionSuccessMessage, setCorrectionSuccessMessage] = useState<string | null>(null)
+  const [auditInspectingSale, setAuditInspectingSale] = useState<DistSale | null>(null)
   const [nowMs] = useState(() => Date.now())
+
+  // Validación de stock en tiempo real del carrito
+  const cartStockValidation = useMemo(() => {
+    const totals = new Map<string, { name: string; qty: number; unitType: UnitType }>()
+    for (const line of cart) {
+      const cur = totals.get(line.productId)
+      totals.set(line.productId, {
+        name: line.productNameSnapshot,
+        qty: round2((cur?.qty ?? 0) + line.quantity),
+        unitType: line.unitType,
+      })
+    }
+    for (const [productId, entry] of totals) {
+      const stock = round2(availableStock.get(productId) ?? 0)
+      if (isDistributor && entry.qty > stock) {
+        return {
+          isValid: false,
+          productId,
+          productName: entry.name,
+          requested: entry.qty,
+          available: stock,
+          unitType: entry.unitType,
+          message: `Stock insuficiente en tu ruta para ${entry.name}: disponible ${formatQty(stock, entry.unitType)}, solicitado ${formatQty(entry.qty, entry.unitType)}.`,
+        }
+      }
+    }
+    return {
+      isValid: true,
+      productId: null,
+      productName: null,
+      requested: 0,
+      available: 0,
+      unitType: null,
+      message: null,
+    }
+  }, [cart, availableStock, isDistributor])
   useEffect(() => {
     if (!lastSale?.pendingConfirmation) return
     const confirmed = data.sales.find(s => s.id === lastSale.id && !s.pendingConfirmation)
@@ -140,6 +242,18 @@ export function SellView({ session, data }: DistributionViewProps) {
     }
     if (!(price > 0)) {
       setError('El precio debe ser mayor a cero.')
+      return
+    }
+
+    const currentStock = round2(availableStock.get(editingProduct.id) ?? 0)
+    const existingInCart = cart
+      .filter((l) => l.productId === editingProduct.id)
+      .reduce((sum, l) => sum + l.quantity, 0)
+    const totalRequested = round2(existingInCart + qty)
+    if (isDistributor && totalRequested > currentStock) {
+      setError(
+        `Stock insuficiente en tu ruta. Disponible: ${formatQty(currentStock, editingProduct.unitType)}, solicitado en total: ${formatQty(totalRequested, editingProduct.unitType)}.`,
+      )
       return
     }
 
@@ -449,6 +563,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         creditAmount,
       })
       setCorrectionTarget(null)
+      setCorrectionSuccessMessage('Venta corregida correctamente. Los cambios y el stock fueron actualizados.')
       setError(null)
     } catch (e) {
       setError((e as Error).message)
@@ -532,19 +647,39 @@ export function SellView({ session, data }: DistributionViewProps) {
 
       {cart.length > 0 && (
         <div
-          className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white px-3 py-2.5"
+          className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white px-3 py-2.5 shadow-lg"
           style={{ paddingBottom: 'calc(0.625rem + var(--safe-bottom) + var(--bottom-nav-height))' }}
         >
-          <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[10px] font-extrabold uppercase text-slate-500">
-                {cart.length} linea{cart.length > 1 ? 's' : ''}
-              </p>
-              <p className="truncate text-lg font-black tabular-nums text-slate-900">{formatBs(total)}</p>
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+            {!cartStockValidation.isValid && (
+              <div className="flex items-center gap-1.5 rounded-xl border border-rose-300 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-800">
+                <AlertTriangle size={15} className="shrink-0 text-rose-600" />
+                <span className="truncate">{cartStockValidation.message}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-extrabold uppercase text-slate-500">
+                  Paso 1 · {cart.length} {cart.length > 1 ? 'líneas' : 'línea'}
+                </p>
+                <p className="truncate text-lg font-black tabular-nums text-slate-900">{formatBs(total)}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <SecondaryButton onClick={resetSale}>
+                  Vaciar
+                </SecondaryButton>
+                <PrimaryButton
+                  disabled={!cartStockValidation.isValid}
+                  onClick={() => {
+                    setError(null)
+                    setIsCustomerOpen(true)
+                  }}
+                >
+                  <span>Siguiente: Cliente</span>
+                  <ArrowRight size={16} />
+                </PrimaryButton>
+              </div>
             </div>
-            <PrimaryButton onClick={() => { setError(null); setIsCustomerOpen(true) }}>
-              <ShoppingCart size={16} /> Cobrar
-            </PrimaryButton>
           </div>
         </div>
       )}
@@ -556,45 +691,77 @@ export function SellView({ session, data }: DistributionViewProps) {
         title={editingProduct?.name ?? ''}
         subtitle={editingProduct?.presentation}
         footer={
-          <PrimaryButton full onClick={addToCart}>
-            <Plus size={16} /> Agregar {formatBs(round2(Number(quantity) * Number(unitPrice)))}
-          </PrimaryButton>
+          (() => {
+            const editingStock = editingProduct ? round2(availableStock.get(editingProduct.id) ?? 0) : 0
+            const requestedQty = round2(Number(quantity) || 0)
+            const existingInCart = editingProduct ? cart.filter(l => l.productId === editingProduct.id).reduce((sum, l) => sum + l.quantity, 0) : 0
+            const totalRequested = round2(existingInCart + requestedQty)
+            const isEditingOverStock = isDistributor && totalRequested > editingStock
+            return (
+              <PrimaryButton full disabled={isEditingOverStock || !(requestedQty > 0)} onClick={addToCart}>
+                <Plus size={16} /> Agregar {formatBs(round2(requestedQty * Number(unitPrice)))}
+              </PrimaryButton>
+            )
+          })()
         }
       >
-        <div className="grid gap-3">
-          <Field
-            label={editingProduct?.unitType === 'kg' ? 'Cantidad (kg)' : 'Cantidad'}
-            hint={`Disponible: ${formatQty(availableStock.get(editingProduct?.id ?? '') ?? 0, editingProduct?.unitType ?? 'unit')}`}
-          >
-            <NumberInput
-              value={quantity}
-              min={0}
-              step={editingProduct?.unitType === 'kg' ? 0.1 : 1}
-              onChange={(event) => setQuantity(event.target.value)}
-            />
-          </Field>
-          <Field
-            label={editingProduct?.unitType === 'kg' ? 'Precio por kilo (Bs)' : 'Precio unitario (Bs)'}
-            hint={isDistributor ? (isPromotional ? 'Precio promocional: quedará destacado y se conservará el precio original.' : 'Precio oficial definido por Administración.') : 'Administración puede modificar el precio.'}
-          >
-            <NumberInput disabled={isDistributor && !isPromotional} value={unitPrice} min={0} step={0.5} onChange={(event) => setUnitPrice(event.target.value)} />
-          </Field>
-          {isDistributor && <button type="button" onClick={() => { const next = !isPromotional; setIsPromotional(next); if (!next && editingProduct) setUnitPrice(String(editingProduct.referencePrice)) }} className={`min-h-[44px] rounded-2xl border-2 px-3 text-xs font-black ${isPromotional ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-slate-300 bg-white text-slate-700'}`}>VENTA PROMOCIONAL {isPromotional ? 'ACTIVADA' : ''}</button>}
+        {(() => {
+          const editingStock = editingProduct ? round2(availableStock.get(editingProduct.id) ?? 0) : 0
+          const requestedQty = round2(Number(quantity) || 0)
+          const existingInCart = editingProduct ? cart.filter(l => l.productId === editingProduct.id).reduce((sum, l) => sum + l.quantity, 0) : 0
+          const totalRequested = round2(existingInCart + requestedQty)
+          const isEditingOverStock = isDistributor && totalRequested > editingStock
 
-          {/* En granel el calculo tiene que estar a la vista: se pesa y se cobra. */}
-          <div className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
-            <span className="text-[11px] font-bold text-slate-500">
-              {round2(Number(quantity) || 0)}
-              {editingProduct?.unitType === 'kg' ? ' kg' : editingProduct?.unitType === 'package' ? ' paq' : ' u'} ×{' '}
-              {formatBs(round2(Number(unitPrice) || 0))}
-            </span>
-            <span className="text-base font-black tabular-nums text-slate-900">
-              {formatBs(round2((Number(quantity) || 0) * (Number(unitPrice) || 0)))}
-            </span>
-          </div>
+          return (
+            <div className="grid gap-3">
+              {isEditingOverStock && (
+                <div className="flex items-center gap-2 rounded-2xl border border-rose-300 bg-rose-50 p-2.5 text-xs font-bold text-rose-800">
+                  <AlertTriangle size={17} className="shrink-0 text-rose-600" />
+                  <div>
+                    <p className="font-black text-rose-900">Stock insuficiente</p>
+                    <p className="text-[11px] text-rose-700">
+                      Disponible en tu ruta: {formatQty(editingStock, editingProduct?.unitType ?? 'unit')}.
+                      {existingInCart > 0 && ` Ya tienes ${formatQty(existingInCart, editingProduct?.unitType ?? 'unit')} en carrito.`}
+                      {' '}Máximo disponible: {formatQty(editingStock, editingProduct?.unitType ?? 'unit')}.
+                    </p>
+                  </div>
+                </div>
+              )}
+              <Field
+                label={editingProduct?.unitType === 'kg' ? 'Cantidad (kg)' : 'Cantidad'}
+                hint={`Disponible en tu ruta: ${formatQty(editingStock, editingProduct?.unitType ?? 'unit')}`}
+              >
+                <NumberInput
+                  value={quantity}
+                  min={0}
+                  step={editingProduct?.unitType === 'kg' ? 0.1 : 1}
+                  onChange={(event) => setQuantity(event.target.value)}
+                />
+              </Field>
+              <Field
+                label={editingProduct?.unitType === 'kg' ? 'Precio por kilo (Bs)' : 'Precio unitario (Bs)'}
+                hint={isDistributor ? (isPromotional ? 'Precio promocional: quedará destacado y se conservará el precio original.' : 'Precio oficial definido por Administración.') : 'Administración puede modificar el precio.'}
+              >
+                <NumberInput disabled={isDistributor && !isPromotional} value={unitPrice} min={0} step={0.5} onChange={(event) => setUnitPrice(event.target.value)} />
+              </Field>
+              {isDistributor && <button type="button" onClick={() => { const next = !isPromotional; setIsPromotional(next); if (!next && editingProduct) setUnitPrice(String(editingProduct.referencePrice)) }} className={`min-h-[44px] rounded-2xl border-2 px-3 text-xs font-black ${isPromotional ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-slate-300 bg-white text-slate-700'}`}>VENTA PROMOCIONAL {isPromotional ? 'ACTIVADA' : ''}</button>}
 
-          {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
-        </div>
+              {/* En granel el calculo tiene que estar a la vista: se pesa y se cobra. */}
+              <div className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
+                <span className="text-[11px] font-bold text-slate-500">
+                  {round2(Number(quantity) || 0)}
+                  {editingProduct?.unitType === 'kg' ? ' kg' : editingProduct?.unitType === 'package' ? ' paq' : ' u'} ×{' '}
+                  {formatBs(round2(Number(unitPrice) || 0))}
+                </span>
+                <span className="text-base font-black tabular-nums text-slate-900">
+                  {formatBs(round2((Number(quantity) || 0) * (Number(unitPrice) || 0)))}
+                </span>
+              </div>
+
+              {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
+            </div>
+          )
+        })()}
       </Modal>
 
       {/* Cobro */}
@@ -602,45 +769,102 @@ export function SellView({ session, data }: DistributionViewProps) {
         isOpen={isCheckoutOpen}
         onClose={() => setIsCheckoutOpen(false)}
         title="Cobrar venta"
-        subtitle={formatBs(total)}
+        subtitle={`Paso 3 de 3 · Forma de pago y confirmación · Total ${formatBs(total)}`}
         footer={
-          <PrimaryButton full disabled={isSubmitting} onClick={() => void confirmSale()}>
-            {isSubmitting ? 'Registrando...' : `Confirmar ${formatBs(total)}`}
-          </PrimaryButton>
+          <div className="flex items-center justify-between gap-2 w-full">
+            <SecondaryButton
+              disabled={isSubmitting}
+              onClick={() => {
+                setIsCheckoutOpen(false)
+                setIsCustomerOpen(true)
+              }}
+            >
+              <ArrowLeft size={16} /> Volver al cliente
+            </SecondaryButton>
+            <PrimaryButton
+              disabled={isSubmitting || !cartStockValidation.isValid}
+              onClick={() => void confirmSale()}
+            >
+              {isSubmitting ? 'Registrando...' : `Confirmar venta · ${formatBs(total)}`}
+            </PrimaryButton>
+          </div>
         }
       >
         <div className="grid gap-3">
+          <SaleStepIndicator currentStep={3} />
+
+          {!cartStockValidation.isValid && (
+            <div className="flex items-center gap-2 rounded-2xl border border-rose-300 bg-rose-50 p-2.5 text-xs font-bold text-rose-800">
+              <AlertTriangle size={16} className="shrink-0 text-rose-600" />
+              <span>{cartStockValidation.message}</span>
+            </div>
+          )}
+
           <div className="grid gap-1.5">
-            {cart.map((line) => (
-              <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2">
-                <div className="min-w-0">
-                  <p className="break-words text-xs font-extrabold text-slate-900">{line.productNameSnapshot}</p>
-                  {(line.presentationSnapshot || line.descriptionSnapshot) && <p className="break-words text-[10px] font-semibold text-slate-500">{[line.presentationSnapshot, line.descriptionSnapshot].filter(Boolean).join(' · ')}</p>}
-                  <p className="text-[11px] font-semibold text-slate-500">
-                    {formatQty(line.quantity, line.unitType)} × {formatBs(line.actualUnitPrice)}
-                  </p>
-                  {line.isPromotional && <p className="text-[10px] font-black text-amber-700">PRECIO PROMOCIONAL · original {formatBs(line.referenceUnitPrice || line.actualUnitPrice)}</p>}
+            {cart.map((line) => {
+              const lineStock = round2(availableStock.get(line.productId) ?? 0)
+              const isOver = isDistributor && line.quantity > lineStock
+              return (
+                <div
+                  key={line.lineId}
+                  className={`flex items-center justify-between gap-2 rounded-2xl p-3 transition ${
+                    isOver ? 'border border-rose-300 bg-rose-50/70' : 'bg-slate-50'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className="break-words text-xs font-extrabold text-slate-900">{line.productNameSnapshot}</p>
+                    {(line.presentationSnapshot || line.descriptionSnapshot) && (
+                      <p className="break-words text-[10px] font-semibold text-slate-500">
+                        {[line.presentationSnapshot, line.descriptionSnapshot].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                    <p className="text-[11px] font-semibold text-slate-500">
+                      {formatQty(line.quantity, line.unitType)} × {formatBs(line.actualUnitPrice)}
+                    </p>
+                    {isOver && (
+                      <p className="mt-1 flex items-center gap-1 text-[10px] font-black text-rose-700">
+                        <AlertTriangle size={12} className="shrink-0" />
+                        <span>Stock insuficiente: máximo {formatQty(lineStock, line.unitType)} en tu ruta</span>
+                      </p>
+                    )}
+                    {line.isPromotional && (
+                      <p className="text-[10px] font-black text-amber-700">
+                        PRECIO PROMOCIONAL · original {formatBs(line.referenceUnitPrice || line.actualUnitPrice)}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-xs font-black tabular-nums text-slate-900">{formatBs(line.subtotal)}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeLine(line.lineId)}
+                      aria-label="Eliminar producto"
+                      className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-white px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-50 hover:text-rose-700 transition shadow-2xs"
+                    >
+                      <Trash2 size={13} /> Eliminar
+                    </button>
+                  </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="text-xs font-black tabular-nums text-slate-900">{formatBs(line.subtotal)}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeLine(line.lineId)}
-                    aria-label="Quitar linea"
-                    className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 px-3 py-2.5">
             <p className="text-[10px] font-extrabold uppercase text-emerald-700">Cliente seleccionado</p>
             <div className="mt-1 flex items-center justify-between gap-2">
-              <p className="min-w-0 break-words text-xs font-black text-emerald-950">{selectedCustomer ? selectedCustomer.name : 'Sin cliente · venta rápida'}</p>
-              <button type="button" className="shrink-0 text-[11px] font-extrabold text-emerald-800 underline" onClick={() => { setIsCheckoutOpen(false); setIsCustomerOpen(true) }}>Cambiar</button>
+              <p className="min-w-0 break-words text-xs font-black text-emerald-950">
+                {selectedCustomer ? selectedCustomer.name : 'Sin cliente · venta rápida al contado'}
+              </p>
+              <button
+                type="button"
+                className="shrink-0 text-[11px] font-extrabold text-emerald-800 underline"
+                onClick={() => {
+                  setIsCheckoutOpen(false)
+                  setIsCustomerOpen(true)
+                }}
+              >
+                Cambiar cliente
+              </button>
             </div>
           </div>
 
@@ -677,16 +901,53 @@ export function SellView({ session, data }: DistributionViewProps) {
               </p>
             </div>
           )}
-          {paymentKind === 'cash' && <div className="grid grid-cols-2 gap-2"><Field label="Efectivo recibido (Bs)"><NumberInput value={cashReceived} min={0} placeholder={String(total)} onChange={event => setCashReceived(event.target.value)} /></Field><div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-3"><p className="text-[10px] font-extrabold uppercase text-emerald-700">Cambio a devolver</p><p className="mt-1 text-lg font-black text-emerald-800">{formatBs(changeAmount)}</p></div></div>}
-          <Field label="Observaciones" hint="Se guarda con la venta, pero no aparecerá en el ticket."><TextArea value={note} onChange={event => setNote(event.target.value)} /></Field>
+          {paymentKind === 'cash' && (
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Efectivo recibido (Bs)">
+                <NumberInput value={cashReceived} min={0} placeholder={String(total)} onChange={event => setCashReceived(event.target.value)} />
+              </Field>
+              <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-[10px] font-extrabold uppercase text-emerald-700">Cambio a devolver</p>
+                <p className="mt-1 text-lg font-black text-emerald-800">{formatBs(changeAmount)}</p>
+              </div>
+            </div>
+          )}
+          <Field label="Observaciones" hint="Se guarda con la venta, pero no aparecerá en el ticket.">
+            <TextArea value={note} onChange={event => setNote(event.target.value)} />
+          </Field>
 
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
         </div>
       </Modal>
 
       {/* Cliente */}
-      <Modal isOpen={isCustomerOpen} onClose={() => setIsCustomerOpen(false)} title="Seleccionar cliente" subtitle="Paso 1 de 2 · elige una opción para continuar" size="lg">
+      <Modal
+        isOpen={isCustomerOpen}
+        onClose={() => setIsCustomerOpen(false)}
+        title="Seleccionar cliente"
+        subtitle="Paso 2 de 3 · Elige una opción para continuar"
+        size="lg"
+        footer={
+          <div className="flex items-center justify-between gap-2 w-full">
+            <SecondaryButton onClick={() => setIsCustomerOpen(false)}>
+              <ArrowLeft size={16} /> Volver a productos
+            </SecondaryButton>
+            {customerChoiceMade && (
+              <PrimaryButton
+                onClick={() => {
+                  setIsCustomerOpen(false)
+                  setIsCheckoutOpen(true)
+                }}
+              >
+                <span>Siguiente: Pago</span>
+                <ArrowRight size={16} />
+              </PrimaryButton>
+            )}
+          </div>
+        }
+      >
         <div className="grid gap-3">
+          <SaleStepIndicator currentStep={2} />
           <div className="relative rounded-2xl bg-sky-50"><Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sky-700" /><TextInput value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Buscar por nombre, código o carnet..." className="border-2 border-sky-300 bg-sky-50 pl-10" /></div>
           <div className="grid max-h-[52dvh] gap-2 overflow-y-auto pr-1">
             <button
@@ -762,49 +1023,122 @@ export function SellView({ session, data }: DistributionViewProps) {
       {/* Venta confirmada */}
       <Modal isOpen={isHistoryOpen} onClose={() => setIsHistoryOpen(false)} title="Historial de ventas" subtitle="Operación diaria, reimpresión y correcciones auditadas" size="lg">
         <div className="grid gap-3">
+          {correctionSuccessMessage && (
+            <div className="flex items-center justify-between gap-2 rounded-2xl border border-emerald-300 bg-emerald-50 p-3 text-emerald-950 shadow-xs">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
+                <div>
+                  <p className="text-xs font-black">Venta corregida correctamente</p>
+                  <p className="text-[11px] font-semibold text-emerald-800">
+                    Los cambios y el stock fueron actualizados.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCorrectionSuccessMessage(null)}
+                className="rounded-lg p-1 text-emerald-700 hover:bg-emerald-100 transition"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
+
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <TextInput className="pl-9" value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Buscar cliente, producto o vendedor" />
           </div>
-          {historySales.map(sale => (
-            <article key={sale.id} className={`rounded-2xl border p-3 ${sale.latestCorrectionId ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}>
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-xs font-extrabold">{sale.customerName || 'Contado sin cliente'} · {formatBs(sale.total)}</p>
-                  <p className="text-[10px] font-semibold text-slate-500">{new Date(sale.createdAt).toLocaleString('es-BO')} · {sale.sellerName}</p>
-                  {sale.latestCorrectionId && (
-                    <p className="mt-1 text-[10px] font-black text-amber-800">
-                      EDITADA · {sale.editReason} · {sale.editedAt ? new Date(sale.editedAt).toLocaleString('es-BO') : ''}
+          {historySales.map(sale => {
+            const availability = checkSaleCorrectionAvailability(sale, session, data)
+            const audit = getSaleAuditSummary(sale)
+
+            return (
+              <article
+                key={sale.id}
+                className={`rounded-2xl border p-3 ${
+                  audit.isCorrected ? 'border-amber-300 bg-amber-50/70' : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-xs font-extrabold text-slate-900">
+                        {sale.customerName || 'Contado sin cliente'} · {formatBs(sale.total)}
+                      </p>
+                      {audit.isCorrected && (
+                        <span className="rounded-full bg-amber-100 border border-amber-300 px-2 py-0.5 text-[9px] font-black text-amber-800 tracking-wide uppercase">
+                          CORREGIDA
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] font-semibold text-slate-500">
+                      {new Date(sale.createdAt).toLocaleString('es-BO')} · {sale.sellerName}
                     </p>
+                    {audit.isCorrected && (
+                      <div className="mt-1 flex items-center gap-2 flex-wrap">
+                        <p className="text-[10px] font-bold text-amber-900">
+                          Rev. {audit.revisionNumber} · {sale.editReason || 'Corregida'}{' '}
+                          {sale.editedAt ? `· ${new Date(sale.editedAt).toLocaleString('es-BO')}` : ''}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setAuditInspectingSale(sale)}
+                          className="text-[10px] font-black text-amber-900 underline hover:text-amber-700"
+                        >
+                          Ver historial
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <p className="my-2 text-[11px] text-slate-600">
+                  {sale.lines.map(line => `${formatQty(line.quantity, line.unitType)} ${line.productNameSnapshot}`).join(' · ')}
+                </p>
+                <div className="grid grid-cols-3 gap-2 items-center">
+                  <SecondaryButton onClick={() => void printSaleReceipt(sale, receiptContext, true)}>
+                    Ticket
+                  </SecondaryButton>
+                  <SecondaryButton onClick={() => void shareSaleReceipt(sale, receiptContext)}>
+                    Compartir
+                  </SecondaryButton>
+                  {availability.canCorrect ? (
+                    <SecondaryButton
+                      onClick={() => {
+                        setCorrectionTarget(sale)
+                        setCorrectionReason('')
+                        setCorrectionSearch('')
+                        setError(null)
+                        const init: Record<string, string> = {}
+                        sale.lines.forEach(l => {
+                          init[l.productId] = String(l.quantity)
+                        })
+                        setCorrectionQuantities(init)
+                      }}
+                    >
+                      <Pencil size={14} /> Corregir
+                    </SecondaryButton>
+                  ) : (
+                    <div className="flex flex-col">
+                      <button
+                        type="button"
+                        disabled
+                        title={availability.reason}
+                        className="inline-flex min-h-[36px] w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-400 cursor-not-allowed opacity-80"
+                      >
+                        <Ban size={12} className="shrink-0" /> No editable
+                      </button>
+                      <span
+                        className="mt-0.5 text-[8.5px] font-semibold text-slate-400 leading-tight truncate"
+                        title={availability.reason}
+                      >
+                        {availability.reason}
+                      </span>
+                    </div>
                   )}
                 </div>
-              </div>
-              <p className="my-2 text-[11px] text-slate-600">
-                {sale.lines.map(line => `${formatQty(line.quantity, line.unitType)} ${line.productNameSnapshot}`).join(' · ')}
-              </p>
-              <div className="grid grid-cols-3 gap-2">
-                <SecondaryButton onClick={() => void printSaleReceipt(sale, receiptContext, true)}>Ticket</SecondaryButton>
-                <SecondaryButton onClick={() => void shareSaleReceipt(sale, receiptContext)}>Compartir</SecondaryButton>
-                {(!isDistributor || data.openDispatches.some(dispatch => dispatch.id === sale.dispatchId)) && (
-                  <SecondaryButton
-                    onClick={() => {
-                      setCorrectionTarget(sale)
-                      setCorrectionReason('')
-                      setCorrectionSearch('')
-                      setError(null)
-                      const init: Record<string, string> = {}
-                      sale.lines.forEach(l => {
-                        init[l.productId] = String(l.quantity)
-                      })
-                      setCorrectionQuantities(init)
-                    }}
-                  >
-                    <Pencil size={14} /> Corregir
-                  </SecondaryButton>
-                )}
-              </div>
-            </article>
-          ))}
+              </article>
+            )
+          })}
         </div>
       </Modal>
 
@@ -888,6 +1222,11 @@ export function SellView({ session, data }: DistributionViewProps) {
                           Disponible en ruta: {formatQty(stock, product.unitType)}
                           {increase > 0 && ` (+${formatQty(increase, product.unitType)} adicionales)`}
                         </p>
+                        {originalQty > 0 && currentNum === 0 && (
+                          <p className="mt-1.5 rounded-lg border border-rose-200 bg-rose-50/90 px-2 py-1 text-[10px] font-bold text-rose-800">
+                            Línea eliminada en corrección: retornarán {formatQty(originalQty, product.unitType)} al stock disponible de la ruta.
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -895,15 +1234,28 @@ export function SellView({ session, data }: DistributionViewProps) {
                       <p className="text-xs font-black tabular-nums text-slate-900">
                         {formatBs(round2(currentNum * unitPrice))}
                       </p>
-                      {currentNum > 0 && (
+                      {currentNum > 0 ? (
                         <button
                           type="button"
-                          onClick={() => setCorrectionQuantities((c) => ({ ...c, [product.id]: '0' }))}
-                          className="mt-1 text-[10px] font-bold text-rose-600 hover:underline"
+                          onClick={() => setProductPendingRemoval(product)}
+                          className="mt-1 inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50/70 px-2 py-0.5 text-[10px] font-bold text-rose-600 hover:bg-rose-100 hover:text-rose-700 transition"
                         >
-                          Quitar (0)
+                          <Trash2 size={12} /> Eliminar producto
                         </button>
-                      )}
+                      ) : originalQty > 0 ? (
+                        <div className="mt-1 flex flex-col items-end gap-1">
+                          <span className="rounded-md border border-rose-200 bg-rose-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-rose-800">
+                            ELIMINADO
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setCorrectionQuantities((c) => ({ ...c, [product.id]: String(originalQty) }))}
+                            className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 hover:text-slate-900 underline"
+                          >
+                            <RotateCcw size={11} /> Restaurar
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -971,6 +1323,236 @@ export function SellView({ session, data }: DistributionViewProps) {
 
           {error && <p className="text-xs font-bold text-rose-700">{error}</p>}
         </div>
+      </Modal>
+
+      {/* Modal de confirmación para eliminar producto de la venta */}
+      <Modal
+        isOpen={Boolean(productPendingRemoval)}
+        onClose={() => setProductPendingRemoval(null)}
+        title="¿Eliminar este producto de la venta?"
+        subtitle={productPendingRemoval?.name || ''}
+        size="sm"
+        footer={
+          <div className="flex w-full items-center justify-end gap-2">
+            <SecondaryButton onClick={() => setProductPendingRemoval(null)}>
+              Cancelar
+            </SecondaryButton>
+            <button
+              type="button"
+              onClick={() => {
+                if (productPendingRemoval) {
+                  setCorrectionQuantities((c) => ({
+                    ...c,
+                    [productPendingRemoval.id]: '0',
+                  }))
+                }
+                setProductPendingRemoval(null)
+              }}
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-2xl bg-rose-600 px-4 py-2 text-sm font-bold text-white shadow-xs hover:bg-rose-700 active:scale-[0.98] transition"
+            >
+              <Trash2 size={16} /> Sí, eliminar producto
+            </button>
+          </div>
+        }
+      >
+        {productPendingRemoval && (
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-rose-200 bg-rose-50/80 p-3.5 text-xs text-rose-950">
+              <p className="font-extrabold text-sm text-rose-900 mb-1">
+                {productPendingRemoval.name}
+              </p>
+              {getProductPresentation(productPendingRemoval) && (
+                <p className="text-[11px] font-semibold text-rose-800 mb-2">
+                  {getProductPresentation(productPendingRemoval)}
+                </p>
+              )}
+              {(() => {
+                const orig = correctionTarget?.lines.find((l) => l.productId === productPendingRemoval.id)
+                const origQty = orig?.quantity ?? 0
+                return (
+                  <div className="space-y-1.5 pt-1 border-t border-rose-200/80">
+                    <p className="text-xs font-bold text-slate-800">
+                      Cantidad vendida original:{' '}
+                      <span className="font-extrabold text-rose-900">
+                        {formatQty(origQty, productPendingRemoval.unitType)}
+                      </span>
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-slate-700">
+                      Ese producto se retirará de la venta y sus{' '}
+                      <strong className="text-slate-900">
+                        {formatQty(origQty, productPendingRemoval.unitType)}
+                      </strong>{' '}
+                      se devolverán automáticamente al stock de la ruta del distribuidor.
+                    </p>
+                  </div>
+                )
+              })()}
+            </div>
+            <p className="text-[11px] text-slate-500 italic">
+              Podrás restaurar el producto antes de guardar la corrección si fue un error.
+            </p>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal de inspección de auditoría de venta */}
+      <Modal
+        isOpen={Boolean(auditInspectingSale)}
+        onClose={() => setAuditInspectingSale(null)}
+        title="Auditoría de corrección de venta"
+        subtitle={
+          auditInspectingSale
+            ? `${auditInspectingSale.customerName || 'Contado sin cliente'} · ${new Date(auditInspectingSale.createdAt).toLocaleString('es-BO')}`
+            : ''
+        }
+        size="md"
+        footer={
+          <SecondaryButton full onClick={() => setAuditInspectingSale(null)}>
+            Cerrar detalle
+          </SecondaryButton>
+        }
+      >
+        {auditInspectingSale && (() => {
+          const audit = getSaleAuditSummary(auditInspectingSale)
+          return (
+            <div className="space-y-4 text-xs">
+              {/* Resumen de cambios financieros */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2.5">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase">Total Original</p>
+                  <p className="text-base font-extrabold text-slate-800">{formatBs(audit.totalBefore)}</p>
+                </div>
+                <div className="rounded-2xl border border-amber-300 bg-amber-50 p-2.5">
+                  <p className="text-[10px] font-bold text-amber-800 uppercase">Total Corregido</p>
+                  <p className="text-base font-extrabold text-amber-950">{formatBs(audit.totalAfter)}</p>
+                  {audit.moneyDelta !== 0 && (
+                    <p className={`text-[10px] font-black ${audit.moneyDelta < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                      {audit.moneyDelta > 0 ? `+${formatBs(audit.moneyDelta)}` : formatBs(audit.moneyDelta)}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Metadatos de la corrección */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-3 space-y-1.5 shadow-2xs">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-bold text-slate-500">Revisión:</span>
+                  <span className="font-black text-slate-900">Rev. {audit.revisionNumber}</span>
+                </div>
+                {audit.correctedAt && (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-slate-500">Fecha y hora:</span>
+                    <span className="font-semibold text-slate-800">
+                      {new Date(audit.correctedAt).toLocaleString('es-BO')}
+                    </span>
+                  </div>
+                )}
+                {audit.correctedBy && (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-slate-500">Corregido por:</span>
+                    <span className="font-semibold text-slate-800">{audit.correctedBy}</span>
+                  </div>
+                )}
+                {audit.reason && (
+                  <div className="pt-1.5 border-t border-slate-100">
+                    <span className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Motivo:</span>
+                    <p className="rounded-xl bg-slate-50 p-2 text-[11px] font-medium text-slate-800 italic">
+                      "{audit.reason}"
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Detalle línea por línea */}
+              <div>
+                <p className="mb-2 text-[11px] font-extrabold uppercase text-slate-600 tracking-wider">
+                  Detalle de productos ({audit.lineChanges.length})
+                </p>
+                <div className="space-y-2">
+                  {audit.lineChanges.map((change) => {
+                    const isEliminated = change.status === 'eliminated'
+                    const isModified = change.status === 'modified'
+                    const isAdded = change.status === 'added'
+                    return (
+                      <div
+                        key={change.productId}
+                        className={`rounded-2xl border p-2.5 transition ${
+                          isEliminated
+                            ? 'border-rose-200 bg-rose-50/60'
+                            : isModified
+                            ? 'border-amber-200 bg-amber-50/60'
+                            : isAdded
+                            ? 'border-emerald-200 bg-emerald-50/60'
+                            : 'border-slate-200 bg-slate-50/40'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className={`font-bold text-xs ${isEliminated ? 'line-through text-slate-500' : 'text-slate-900'}`}>
+                              {change.productName}
+                            </p>
+                            {change.presentation && (
+                              <p className="text-[10px] text-slate-500">{change.presentation}</p>
+                            )}
+                          </div>
+                          <div>
+                            {isEliminated && (
+                              <span className="rounded-full border border-rose-300 bg-rose-100 px-2 py-0.5 text-[9px] font-black uppercase text-rose-800">
+                                ELIMINADO EN CORRECCIÓN
+                              </span>
+                            )}
+                            {isModified && (
+                              <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[9px] font-black uppercase text-amber-800">
+                                MODIFICADO
+                              </span>
+                            )}
+                            {isAdded && (
+                              <span className="rounded-full border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-[9px] font-black uppercase text-emerald-800">
+                                AGREGADO
+                              </span>
+                            )}
+                            {!isEliminated && !isModified && !isAdded && (
+                              <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-500">
+                                SIN CAMBIO
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="mt-1.5 flex items-center justify-between text-[11px] pt-1.5 border-t border-slate-200/50">
+                          <span className="text-slate-500 font-semibold">
+                            {isEliminated ? (
+                              <>
+                                Vendido: <span className="font-bold text-slate-700">{formatQty(change.qtyBefore, change.unitType as UnitType)}</span> → <span className="font-bold text-rose-700">0</span>
+                              </>
+                            ) : isModified ? (
+                              <>
+                                Cantidad: <span className="line-through text-slate-400">{formatQty(change.qtyBefore, change.unitType as UnitType)}</span>{' '}
+                                <span className="font-bold text-amber-900">→ {formatQty(change.qtyAfter, change.unitType as UnitType)}</span>
+                              </>
+                            ) : isAdded ? (
+                              <>
+                                Nueva cantidad: <span className="font-bold text-emerald-800">+{formatQty(change.qtyAfter, change.unitType as UnitType)}</span>
+                              </>
+                            ) : (
+                              <span>Cantidad: {formatQty(change.qtyAfter, change.unitType as UnitType)}</span>
+                            )}
+                          </span>
+
+                          {change.returnedStockToRoute > 0 && (
+                            <span className="font-extrabold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-lg text-[10px]">
+                              +{formatQty(change.returnedStockToRoute, change.unitType as UnitType)} devueltos a ruta
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )
+        })()}
       </Modal>
 
       <Modal

@@ -434,7 +434,33 @@ export function subscribeSales(
   onError?: (error: Error) => void,
   distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistSale>(DIST_COLLECTIONS.sales, dayKeys, routeId, rows => onData(rows.map(row => row.effectiveSnapshot ? { ...row, ...row.effectiveSnapshot } : row)), onError, distributorUid ? { field: 'sellerUid', uid: distributorUid } : undefined)
+  return subscribeDayScoped<DistSale>(
+    DIST_COLLECTIONS.sales,
+    dayKeys,
+    routeId,
+    rows =>
+      onData(
+        rows.map(row => {
+          if (row.effectiveSnapshot) {
+            return {
+              ...row,
+              ...row.effectiveSnapshot,
+              originalSnapshot: {
+                lines: row.lines,
+                total: row.total,
+                paymentKind: row.paymentKind,
+                cashAmount: row.cashAmount,
+                qrAmount: row.qrAmount,
+                creditAmount: row.creditAmount,
+              },
+            }
+          }
+          return row
+        }),
+      ),
+    onError,
+    distributorUid ? { field: 'sellerUid', uid: distributorUid } : undefined,
+  )
 }
 
 export async function correctSale(input: { saleId: string; reason: string; lines: DistSaleLine[]; paymentKind: PaymentKind; cashAmount: number; qrAmount: number; creditAmount: number }): Promise<void> {

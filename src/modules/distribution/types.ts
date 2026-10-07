@@ -267,6 +267,10 @@ export interface DistSale extends DistBaseDoc {
   revision?: number
   /** Resultado vigente; los campos originales del documento no se sobrescriben. */
   effectiveSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
+  /** Instantánea original antes de cualquier corrección auditada */
+  originalSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
+  /** Historial acumulado de correcciones auditadas de esta venta */
+  revisions?: DistSaleCorrection[]
 }
 
 export interface DistSaleCorrection extends DistBaseDoc {

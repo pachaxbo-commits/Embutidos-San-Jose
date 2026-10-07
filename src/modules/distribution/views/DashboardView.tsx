@@ -1,4 +1,5 @@
 import { StockAlerts } from './LotsAndHistory'
+import { SaleCorrectionAlerts } from './SaleCorrectionAlerts'
 import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { Screen } from '../../../components/ui/Screen'
@@ -330,6 +331,11 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
         <div className="relative mt-1.5"><Search size={17} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--primary)]" /><input id="module-search" value={moduleSearch} onChange={event => setModuleSearch(event.target.value)} placeholder="Ej.: créditos, almacén, reportes…" className="min-h-[44px] w-full rounded-2xl border-2 border-slate-300 bg-slate-50 pl-10 pr-3 text-sm font-semibold outline-none focus:border-[var(--primary)]" /></div>
         {moduleSearch.trim() && <div className="mt-2 grid gap-1.5 sm:grid-cols-2">{moduleMatches.length ? moduleMatches.map(module => <button key={module.id} type="button" onClick={() => { onNavigate?.(module.id); setModuleSearch('') }} className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-3 text-left text-xs font-extrabold text-slate-800 hover:border-[var(--primary)] hover:bg-[var(--primary-soft)]">Ir a {module.label}</button>) : <p className="px-1 py-2 text-xs font-semibold text-slate-500">No se encontró una sección con ese nombre.</p>}</div>}
       </div>}
+      <SaleCorrectionAlerts
+        sales={data.sales}
+        userUid={session.uid}
+        role={session.role}
+      />
       <StockAlerts data={data} />
       <div className="grid w-full min-w-0 gap-3">
         <RangePicker
