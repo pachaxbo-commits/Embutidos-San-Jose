@@ -31,6 +31,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   transfer: 'Transferencia entre almacenes',
   dispatch: 'Despacho a ruta',
   dispatch_addition: 'Aumento de despacho',
+  dispatch_correction: 'Corrección de despacho',
   sale: 'Venta',
   return: 'Retorno de ruta',
   adjustment: 'Ajuste de inventario',

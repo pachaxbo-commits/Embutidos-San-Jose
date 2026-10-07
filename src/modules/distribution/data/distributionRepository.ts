@@ -673,6 +673,24 @@ export async function addDispatchLoad(input: AddDispatchLoadInput): Promise<stri
   return id
 }
 
+export interface CorrectDispatchInput {
+  dispatchId: string
+  targetType: 'initial' | 'addition'
+  additionId?: string
+  productId?: string
+  newQuantity?: number
+  voidAddition?: boolean
+  reason: string
+  operationId?: string
+}
+
+/** Corrección auditada de despacho o aumento de carga (reintegra stock al lote de origen). */
+export async function correctDispatch(input: CorrectDispatchInput): Promise<string> {
+  const id = input.operationId || newOperationId('disp-corr')
+  await submitOperation('correctDispatch', input, id)
+  return id
+}
+
 // ---------------------------------------------------------------------------
 // Ventas
 // ---------------------------------------------------------------------------

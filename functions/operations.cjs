@@ -447,6 +447,325 @@ async function dispatch(o, p, addition = false) {
   o.put("distDispatches", o.id, d);
   return d;
 }
+function getDispatchLoadedMap(d) {
+  const map = new Map();
+  for (const line of d.lines || []) {
+    map.set(line.productId, round((map.get(line.productId) || 0) + line.quantity));
+  }
+  for (const add of d.additions || []) {
+    if (add.voided) continue;
+    for (const line of add.quantityByProduct || []) {
+      map.set(line.productId, round((map.get(line.productId) || 0) + line.quantity));
+    }
+  }
+  return map;
+}
+async function revertLineStock(o, d, line, returnQty, reason) {
+  if (returnQty <= 0) return [];
+  const wh = d.warehouseId || "central";
+  const warehouse = location("warehouse", wh);
+  const route = location("route", d.routeId);
+  const pid = line.productId;
+
+  const e = await o.loadStock(pid, warehouse);
+  await o.loadStock(pid, route);
+
+  const allocationsReturned = [];
+  let remainingReturn = returnQty;
+
+  if (Array.isArray(line.allocations) && line.allocations.length > 0) {
+    for (let i = line.allocations.length - 1; i >= 0 && remainingReturn > 0; i--) {
+      const alloc = line.allocations[i];
+      const takeBack = round(Math.min(remainingReturn, alloc.quantity));
+      if (takeBack <= 0) continue;
+      alloc.quantity = round(alloc.quantity - takeBack);
+      remainingReturn = round(remainingReturn - takeBack);
+      allocationsReturned.push({
+        lotId: alloc.lotId,
+        lotCode: alloc.lotCode,
+        expiresOn: alloc.expiresOn,
+        quantity: takeBack,
+        productionCost: alloc.productionCost ?? null,
+      });
+    }
+    line.allocations = line.allocations.filter((a) => a.quantity > 0.0001);
+  } else {
+    const lotId =
+      line.lotId ||
+      e.lots.find((l) => l.productId === pid && l.lotCode === line.lotCode)?.id;
+    check(lotId, "No se encontró el lote de origen para retornar la mercadería.");
+    allocationsReturned.push({
+      lotId,
+      lotCode: line.lotCode || "",
+      quantity: returnQty,
+    });
+  }
+
+  for (const part of allocationsReturned) {
+    const lot = e.lots.find((x) => x.id === part.lotId);
+    check(
+      lot,
+      `No se encontró el lote ${part.lotCode || part.lotId} en el inventario.`,
+    );
+    lot.quantities[warehouse] = round(
+      (lot.quantities[warehouse] || 0) + part.quantity,
+    );
+    lot.quantities[route] = round((lot.quantities[route] || 0) - part.quantity);
+  }
+
+  o.move(e, warehouse, returnQty);
+  o.move(e, route, -returnQty);
+
+  o.ledger(pid, returnQty, route, warehouse, "dispatch_correction", {
+    note: reason.trim(),
+    dispatchId: d.id,
+    allocations: allocationsReturned,
+    lotCode:
+      allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+      line.lotCode ||
+      "",
+  });
+
+  return allocationsReturned;
+}
+async function correctDispatch(o, p) {
+  check(
+    ["admin", "warehouse"].includes(o.member.role),
+    "Sin permiso para corregir despachos.",
+  );
+  check(p.dispatchId?.trim(), "Falta el identificador del despacho.");
+  check(p.reason?.trim(), "El motivo de la corrección es obligatorio.");
+  check(
+    ["initial", "addition"].includes(p.targetType),
+    "Tipo de corrección inválido.",
+  );
+
+  const d = await o.read("distDispatches", p.dispatchId);
+  check(d, "Despacho inexistente.");
+  check(
+    d.status === "open",
+    "Este despacho ya fue cerrado y no puede modificarse.",
+  );
+
+  const wh = d.warehouseId || "central";
+  const warehouse = location("warehouse", wh);
+  if (o.member.role === "warehouse") {
+    o.owns(warehouse);
+  }
+
+  const sales = (await o.query("distSales", "dispatchId", d.id)).map((sale) =>
+    sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
+  );
+
+  const loadedMap = getDispatchLoadedMap(d);
+  d.corrections = d.corrections || [];
+
+  if (p.targetType === "initial") {
+    check(p.productId?.trim(), "Falta el identificador del producto.");
+    const line = (d.lines || []).find((l) => l.productId === p.productId);
+    check(line, "El producto no se encuentra en la carga inicial.");
+    const oldQty = line.quantity;
+    const product = await o.product(p.productId);
+    const newQty = o.amount(p.newQuantity, product);
+    check(newQty >= 0, "La cantidad no puede ser negativa.");
+    check(
+      newQty <= oldQty,
+      "Solo se permite mantener o reducir la cantidad cargada.",
+    );
+    const returnQty = round(oldQty - newQty);
+
+    if (returnQty > 0) {
+      const currentTotalLoaded = loadedMap.get(p.productId) || 0;
+      const newTotalLoaded = round(currentTotalLoaded - returnQty);
+      const totalSold = round(
+        sales.reduce(
+          (sum, s) =>
+            sum +
+            (s.lines || [])
+              .filter((l) => l.productId === p.productId)
+              .reduce((n, l) => n + l.quantity, 0),
+          0,
+        ),
+      );
+      check(
+        newTotalLoaded >= totalSold,
+        `No puedes reducir la carga a ${newTotalLoaded} porque ya se registraron ${totalSold} vendidos.`,
+      );
+
+      const allocationsReturned = await revertLineStock(
+        o,
+        d,
+        line,
+        returnQty,
+        p.reason,
+      );
+      line.quantity = newQty;
+
+      d.corrections.push({
+        id: `${o.id}__corr_${d.corrections.length + 1}`,
+        operationId: o.id,
+        targetType: "initial",
+        productId: p.productId,
+        productName: line.productName,
+        oldQuantity: oldQty,
+        newQuantity: newQty,
+        returnedQuantity: returnQty,
+        unitType: line.unitType,
+        lotCode:
+          allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+          line.lotCode ||
+          "",
+        lotId: allocationsReturned[0]?.lotId || line.lotId || "",
+        reason: p.reason.trim(),
+        correctedBy: o.actor,
+        correctedByName: o.member.displayName || o.actor,
+        correctedAt: o.now,
+      });
+    }
+  } else if (p.targetType === "addition") {
+    check(p.additionId?.trim(), "Identificador de aumento requerido.");
+    const addition = (d.additions || []).find((a) => a.id === p.additionId);
+    check(addition, "El aumento de carga no existe.");
+    check(!addition.voided, "Este aumento ya fue anulado anteriormente.");
+
+    if (p.voidAddition === true) {
+      for (const line of addition.quantityByProduct || []) {
+        const oldQty = line.quantity;
+        if (oldQty <= 0) continue;
+        const currentTotalLoaded = loadedMap.get(line.productId) || 0;
+        const newTotalLoaded = round(currentTotalLoaded - oldQty);
+        const totalSold = round(
+          sales.reduce(
+            (sum, s) =>
+              sum +
+              (s.lines || [])
+                .filter((l) => l.productId === line.productId)
+                .reduce((n, l) => n + l.quantity, 0),
+            0,
+          ),
+        );
+        check(
+          newTotalLoaded >= totalSold,
+          `No puedes reducir la carga a ${newTotalLoaded} porque ya se registraron ${totalSold} vendidos.`,
+        );
+
+        const allocationsReturned = await revertLineStock(
+          o,
+          d,
+          line,
+          oldQty,
+          p.reason,
+        );
+        line.quantity = 0;
+
+        d.corrections.push({
+          id: `${o.id}__corr_${d.corrections.length + 1}`,
+          operationId: o.id,
+          targetType: "addition",
+          additionId: addition.id,
+          productId: line.productId,
+          productName: line.productName,
+          oldQuantity: oldQty,
+          newQuantity: 0,
+          returnedQuantity: oldQty,
+          unitType: line.unitType,
+          lotCode:
+            allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+            line.lotCode ||
+            "",
+          lotId: allocationsReturned[0]?.lotId || line.lotId || "",
+          reason: p.reason.trim(),
+          correctedBy: o.actor,
+          correctedByName: o.member.displayName || o.actor,
+          correctedAt: o.now,
+        });
+      }
+      addition.voided = true;
+      addition.voidedAt = o.now;
+      addition.voidedBy = o.actor;
+      addition.voidReason = p.reason.trim();
+    } else {
+      check(p.productId?.trim(), "Falta el identificador del producto.");
+      const line = (addition.quantityByProduct || []).find(
+        (l) => l.productId === p.productId,
+      );
+      check(line, "El producto no se encuentra en este aumento.");
+      const oldQty = line.quantity;
+      const product = await o.product(p.productId);
+      const newQty = o.amount(p.newQuantity, product);
+      check(newQty >= 0, "La cantidad no puede ser negativa.");
+      check(
+        newQty <= oldQty,
+        "Solo se permite mantener o reducir la cantidad cargada.",
+      );
+      const returnQty = round(oldQty - newQty);
+
+      if (returnQty > 0) {
+        const currentTotalLoaded = loadedMap.get(p.productId) || 0;
+        const newTotalLoaded = round(currentTotalLoaded - returnQty);
+        const totalSold = round(
+          sales.reduce(
+            (sum, s) =>
+              sum +
+              (s.lines || [])
+                .filter((l) => l.productId === p.productId)
+                .reduce((n, l) => n + l.quantity, 0),
+            0,
+          ),
+        );
+        check(
+          newTotalLoaded >= totalSold,
+          `No puedes reducir la carga a ${newTotalLoaded} porque ya se registraron ${totalSold} vendidos.`,
+        );
+
+        const allocationsReturned = await revertLineStock(
+          o,
+          d,
+          line,
+          returnQty,
+          p.reason,
+        );
+        line.quantity = newQty;
+
+        d.corrections.push({
+          id: `${o.id}__corr_${d.corrections.length + 1}`,
+          operationId: o.id,
+          targetType: "addition",
+          additionId: addition.id,
+          productId: p.productId,
+          productName: line.productName,
+          oldQuantity: oldQty,
+          newQuantity: newQty,
+          returnedQuantity: returnQty,
+          unitType: line.unitType,
+          lotCode:
+            allocationsReturned.map((a) => a.lotCode).filter(Boolean).join(", ") ||
+            line.lotCode ||
+            "",
+          lotId: allocationsReturned[0]?.lotId || line.lotId || "",
+          reason: p.reason.trim(),
+          correctedBy: o.actor,
+          correctedByName: o.member.displayName || o.actor,
+          correctedAt: o.now,
+        });
+      }
+    }
+  }
+
+  d.linesProductIds = [
+    ...new Set(
+      [
+        ...(d.lines || []).filter((l) => l.quantity > 0),
+        ...(d.additions || [])
+          .filter((a) => !a.voided)
+          .flatMap((a) => a.quantityByProduct || [])
+          .filter((l) => l.quantity > 0),
+      ].map((l) => l.productId),
+    ),
+  ];
+  o.put("distDispatches", d.id, d);
+  return { id: d.id, corrections: d.corrections };
+}
 async function sale(o, p) {
   check(
     ["admin", "distributor"].includes(o.member.role),
@@ -765,6 +1084,7 @@ const handlers = {
   changeProductUnit,
   warehouseShift,
   editSale,
+  correctDispatch,
 };
 async function processCommand(db, ref) {
   return db.runTransaction(async (tx) => {

@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { AlertTriangle, ChevronRight } from "lucide-react";
+import { AlertTriangle, ChevronRight, Printer } from "lucide-react";
 import { Field, TextInput, NumberInput } from "../../../components/ui/Form";
 import { Modal } from "../../../components/ui/Modal";
 import { PrimaryButton, SectionCard, formatQty } from "./shared";
 import { submitOperation } from "../data/operationQueue";
 import { newOperationId } from "../data/distributionRepository";
 import { toDayKey } from "../domain/engine";
+import { exportTodayIntakesPdf } from "../data/reportExports";
+import { getTodayStockIntakes } from "../domain/todayIntakes";
 import type { DistributionViewProps } from "./DistributionApp";
 import type { DistLot } from "../types";
 import { visiblePersonName } from "./displayText";
@@ -15,6 +17,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   transfer: "Transferencia entre almacenes",
   dispatch: "Despacho a ruta",
   dispatch_addition: "Aumento de despacho",
+  dispatch_correction: "Corrección de despacho",
   sale: "Venta",
   return: "Retorno",
   adjustment: "Baja o ajuste",
@@ -241,6 +244,26 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
     [reason, setReason] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const [exportingToday, setExportingToday] = useState(false);
+  const [todayMsg, setTodayMsg] = useState<string | null>(null);
+
+  const handlePrintToday = async () => {
+    if (exportingToday) return;
+    const todayIntakes = getTodayStockIntakes(data, session.warehouseId || "central");
+    if (todayIntakes.items.length === 0) {
+      setTodayMsg("No hay ingresos de inventario registrados hoy.");
+      return;
+    }
+    setExportingToday(true);
+    setTodayMsg(null);
+    try {
+      await exportTodayIntakesPdf(data, session.warehouseId || "central");
+    } catch (err) {
+      setTodayMsg((err as Error).message || "No se pudo generar el reporte.");
+    } finally {
+      setExportingToday(false);
+    }
+  };
   const open = (l: DistLot) => {
     setEditing(l);
     setCode(l.lotCode);
@@ -318,6 +341,20 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
             onChange={(e) => setMonth(e.target.value)}
           />
         </Field>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <button
+            type="button"
+            disabled={exportingToday}
+            onClick={() => void handlePrintToday()}
+            className="flex min-h-[38px] items-center justify-center gap-2 rounded-xl bg-emerald-700 px-3.5 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-800 disabled:opacity-50"
+          >
+            <Printer size={15} />
+            <span>{exportingToday ? "Generando…" : "Imprimir ingresos de hoy (PDF)"}</span>
+          </button>
+          {todayMsg && (
+            <p className="text-xs font-bold text-rose-700">{todayMsg}</p>
+          )}
+        </div>
         <div className="mt-3 grid gap-2">
           {data.movements
             .filter(

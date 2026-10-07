@@ -23,6 +23,10 @@ import {
 } from "../domain/reportLabels";
 import { saveReport } from "./reportFiles";
 import {
+  generateTodayIntakesPdfBytes,
+  getTodayStockIntakes,
+} from "../domain/todayIntakes";
+import {
   type ReportSheetId,
   type ReportOption,
   REPORT_OPTIONS,
@@ -1587,3 +1591,16 @@ export async function exportCustomerStatement(
     "SanJose-estado-cuenta.pdf",
   );
 }
+
+export { generateTodayIntakesPdfBytes, getTodayStockIntakes };
+
+export async function exportTodayIntakesPdf(
+  data: Pick<DistributionData, "movements" | "products" | "lots" | "warehouses">,
+  warehouseId = "central",
+  targetDayKey?: string,
+  filename = "SanJose-ingresos-hoy.pdf",
+): Promise<void> {
+  const bytes = await generateTodayIntakesPdfBytes(data, warehouseId, targetDayKey);
+  await saveReport(bytes, filename, "application/pdf");
+}
+

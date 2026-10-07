@@ -73,8 +73,9 @@ export function formatDispatchTextSummary(dispatch: DistDispatch): string {
   ).join('\n')
 
   let additionsText = ''
-  if (dispatch.additions && dispatch.additions.length > 0) {
-    additionsText = '\n\n*AUMENTOS REGISTRADOS:*\n' + dispatch.additions.map((a, i) => {
+  const activeAdditions = (dispatch.additions || []).filter((a) => !a.voided)
+  if (activeAdditions.length > 0) {
+    additionsText = '\n\n*AUMENTOS REGISTRADOS:*\n' + activeAdditions.map((a, i) => {
       const time = new Date(a.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })
       const resp = a.warehouseResponsibleName || a.createdByName || 'Almacén'
       const lines = a.quantityByProduct.map(
@@ -110,8 +111,9 @@ Almacén: ${dispatch.warehouseResponsibleName || 'Almacén Central'}`
   ).join('\n')
 
   let additionsText = ''
-  if (dispatch.additions && dispatch.additions.length > 0) {
-    additionsText = '\n\nAUMENTOS REGISTRADOS:\n' + dispatch.additions.map((a, i) => {
+  const activeAdditions = (dispatch.additions || []).filter((a) => !a.voided)
+  if (activeAdditions.length > 0) {
+    additionsText = '\n\nAUMENTOS REGISTRADOS:\n' + activeAdditions.map((a, i) => {
       const time = new Date(a.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })
       const resp = a.warehouseResponsibleName || a.createdByName || 'Almacén'
       const lines = a.quantityByProduct.map(
@@ -215,13 +217,14 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
   // SECCIÓN 2: AUMENTOS EN RUTA
   let y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8
 
-  if (dispatch.additions && dispatch.additions.length > 0) {
+  const activeAdditions = (dispatch.additions || []).filter((a) => !a.voided)
+  if (activeAdditions.length > 0) {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(9.5)
     doc.setTextColor(180, 83, 9)
     doc.text('2. AUMENTOS DE CARGA REGISTRADOS DURANTE EL DÍA', 14, y)
 
-    dispatch.additions.forEach((add, i) => {
+    activeAdditions.forEach((add, i) => {
       y += 5
       doc.setFillColor(254, 243, 199)
       doc.rect(14, y, pageWidth - 28, 7.5, 'F')

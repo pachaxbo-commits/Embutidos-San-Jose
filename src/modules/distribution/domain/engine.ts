@@ -79,6 +79,7 @@ export function computeLoadedByProduct(dispatch: DistDispatch | null): Map<strin
   }
 
   for (const addition of dispatch.additions || []) {
+    if (addition.voided) continue
     for (const line of addition.quantityByProduct || []) {
       const current = result.get(line.productId)
       result.set(line.productId, {

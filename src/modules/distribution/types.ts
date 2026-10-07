@@ -23,6 +23,7 @@ export type StockMovementType =
   | 'sale_correction'
   | 'return' // retorno fisico de ruta a central
   | 'adjustment' // ajuste manual de almacen
+  | 'dispatch_correction' // correccion auditada de despacho o aumento
   | 'shortage' // faltante detectado en conciliacion
   | 'overage' // sobrante detectado en conciliacion
 
@@ -174,6 +175,29 @@ export interface DistDispatchAddition {
   createdByName: string
   note?: string
   warehouseResponsibleName?: string
+  voided?: boolean
+  voidedAt?: string
+  voidedBy?: string
+  voidReason?: string
+}
+
+export interface DistDispatchCorrection {
+  id: string
+  operationId: string
+  targetType: 'initial' | 'addition'
+  additionId?: string
+  productId: string
+  productName: string
+  oldQuantity: number
+  newQuantity: number
+  returnedQuantity: number
+  unitType: UnitType
+  lotCode?: string
+  lotId?: string
+  reason: string
+  correctedBy: string
+  correctedByName: string
+  correctedAt: string
 }
 
 export type DispatchStatus = 'open' | 'closed'
@@ -187,6 +211,7 @@ export interface DistDispatch extends DistBaseDoc {
   status: DispatchStatus
   lines: DistDispatchLine[]
   additions: DistDispatchAddition[]
+  corrections?: DistDispatchCorrection[]
   observation?: string
   closedAt?: string
   closureId?: string

@@ -13,10 +13,13 @@ import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
-import { currentStockSheets, exportExcel, exportPdf, inventoryHistorySheet } from '../data/reportExports'
+import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inventoryHistorySheet } from '../data/reportExports'
+import { getTodayStockIntakes } from '../domain/todayIntakes'
+import { reportUnitLabel } from '../domain/reportLabels'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
+  dispatch_addition: 'Aumento de despacho', dispatch_correction: 'Corrección de despacho',
   sale: 'Venta', adjustment: 'Disminución por ajuste', return: 'Devolución recibida',
   shortage: 'Faltante', overage: 'Sobrante', exchange: 'Cambio de producto',
   customer_return: 'Devolución del cliente',
@@ -108,6 +111,30 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     }
   }
 
+  const todayIntakes = useMemo(
+    () => getTodayStockIntakes(data, warehouseId),
+    [data, warehouseId],
+  )
+  const [todayIntakesExporting, setTodayIntakesExporting] = useState(false)
+  const [todayIntakesMessage, setTodayIntakesMessage] = useState<string | null>(null)
+
+  const handlePrintTodayIntakes = async () => {
+    if (todayIntakesExporting) return
+    if (todayIntakes.items.length === 0) {
+      setTodayIntakesMessage('No hay ingresos de inventario registrados hoy.')
+      return
+    }
+    setTodayIntakesExporting(true)
+    setTodayIntakesMessage(null)
+    try {
+      await exportTodayIntakesPdf(data, warehouseId)
+    } catch (printError) {
+      setTodayIntakesMessage((printError as Error).message || 'No se pudo generar el reporte de ingresos de hoy.')
+    } finally {
+      setTodayIntakesExporting(false)
+    }
+  }
+
   const filteredProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
     return data.products
@@ -188,6 +215,36 @@ export function InventoryView({ session, data }: DistributionViewProps) {
 
         {tab === 'central' && !isDistributor && (
           <>
+            <div className="flex w-full min-w-0 flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 sm:p-3.5 shadow-xs">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <PackagePlus size={16} className="shrink-0 text-emerald-700" />
+                  <h3 className="text-xs font-black uppercase tracking-wider text-emerald-950">Ingresos de hoy</h3>
+                  <span className="inline-flex items-center rounded-full bg-emerald-200/80 px-2 py-0.5 text-[11px] font-bold text-emerald-900">
+                    {todayIntakes.totalMovements} {todayIntakes.totalMovements === 1 ? 'movimiento' : 'movimientos'}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] font-semibold text-emerald-800 truncate">
+                  {todayIntakes.totalMovements === 0
+                    ? 'No hay ingresos registrados hoy en este almacén.'
+                    : todayIntakes.summary.map(s => `${s.productName}: ${s.totalQuantity} ${reportUnitLabel(s.unitType)}`).join(' · ')}
+                </p>
+                {todayIntakesMessage && (
+                  <p className="mt-1 text-[11px] font-bold text-rose-700">
+                    {todayIntakesMessage}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={todayIntakesExporting}
+                onClick={() => void handlePrintTodayIntakes()}
+                className="flex shrink-0 min-h-[38px] items-center justify-center gap-2 rounded-xl bg-emerald-700 px-3.5 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-800 disabled:opacity-50"
+              >
+                <Printer size={15} />
+                <span>{todayIntakesExporting ? 'Generando…' : 'Imprimir ingresos de hoy'}</span>
+              </button>
+            </div>
             <TextInput value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto..." />
             <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2">
               {filteredProducts.map((product) => {
@@ -307,6 +364,29 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                 <FileSpreadsheet size={15} /> Descargar Excel existencias
               </button>
             </div>
+          </div>
+
+          <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/60 p-4">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <PackagePlus size={18} className="text-emerald-700" />
+                <h4 className="text-xs font-black uppercase tracking-wider text-emerald-950">Ingresos de hoy</h4>
+              </div>
+              <span className="inline-flex items-center rounded-full bg-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-900">
+                {todayIntakes.totalMovements} {todayIntakes.totalMovements === 1 ? 'ingreso' : 'ingresos'}
+              </span>
+            </div>
+            <p className="mb-3 text-xs font-semibold text-emerald-800">
+              Documento exclusivo con los ingresos de mercadería realizados hoy ({todayIntakes.dateFormatted}) en {warehouseName}.
+            </p>
+            <button
+              type="button"
+              disabled={todayIntakesExporting}
+              onClick={() => void handlePrintTodayIntakes()}
+              className="flex min-h-[42px] w-full items-center justify-center gap-2 rounded-2xl bg-emerald-700 px-3 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-800 disabled:opacity-40"
+            >
+              <Printer size={15} /> {todayIntakesExporting ? 'Generando…' : 'Imprimir ingresos de hoy (PDF)'}
+            </button>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
