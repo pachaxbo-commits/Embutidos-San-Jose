@@ -87,4 +87,13 @@ equal(hasNewerAndroidVersion(29, manifest31), true)
 equal(hasNewerAndroidVersion(30, manifest31), true)
 equal(hasNewerAndroidVersion(31, manifest31), false)
 
-console.log('34 comprobaciones del manifiesto y sesión Android aprobadas')
+const manifest32 = parseAndroidUpdateManifest({
+  ...valid,
+  versionCode: 32,
+  versionName: '1.4.12',
+})
+equal(hasNewerAndroidVersion(30, manifest32), true)
+equal(hasNewerAndroidVersion(31, manifest32), true)
+equal(hasNewerAndroidVersion(32, manifest32), false)
+
+console.log('37 comprobaciones del manifiesto y sesión Android aprobadas')

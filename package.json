@@ -20,6 +20,7 @@
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "test:report-selection": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportSelection.test.ts",
     "test:customer-purchases": "node --experimental-strip-types src/modules/distribution/domain/__tests__/customerPurchases.test.ts",
+    "test:product-profit": "node --experimental-strip-types src/modules/distribution/domain/__tests__/productProfit.test.ts",
     "test:today-intakes": "node --experimental-strip-types src/modules/distribution/domain/__tests__/todayIntakes.test.ts",
     "test:dispatch-correction": "node --experimental-strip-types src/modules/distribution/domain/__tests__/dispatchCorrection.test.ts",
     "test:sale-correction": "node --experimental-strip-types src/modules/distribution/domain/__tests__/saleCorrectionAudit.test.ts",

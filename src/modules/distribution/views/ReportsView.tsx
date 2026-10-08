@@ -9,13 +9,13 @@ import {
   defaultSheetIdForTab,
   filterReportSheets,
 } from '../data/reportExports'
-import { reportCreditLabel, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
+import { reportCreditLabel, reportDateTime, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
 import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
 import { Field } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
-import { Award, Check, ChevronDown, ChevronRight, FileSpreadsheet, FileText, HelpCircle, Printer, Send } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Award, Check, ChevronDown, ChevronRight, FileSpreadsheet, FileText, HelpCircle, Printer, Send } from 'lucide-react'
 import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
 import {
   computeMoneySummary,
@@ -31,10 +31,11 @@ import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
 import { aggregateCustomerPurchases } from '../domain/customerPurchases'
+import { computeProductProfitReport, type ProductProfitSummaryItem } from '../domain/productProfit'
 
 type MainCategory = 'resumen' | 'dinero' | 'ventas' | 'creditos' | 'inventario'
 type DineroSubTab = 'flujo' | 'cobros' | 'gastos' | 'arqueos'
-type VentasSubTab = 'ventas' | 'productos' | 'kardex' | 'clientes'
+type VentasSubTab = 'ventas' | 'productos' | 'ganancias' | 'kardex' | 'clientes'
 type InventarioSubTab = 'existencias' | 'movimientos'
 
 const MAIN_CATEGORIES: { value: MainCategory; label: string }[] = [
@@ -62,6 +63,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const [selectedSheetIds, setSelectedSheetIds] = useState<Set<ReportSheetId>>(new Set())
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null)
+  const [selectedProfitProduct, setSelectedProfitProduct] = useState<ProductProfitSummaryItem | null>(null)
 
   const attributionError = reportAttributionError(data, session.dayKeys, routeFilter, sellerFilter)
 
@@ -208,6 +210,20 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const customerPurchasesAgg = useMemo(
     () => aggregateCustomerPurchases(data, session.dayKeys, routeFilter, sellerFilter),
     [data, session.dayKeys, routeFilter, sellerFilter],
+  )
+
+  const productProfitReport = useMemo(
+    () =>
+      computeProductProfitReport(
+        sales,
+        claims,
+        expenses,
+        data.movements,
+        session.dayKeys,
+        routeFilter,
+        sellerFilter,
+      ),
+    [sales, claims, expenses, data.movements, session.dayKeys, routeFilter, sellerFilter],
   )
 
   const operatingFinancials = useMemo(() => {
@@ -605,6 +621,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
               {[
                 { value: 'ventas', label: 'Ventas' },
                 { value: 'productos', label: 'Productos vendidos' },
+                { value: 'ganancias', label: 'Ganancias' },
                 { value: 'kardex', label: 'Kardex de ventas' },
                 { value: 'clientes', label: 'Compras por cliente' },
               ].map((sub) => (
@@ -654,16 +671,223 @@ export function ReportsView({ session, data }: DistributionViewProps) {
               productRows.length === 0 ? (
                 <EmptyBlock title="Sin productos vendidos" />
               ) : (
-                <ResponsiveTable
-                  rows={productRows}
-                  columns={[
-                    { key: 'cantidad', header: 'Cantidad', render: (row) => formatQty(row.quantity, row.unitType) },
-                    { key: 'importe', header: 'Importe', align: 'right', render: (row) => formatBs(row.amount) },
-                  ]}
-                  keyOf={(row) => row.productId}
-                  titleOf={(row) => row.productName}
-                />
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] font-bold text-slate-500">
+                      Volumen de productos comercializados
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setVentasSubTab('ganancias')}
+                      className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-bold text-rose-700 hover:bg-rose-100 transition"
+                    >
+                      <span>Ver ganancias</span>
+                      <ArrowRight size={13} />
+                    </button>
+                  </div>
+                  <ResponsiveTable
+                    rows={productRows}
+                    columns={[
+                      { key: 'cantidad', header: 'Cantidad', render: (row) => formatQty(row.quantity, row.unitType) },
+                      { key: 'importe', header: 'Importe', align: 'right', render: (row) => formatBs(row.amount) },
+                    ]}
+                    keyOf={(row) => row.productId}
+                    titleOf={(row) => row.productName}
+                  />
+                </>
               )
+            )}
+
+            {ventasSubTab === 'ganancias' && (
+              <div className="grid gap-3">
+                {/* 1. KPIs Principales de Ganancia Bruta */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <KpiCard
+                    label="Ventas netas"
+                    value={formatBs(productProfitReport.totals.salesBs)}
+                    tone="primary"
+                  />
+                  <KpiCard
+                    label="Costo de productos"
+                    value={
+                      productProfitReport.totals.costKnown
+                        ? formatBs(productProfitReport.totals.costBs ?? 0)
+                        : 'Incompleto'
+                    }
+                    tone="neutral"
+                  />
+                  <KpiCard
+                    label="Ganancia bruta"
+                    value={
+                      productProfitReport.totals.costKnown
+                        ? formatBs(productProfitReport.totals.profitBs ?? 0)
+                        : 'No disponible'
+                    }
+                    tone={
+                      productProfitReport.totals.costKnown && (productProfitReport.totals.profitBs ?? 0) >= 0
+                        ? 'positive'
+                        : 'warning'
+                    }
+                  />
+                  <KpiCard
+                    label="Margen bruto"
+                    value={
+                      productProfitReport.totals.costKnown && productProfitReport.totals.marginPct !== null
+                        ? `${productProfitReport.totals.marginPct.toFixed(1)} %`
+                        : 'No disponible'
+                    }
+                    tone="positive"
+                  />
+                </div>
+
+                {/* 2. Advertencia si existen costos incompletos */}
+                {!productProfitReport.totals.costKnown && (
+                  <div className="flex items-start gap-2.5 rounded-2xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-xs">
+                    <AlertTriangle size={18} className="shrink-0 text-amber-600 mt-0.5" />
+                    <div>
+                      <p className="font-extrabold text-amber-950">
+                        Hay ventas históricas sin costo de producción registrado
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-relaxed text-amber-800">
+                        Para no distorsionar la rentabilidad ni proyectar márgenes engañosos, la ganancia bruta de los productos afectados y el total del periodo se indican como no disponibles.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. Bloque Secundario: Ganancia Operativa Estimada (cuando aplique) */}
+                {productProfitReport.operationalTotals.isAvailable ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                      <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
+                        Resultado operativo estimado (periodo completo)
+                      </span>
+                      <span className="text-xs font-black text-slate-900">
+                        {formatBs(productProfitReport.operationalTotals.operatingProfit ?? 0)}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-center text-[11px]">
+                      <div>
+                        <span className="block text-[10px] text-slate-500 font-semibold">Gastos de ruta</span>
+                        <span className="font-extrabold text-slate-800">
+                          - {formatBs(productProfitReport.operationalTotals.spent)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] text-slate-500 font-semibold">Pérdidas y mermas</span>
+                        <span className="font-extrabold text-slate-800">
+                          - {formatBs(productProfitReport.operationalTotals.lossCost)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] text-slate-500 font-semibold">Ganancia operativa</span>
+                        <span
+                          className={`font-black ${
+                            (productProfitReport.operationalTotals.operatingProfit ?? 0) >= 0
+                              ? 'text-emerald-700'
+                              : 'text-rose-700'
+                          }`}
+                        >
+                          {formatBs(productProfitReport.operationalTotals.operatingProfit ?? 0)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : productProfitReport.operationalTotals.reasonNotAvailable ? (
+                  <p className="rounded-xl bg-slate-50 px-3 py-2 text-[10px] font-semibold text-slate-500 italic">
+                    * {productProfitReport.operationalTotals.reasonNotAvailable}
+                  </p>
+                ) : null}
+
+                {/* 4. Tabla y Responsive Cards de Ganancia por Producto */}
+                {productProfitReport.items.length === 0 ? (
+                  <EmptyBlock
+                    title="Sin ventas de productos"
+                    description="No se registraron ventas en los filtros seleccionados."
+                  />
+                ) : (
+                  <>
+                    <p className="text-[11px] font-bold text-slate-500">
+                      Toca cualquier producto para ver las ventas y comprobantes que forman su cálculo.
+                    </p>
+                    <ResponsiveTable
+                      rows={productProfitReport.items}
+                      columns={[
+                        {
+                          key: 'producto',
+                          header: 'Producto',
+                          render: (row) => (
+                            <div>
+                              <p className="font-extrabold text-slate-900">{row.productName}</p>
+                              {row.presentation && (
+                                <p className="text-[10px] text-slate-500">{row.presentation}</p>
+                              )}
+                            </div>
+                          ),
+                        },
+                        {
+                          key: 'cantidad',
+                          header: 'Cantidad',
+                          align: 'right',
+                          render: (row) => formatQty(row.quantity, row.unitType),
+                        },
+                        {
+                          key: 'ventas',
+                          header: 'Ventas',
+                          align: 'right',
+                          render: (row) => formatBs(row.salesBs),
+                        },
+                        {
+                          key: 'costo',
+                          header: 'Costo',
+                          align: 'right',
+                          render: (row) =>
+                            row.costBs !== null ? (
+                              formatBs(row.costBs)
+                            ) : (
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
+                                Incompleto
+                              </span>
+                            ),
+                        },
+                        {
+                          key: 'ganancia',
+                          header: 'Ganancia',
+                          align: 'right',
+                          render: (row) =>
+                            row.profitBs !== null ? (
+                              <span
+                                className={`font-black ${
+                                  row.profitBs >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                                }`}
+                              >
+                                {formatBs(row.profitBs)}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-semibold">—</span>
+                            ),
+                        },
+                        {
+                          key: 'margen',
+                          header: 'Margen',
+                          align: 'right',
+                          render: (row) =>
+                            row.marginPct !== null ? (
+                              <span className="font-extrabold text-slate-800">
+                                {row.marginPct.toFixed(1)} %
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-semibold">—</span>
+                            ),
+                        },
+                      ]}
+                      keyOf={(row) => row.productId}
+                      titleOf={(row) => row.productName}
+                      onRowClick={(row) => setSelectedProfitProduct(row)}
+                    />
+                  </>
+                )}
+              </div>
             )}
 
             {ventasSubTab === 'kardex' && (() => {
@@ -961,6 +1185,133 @@ export function ReportsView({ session, data }: DistributionViewProps) {
               <Send size={16} /> Compartir imagen
             </SecondaryButton>
             {printFeedback && <p className="rounded-xl bg-amber-50 p-2 text-xs font-bold text-amber-800">{printFeedback}</p>}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(selectedProfitProduct)}
+        onClose={() => setSelectedProfitProduct(null)}
+        title={selectedProfitProduct ? selectedProfitProduct.productName : ''}
+        subtitle={
+          selectedProfitProduct
+            ? `${selectedProfitProduct.presentation || 'Sin presentación'} · ${formatQty(selectedProfitProduct.quantity, selectedProfitProduct.unitType)} vendidos`
+            : ''
+        }
+      >
+        {selectedProfitProduct && (
+          <div className="grid gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Ventas</span>
+                <p className="text-xs font-black text-slate-900 tabular-nums">
+                  {formatBs(selectedProfitProduct.salesBs)}
+                </p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Costo</span>
+                <p className="text-xs font-black text-slate-900 tabular-nums">
+                  {selectedProfitProduct.costBs !== null
+                    ? formatBs(selectedProfitProduct.costBs)
+                    : 'Incompleto'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Ganancia Bruta</span>
+                <p
+                  className={`text-xs font-black tabular-nums ${
+                    selectedProfitProduct.profitBs !== null
+                      ? selectedProfitProduct.profitBs >= 0
+                        ? 'text-emerald-700'
+                        : 'text-rose-700'
+                      : 'text-slate-500'
+                  }`}
+                >
+                  {selectedProfitProduct.profitBs !== null
+                    ? formatBs(selectedProfitProduct.profitBs)
+                    : 'No disponible'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Margen</span>
+                <p className="text-xs font-black text-slate-900 tabular-nums">
+                  {selectedProfitProduct.marginPct !== null
+                    ? `${selectedProfitProduct.marginPct.toFixed(1)} %`
+                    : '—'}
+                </p>
+              </div>
+            </div>
+
+            {!selectedProfitProduct.costKnown && (
+              <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-2.5 text-xs text-amber-800">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-600" />
+                <span>
+                  Este producto tiene ventas históricas sin costo registrado en el momento de la venta.
+                  No se muestra ganancia ni margen para no proyectar cifras inexactas.
+                </span>
+              </div>
+            )}
+
+            <div>
+              <p className="mb-1.5 text-xs font-bold text-slate-700">
+                Detalle de movimientos y ventas ({selectedProfitProduct.lineDetails.length})
+              </p>
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white">
+                {selectedProfitProduct.lineDetails.length === 0 ? (
+                  <p className="p-3 text-center text-xs text-slate-400">Sin movimientos detallados</p>
+                ) : (
+                  selectedProfitProduct.lineDetails.map((detail, idx) => (
+                    <div key={`${detail.saleId}-${idx}`} className="p-2.5 text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-extrabold text-slate-900">{detail.voucherCode}</span>
+                            {detail.isCorrected && (
+                              <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[9px] font-bold text-sky-800">
+                                CORREGIDA
+                              </span>
+                            )}
+                            {detail.isClaimRelated && (
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
+                                {detail.claimKind === 'return' ? 'DEVOLUCIÓN' : 'CAMBIO'}
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-slate-600">
+                            {detail.customerName} · {detail.routeName} ({detail.sellerName})
+                          </p>
+                          <p className="text-[10px] text-slate-400">
+                            {reportDateTime(detail.createdAt)}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-bold text-slate-900 tabular-nums">
+                            {formatQty(detail.quantity, detail.unitType)} × {formatBs(detail.actualUnitPrice)}
+                          </p>
+                          <p className="text-[11px] font-extrabold text-slate-800 tabular-nums">
+                            Venta: {formatBs(detail.saleBs)}
+                          </p>
+                          {detail.costBs !== null && (
+                            <p className="text-[10px] text-slate-500 tabular-nums">
+                              Costo: {formatBs(detail.costBs)}
+                              {detail.profitBs !== null && (
+                                <span
+                                  className={`ml-1 font-bold ${
+                                    detail.profitBs >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                                  }`}
+                                >
+                                  (Gan: {formatBs(detail.profitBs)})
+                                </span>
+                              )}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         )}
       </Modal>

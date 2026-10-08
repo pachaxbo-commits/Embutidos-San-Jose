@@ -27,6 +27,10 @@ import {
   getTodayStockIntakes,
 } from "../domain/todayIntakes";
 import {
+  computeProductProfitReport,
+  type ProductProfitReport,
+} from "../domain/productProfit";
+import {
   type ReportSheetId,
   type ReportOption,
   REPORT_OPTIONS,
@@ -51,6 +55,7 @@ type Cell = string | number | null;
 export type ReportSaleLine = DistSaleLine & { sale?: DistSale };
 
 export interface ReportSheetMeta {
+  profitReport?: ProductProfitReport;
   agg?: CustomerPurchasesAggregation;
   lines?: ReportSaleLine[];
   stockSheet?: ReportSheet;
@@ -534,6 +539,55 @@ export function reportSheets(
         ["TOTAL", "", "", "", "", "", "", "", round2(lines.reduce((n, l) => n + l.subtotal, 0)), lines.every(l => typeof l.costTotal === "number") ? round2(lines.reduce((n, l) => n + (l.costTotal || 0), 0)) : null, ""],
       ],
     },
+    (() => {
+      const profitReport = computeProductProfitReport(
+        sales,
+        claims,
+        expenses,
+        data.movements,
+        days,
+        route,
+        seller,
+      );
+      const rows: Cell[][] = [
+        ...profitReport.items.map((item) => [
+          item.productName,
+          item.presentation || "",
+          reportUnitLabel(item.unitType),
+          item.quantity,
+          item.salesBs,
+          item.costBs !== null ? item.costBs : "Incompleto",
+          item.profitBs !== null ? item.profitBs : "No disponible",
+          item.marginPct !== null ? `${item.marginPct.toFixed(1)} %` : "—",
+        ] as Cell[]),
+        [
+          "TOTAL",
+          "",
+          "",
+          profitReport.totals.quantityTotal,
+          profitReport.totals.salesBs,
+          profitReport.totals.costBs !== null ? profitReport.totals.costBs : "Incompleto",
+          profitReport.totals.profitBs !== null ? profitReport.totals.profitBs : "No disponible",
+          profitReport.totals.marginPct !== null ? `${profitReport.totals.marginPct.toFixed(1)} %` : "—",
+        ],
+      ];
+      return {
+        id: 'productProfit' as const,
+        name: "Ganancia por productos",
+        headers: [
+          "Producto",
+          "Presentación",
+          "Unidad",
+          "Cantidad",
+          "Ventas (Bs)",
+          "Costo (Bs)",
+          "Ganancia (Bs)",
+          "Margen (%)",
+        ],
+        rows,
+        meta: { profitReport },
+      };
+    })(),
     {
       id: 'salesKardex',
       name: "Kardex de ventas",
@@ -954,6 +1008,86 @@ export async function exportExcel(
     } else if (sheet.id === "inventory" && sheet.meta?.stockSheet && sheet.meta?.lotSheet) {
       addStyledWorksheet("Existencias actuales", sheet.meta.stockSheet.headers, sheet.meta.stockSheet.rows, `${description} · Existencias físicas y disponibles`);
       addStyledWorksheet("Lotes por almacén", sheet.meta.lotSheet.headers, sheet.meta.lotSheet.rows, `${description} · Detalle de lotes y vencimientos`);
+    } else if (sheet.id === "productProfit" && sheet.meta?.profitReport) {
+      const report = sheet.meta.profitReport as ProductProfitReport;
+      const summaryHeaders = [
+        "Producto",
+        "Presentación",
+        "Unidad",
+        "Cantidad vendida",
+        "Ventas (Bs)",
+        "Costo de producción (Bs)",
+        "Ganancia bruta (Bs)",
+        "Margen (%)",
+      ];
+      const summaryRows: Cell[][] = [
+        ...report.items.map((p) => [
+          p.productName,
+          p.presentation || "",
+          reportUnitLabel(p.unitType),
+          p.quantity,
+          p.salesBs,
+          p.costBs !== null ? p.costBs : "Incompleto",
+          p.profitBs !== null ? p.profitBs : "No disponible",
+          p.marginPct !== null ? p.marginPct / 100 : null,
+        ]),
+        [
+          "TOTAL DEL PERIODO",
+          "",
+          "",
+          report.totals.quantityTotal,
+          report.totals.salesBs,
+          report.totals.costBs !== null ? report.totals.costBs : "Incompleto",
+          report.totals.profitBs !== null ? report.totals.profitBs : "No disponible",
+          report.totals.marginPct !== null ? report.totals.marginPct / 100 : null,
+        ],
+      ];
+      if (report.operationalTotals.isAvailable) {
+        summaryRows.push(
+          ["Gastos de ruta registrados", "", "", "", "", "", -report.operationalTotals.spent, ""],
+          ["Pérdidas y mermas de inventario", "", "", "", "", "", -report.operationalTotals.lossCost, ""],
+          ["(=) Ganancia operativa estimada", "", "", "", "", "", report.operationalTotals.operatingProfit, ""],
+        );
+      }
+      addStyledWorksheet("Ganancia - Resumen", summaryHeaders, summaryRows, `${description} · Resumen económico de productos`);
+
+      const detailHeaders = [
+        "Fecha",
+        "Hora",
+        "Comprobante",
+        "Ruta",
+        "Vendedor",
+        "Cliente",
+        "Producto",
+        "Presentación",
+        "Unidad",
+        "Cantidad",
+        "Precio unitario (Bs)",
+        "Venta (Bs)",
+        "Costo (Bs)",
+        "Ganancia (Bs)",
+        "Margen (%)",
+        "Estado / Observación",
+      ];
+      const detailRows: Cell[][] = report.allLineDetails.map((d) => [
+        reportDate(d.dayKey),
+        new Date(d.createdAt).toLocaleTimeString("es-BO", { hour: "2-digit", minute: "2-digit" }),
+        d.voucherCode,
+        reportRecordName(d.routeName, "Ruta registrada"),
+        reportPersonName(d.sellerName),
+        d.customerName || "Contado",
+        d.productName,
+        d.presentation || "",
+        reportUnitLabel(d.unitType),
+        d.quantity,
+        d.actualUnitPrice,
+        d.saleBs,
+        d.costBs !== null ? d.costBs : "Incompleto",
+        d.profitBs !== null ? d.profitBs : "No disponible",
+        d.marginPct !== null ? d.marginPct / 100 : null,
+        d.isClaimRelated ? (d.claimKind === "return" ? "Devolución" : "Cambio") : d.isCorrected ? "Venta corregida" : "Normal",
+      ]);
+      addStyledWorksheet("Ganancia - Detalle", detailHeaders, detailRows, `${description} · Detalle de ventas y cambios por producto`);
     } else {
       addStyledWorksheet(sheet.name, sheet.headers, sheet.rows);
     }
@@ -1495,6 +1629,208 @@ export async function exportPdf(
     });
   };
 
+  const renderProductProfitSheet = (sheet: ReportSheet) => {
+    drawBrandedPdfHeader(
+      pdf,
+      "GANANCIA POR VENTA DE PRODUCTOS",
+      `Periodo: ${description}  ·  Moneda: Bolivianos (Bs)`,
+    );
+
+    const report = sheet.meta?.profitReport as ProductProfitReport | undefined;
+    const pageWidth = pdf.internal.pageSize.getWidth();
+
+    if (!report) {
+      renderGenericTable(sheet);
+      return;
+    }
+
+    const { totals, operationalTotals } = report;
+
+    // KPI Summary Box
+    pdf.setFillColor(248, 250, 252);
+    pdf.setDrawColor(200, 16, 46);
+    pdf.setLineWidth(1);
+    pdf.roundedRect(14, 33, pageWidth - 28, 24, 3, 3, "FD");
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(100, 116, 139);
+    pdf.text("VENTAS NETAS", 20, 40);
+    pdf.text("COSTO DE PRODUCTOS", 70, 40);
+    pdf.text("GANANCIA BRUTA TOTAL", 125, 40);
+    pdf.text("MARGEN BRUTO", pageWidth - 45, 40);
+
+    pdf.setFontSize(11);
+    pdf.setTextColor(30, 41, 59);
+    pdf.text(formatBsCurrency(totals.salesBs), 20, 48);
+    pdf.text(totals.costKnown ? formatBsCurrency(totals.costBs ?? 0) : "Incompleto", 70, 48);
+
+    pdf.setTextColor(
+      totals.costKnown ? ((totals.profitBs ?? 0) >= 0 ? 21 : 185) : 100,
+      totals.costKnown ? ((totals.profitBs ?? 0) >= 0 ? 128 : 28) : 116,
+      totals.costKnown ? ((totals.profitBs ?? 0) >= 0 ? 61 : 28) : 139,
+    );
+    pdf.text(totals.costKnown ? formatBsCurrency(totals.profitBs ?? 0) : "No disponible", 125, 48);
+
+    pdf.setTextColor(200, 16, 46);
+    pdf.text(
+      totals.costKnown && totals.marginPct !== null ? `${totals.marginPct.toFixed(1)} %` : "—",
+      pageWidth - 45,
+      48,
+    );
+
+    let startY = 61;
+
+    // If dayGroups exist and > 1: Group by day with subtotals
+    if (report.dayGroups.length > 1) {
+      report.dayGroups.forEach((group) => {
+        if (startY > 230) {
+          pdf.addPage("letter", "portrait");
+          drawBrandedPdfHeader(pdf, "GANANCIA POR PRODUCTOS (CONTINUACIÓN)", `Periodo: ${description}`);
+          startY = 33;
+        }
+
+        // Day Banner
+        pdf.setFillColor(241, 245, 249);
+        pdf.rect(14, startY, pageWidth - 28, 6.5, "F");
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(8);
+        pdf.setTextColor(30, 41, 59);
+        pdf.text(group.dateLabel.toUpperCase(), 18, startY + 4.5);
+
+        autoTable(pdf, {
+          startY: startY + 7.5,
+          head: [["Producto", "Presentación", "Cantidad", "Unidad", "Venta (Bs)", "Costo (Bs)", "Ganancia (Bs)", "Margen (%)"]],
+          body: group.items.map((item) => [
+            item.productName,
+            item.presentation || "",
+            round2(item.quantity),
+            reportUnitLabel(item.unitType),
+            formatBsCurrency(item.salesBs),
+            item.costBs !== null ? formatBsCurrency(item.costBs) : "Incompleto",
+            item.profitBs !== null ? formatBsCurrency(item.profitBs) : "No disp.",
+            item.marginPct !== null ? `${item.marginPct.toFixed(1)} %` : "—",
+          ]),
+          theme: "grid",
+          headStyles: { fillColor: [51, 65, 85], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7, cellPadding: 2 },
+          bodyStyles: { fontSize: 7, cellPadding: 2, textColor: [30, 41, 59] },
+          columnStyles: {
+            0: { cellWidth: 44, fontStyle: "bold" },
+            1: { cellWidth: 32, textColor: [71, 85, 105] },
+            2: { cellWidth: 16, halign: "right" },
+            3: { cellWidth: 14, halign: "center" },
+            4: { cellWidth: 20, halign: "right" },
+            5: { cellWidth: 20, halign: "right" },
+            6: { cellWidth: 22, halign: "right", fontStyle: "bold" },
+            7: { cellWidth: 18, halign: "right" },
+          },
+          margin: { left: 14, right: 14 },
+        });
+
+        const dayFinalY = (pdf as unknown as AutoTableJsPDF).lastAutoTable.finalY;
+        // Day Subtotal Bar
+        pdf.setFillColor(248, 250, 252);
+        pdf.rect(14, dayFinalY, pageWidth - 28, 5.5, "F");
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(7);
+        pdf.setTextColor(71, 85, 105);
+        pdf.text(
+          `Subtotal ${group.dateLabel}: Ventas: ${formatBsCurrency(group.daySalesBs)} · Costo: ${group.dayCostBs !== null ? formatBsCurrency(group.dayCostBs) : "Incompleto"} · Ganancia: ${group.dayProfitBs !== null ? formatBsCurrency(group.dayProfitBs) : "No disp."} · Margen: ${group.dayMarginPct !== null ? `${group.dayMarginPct.toFixed(1)} %` : "—"}`,
+          18,
+          dayFinalY + 3.8,
+        );
+
+        startY = dayFinalY + 8;
+      });
+    } else {
+      // Single day or summary table
+      autoTable(pdf, {
+        startY,
+        head: [["Producto", "Presentación", "Cantidad", "Unidad", "Venta (Bs)", "Costo (Bs)", "Ganancia (Bs)", "Margen (%)"]],
+        body: report.items.map((item) => [
+          item.productName,
+          item.presentation || "",
+          round2(item.quantity),
+          reportUnitLabel(item.unitType),
+          formatBsCurrency(item.salesBs),
+          item.costBs !== null ? formatBsCurrency(item.costBs) : "Incompleto",
+          item.profitBs !== null ? formatBsCurrency(item.profitBs) : "No disp.",
+          item.marginPct !== null ? `${item.marginPct.toFixed(1)} %` : "—",
+        ]),
+        theme: "grid",
+        headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5, cellPadding: 2.2 },
+        bodyStyles: { fontSize: 7, cellPadding: 2, textColor: [30, 41, 59] },
+        columnStyles: {
+          0: { cellWidth: 44, fontStyle: "bold" },
+          1: { cellWidth: 32, textColor: [71, 85, 105] },
+          2: { cellWidth: 16, halign: "right" },
+          3: { cellWidth: 14, halign: "center" },
+          4: { cellWidth: 20, halign: "right" },
+          5: { cellWidth: 20, halign: "right" },
+          6: { cellWidth: 22, halign: "right", fontStyle: "bold" },
+          7: { cellWidth: 18, halign: "right" },
+        },
+        margin: { left: 14, right: 14 },
+      });
+      startY = (pdf as unknown as AutoTableJsPDF).lastAutoTable.finalY + 6;
+    }
+
+    // Block: TOTAL DEL PERIODO
+    if (startY > 235) {
+      pdf.addPage("letter", "portrait");
+      drawBrandedPdfHeader(pdf, "GANANCIA POR PRODUCTOS (TOTALES)", `Periodo: ${description}`);
+      startY = 33;
+    }
+
+    pdf.setFillColor(30, 41, 59);
+    pdf.rect(14, startY, pageWidth - 28, 8, "F");
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(8);
+    pdf.setTextColor(255, 255, 255);
+    pdf.text("TOTAL DEL PERIODO", 18, startY + 5.5);
+    pdf.text(`Ventas: ${formatBsCurrency(totals.salesBs)}`, 65, startY + 5.5);
+    pdf.text(`Costo: ${totals.costKnown ? formatBsCurrency(totals.costBs ?? 0) : "Incompleto"}`, 105, startY + 5.5);
+    pdf.text(`Ganancia bruta: ${totals.costKnown ? formatBsCurrency(totals.profitBs ?? 0) : "No disp."}`, 145, startY + 5.5);
+    pdf.text(`Margen: ${totals.costKnown && totals.marginPct !== null ? `${totals.marginPct.toFixed(1)} %` : "—"}`, pageWidth - 38, startY + 5.5);
+
+    startY += 12;
+
+    // Secondary Operational Profit Block if applicable
+    if (operationalTotals.isAvailable) {
+      pdf.setFillColor(248, 250, 252);
+      pdf.setDrawColor(203, 213, 225);
+      pdf.roundedRect(14, startY, pageWidth - 28, 16, 2, 2, "FD");
+
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(100, 116, 139);
+      pdf.text("GASTOS DE RUTA", 20, startY + 5.5);
+      pdf.text("PÉRDIDAS Y MERMAS", 80, startY + 5.5);
+      pdf.text("GANANCIA OPERATIVA ESTIMADA", 140, startY + 5.5);
+
+      pdf.setFontSize(9);
+      pdf.setTextColor(30, 41, 59);
+      pdf.text(`- ${formatBsCurrency(operationalTotals.spent)}`, 20, startY + 11.5);
+      pdf.text(`- ${formatBsCurrency(operationalTotals.lossCost)}`, 80, startY + 11.5);
+
+      pdf.setTextColor(
+        operationalTotals.operatingProfit !== null && operationalTotals.operatingProfit >= 0 ? 21 : 185,
+        operationalTotals.operatingProfit !== null && operationalTotals.operatingProfit >= 0 ? 128 : 28,
+        operationalTotals.operatingProfit !== null && operationalTotals.operatingProfit >= 0 ? 61 : 28,
+      );
+      pdf.text(
+        operationalTotals.operatingProfit !== null ? formatBsCurrency(operationalTotals.operatingProfit) : "—",
+        140,
+        startY + 11.5,
+      );
+    } else if (operationalTotals.reasonNotAvailable) {
+      pdf.setFont("helvetica", "italic");
+      pdf.setFontSize(7);
+      pdf.setTextColor(100, 116, 139);
+      pdf.text(`* ${operationalTotals.reasonNotAvailable}`, 18, startY + 4);
+    }
+  };
+
   sheets.forEach((sheet, i) => {
     if (i > 0) {
       const isWide = sheet.headers.length > 8 || sheet.id === "credits" || sheet.id === "sales" || sheet.id === "claims";
@@ -1514,6 +1850,8 @@ export async function exportPdf(
       renderCashFlowSheet(sheet);
     } else if (sheetId === "credits") {
       renderCreditsSheet(sheet);
+    } else if (sheetId === "productProfit") {
+      renderProductProfitSheet(sheet);
     } else {
       renderGenericTable(sheet);
     }

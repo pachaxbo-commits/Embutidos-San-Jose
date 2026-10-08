@@ -2,6 +2,7 @@ export type ReportSheetId =
   | 'summary'
   | 'sales'
   | 'products'
+  | 'productProfit'
   | 'salesKardex'
   | 'customerPurchases'
   | 'cashFlow'
@@ -24,6 +25,7 @@ export const REPORT_OPTIONS: readonly ReportOption[] = [
   { id: 'summary', label: 'Resumen', sheetName: 'Resumen' },
   { id: 'sales', label: 'Ventas', sheetName: 'Ventas' },
   { id: 'products', label: 'Productos vendidos', sheetName: 'Productos vendidos' },
+  { id: 'productProfit', label: 'Ganancia por productos', sheetName: 'Ganancia por productos' },
   { id: 'salesKardex', label: 'Kardex de ventas por producto', sheetName: 'Kardex de ventas' },
   { id: 'customerPurchases', label: 'Compras por cliente y producto', sheetName: 'Compras por cliente' },
   { id: 'cashFlow', label: 'Movimiento de efectivo', sheetName: 'Movimiento de efectivo' },
@@ -58,6 +60,8 @@ export function defaultSheetIdForTab(tab: string): ReportSheetId {
       return 'sales'
     case 'productos':
       return 'products'
+    case 'ganancias':
+      return 'productProfit'
     case 'kardex':
       return 'salesKardex'
     case 'clientes':

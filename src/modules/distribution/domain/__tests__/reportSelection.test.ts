@@ -72,6 +72,7 @@ export async function runReportSelectionTestSuite() {
   assert(defaultSheetIdForTab('resumen') === 'summary', 'pestaña resumen preselecciona Resumen')
   assert(defaultSheetIdForTab('ventas') === 'sales', 'pestaña ventas preselecciona Ventas')
   assert(defaultSheetIdForTab('productos') === 'products', 'pestaña productos preselecciona Productos vendidos')
+  assert(defaultSheetIdForTab('ganancias') === 'productProfit', 'pestaña ganancias preselecciona Ganancias por producto')
   assert(defaultSheetIdForTab('creditos') === 'credits', 'pestaña creditos preselecciona Créditos')
   assert(defaultSheetIdForTab('cobros') === 'collections', 'pestaña cobros preselecciona Cobros')
   assert(defaultSheetIdForTab('gastos') === 'expenses', 'pestaña gastos preselecciona Gastos')
