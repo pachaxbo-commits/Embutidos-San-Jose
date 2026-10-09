@@ -124,12 +124,19 @@ import { normalizeClosure } from '../domain/closurePeriod'
 export { normalizeClosure }
 
 /** Declarar retorno no modifica stock; almacen confirma la recepcion posteriormente. */
-export async function declareRouteReturn(dispatch: DistDispatch, quantities: Record<string, number>) {
+export async function declareRouteReturn(
+  dispatch: DistDispatch,
+  quantities: Record<string, number>,
+  physicalCashDeclared?: number,
+) {
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     throw new Error('Declarar la devolución requiere conexión a Internet.')
   }
   if (Object.values(quantities).some(q => !Number.isFinite(q) || q < 0)) {
     throw new Error('Las cantidades deben ser positivas o cero.')
+  }
+  if (physicalCashDeclared !== undefined && (!Number.isFinite(physicalCashDeclared) || physicalCashDeclared < 0)) {
+    throw new Error('El efectivo físico declarado debe ser mayor o igual a cero.')
   }
   const ctx = await getContext()
   const id = `closure_${dispatch.id}`
@@ -146,6 +153,13 @@ export async function declareRouteReturn(dispatch: DistDispatch, quantities: Rec
     returnDeclaredBy: ctx.uid,
     returnDeclaredAt: now,
     dayKey: dispatch.dayKey,
+    ...(physicalCashDeclared !== undefined
+      ? {
+          physicalCashDeclared,
+          cashDeclaredBy: ctx.uid,
+          cashDeclaredAt: now,
+        }
+      : {}),
   }, { merge: true })
   await batch.commit()
 }

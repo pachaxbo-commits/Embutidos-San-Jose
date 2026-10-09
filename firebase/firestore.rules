@@ -280,15 +280,19 @@ service cloud.firestore {
         || (distDistributor(restaurantId) && resource.data.get('returnDeclaredBy', '') == request.auth.uid);
       allow create: if distTenantMatches(restaurantId)
         && distOwnsRoute(restaurantId, request.resource.data.get('routeId', ''))
-        && request.resource.data.keys().hasOnly(['id', 'restaurantId', 'dispatchId', 'routeId', 'distributorUid', 'distributorName', 'declaredReturns', 'returnDeclaredBy', 'returnDeclaredAt', 'dayKey'])
+        && request.resource.data.keys().hasOnly(['id', 'restaurantId', 'dispatchId', 'routeId', 'distributorUid', 'distributorName', 'declaredReturns', 'returnDeclaredBy', 'returnDeclaredAt', 'dayKey', 'physicalCashDeclared', 'cashDeclaredBy', 'cashDeclaredAt'])
         && request.resource.data.distributorUid == request.auth.uid
-        && request.resource.data.returnDeclaredBy == request.auth.uid;
+        && request.resource.data.returnDeclaredBy == request.auth.uid
+        && (!('physicalCashDeclared' in request.resource.data) || (request.resource.data.physicalCashDeclared is number && request.resource.data.physicalCashDeclared >= 0))
+        && (!('cashDeclaredBy' in request.resource.data) || request.resource.data.cashDeclaredBy == request.auth.uid);
       allow update: if distTenantMatches(restaurantId)
         && distOwnsRoute(restaurantId, resource.data.get('routeId', ''))
         && resource.data.get('warehouseClosedBy', '') == ''
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['declaredReturns', 'returnDeclaredBy', 'returnDeclaredAt', 'dayKey', 'distributorUid', 'distributorName'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['declaredReturns', 'returnDeclaredBy', 'returnDeclaredAt', 'dayKey', 'distributorUid', 'distributorName', 'physicalCashDeclared', 'cashDeclaredBy', 'cashDeclaredAt'])
         && request.resource.data.distributorUid == request.auth.uid
-        && request.resource.data.returnDeclaredBy == request.auth.uid;
+        && request.resource.data.returnDeclaredBy == request.auth.uid
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['physicalCashDeclared']) || (request.resource.data.physicalCashDeclared is number && request.resource.data.physicalCashDeclared >= 0))
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['cashDeclaredBy']) || request.resource.data.cashDeclaredBy == request.auth.uid);
       allow delete: if false;
     }
 

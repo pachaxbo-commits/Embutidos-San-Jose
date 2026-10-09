@@ -34,7 +34,13 @@ export function normalizeClosure(raw: Partial<DistClosure> & { id: string }): Di
     qrCollections: Number(raw.qrCollections) || 0,
     cashExpenses: Number(raw.cashExpenses) || 0,
     expectedCash: Number(raw.expectedCash) || 0,
-    physicalCashDeclared: Number(raw.physicalCashDeclared) || 0,
+    physicalCashDeclared: raw.physicalCashDeclared != null && Number.isFinite(Number(raw.physicalCashDeclared))
+      ? Number(raw.physicalCashDeclared)
+      : raw.status === 'closed'
+        ? 0
+        : undefined,
+    cashDeclaredBy: raw.cashDeclaredBy || '',
+    cashDeclaredAt: raw.cashDeclaredAt || '',
     cashDifference: Number(raw.cashDifference) || 0,
     warehouseClosedBy: raw.warehouseClosedBy || '',
     warehouseClosedAt: raw.warehouseClosedAt || '',

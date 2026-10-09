@@ -96,4 +96,22 @@ equal(hasNewerAndroidVersion(30, manifest32), true)
 equal(hasNewerAndroidVersion(31, manifest32), true)
 equal(hasNewerAndroidVersion(32, manifest32), false)
 
-console.log('37 comprobaciones del manifiesto y sesión Android aprobadas')
+const manifest33 = parseAndroidUpdateManifest({
+  ...valid,
+  versionCode: 33,
+  versionName: '1.4.13',
+})
+equal(hasNewerAndroidVersion(31, manifest33), true)
+equal(hasNewerAndroidVersion(32, manifest33), true)
+equal(hasNewerAndroidVersion(33, manifest33), false)
+
+const manifest34 = parseAndroidUpdateManifest({
+  ...valid,
+  versionCode: 34,
+  versionName: '1.4.14',
+})
+equal(hasNewerAndroidVersion(32, manifest34), true)
+equal(hasNewerAndroidVersion(33, manifest34), true)
+equal(hasNewerAndroidVersion(34, manifest34), false)
+
+console.log('43 comprobaciones del manifiesto y sesión Android aprobadas')

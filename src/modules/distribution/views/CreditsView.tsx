@@ -137,22 +137,48 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     }
   }
 
-  const openCustomerCollection = (entry: CustomerCredit, initialAmount?: number) => {
+  const [collectionReferenceDebt, setCollectionReferenceDebt] = useState<number | undefined>(undefined)
+  const [confirmingCollection, setConfirmingCollection] = useState(false)
+
+  const openCustomerCollection = (entry: CustomerCredit, referenceDebt?: number) => {
     setCollectCustomer(entry)
-    const targetAmt = initialAmount !== undefined ? Math.min(initialAmount, entry.balance) : entry.balance
-    setAmount(String(targetAmt))
+    setCollectionReferenceDebt(referenceDebt !== undefined ? Math.min(referenceDebt, entry.balance) : undefined)
+    setAmount('0')
     setMethod('cash')
-    setCashAmount(String(targetAmt))
+    setCashAmount('0')
     setQrAmount('0')
     setNote('')
     setError(null)
+    setConfirmingCollection(false)
   }
 
-  const submitCollection = async () => {
+  const handleAmountChange = (newVal: string) => {
+    setAmount(newVal)
+    if (method === 'cash') {
+      setCashAmount(newVal)
+      setQrAmount('0')
+    } else if (method === 'qr') {
+      setQrAmount(newVal)
+      setCashAmount('0')
+    }
+  }
+
+  const handleMethodChange = (newMethod: 'cash' | 'qr' | 'mixed') => {
+    setMethod(newMethod)
+    if (newMethod === 'cash') {
+      setCashAmount(amount)
+      setQrAmount('0')
+    } else if (newMethod === 'qr') {
+      setQrAmount(amount)
+      setCashAmount('0')
+    }
+  }
+
+  const requestCollectionConfirmation = () => {
     if (!collectCustomer || isSubmitting) return
     const value = round2(Number(amount))
     if (!(value > 0)) {
-      setError('El monto cobrado debe ser mayor a cero.')
+      setError('Ingresa el monto que realmente vas a cobrar.')
       return
     }
     if (value > collectCustomer.balance) {
@@ -167,7 +193,34 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       return
     }
 
+    setError(null)
+    setConfirmingCollection(true)
+  }
+
+  const executeConfirmedCollection = async () => {
+    if (!collectCustomer || isSubmitting) return
+    const value = round2(Number(amount))
+    if (!(value > 0)) {
+      setError('Ingresa el monto que realmente vas a cobrar.')
+      setConfirmingCollection(false)
+      return
+    }
+    if (value > collectCustomer.balance) {
+      setError(`El monto no puede superar la deuda total del cliente (${formatBs(collectCustomer.balance)}).`)
+      setConfirmingCollection(false)
+      return
+    }
+
+    const cash = method === 'cash' ? value : method === 'qr' ? 0 : round2(Number(cashAmount))
+    const qr = method === 'qr' ? value : method === 'cash' ? 0 : round2(Number(qrAmount))
+    if (cash < 0 || qr < 0 || round2(cash + qr) !== value || (method === 'mixed' && (!(cash > 0) || !(qr > 0)))) {
+      setError('El efectivo y el QR deben ser mayores a cero y sumar exactamente el monto cobrado.')
+      setConfirmingCollection(false)
+      return
+    }
+
     setIsSubmitting(true)
+    setError(null)
     try {
       const oldestDebt = collectCustomer.receivables
         .filter((item) => item.balance > 0)
@@ -187,12 +240,14 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         routeId: session.routeId || oldestDebt?.routeId,
         note,
       })
+      setConfirmingCollection(false)
       setCollectCustomer(null)
       setSelected(null)
       setLastCollection(registered)
       setReceiptFeedback('')
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo registrar el cobro.')
+      setConfirmingCollection(false)
     } finally {
       setIsSubmitting(false)
     }
@@ -575,38 +630,57 @@ export function CreditsView({ session, data }: DistributionViewProps) {
 
       {/* Modal de Cobro a Nivel Cliente */}
       <Modal
-        isOpen={Boolean(collectCustomer)}
-        onClose={() => setCollectCustomer(null)}
+        isOpen={Boolean(collectCustomer && !confirmingCollection)}
+        onClose={() => {
+          if (!isSubmitting) {
+            setCollectCustomer(null)
+            setConfirmingCollection(false)
+          }
+        }}
         title="Registrar cobro de cliente"
         subtitle={
           collectCustomer
-            ? `${collectCustomer.customerName} · Deuda total: ${formatBs(collectCustomer.balance)}`
+            ? `${collectCustomer.customerName}`
             : ''
         }
         footer={
-          <PrimaryButton full disabled={isSubmitting} onClick={() => void submitCollection()}>
-            {isSubmitting ? 'Guardando...' : 'Confirmar cobro'}
+          <PrimaryButton full disabled={isSubmitting} onClick={requestCollectionConfirmation}>
+            Cobrar
           </PrimaryButton>
         }
       >
         <div className="grid gap-3">
+          {collectCustomer && (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-600">Deuda total del cliente:</span>
+                <span className="font-black text-rose-700 tabular-nums">{formatBs(collectCustomer.balance)}</span>
+              </div>
+              {collectionReferenceDebt !== undefined && (
+                <div className="mt-1 flex items-center justify-between border-t border-slate-200 pt-1">
+                  <span className="font-semibold text-amber-700">Deuda anterior registrada:</span>
+                  <span className="font-black text-amber-800 tabular-nums">{formatBs(collectionReferenceDebt)}</span>
+                </div>
+              )}
+            </div>
+          )}
           <Field
             label="Monto a cobrar (Bs)"
             required
-            hint={`Deuda total: ${collectCustomer ? formatBs(collectCustomer.balance) : '0'}`}
+            hint="Escribe el monto recibido. Debe ser mayor a 0 y no superar la deuda total."
           >
             <NumberInput
               value={amount}
               min={0}
               max={collectCustomer?.balance}
               step={1}
-              onChange={(event) => setAmount(event.target.value)}
+              onChange={(event) => handleAmountChange(event.target.value)}
             />
           </Field>
           <Field label="Forma de cobro">
             <Segmented
               value={method}
-              onChange={setMethod}
+              onChange={handleMethodChange}
               options={[
                 { value: 'cash', label: 'Efectivo' },
                 { value: 'qr', label: 'QR' },
@@ -632,6 +706,70 @@ export function CreditsView({ session, data }: DistributionViewProps) {
           </p>
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
         </div>
+      </Modal>
+
+      {/* Modal Dedicado de Confirmación de Cobro */}
+      <Modal
+        isOpen={Boolean(confirmingCollection && collectCustomer)}
+        onClose={() => {
+          if (!isSubmitting) setConfirmingCollection(false)
+        }}
+        title="Confirmar cobro"
+        subtitle="Verifica los datos antes de registrar el cobro"
+        footer={
+          <div className="grid grid-cols-2 gap-2 w-full">
+            <SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingCollection(false)}>
+              Volver a revisar
+            </SecondaryButton>
+            <PrimaryButton disabled={isSubmitting} onClick={() => void executeConfirmedCollection()}>
+              {isSubmitting ? 'Guardando...' : `Sí, cobrar ${formatBs(round2(Number(amount)))}`}
+            </PrimaryButton>
+          </div>
+        }
+      >
+        {collectCustomer && (
+          <div className="grid gap-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs grid gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Cliente:</span>
+                <span className="font-extrabold text-slate-900">{collectCustomer.customerName}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Saldo actual:</span>
+                <span className="font-bold text-slate-800 tabular-nums">{formatBs(collectCustomer.balance)}</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-4 text-center">
+              <p className="text-xs font-extrabold uppercase tracking-wide text-emerald-700">Monto a cobrar</p>
+              <p className="mt-1 text-3xl font-black text-emerald-800 tabular-nums">{formatBs(round2(Number(amount)))}</p>
+              <div className="mt-2 text-xs font-semibold text-emerald-900">
+                Forma de cobro:{' '}
+                <span className="font-black">
+                  {method === 'cash' ? 'Efectivo' : method === 'qr' ? 'QR' : 'Mixto'}
+                </span>
+                {method === 'mixed' && (
+                  <span className="block mt-0.5 text-[11px] text-emerald-700">
+                    Efectivo: {formatBs(round2(Number(cashAmount)))} · QR: {formatBs(round2(Number(qrAmount)))}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs flex items-center justify-between">
+              <span className="font-semibold text-slate-600">Saldo que quedará después del cobro:</span>
+              <span className="text-sm font-black text-slate-900 tabular-nums">
+                {formatBs(Math.max(0, round2(collectCustomer.balance - round2(Number(amount)))))}
+              </span>
+            </div>
+
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-center text-xs font-bold text-amber-800">
+              ¿Estás seguro de registrar este cobro?
+            </div>
+
+            {error && <p className="text-xs font-bold text-rose-600 text-center">{error}</p>}
+          </div>
+        )}
       </Modal>
 
       {/* Modal de Saldo Inicial / Deuda Anterior */}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
 import { Field, NumberInput, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
+import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { buildReconciliation, computeMoneySummary, round2, toDayKey } from '../domain/engine'
 import { declareRouteReturn, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
@@ -43,6 +44,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [isDispatchOpen, setIsDispatchOpen] = useState(false)
   const [historyOpenId, setHistoryOpenId] = useState<string | null>(null)
   const [reviewingClosureId, setReviewingClosureId] = useState('')
+  const [confirmingDeclaration, setConfirmingDeclaration] = useState(false)
+  const [confirmingClosure, setConfirmingClosure] = useState(false)
 
   const dispatch = availableDispatches.find(item => item.id === selectedDispatchId) ?? availableDispatches[0] ?? null
 
@@ -112,6 +115,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const buildClosureDoc = (status: DistClosure['status']): DistClosure | null => {
     if (!dispatch) return null
     const now = new Date().toISOString()
+    const cashValueToSave = isCashDeclared
+      ? declaredValue
+      : (existingClosure?.physicalCashDeclared ?? undefined)
+    const effectiveDifference = cashValueToSave !== undefined
+      ? round2(cashValueToSave - money.expectedCash)
+      : 0
     return {
       id: `closure_${dispatch.id}`,
       restaurantId: session.restaurantId,
@@ -131,6 +140,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       declaredReturns: existingClosure?.declaredReturns || {},
       returnDeclaredBy: existingClosure?.returnDeclaredBy || '',
       returnDeclaredAt: existingClosure?.returnDeclaredAt || '',
+      cashDeclaredBy: existingClosure?.cashDeclaredBy || (isCashDeclared ? session.uid : ''),
+      cashDeclaredAt: existingClosure?.cashDeclaredAt || (isCashDeclared ? now : ''),
       cashSales: money.cashSales,
       qrSales: money.qrSales,
       creditGenerated: money.creditGenerated,
@@ -138,8 +149,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       qrCollections: money.qrCollections,
       cashExpenses: money.cashExpenses,
       expectedCash: money.expectedCash,
-      physicalCashDeclared: declaredValue,
-      cashDifference,
+      physicalCashDeclared: cashValueToSave,
+      cashDifference: effectiveDifference,
       // Firestore rechaza undefined: los campos aun no ocurridos van vacios.
       warehouseClosedBy: status === 'warehouse_done' ? session.uid : (existingClosure?.warehouseClosedBy ?? ''),
       warehouseClosedAt: status === 'warehouse_done' ? now : (existingClosure?.warehouseClosedAt ?? ''),
@@ -184,7 +195,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       setIsSubmitting(false)
       return
     }
-    if (status === 'closed' && (!declaredCash || !Number.isFinite(Number(declaredCash)) || Number(declaredCash) < 0)) {
+    if (status === 'closed' && (declaredCash.trim() === '' || !Number.isFinite(Number(declaredCash)) || Number(declaredCash) < 0)) {
       setError('Ingresa el efectivo físico declarado antes de cerrar la ruta.')
       isSubmittingRef.current = false
       setIsSubmitting(false)
@@ -201,6 +212,76 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     } finally {
       isSubmittingRef.current = false
       setIsSubmitting(false)
+    }
+  }
+
+  const requestDeclarationConfirmation = () => {
+    if (isSubmittingRef.current || isSubmitting) return
+    if (productRows.some(row => !isDeclared(row.productId))) {
+      setError('Declara todos los productos, incluso si retornas cero.')
+      return
+    }
+    if (declaredCash.trim() === '') {
+      setError('Ingresa el efectivo que estás entregando. Si no devuelves dinero, escribe 0.')
+      return
+    }
+    const cashNum = Number(declaredCash)
+    if (!Number.isFinite(cashNum) || cashNum < 0) {
+      setError('El efectivo declarado debe ser un número válido mayor o igual a 0.')
+      return
+    }
+    setError(null)
+    setConfirmingDeclaration(true)
+  }
+
+  const executeConfirmedDeclaration = async () => {
+    if (!dispatch || isSubmittingRef.current || isSubmitting) return
+    const cashNum = round2(Number(declaredCash))
+    isSubmittingRef.current = true
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await declareRouteReturn(dispatch, parsedReturns, cashNum)
+      setConfirmingDeclaration(false)
+    } catch (e) {
+      setError((e as Error).message)
+      setConfirmingDeclaration(false)
+    } finally {
+      isSubmittingRef.current = false
+      setIsSubmitting(false)
+    }
+  }
+
+  const requestClosureConfirmation = () => {
+    if (isSubmittingRef.current || isSubmitting) return
+    if (!returnsAlreadyApplied) {
+      setError('Almacén debe confirmar primero el retorno físico.')
+      return
+    }
+    if (declaredCash.trim() === '') {
+      setError('Ingresa el efectivo físico declarado antes de cerrar la ruta. Si no hay dinero, escribe 0.')
+      return
+    }
+    const cashNum = Number(declaredCash)
+    if (!Number.isFinite(cashNum) || cashNum < 0) {
+      setError('El efectivo declarado debe ser mayor o igual a cero.')
+      return
+    }
+    if (Object.values(parsedReturns).some(q => !Number.isFinite(q) || q < 0)) {
+      setError('No se permiten retornos negativos.')
+      return
+    }
+    setError(null)
+    setConfirmingClosure(true)
+  }
+
+  const executeConfirmedClosure = async () => {
+    if (isSubmittingRef.current || isSubmitting) return
+    try {
+      await submit('closed')
+      setConfirmingClosure(false)
+    } catch {
+      setConfirmingClosure(false)
     }
   }
 
@@ -227,7 +308,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             </button>
             {expanded && <div className="grid gap-3 border-t border-slate-100 p-3">
               <div className="grid gap-2 md:grid-cols-2">{closure.products.length === 0 ? <p className="text-xs text-slate-500">Almacén todavía no confirmó las cantidades.</p> : closure.products.map(row => <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Entregado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía volver</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Devuelto</dt><dd className="text-xs font-black">{formatQty(row.actualReturn, row.unitType)}</dd></div></dl></div>)}</div>
-              {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared)} /></div>}
+              {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared ?? 0)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
               {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => void reopenClosure(closure, session.uid).catch(e => setError(e.message))}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
               <div className="grid grid-cols-3 gap-2">
@@ -239,12 +320,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                     closure.products.map(row => ({ name: row.productName, detail: `Entregado ${formatQty(row.totalLoaded, row.unitType)} · vendido ${formatQty(row.sold, row.unitType)} · devuelto ${formatQty(row.actualReturn, row.unitType)}` })),
                     closure.status === 'closed' ? [
                       { label: 'Efectivo esperado', value: formatBs(closure.expectedCash) },
-                      { label: 'Efectivo declarado', value: formatBs(closure.physicalCashDeclared) },
+                      { label: 'Efectivo declarado', value: formatBs(closure.physicalCashDeclared ?? 0) },
                       { label: 'Diferencia', value: formatBs(closure.cashDifference) },
                     ] : [],
                   ).catch(printError => setError(printError.message))
                 }}><FileText size={15} /> Hoja de cierre</SecondaryButton>
-                <SecondaryButton onClick={() => void exportPdf([{name:'Cierre de ruta',headers:['Producto','Entregado','Vendido','Debía volver','Devuelto','Diferencia'],rows:[...closure.products.map(row=>[row.productName,formatQty(row.totalLoaded,row.unitType),formatQty(row.sold,row.unitType),formatQty(row.expectedReturn,row.unitType),formatQty(row.actualReturn,row.unitType),formatQty(row.variance,row.unitType)]),['EFECTIVO','','','','Esperado',formatBs(closure.expectedCash)],['','','','','Declarado',formatBs(closure.physicalCashDeclared)],['','','','','Diferencia',formatBs(closure.cashDifference)]]}],`${closure.routeName} · ${closure.distributorName} · Encargado almacén: ${closure.warehouseResponsibleName || 'registro anterior'} · Generado ${new Date().toLocaleString('es-BO')}`,`Cierre-${closure.dayKey || 'ruta'}.pdf`).catch(pdfError=>setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
+                <SecondaryButton onClick={() => void exportPdf([{name:'Cierre de ruta',headers:['Producto','Entregado','Vendido','Debía volver','Devuelto','Diferencia'],rows:[...closure.products.map(row=>[row.productName,formatQty(row.totalLoaded,row.unitType),formatQty(row.sold,row.unitType),formatQty(row.expectedReturn,row.unitType),formatQty(row.actualReturn,row.unitType),formatQty(row.variance,row.unitType)]),['EFECTIVO','','','','Esperado',formatBs(closure.expectedCash)],['','','','','Declarado',formatBs(closure.physicalCashDeclared ?? 0)],['','','','','Diferencia',formatBs(closure.cashDifference)]]}],`${closure.routeName} · ${closure.distributorName} · Encargado almacén: ${closure.warehouseResponsibleName || 'registro anterior'} · Generado ${new Date().toLocaleString('es-BO')}`,`Cierre-${closure.dayKey || 'ruta'}.pdf`).catch(pdfError=>setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
               </div>
             </div>}
           </article>
@@ -408,12 +489,21 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               hint="Ventas efectivo + cobros efectivo - gastos"
               tone="primary"
             />
-            <Field label="Efectivo fisico declarado (Bs)">
+            <Field
+              label={isDistributor ? 'Efectivo físico que estás devolviendo (Bs)' : 'Efectivo físico declarado (Bs)'}
+              required
+              hint={
+                isDistributor
+                  ? 'Debes declarar el efectivo físico que entregas en mano. Si no hay efectivo, escribe 0.'
+                  : 'Verifica el efectivo físico recibido de la ruta.'
+              }
+            >
               <NumberInput
                 value={declaredCash}
                 min={0}
                 step={1}
-                disabled={!canCloseMoney}
+                placeholder={isDistributor ? 'Escribe 0 si no devuelves efectivo' : 'Escribe 0 si no hay efectivo'}
+                disabled={(!canCloseMoney && !isDistributor) || (isDistributor && Boolean(existingClosure?.returnDeclaredAt))}
                 onChange={(event) => setDeclaredCash(event.target.value)}
               />
             </Field>
@@ -437,25 +527,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         {isDistributor && !returnsAlreadyApplied && (
           <SecondaryButton
             full
-            disabled={isSubmitting || !loaded}
-            onClick={async () => {
-              if (isSubmittingRef.current) return
-              if (productRows.some(row => !isDeclared(row.productId))) {
-                setError('Declara todos los productos, incluso si retornas cero.')
-                return
-              }
-              isSubmittingRef.current = true
-              setIsSubmitting(true)
-              try {
-                await declareRouteReturn(dispatch, parsedReturns)
-                setError(null)
-              } catch (e) {
-                setError((e as Error).message)
-              } finally {
-                isSubmittingRef.current = false
-                setIsSubmitting(false)
-              }
-            }}
+            disabled={isSubmitting || !loaded || Boolean(existingClosure?.returnDeclaredAt)}
+            onClick={requestDeclarationConfirmation}
           >
             {isSubmitting ? 'Enviando devolución…' : 'Declarar retorno para almacén'}
           </SecondaryButton>
@@ -480,7 +553,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             <PrimaryButton
               full
               disabled={isSubmitting || !loaded || !returnsAlreadyApplied || existingClosure?.status === 'closed'}
-              onClick={() => void submit('closed')}
+              onClick={requestClosureConfirmation}
             >
               <Lock size={16} />
               {isSubmitting ? 'Cerrando ruta…' : existingClosure?.status === 'closed' ? 'Ruta cerrada correctamente' : 'Cerrar ruta'}
@@ -511,6 +584,152 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         selectedValue={dispatch.id}
         onSelect={setSelectedDispatchId}
       />
+
+      {/* Modal Dedicado de Confirmación de Declaración de Retorno (Distribuidor) */}
+      <Modal
+        isOpen={confirmingDeclaration && Boolean(dispatch)}
+        onClose={() => {
+          if (!isSubmitting) setConfirmingDeclaration(false)
+        }}
+        title="Confirmar declaración de retorno"
+        subtitle="Verifica las cantidades antes de enviar a almacén"
+        footer={
+          <div className="grid grid-cols-2 gap-2 w-full">
+            <SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingDeclaration(false)}>
+              Volver a revisar
+            </SecondaryButton>
+            <PrimaryButton disabled={isSubmitting} onClick={() => void executeConfirmedDeclaration()}>
+              {isSubmitting ? 'Enviando…' : `Sí, declarar ${formatBs(round2(Number(declaredCash)))}`}
+            </PrimaryButton>
+          </div>
+        }
+      >
+        {dispatch && (
+          <div className="grid gap-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs grid gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Ruta:</span>
+                <span className="font-extrabold text-slate-900">{dispatch.routeName}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Distribuidor:</span>
+                <span className="font-bold text-slate-800">{dispatch.distributorName}</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-4 text-center">
+              <p className="text-xs font-extrabold uppercase tracking-wide text-emerald-700">Efectivo que declaras devolver</p>
+              <p className="mt-1 text-3xl font-black text-emerald-800 tabular-nums">{formatBs(round2(Number(declaredCash)))}</p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
+              <div className="flex items-center justify-between font-bold text-slate-700 mb-1">
+                <span>Resumen de productos devueltos:</span>
+                <span className="text-slate-900">
+                  {productRows.filter(r => (parsedReturns[r.productId] || 0) > 0).length} con retorno
+                </span>
+              </div>
+              <div className="max-h-36 overflow-y-auto divide-y divide-slate-100 pr-1">
+                {productRows.filter(r => (parsedReturns[r.productId] || 0) > 0).map(row => (
+                  <div key={row.productId} className="flex items-center justify-between py-1 text-[11px]">
+                    <span className="truncate text-slate-600">{row.productName}</span>
+                    <span className="font-bold text-slate-900 tabular-nums">
+                      {formatQty(parsedReturns[row.productId] || 0, row.unitType)}
+                    </span>
+                  </div>
+                ))}
+                {productRows.every(r => !(parsedReturns[r.productId] > 0)) && (
+                  <p className="text-[11px] italic text-slate-500 py-1">Sin productos a devolver (retorno 0 en todos)</p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900 font-medium leading-relaxed">
+              <p className="font-bold text-amber-950 mb-0.5">¿Estás seguro de enviar esta declaración al almacén?</p>
+              Una vez enviada, el encargado de almacén verificará físicamente tu carga y tu dinero.
+            </div>
+
+            {error && <p className="text-xs font-bold text-rose-600 text-center">{error}</p>}
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal Dedicado de Confirmación de Cierre Final de Ruta */}
+      <Modal
+        isOpen={confirmingClosure && Boolean(dispatch)}
+        onClose={() => {
+          if (!isSubmitting) setConfirmingClosure(false)
+        }}
+        title="Confirmar cierre de ruta"
+        subtitle="Verifica el cuadre de caja antes de finalizar"
+        footer={
+          <div className="grid grid-cols-2 gap-2 w-full">
+            <SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingClosure(false)}>
+              Volver a revisar
+            </SecondaryButton>
+            <PrimaryButton disabled={isSubmitting} onClick={() => void executeConfirmedClosure()}>
+              {isSubmitting ? 'Cerrando…' : 'Sí, cerrar ruta'}
+            </PrimaryButton>
+          </div>
+        }
+      >
+        {dispatch && (
+          <div className="grid gap-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs grid gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Ruta:</span>
+                <span className="font-extrabold text-slate-900">{dispatch.routeName}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Distribuidor:</span>
+                <span className="font-bold text-slate-800">{dispatch.distributorName}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center">
+                <p className="text-[10px] font-bold uppercase text-slate-500">Efectivo esperado</p>
+                <p className="mt-1 text-lg font-black text-slate-800 tabular-nums">{formatBs(money.expectedCash)}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center">
+                <p className="text-[10px] font-bold uppercase text-slate-500">Efectivo declarado</p>
+                <p className="mt-1 text-lg font-black text-slate-800 tabular-nums">{formatBs(declaredValue)}</p>
+              </div>
+            </div>
+
+            {/* Diferencia de caja destacada */}
+            {Math.abs(cashDifference) < 0.01 ? (
+              <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3.5 text-center">
+                <p className="text-xs font-black uppercase tracking-wider text-emerald-800">
+                  Caja cuadrada (Bs 0.00)
+                </p>
+                <p className="text-[11px] text-emerald-700 mt-0.5">El dinero físico coincide exactamente con lo esperado.</p>
+              </div>
+            ) : cashDifference < 0 ? (
+              <div className="rounded-2xl border border-rose-300 bg-rose-50 p-3.5 text-center">
+                <p className="text-xs font-black uppercase tracking-wider text-rose-800">
+                  Faltante en caja: {formatBs(cashDifference)}
+                </p>
+                <p className="text-[11px] text-rose-700 mt-0.5">Falta dinero físico según el registro del sistema.</p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3.5 text-center">
+                <p className="text-xs font-black uppercase tracking-wider text-amber-800">
+                  Sobrante en caja: +{formatBs(cashDifference)}
+                </p>
+                <p className="text-[11px] text-amber-700 mt-0.5">Hay más dinero físico del esperado por el sistema.</p>
+              </div>
+            )}
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-700 font-medium leading-relaxed">
+              <p className="font-bold text-slate-900 mb-0.5">¿Estás seguro de cerrar definitivamente esta ruta?</p>
+              Esta acción finalizará el arqueo y registrará el estado final de caja.
+            </div>
+
+            {error && <p className="text-xs font-bold text-rose-600 text-center">{error}</p>}
+          </div>
+        )}
+      </Modal>
     </Screen>
   )
 }

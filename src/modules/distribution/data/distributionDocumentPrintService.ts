@@ -395,7 +395,7 @@ export function printClosureTicket(closure: DistClosure): Promise<string> {
         modifiersText: [`Entregado ${row.totalLoaded}`, `Devuelto ${row.actualReturn}`, `Diferencia ${row.variance}`],
       })),
       closure.status === 'closed'
-        ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared).toFixed(2)}`
+        ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared ?? 0).toFixed(2)}`
         : 'Cierre pendiente de completar',
     ),
     `closure:${closure.id}`,

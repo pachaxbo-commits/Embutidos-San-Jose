@@ -379,7 +379,9 @@ export interface DistClosure extends DistBaseDoc {
   qrCollections: number
   cashExpenses: number
   expectedCash: number
-  physicalCashDeclared: number
+  physicalCashDeclared?: number
+  cashDeclaredBy?: string
+  cashDeclaredAt?: string
   cashDifference: number
   warehouseClosedBy?: string
   warehouseClosedAt?: string

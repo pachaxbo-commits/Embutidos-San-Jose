@@ -593,7 +593,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                             {closure.routeName} · {closure.distributorName}
                           </p>
                           <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">
-                            Esperado {formatBs(closure.expectedCash)} · Declarado {formatBs(closure.physicalCashDeclared)}
+                            Esperado {formatBs(closure.expectedCash)} · Declarado {formatBs(closure.physicalCashDeclared ?? 0)}
                           </p>
                         </div>
                         {closure.status === 'closed' ? (

@@ -25,6 +25,7 @@
     "test:dispatch-correction": "node --experimental-strip-types src/modules/distribution/domain/__tests__/dispatchCorrection.test.ts",
     "test:multi-lot-dispatch": "node firebase/tests/multiLotDispatch.test.mjs",
     "test:collection-receipts": "node --experimental-strip-types src/modules/distribution/domain/__tests__/collectionReceipts.test.ts",
+    "test:confirmations": "node --experimental-strip-types src/modules/distribution/domain/__tests__/collectionAndClosureConfirmations.test.ts",
     "test:sale-correction": "node --experimental-strip-types src/modules/distribution/domain/__tests__/saleCorrectionAudit.test.ts",
     "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
     "test:android-documents": "node scripts/test-android-document-flows.mjs",
