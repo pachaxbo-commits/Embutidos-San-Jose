@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, HandCoins, History, Search, ShieldAlert, UserPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, HandCoins, History, Printer, Search, Share2, ShieldAlert, UserPlus } from 'lucide-react'
 import { RangePicker } from './RangePicker'
 import { Modal } from '../../../components/ui/Modal'
 import { ChoiceButton } from '../../../components/ui/ChoiceModal'
@@ -10,7 +10,8 @@ import { newOperationId, registerCollection, registerOpeningBalance, saveCustome
 import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
-import type { DistReceivable } from '../types'
+import type { DistCollection, DistReceivable } from '../types'
+import { printCollectionReceipt, printLargeCollectionReceipt, shareCollectionReceipt } from '../data/distributionReceiptService'
 
 interface CustomerCredit {
   customerId: string
@@ -48,6 +49,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [lastCollection, setLastCollection] = useState<DistCollection | null>(null)
+  const [receiptFeedback, setReceiptFeedback] = useState('')
   const [paidOpen, setPaidOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
@@ -170,7 +173,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         .filter((item) => item.balance > 0)
         .sort((a, b) => (a.sourceDate || a.createdAt).localeCompare(b.sourceDate || b.createdAt))[0]
 
-      await registerCollection({
+      const registered = await registerCollection({
         operationId: newOperationId('col'),
         customerId: collectCustomer.customerId,
         customerName: collectCustomer.customerName,
@@ -186,12 +189,30 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       })
       setCollectCustomer(null)
       setSelected(null)
-      setToast(`Cobro de ${formatBs(value)} registrado correctamente.`)
+      setLastCollection(registered)
+      setReceiptFeedback('')
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo registrar el cobro.')
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  const receiptContext = {
+    companyName: data.supportSettings.companyName || session.restaurantName,
+    receiptHeader: data.supportSettings.receiptHeader,
+    receiptFooter: data.supportSettings.receiptFooter,
+    taxId: data.supportSettings.taxId,
+    address: data.supportSettings.address,
+    phone: data.supportSettings.phone,
+    routeName: data.routes.find(route => route.id === session.routeId)?.name || 'Administración',
+    distributorName: session.userName,
+  }
+
+  const printCollection = async (collection: DistCollection) => {
+    setReceiptFeedback('')
+    const result = await printCollectionReceipt(collection, receiptContext, true)
+    setReceiptFeedback(result.message)
   }
 
   const submitOpeningBalance = async (andCollectNow = false) => {
@@ -536,6 +557,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                         {collection.collectedByName}
                       </p>
                       {collection.note && <p className="mt-0.5 text-slate-500 italic">{collection.note}</p>}
+                      <div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={() => void printCollection(collection)} className="flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 px-3 font-extrabold text-slate-700"><Printer size={14} /> Imprimir</button><button type="button" onClick={() => void shareCollectionReceipt(collection, receiptContext).catch(error => setReceiptFeedback((error as Error).message))} className="flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 px-3 font-extrabold text-slate-700"><Share2 size={14} /> Compartir</button></div>
                     </div>
                   ))}
                 {!data.collections.some((collection) => collection.customerId === selected.customerId) && (
@@ -545,6 +567,10 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal isOpen={Boolean(lastCollection)} onClose={() => setLastCollection(null)} title="Cobro registrado correctamente" subtitle={lastCollection ? `${lastCollection.customerName} · ${formatBs(lastCollection.amount)}` : ''} footer={<PrimaryButton full onClick={() => setLastCollection(null)}>Finalizar</PrimaryButton>}>
+        {lastCollection && <div className="grid gap-3"><div className="rounded-2xl bg-emerald-50 p-4 text-center"><p className="text-xs font-extrabold uppercase text-emerald-700">Monto recibido</p><p className="mt-1 text-2xl font-black text-emerald-800">{formatBs(lastCollection.amount)}</p>{lastCollection.portfolioBalanceAfter !== undefined && <p className="mt-1 text-xs font-bold text-emerald-700">Saldo restante: {formatBs(lastCollection.portfolioBalanceAfter)}</p>}</div><div className="grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printCollection(lastCollection)}><Printer size={16} /> Imprimir ticket</SecondaryButton><SecondaryButton onClick={() => void shareCollectionReceipt(lastCollection, receiptContext).then(shared => setReceiptFeedback(shared ? 'Opciones para compartir abiertas.' : 'Envío cancelado.')).catch(error => setReceiptFeedback((error as Error).message))}><Share2 size={16} /> Compartir</SecondaryButton></div>{session.role === 'admin' && <SecondaryButton full onClick={() => void printLargeCollectionReceipt(lastCollection, receiptContext).catch(error => setReceiptFeedback((error as Error).message))}><Printer size={16} /> Imprimir en hoja normal</SecondaryButton>}{receiptFeedback && <p className="text-center text-xs font-bold text-slate-600">{receiptFeedback}</p>}</div>}
       </Modal>
 
       {/* Modal de Cobro a Nivel Cliente */}

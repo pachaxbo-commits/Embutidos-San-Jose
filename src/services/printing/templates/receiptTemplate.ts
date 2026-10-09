@@ -82,6 +82,11 @@ export function buildReceiptBytes(
   if (payload.branchPhone) builder.line(`Tel: ${payload.branchPhone}`)
   payload.headerDetails?.forEach((detail) => builder.line(detail))
 
+  if (payload.documentTitle) {
+    builder.separator(cols)
+    builder.bold(true).line(payload.documentTitle.toUpperCase()).bold(false)
+  }
+
   builder.separator(cols)
 
   // Order meta
@@ -107,7 +112,7 @@ export function buildReceiptBytes(
 
   // Column header
   builder.bold(true)
-  builder.line(padLine('PRODUCTO', 'SUBTOTAL', cols))
+  builder.line(padLine(payload.itemsHeaderLabel || 'PRODUCTO', payload.amountHeaderLabel || 'SUBTOTAL', cols))
   builder.bold(false).separator(cols)
 
   // Items
@@ -140,7 +145,7 @@ export function buildReceiptBytes(
   // Totales monetarios solo en comprobantes de venta.
   builder.alignRight()
   const showMoneyTotals = payload.grandTotal !== 0 || payload.subtotal !== 0 || payload.discountTotal !== 0 || payload.deliveryFee !== 0
-  if (showMoneyTotals) builder.line(padLine('SUBTOTAL:', `${payload.subtotal.toFixed(2)} Bs`, cols))
+  if (showMoneyTotals && !payload.hideSubtotal) builder.line(padLine('SUBTOTAL:', `${payload.subtotal.toFixed(2)} Bs`, cols))
   if (payload.discountTotal > 0) {
     builder.line(padLine('DESCUENTO:', `-${payload.discountTotal.toFixed(2)} Bs`, cols))
   }
@@ -150,8 +155,9 @@ export function buildReceiptBytes(
 
   if (showMoneyTotals) {
     builder.bold(true)
-    if (paperWidth === '80mm') builder.doubleSize(true).line(padLine('TOTAL:', `${payload.grandTotal.toFixed(2)} Bs`, Math.floor(cols / 2))).doubleSize(false)
-    else builder.line(padLine('TOTAL:', `${payload.grandTotal.toFixed(2)} Bs`, cols))
+    const totalLabel = `${payload.totalLabel || 'TOTAL'}:`
+    if (paperWidth === '80mm') builder.doubleSize(true).line(padLine(totalLabel, `${payload.grandTotal.toFixed(2)} Bs`, Math.floor(cols / 2))).doubleSize(false)
+    else builder.line(padLine(totalLabel, `${payload.grandTotal.toFixed(2)} Bs`, cols))
     builder.bold(false)
   }
 

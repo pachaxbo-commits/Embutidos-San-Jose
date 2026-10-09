@@ -156,6 +156,8 @@ export interface DistDispatchLine {
   productName: string
   unitType: UnitType
   quantity: number
+  /** Selección explícita solicitada por el operador; el servidor vuelve a validarla. */
+  allocationsRequested?: Array<{ lotId: string; quantity: number }>
   allocations?: DistLotAllocation[]
 }
 
@@ -311,7 +313,10 @@ export interface DistCollection extends DistBaseDoc {
   customerCode?: string
   operationId: string
   receivableId?: string
-  allocations?: Array<{ receivableId: string; amount: number; sourceType?: 'sale' | 'opening_balance' }>
+  allocations?: Array<{ receivableId: string; amount: number; sourceType?: 'sale' | 'opening_balance'; saleId?: string }>
+  /** Saldos congelados al momento del cobro para reimpresión histórica. */
+  portfolioBalanceBefore?: number
+  portfolioBalanceAfter?: number
   customerId: string
   customerName: string
   routeId: string

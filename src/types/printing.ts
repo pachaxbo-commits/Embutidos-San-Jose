@@ -111,6 +111,12 @@ export interface PrintJobPayload {
   branchAddress?: string
   branchPhone?: string
   headerDetails?: string[]
+  /** Etiquetas opcionales para documentos que no son ventas. */
+  documentTitle?: string
+  itemsHeaderLabel?: string
+  amountHeaderLabel?: string
+  totalLabel?: string
+  hideSubtotal?: boolean
   orderId?: string
   sequenceNumber?: number
   displayNumber?: string

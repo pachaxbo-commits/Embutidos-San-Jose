@@ -196,7 +196,7 @@ service cloud.firestore {
           || (request.resource.data.type in ['openingBalance','creditOverride','changeProductUnit'] && distAdmin(restaurantId))
           || (request.resource.data.type == 'editSale' && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type == 'warehouseShift' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
-          || (request.resource.data.type in ['intake','transfer','dispatch','addition','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
+          || (request.resource.data.type in ['intake','transfer','dispatch','addition','correctDispatch','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
           || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
           || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','deleteProduct'] && distAdmin(restaurantId)));

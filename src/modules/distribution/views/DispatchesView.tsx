@@ -28,7 +28,7 @@ interface DraftLine {
   id: string
   productId: string
   quantity: string
-  lotId: string
+  allocations: Array<{ id: string; lotId: string; quantity: string }>
 }
 
 /**
@@ -413,6 +413,53 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     setSearch('')
   }
 
+  const lotLocation = effectiveWarehouse === 'central' ? 'central' : `warehouse__${effectiveWarehouse}`
+  const eligibleLots = (productId: string) => data.lots
+    .filter(lot => lot.productId === productId && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= new Date().toLocaleDateString('en-CA')))
+    .sort((a, b) => (a.expiresOn || '9999').localeCompare(b.expiresOn || '9999') || a.id.localeCompare(b.id))
+
+  const distributeFefo = (draft: DraftLine) => {
+    let remaining = round2(Number(draft.quantity))
+    if (!(remaining > 0)) { setError('Primero indica la cantidad total del producto.'); return }
+    const allocations: DraftLine['allocations'] = []
+    for (const lot of eligibleLots(draft.productId)) {
+      if (remaining <= 0) break
+      const quantity = round2(Math.min(remaining, lot.quantities[lotLocation] || 0))
+      if (quantity > 0) allocations.push({ id: newOperationId('lot'), lotId: lot.id, quantity: String(quantity) })
+      remaining = round2(remaining - quantity)
+    }
+    if (remaining > 0) { setError(`Faltan ${remaining} para completar la cantidad con lotes aptos.`); return }
+    setError(null)
+    setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, allocations } : line))
+  }
+
+  const validateLotAssignments = (): string | null => {
+    for (const draft of draftLines) {
+      const product = activeProducts.find(item => item.id === draft.productId)
+      const total = round2(Number(draft.quantity))
+      if (!product || !(total > 0)) continue
+      if (!draft.allocations.length) return `Distribuye ${product.name} entre uno o más lotes.`
+      const ids = draft.allocations.map(part => part.lotId)
+      if (ids.some(id => !id)) return `Selecciona todos los lotes de ${product.name}.`
+      if (new Set(ids).size !== ids.length) return `No repitas el mismo lote en ${product.name}.`
+      let assigned = 0
+      for (const part of draft.allocations) {
+        const quantity = round2(Number(part.quantity))
+        const lot = eligibleLots(product.id).find(item => item.id === part.lotId)
+        if (!lot || !(quantity > 0)) return `Revisa las asignaciones de ${product.name}.`
+        if (quantity > round2(lot.quantities[lotLocation] || 0)) return `El lote ${lot.lotCode} no tiene cantidad suficiente.`
+        assigned = round2(assigned + quantity)
+      }
+      if (Math.abs(assigned - total) >= 0.01) {
+        const difference = round2(Math.abs(total - assigned))
+        return assigned < total
+          ? `Faltan distribuir ${difference} de ${product.name}. Asignado: ${assigned} / ${total}.`
+          : `Sobran ${difference} asignados en ${product.name}. Asignado: ${assigned} / ${total}.`
+      }
+    }
+    return null
+  }
+
   const buildLines = (): DistDispatchLine[] => {
     const lines: DistDispatchLine[] = []
     for (const draft of draftLines) {
@@ -425,7 +472,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         productName: product.presentation ? `${product.name} - ${product.presentation}` : product.name,
         unitType: product.unitType,
         quantity,
-        lotId: draft.lotId,
+        allocationsRequested: draft.allocations.map(part => ({ lotId: part.lotId, quantity: round2(Number(part.quantity)) })),
       })
     }
     return lines
@@ -446,7 +493,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       setError('Agrega al menos un producto con cantidad.')
       return
     }
-    if (lines.some(line => !line.lotId)) { setError('Selecciona el lote exacto de cada producto.'); return }
+    const lotError = validateLotAssignments(); if (lotError) { setError(lotError); return }
     if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
     const stockError = validateStockAvailability(lines, central)
@@ -490,7 +537,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       setError('Agrega al menos un producto con cantidad.')
       return
     }
-    if (lines.some(line => !line.lotId)) { setError('Selecciona el lote exacto de cada producto.'); return }
+    const lotError = validateLotAssignments(); if (lotError) { setError(lotError); return }
     if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
     const stockError = validateStockAvailability(lines, central)
@@ -526,12 +573,18 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         {draftLines.map((line) => {
           const product = activeProducts.find(item => item.id === line.productId)
           if (!product) return null
-          const lotLocation = effectiveWarehouse === 'central' ? 'central' : `warehouse__${effectiveWarehouse}`
-          const lots = data.lots.filter(lot => lot.productId === product.id && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= new Date().toLocaleDateString('en-CA'))).sort((a,b) => (a.expiresOn || '9999').localeCompare(b.expiresOn || '9999'))
-          return <div key={line.id} className="grid grid-cols-[minmax(0,1fr)_88px_40px] items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2.5">
-            <div className="min-w-0"><p className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-500">Disponible: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p><SelectInput aria-label={`Lote de ${product.name}`} value={line.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, lotId: event.target.value } : item))} className="mt-2 text-xs"><option value="">Selecciona lote</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · vence {lot.expiresOn || 'sin fecha'} · {formatQty(lot.quantities[lotLocation], product.unitType)}</option>)}</SelectInput><button type="button" className="mt-1 text-[10px] font-extrabold text-[var(--primary)]" onClick={() => setDraftLines(current => [...current,{id:newOperationId('draft'),productId:product.id,quantity:'',lotId:''}])}>+ Usar otro lote</button></div>
-            <NumberInput aria-label={`Cantidad de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cant.'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} className="px-2 text-center" />
-            <button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button>
+          const lots = eligibleLots(product.id)
+          const assigned = round2(line.allocations.reduce((sum, part) => sum + (Number(part.quantity) || 0), 0))
+          const total = round2(Number(line.quantity) || 0)
+          const complete = total > 0 && Math.abs(assigned - total) < 0.01
+          return <div key={line.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Disponible: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p></div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
+            <Field label="Cantidad total a despachar" required><NumberInput aria-label={`Cantidad total de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
+            <div className="rounded-2xl border border-slate-200 bg-white p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-black text-slate-800">Lotes utilizados</p><button type="button" className="rounded-xl bg-slate-100 px-3 py-2 text-[11px] font-extrabold text-slate-700" onClick={() => distributeFefo(line)}>Distribuir por FEFO</button></div>
+              <div className="grid gap-2">{line.allocations.map(part => <div key={part.id} className="grid gap-2 rounded-xl border border-slate-200 p-2 sm:grid-cols-[minmax(0,1fr)_110px_40px] sm:items-center"><SelectInput aria-label={`Lote de ${product.name}`} value={part.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, lotId: event.target.value } : entry) } : item))}><option value="">Selecciona lote</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · {formatQty(lot.quantities[lotLocation], product.unitType)} · vence {lot.expiresOn || 'sin fecha'}</option>)}</SelectInput><NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} /><button type="button" aria-label="Quitar lote" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.filter(entry => entry.id !== part.id) } : item))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></div>)}</div>
+              <button type="button" className="mt-2 w-full rounded-xl border border-dashed border-[var(--primary)] px-3 py-2 text-xs font-extrabold text-[var(--primary)]" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: [...item.allocations, { id: newOperationId('lot'), lotId: '', quantity: '' }] } : item))}>+ Agregar otro lote</button>
+              <p className={`mt-2 text-xs font-extrabold ${complete ? 'text-emerald-700' : 'text-amber-700'}`}>Asignado: {assigned} / {total} {complete ? '✓' : total <= 0 ? '' : total > assigned ? `· Faltan ${round2(total - assigned)}` : `· Sobran ${round2(assigned - total)}`}</p>
+            </div>
           </div>
         })}
         {draftLines.length === 0 && <p className="rounded-2xl border border-dashed border-slate-300 px-4 py-6 text-center text-xs font-semibold text-slate-500">Todavía no seleccionaste productos.</p>}
@@ -761,7 +814,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               const draft = draftLines.find(line => line.productId === product.id)
               return <div key={product.id} className={`min-w-0 overflow-hidden rounded-2xl border ${draft ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}>
                 {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} onError={(event) => { event.currentTarget.style.display = 'none' }} className="aspect-[16/8] w-full object-cover" />}
-                <button type="button" onClick={() => setDraftLines(current => draft ? current.filter(line => line.productId !== product.id) : [...current, { id: newOperationId('draft'), productId: product.id, quantity: '', lotId: '' }])} className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
+                <button type="button" onClick={() => setDraftLines(current => draft ? current.filter(line => line.productId !== product.id) : [...current, { id: newOperationId('draft'), productId: product.id, quantity: '', allocations: [] }])} className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
                   <span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span>
                   <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>{formatQty(central.get(product.id) ?? 0, product.unitType)}</span>{draft && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--primary)] text-white"><Check size={13} /></span>}</span>
                 </button>

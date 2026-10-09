@@ -186,9 +186,31 @@ class Operation {
     check(b.quantity >= 0, "Stock insuficiente.");
     b.updatedAt = this.now;
   }
-  async take(pid, loc, quantity, { allowExpired = false, lotId } = {}) {
+  async take(pid, loc, quantity, { allowExpired = false, lotId, allocationsRequested } = {}) {
     const e = await this.loadStock(pid, loc);
     quantity = this.amount(quantity, e.p);
+    if (Array.isArray(allocationsRequested)) {
+      check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
+      const seen = new Set();
+      const requested = allocationsRequested.map((part) => {
+        check(part?.lotId && !seen.has(part.lotId), "No repitas el mismo lote en un producto.");
+        seen.add(part.lotId);
+        const requestedQuantity = this.amount(part.quantity, e.p);
+        check(requestedQuantity > 0, "La cantidad asignada a cada lote debe ser mayor a cero.");
+        const lot = e.lots.find((row) => row.id === part.lotId);
+        check(lot && lot.productId === pid, "El lote no pertenece al producto seleccionado.");
+        check(allowExpired || (!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= this.today)), "El lote está vencido o en cuarentena.");
+        check(round(lot.quantities?.[loc] || 0) >= requestedQuantity, `El lote ${lot.lotCode || lot.id} no tiene cantidad suficiente.`);
+        return { lot, quantity: requestedQuantity };
+      });
+      check(Math.abs(round(requested.reduce((sum, part) => sum + part.quantity, 0)) - quantity) < 0.01, "La distribución por lotes debe coincidir con la cantidad total.");
+      const allocations = requested.map(({ lot, quantity: requestedQuantity }) => {
+        lot.quantities[loc] = round(lot.quantities[loc] - requestedQuantity);
+        return { lotId: lot.id, lotCode: lot.lotCode, expiresOn: lot.expiresOn, quantity: requestedQuantity, productionCost: lot.productionCost ?? null };
+      });
+      this.move(e, loc, -quantity);
+      return allocations;
+    }
     const lots = e.lots
       .filter(
         (l) =>
@@ -392,18 +414,24 @@ async function dispatch(o, p, addition = false) {
   // Compatibilidad temporal: 1.4.5 no envía este campo. La interfaz 1.4.6 lo
   // exige, pero el servidor conserva como responsable al usuario autenticado.
   const warehouseResponsibleName = p.warehouseResponsibleName?.trim() || o.member.displayName || o.actor;
-  const lines = [];
+  const linesByProduct = new Map();
   for (const l of p.lines) {
-    // 1.4.6 envía lotId explícito; 1.4.5 continúa temporalmente con FEFO.
-    const allocations = await o.moveStock(l.productId, from, to, l.quantity, l.lotId ? { lotId: l.lotId } : {});
+    // Versiones antiguas envían lotId o líneas repetidas; 1.4.13 envía una
+    // línea por producto con allocationsRequested. El documento efectivo se
+    // normaliza siempre a una sola línea por producto.
+    const options = Array.isArray(l.allocationsRequested)
+      ? { allocationsRequested: l.allocationsRequested }
+      : l.lotId ? { lotId: l.lotId } : {};
+    const allocations = await o.moveStock(l.productId, from, to, l.quantity, options);
     const product = o.stock.get(l.productId).p;
-    lines.push({
-      productId: l.productId,
-      productName: product.name,
-      unitType: product.unitType,
-      quantity: l.quantity,
-      allocations,
-    });
+    const effective = linesByProduct.get(l.productId) || { productId: l.productId, productName: product.name, unitType: product.unitType, quantity: 0, allocations: [] };
+    effective.quantity = round(effective.quantity + l.quantity);
+    for (const allocation of allocations) {
+      const existing = effective.allocations.find((part) => part.lotId === allocation.lotId);
+      if (existing) existing.quantity = round(existing.quantity + allocation.quantity);
+      else effective.allocations.push({ ...allocation });
+    }
+    linesByProduct.set(l.productId, effective);
     o.ledger(
       l.productId,
       l.quantity,
@@ -413,6 +441,7 @@ async function dispatch(o, p, addition = false) {
       { refId: current?.id || o.id, allocations },
     );
   }
+  const lines = [...linesByProduct.values()];
   if (addition) {
     current.additions = [
       ...(current.additions || []),
@@ -459,6 +488,28 @@ function getDispatchLoadedMap(d) {
     }
   }
   return map;
+}
+function normalizeDispatchLines(lines = []) {
+  const byProduct = new Map();
+  for (const source of lines) {
+    const current = byProduct.get(source.productId) || { ...source, quantity: 0, allocations: [] };
+    current.quantity = round(current.quantity + (Number(source.quantity) || 0));
+    const sourceAllocations = Array.isArray(source.allocations) && source.allocations.length
+      ? source.allocations
+      : source.lotId ? [{ lotId: source.lotId, lotCode: source.lotCode || "", expiresOn: source.expiresOn || "", quantity: source.quantity, productionCost: source.productionCost ?? null }] : [];
+    for (const allocation of sourceAllocations) {
+      const existing = current.allocations.find((part) => part.lotId === allocation.lotId);
+      if (existing) existing.quantity = round(existing.quantity + allocation.quantity);
+      else current.allocations.push({ ...allocation });
+    }
+    byProduct.set(source.productId, current);
+  }
+  return [...byProduct.values()];
+}
+function dispatchCorrectionAmount(value, product) {
+  check(Number.isFinite(value) && value >= 0, "La cantidad no puede ser negativa.");
+  check(product.unitType === "kg" || Number.isInteger(value), "Paquetes y unidades requieren cantidades enteras.");
+  return round(value);
 }
 async function revertLineStock(o, d, line, returnQty, reason) {
   if (returnQty <= 0) return [];
@@ -542,6 +593,14 @@ async function correctDispatch(o, p) {
     d.status === "open",
     "Este despacho ya fue cerrado y no puede modificarse.",
   );
+  // Compatibilidad sin migración masiva: si un despacho histórico guardó el
+  // mismo producto en varias filas, se normaliza dentro de esta corrección y
+  // se combinan sus asignaciones reales antes de calcular devoluciones.
+  d.lines = normalizeDispatchLines(d.lines || []);
+  d.additions = (d.additions || []).map((addition) => ({
+    ...addition,
+    quantityByProduct: normalizeDispatchLines(addition.quantityByProduct || []),
+  }));
 
   const changes = Array.isArray(p.changes) && p.changes.length > 0 ? p.changes : [p];
   check(changes.length > 0, "No se enviaron cambios para corregir.");
@@ -573,8 +632,7 @@ async function correctDispatch(o, p) {
       check(line, "El producto no se encuentra en la carga inicial.");
       const oldQty = line.quantity;
       const product = await o.product(c.productId);
-      const newQty = o.amount(c.newQuantity, product);
-      check(newQty >= 0, "La cantidad no puede ser negativa.");
+      const newQty = dispatchCorrectionAmount(c.newQuantity, product);
       const delta = round(newQty - oldQty);
       netDeltaByProduct.set(
         c.productId,
@@ -604,8 +662,7 @@ async function correctDispatch(o, p) {
         check(line, "El producto no se encuentra en este aumento.");
         const oldQty = line.quantity;
         const product = await o.product(c.productId);
-        const newQty = o.amount(c.newQuantity, product);
-        check(newQty >= 0, "La cantidad no puede ser negativa.");
+        const newQty = dispatchCorrectionAmount(c.newQuantity, product);
         const delta = round(newQty - oldQty);
         netDeltaByProduct.set(
           c.productId,
@@ -643,7 +700,7 @@ async function correctDispatch(o, p) {
       const line = (d.lines || []).find((l) => l.productId === c.productId);
       const oldQty = line.quantity;
       const product = await o.product(c.productId);
-      const newQty = o.amount(c.newQuantity, product);
+      const newQty = dispatchCorrectionAmount(c.newQuantity, product);
 
       if (newQty < oldQty) {
         const returnQty = round(oldQty - newQty);
@@ -805,7 +862,7 @@ async function correctDispatch(o, p) {
         );
         const oldQty = line.quantity;
         const product = await o.product(c.productId);
-        const newQty = o.amount(c.newQuantity, product);
+        const newQty = dispatchCorrectionAmount(c.newQuantity, product);
 
         if (newQty < oldQty) {
           const returnQty = round(oldQty - newQty);
@@ -1093,8 +1150,8 @@ async function collection(o, p) {
   const debts = (await o.query("distReceivables", "customerId", customerId))
     .filter((row) => Number(row.balance) > 0)
     .sort((a, b) => (a.sourceDate || a.createdAt).localeCompare(b.sourceDate || b.createdAt) || a.id.localeCompare(b.id));
-  const portfolioBalance = round(debts.reduce((sum, row) => sum + row.balance, 0));
-  check(Number.isFinite(p.amount) && p.amount > 0 && p.amount <= portfolioBalance, "El cobro supera el saldo total pendiente.");
+  const portfolioBalanceBefore = round(debts.reduce((sum, row) => sum + row.balance, 0));
+  check(Number.isFinite(p.amount) && p.amount > 0 && p.amount <= portfolioBalanceBefore, "El cobro supera el saldo total pendiente.");
   check(["cash", "qr", "mixed"].includes(p.method), "Método de pago inválido.");
   const cashAmount = round(Number.isFinite(p.cashAmount) ? p.cashAmount : p.method === "cash" ? p.amount : 0);
   const qrAmount = round(Number.isFinite(p.qrAmount) ? p.qrAmount : p.method === "qr" ? p.amount : 0);
@@ -1118,7 +1175,7 @@ async function collection(o, p) {
     r.balance = round(r.balance - applied);
     r.status = r.balance === 0 ? "PAID" : "PARTIAL";
     o.put("distReceivables", r.id, r);
-    allocations.push({ receivableId: r.id, amount: applied, sourceType: r.sourceType || "sale" });
+    allocations.push({ receivableId: r.id, amount: applied, sourceType: r.sourceType || "sale", saleId: r.saleId || "" });
     remaining = round(remaining - applied);
   }
   const firstDebt = debts[0];
@@ -1131,6 +1188,8 @@ async function collection(o, p) {
     operationId: o.id,
     receivableId: allocations[0]?.receivableId || "",
     allocations,
+    portfolioBalanceBefore,
+    portfolioBalanceAfter: round(portfolioBalanceBefore - p.amount),
     saleLines: firstDebt.saleLines || [],
     customerId: firstDebt.customerId,
     customerName: firstDebt.customerName,
