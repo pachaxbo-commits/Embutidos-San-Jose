@@ -42,13 +42,14 @@ try {
   await root.collection('members').doc(admin).set({ role: 'admin', active: true, displayName: 'Administración QA' })
   await root.collection('members').doc(seller).set({ role: 'distributor', active: true, routeId: route, displayName: 'Hugo QA' })
   await root.collection('distCustomers').doc(customer).set({ id: customer, restaurantId: 'sanjose', name: 'Cliente QA', identityNumber: '9999001', customerCode: '9999001', active: true })
-  const ids = Object.fromEntries(['a', 'b', 'central', 'credit'].map(key => [key, `${prefix}-${key}`]))
+  const ids = Object.fromEntries(['a', 'b', 'delete', 'central', 'credit'].map(key => [key, `${prefix}-${key}`]))
   for (const id of Object.values(ids)) await root.collection('distProducts').doc(id).set({ id, restaurantId: 'sanjose', name: id, unitType: 'kg', active: true, referencePrice: 30, productionCost: 20 })
   const today = dayKey(new Date())
   const intake = await command(admin, 'intake', { note: 'QA', lines: [
     { productId: ids.a, quantity: 30, lotCode: 'A1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.a, quantity: 170, lotCode: 'A2', manufacturedOn: today, expiresOn: '2099-02-01' },
     { productId: ids.b, quantity: 30, lotCode: 'B1', manufacturedOn: today, expiresOn: '2099-01-01' },
+    { productId: ids.delete, quantity: 100, lotCode: 'D1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.central, quantity: 100, lotCode: 'C1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.credit, quantity: 100, lotCode: 'CR1', manufacturedOn: today, expiresOn: '2099-01-01' },
   ] })
@@ -57,8 +58,12 @@ try {
   const dispatch = await command(admin, 'dispatch', { warehouseId: 'central', routeId: route, routeName: 'Ruta Hugo QA', distributorUid: seller, distributorName: 'Hugo QA', warehouseResponsibleName: 'QA', lines: [
     { productId: ids.a, quantity: 200, allocationsRequested: [{ lotId: lotByCode.get('A1'), quantity: 30 }, { lotId: lotByCode.get('A2'), quantity: 170 }] },
     { productId: ids.b, quantity: 30 },
+    { productId: ids.delete, quantity: 100 },
     { productId: ids.credit, quantity: 100 },
   ] })
+  const deletionSale = await command(seller, 'sale', { sourceLocation: 'route', routeId: route, routeName: 'Ruta Hugo QA', dispatchId: dispatch.id, customerId: customer, lines: [{ productId: ids.delete, quantity: 70, actualUnitPrice: 30 }, { productId: ids.b, quantity: 10, actualUnitPrice: 30 }], ...payment(2400) })
+  await command(seller, 'editSale', correction(deletionSale.id, [{ productId: ids.b, quantity: 10, actualUnitPrice: 30 }], 300))
+  pass((await read('distBalances', `route__${route}__${ids.delete}`)).quantity === 100, 'eliminación directa 70 a 0 devuelve exactamente 70 a ruta')
   const sale = await command(seller, 'sale', { sourceLocation: 'route', routeId: route, routeName: 'Ruta Hugo QA', dispatchId: dispatch.id, customerId: customer, lines: [{ productId: ids.a, quantity: 70, actualUnitPrice: 30 }, { productId: ids.b, quantity: 10, actualUnitPrice: 30 }], ...payment(2400) })
   pass((await read('distBalances', `route__${route}__${ids.a}`)).quantity === 130, 'venta 70 deja 130 en ruta')
 
