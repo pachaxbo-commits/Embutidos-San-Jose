@@ -1361,6 +1361,54 @@ async function editSale(o, p) {
   o.put("distSales", sale.id, { ...sale, effectiveSnapshot: corrected, latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(), revision });
   return correction;
 }
+async function voidSale(o, p) {
+  check(["admin", "distributor"].includes(o.member.role), "Sin permiso para anular ventas.");
+  check(p.reason?.trim(), "La razón de la anulación es obligatoria.");
+  const sale = await o.read("distSales", p.saleId);
+  check(sale, "Venta inexistente.");
+  check(!sale.voidedAt, "La venta ya fue anulada.");
+  check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes anular tus propias ventas.");
+  const dispatch = sale.dispatchId ? await o.read("distDispatches", sale.dispatchId) : null;
+  check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. La venta no puede anularse desde el flujo diario.");
+  if (sale.dispatchId) {
+    const closures = await o.query("distClosures", "dispatchId", sale.dispatchId);
+    check(!closures.some(row => row.status === "closed" || row.warehouseClosedBy), "La ruta ya tiene un cierre confirmado. La venta no puede anularse.");
+  }
+  const claims = await o.query("distClaims", "saleId", sale.id);
+  check(claims.length === 0, "La venta tiene cambios o devoluciones y requiere revisión administrativa especializada.");
+  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount };
+  check(Array.isArray(previous.lines) && previous.lines.length > 0, "La venta no tiene productos activos para anular.");
+  check(previous.lines.every(line => Array.isArray(line.allocations) && line.allocations.length > 0), "Esta venta histórica no tiene lotes auditables y requiere revisión administrativa.");
+  const receivable = await o.read("distReceivables", sale.id);
+  const alreadyPaid = round(Number(receivable?.paidAmount) || 0);
+  check(alreadyPaid === 0, "La venta tiene cobros aplicados. No puede anularse sin revisar primero esos cobros.");
+  const loc = sale.sourceLocation === "route" ? location("route", sale.routeId) : "central";
+  const returnedByProduct = new Map();
+  for (const line of previous.lines) {
+    await o.restore(line.productId, loc, line.allocations);
+    const current = returnedByProduct.get(line.productId) || { quantity: 0, allocations: [] };
+    current.quantity = round(current.quantity + line.quantity);
+    current.allocations.push(...line.allocations);
+    returnedByProduct.set(line.productId, current);
+  }
+  const stockDeltas = [...returnedByProduct.entries()].map(([productId, returned]) => ({
+    productId,
+    quantity: round(-returned.quantity),
+    allocations: returned.allocations,
+  }));
+  for (const delta of stockDeltas) {
+    o.ledger(delta.productId, -delta.quantity, null, loc, "sale_void", { note: p.reason.trim(), saleId: sale.id, allocations: delta.allocations });
+  }
+  if (receivable) {
+    o.put("distReceivables", sale.id, { ...receivable, originalAmount: 0, balance: 0, status: "PAID", saleLines: [], voidedAt: o.now, voidedBy: o.actor, voidReason: p.reason.trim() });
+  }
+  const revision = Number(sale.revision || 0) + 1;
+  const corrected = { lines: [], total: 0, paymentKind: previous.paymentKind, cashAmount: 0, qrAmount: 0, creditAmount: 0 };
+  const correction = { id: o.id, ...o.base(), kind: "void", saleId: sale.id, sellerUid: sale.sellerUid, revision, reason: p.reason.trim(), original: previous, corrected, stockDeltas, moneyDelta: round(-previous.total), creditDelta: round(-(Number(previous.creditAmount) || 0)), correctedByName: o.member.displayName || o.actor };
+  o.put("distSaleCorrections", o.id, correction);
+  o.put("distSales", sale.id, { ...sale, effectiveSnapshot: corrected, latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(), voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: p.reason.trim(), revision });
+  return correction;
+}
 const handlers = {
   intake,
   transfer,
@@ -1373,6 +1421,7 @@ const handlers = {
   changeProductUnit,
   warehouseShift,
   editSale,
+  voidSale,
   correctDispatch,
 };
 async function processCommand(db, ref) {

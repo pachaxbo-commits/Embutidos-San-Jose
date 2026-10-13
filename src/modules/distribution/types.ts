@@ -266,6 +266,10 @@ export interface DistSale extends DistBaseDoc {
   editedAt?: string
   editedBy?: string
   editReason?: string
+  voidedAt?: string
+  voidedBy?: string
+  voidedByName?: string
+  voidReason?: string
   revision?: number
   /** Resultado vigente; los campos originales del documento no se sobrescriben. */
   effectiveSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
@@ -276,6 +280,7 @@ export interface DistSale extends DistBaseDoc {
 }
 
 export interface DistSaleCorrection extends DistBaseDoc {
+  kind?: 'edit' | 'void'
   saleId: string
   revision: number
   reason: string

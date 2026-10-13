@@ -32,7 +32,7 @@ import {
   validateSalePayment,
   validateStockAvailability,
 } from '../domain/engine'
-import { correctSale, newOperationId, registerSale, saveCustomer } from '../data/distributionRepository'
+import { correctSale, newOperationId, registerSale, saveCustomer, voidSale } from '../data/distributionRepository'
 import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
 import { useStockIndex } from '../state/useDistributionStore'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs, formatQty } from './shared'
@@ -152,6 +152,8 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [isReviewingCorrection, setIsReviewingCorrection] = useState(false)
   const [productPendingRemoval, setProductPendingRemoval] = useState<DistProduct | null>(null)
   const [correctionSuccessMessage, setCorrectionSuccessMessage] = useState<string | null>(null)
+  const [voidTarget, setVoidTarget] = useState<DistSale | null>(null)
+  const [voidReason, setVoidReason] = useState('')
   const [auditInspectingSale, setAuditInspectingSale] = useState<DistSale | null>(null)
   const [nowMs] = useState(() => Date.now())
 
@@ -622,6 +624,26 @@ export function SellView({ session, data }: DistributionViewProps) {
     }
   }
 
+  const submitVoid = async () => {
+    if (!voidTarget || isSubmitting) return
+    if (!voidReason.trim()) {
+      setError('La razón de la anulación es obligatoria.')
+      return
+    }
+    setIsSubmitting(true)
+    try {
+      await voidSale({ saleId: voidTarget.id, reason: voidReason.trim() })
+      setVoidTarget(null)
+      setVoidReason('')
+      setCorrectionSuccessMessage('Venta anulada correctamente. Los productos volvieron al stock de origen.')
+      setError(null)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   return (
     <Screen
       title="Ventas"
@@ -1078,9 +1100,9 @@ export function SellView({ session, data }: DistributionViewProps) {
               <div className="flex items-center gap-2">
                 <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
                 <div>
-                  <p className="text-xs font-black">Venta corregida correctamente</p>
+                  <p className="text-xs font-black">Operación confirmada</p>
                   <p className="text-[11px] font-semibold text-emerald-800">
-                    Los cambios y el stock fueron actualizados.
+                    {correctionSuccessMessage}
                   </p>
                 </div>
               </div>
@@ -1106,7 +1128,7 @@ export function SellView({ session, data }: DistributionViewProps) {
               <article
                 key={sale.id}
                 className={`rounded-2xl border p-3 ${
-                  audit.isCorrected ? 'border-amber-300 bg-amber-50/70' : 'border-slate-200 bg-white'
+                  sale.voidedAt ? 'border-rose-300 bg-rose-50/70' : audit.isCorrected ? 'border-amber-300 bg-amber-50/70' : 'border-slate-200 bg-white'
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -1115,16 +1137,21 @@ export function SellView({ session, data }: DistributionViewProps) {
                       <p className="text-xs font-extrabold text-slate-900">
                         {sale.customerName || 'Contado sin cliente'} · {formatBs(sale.total)}
                       </p>
-                      {audit.isCorrected && (
+                      {audit.isCorrected && !sale.voidedAt && (
                         <span className="rounded-full bg-amber-100 border border-amber-300 px-2 py-0.5 text-[9px] font-black text-amber-800 tracking-wide uppercase">
                           CORREGIDA
+                        </span>
+                      )}
+                      {sale.voidedAt && (
+                        <span className="rounded-full border border-rose-300 bg-rose-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-rose-800">
+                          ANULADA
                         </span>
                       )}
                     </div>
                     <p className="text-[10px] font-semibold text-slate-500">
                       {new Date(sale.createdAt).toLocaleString('es-BO')} · {sale.sellerName}
                     </p>
-                    {audit.isCorrected && (
+                    {audit.isCorrected && !sale.voidedAt && (
                       <div className="mt-1 flex items-center gap-2 flex-wrap">
                         <p className="text-[10px] font-bold text-amber-900">
                           Rev. {audit.revisionNumber} · {sale.editReason || 'Corregida'}{' '}
@@ -1142,13 +1169,13 @@ export function SellView({ session, data }: DistributionViewProps) {
                   </div>
                 </div>
                 <p className="my-2 text-[11px] text-slate-600">
-                  {sale.lines.map(line => `${formatQty(line.quantity, line.unitType)} ${line.productNameSnapshot}`).join(' · ')}
+                  {sale.voidedAt ? `Anulada: ${sale.voidReason || 'sin motivo visible'}` : sale.lines.map(line => `${formatQty(line.quantity, line.unitType)} ${line.productNameSnapshot}`).join(' · ')}
                 </p>
-                <div className="grid grid-cols-3 gap-2 items-center">
-                  <SecondaryButton onClick={() => void printSaleReceipt(sale, receiptContext, true)}>
+                <div className="grid grid-cols-2 gap-2 items-center sm:grid-cols-4">
+                  <SecondaryButton disabled={Boolean(sale.voidedAt)} onClick={() => void printSaleReceipt(sale, receiptContext, true)}>
                     Ticket
                   </SecondaryButton>
-                  <SecondaryButton onClick={() => void shareSaleReceipt(sale, receiptContext)}>
+                  <SecondaryButton disabled={Boolean(sale.voidedAt)} onClick={() => void shareSaleReceipt(sale, receiptContext)}>
                     Compartir
                   </SecondaryButton>
                   {availability.canCorrect ? (
@@ -1193,11 +1220,58 @@ export function SellView({ session, data }: DistributionViewProps) {
                       </span>
                     </div>
                   )}
+                  {availability.canCorrect ? (
+                    <SecondaryButton
+                      onClick={() => {
+                        setVoidTarget(sale)
+                        setVoidReason('')
+                        setError(null)
+                      }}
+                    >
+                      <Trash2 size={14} /> Anular
+                    </SecondaryButton>
+                  ) : <span />}
                 </div>
               </article>
             )
           })}
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(voidTarget)}
+        onClose={() => { if (!isSubmitting) { setVoidTarget(null); setVoidReason(''); setError(null) } }}
+        title="Anular venta completa"
+        subtitle="Esta acción queda registrada y no elimina el historial."
+        footer={
+          <div className="grid w-full grid-cols-2 gap-2">
+            <SecondaryButton disabled={isSubmitting} onClick={() => { setVoidTarget(null); setVoidReason(''); setError(null) }}>
+              Volver
+            </SecondaryButton>
+            <PrimaryButton disabled={isSubmitting || !voidReason.trim()} onClick={() => void submitVoid()}>
+              {isSubmitting ? 'Anulando...' : 'Confirmar anulación'}
+            </PrimaryButton>
+          </div>
+        }
+      >
+        {voidTarget && (
+          <div className="grid gap-3">
+            <div className="rounded-2xl border-2 border-rose-300 bg-rose-50 p-3 text-sm text-rose-950">
+              <p className="font-black">Se anulará la venta de {formatBs(voidTarget.total)}.</p>
+              <p className="mt-1 text-xs font-semibold">
+                {voidTarget.lines.map(line => `${formatQty(line.quantity, line.unitType)} de ${line.productNameSnapshot}`).join(' · ')}
+              </p>
+              <p className="mt-2 text-xs font-bold">
+                El producto volverá al stock {voidTarget.sourceLocation === 'route' ? `de la ruta ${voidTarget.routeName}` : 'del almacén central'}, respetando sus lotes originales.
+              </p>
+              {voidTarget.creditAmount > 0 && <p className="mt-2 text-xs font-bold">La deuda sin cobros quedará en cero. Si ya existe algún cobro, el servidor rechazará la anulación.</p>}
+            </div>
+            <Field label="Motivo obligatorio">
+              <TextArea value={voidReason} onChange={event => setVoidReason(event.target.value)} placeholder="Ej.: venta registrada por error; la mercadería no fue entregada" />
+            </Field>
+            {error && <p role="alert" className="rounded-xl bg-rose-50 p-2 text-sm font-bold text-rose-700">{error}</p>}
+          </div>
+        )}
       </Modal>
 
       <Modal

@@ -197,3 +197,13 @@ Estado al cerrar esta limpieza:
 - Actualizador: una consulta asíncrona por montaje de la sesión Android, sin caché de seis horas ni consulta al reanudar desde WhatsApp/impresión. “Más tarde” conserva un recordatorio compacto durante esa sesión y el manifiesto conocido queda en almacenamiento local para recordar la actualización sin conexión.
 - Aislamiento web comprobado: el build normal no contiene módulo, URL ni textos del actualizador Android.
 - APK 1.4.1 preparada localmente para Hosting, sin deploy. SHA-256 APK `B0:ED:21:4D:F7:92:B3:7E:01:52:31:4D:6D:F8:36:F2:9F:50:8B:2C:BF:87:43:6C:E8:C4:07:6F:6F:66:BF:BA`.
+
+## Anulación auditada de ventas 1.4.16 (13 de octubre de 2026)
+
+- Se incorpora `Anular venta` para Administración y para el distribuidor dueño de la venta, únicamente mientras el despacho siga abierto.
+- La anulación no borra documentos: conserva la venta original, crea una revisión en `distSaleCorrections`, deja el resultado efectivo en cero y registra movimientos `sale_void`.
+- El stock retorna al lugar exacto del que salió: una venta de ruta vuelve a esa ruta y una venta administrativa vuelve al almacén central. Las cantidades se restauran a sus lotes originales, sin aplicar FEFO inverso.
+- No se permite anular una venta con ruta cerrada, reclamos asociados, lotes históricos no auditables, cobros de crédito ya aplicados o perteneciente a otro distribuidor.
+- Un crédito sin cobros queda saldado en cero al anular; con cobros parciales la operación se rechaza para exigir revisión administrativa.
+- Caso real Hugo del 13 de octubre: la venta de 70 kg seguía activa en una ruta abierta, como única línea y con crédito sin cobros. La corrección anterior confirmó 70 kg al mismo precio, por lo que no existió devolución de stock. No se alteró producción manualmente.
+- Android: `versionCode 36`, `versionName 1.4.16`; misma firma oficial.

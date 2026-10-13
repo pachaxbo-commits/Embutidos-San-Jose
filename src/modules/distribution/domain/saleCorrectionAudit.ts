@@ -63,6 +63,12 @@ export function checkSaleCorrectionAvailability(
     claims?: DistClaim[]
   },
 ): SaleCorrectionAvailability {
+  if (sale.voidedAt) {
+    return {
+      canCorrect: false,
+      reason: 'La venta ya fue anulada.',
+    }
+  }
   // 1. Venta pendiente de sincronización
   if (sale.pendingConfirmation) {
     return {

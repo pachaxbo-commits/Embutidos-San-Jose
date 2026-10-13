@@ -481,6 +481,10 @@ export async function correctSale(input: { saleId: string; reason: string; lines
   await submitOperation('editSale', input, newOperationId('sale-correction'))
 }
 
+export async function voidSale(input: { saleId: string; reason: string }): Promise<void> {
+  await submitOperation('voidSale', input, newOperationId('sale-void'))
+}
+
 export function subscribeCollections(
   dayKeys: string[],
   routeId: string | null,

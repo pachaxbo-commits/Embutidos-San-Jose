@@ -42,7 +42,7 @@ try {
   await root.collection('members').doc(admin).set({ role: 'admin', active: true, displayName: 'Administración QA' })
   await root.collection('members').doc(seller).set({ role: 'distributor', active: true, routeId: route, displayName: 'Hugo QA' })
   await root.collection('distCustomers').doc(customer).set({ id: customer, restaurantId: 'sanjose', name: 'Cliente QA', identityNumber: '9999001', customerCode: '9999001', active: true })
-  const ids = Object.fromEntries(['a', 'b', 'delete', 'central', 'credit'].map(key => [key, `${prefix}-${key}`]))
+  const ids = Object.fromEntries(['a', 'b', 'delete', 'central', 'credit', 'void', 'paidVoid', 'closedVoid'].map(key => [key, `${prefix}-${key}`]))
   for (const id of Object.values(ids)) await root.collection('distProducts').doc(id).set({ id, restaurantId: 'sanjose', name: id, unitType: 'kg', active: true, referencePrice: 30, productionCost: 20 })
   const today = dayKey(new Date())
   const intake = await command(admin, 'intake', { note: 'QA', lines: [
@@ -52,6 +52,9 @@ try {
     { productId: ids.delete, quantity: 100, lotCode: 'D1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.central, quantity: 100, lotCode: 'C1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.credit, quantity: 100, lotCode: 'CR1', manufacturedOn: today, expiresOn: '2099-01-01' },
+    { productId: ids.void, quantity: 100, lotCode: 'V1', manufacturedOn: today, expiresOn: '2099-01-01' },
+    { productId: ids.paidVoid, quantity: 100, lotCode: 'PV1', manufacturedOn: today, expiresOn: '2099-01-01' },
+    { productId: ids.closedVoid, quantity: 100, lotCode: 'CV1', manufacturedOn: today, expiresOn: '2099-01-01' },
   ] })
   const lots = await root.collection('distLots').where('createdBy', '==', admin).get()
   const lotByCode = new Map(lots.docs.map(row => [row.data().lotCode, row.id]))
@@ -60,6 +63,9 @@ try {
     { productId: ids.b, quantity: 30 },
     { productId: ids.delete, quantity: 100 },
     { productId: ids.credit, quantity: 100 },
+    { productId: ids.void, quantity: 100 },
+    { productId: ids.paidVoid, quantity: 100 },
+    { productId: ids.closedVoid, quantity: 100 },
   ] })
   const deletionSale = await command(seller, 'sale', { sourceLocation: 'route', routeId: route, routeName: 'Ruta Hugo QA', dispatchId: dispatch.id, customerId: customer, lines: [{ productId: ids.delete, quantity: 70, actualUnitPrice: 30 }, { productId: ids.b, quantity: 10, actualUnitPrice: 30 }], ...payment(2400) })
   await command(seller, 'editSale', correction(deletionSale.id, [{ productId: ids.b, quantity: 10, actualUnitPrice: 30 }], 300))
@@ -104,6 +110,36 @@ try {
 
   const auditRows = await root.collection('distSaleCorrections').where('saleId', '==', sale.id).get()
   pass(auditRows.docs.some(row => row.data().original.lines[0].actualUnitPrice === 30 && row.data().corrected.lines[0].actualUnitPrice === 40), 'auditoría conserva precio anterior y nuevo')
+
+  const voided = await command(seller, 'sale', { sourceLocation: 'route', routeId: route, routeName: 'Ruta Hugo QA', dispatchId: dispatch.id, customerId: customer, lines: [{ productId: ids.void, quantity: 70, actualUnitPrice: 30 }], ...payment(2100, 'credit') })
+  pass((await read('distBalances', `route__${route}__${ids.void}`)).quantity === 30, 'venta a anular descuenta 70 de la ruta')
+  const voidOperation = await command(seller, 'voidSale', { saleId: voided.id, reason: 'Venta completa registrada por error' })
+  const voidedSale = await read('distSales', voided.id)
+  const voidedDebt = await read('distReceivables', voided.id)
+  pass((await read('distBalances', `route__${route}__${ids.void}`)).quantity === 100, 'anulación devuelve exactamente 70 a la ruta')
+  pass((await read('distLots', lotByCode.get('V1'))).quantities[`route__${route}`] === 100, 'anulación devuelve al lote original')
+  pass(voidedSale.effectiveSnapshot.lines.length === 0 && voidedSale.effectiveSnapshot.total === 0 && Boolean(voidedSale.voidedAt), 'venta anulada conserva historial y deja total efectivo cero')
+  pass(voidedDebt.originalAmount === 0 && voidedDebt.balance === 0 && voidedDebt.status === 'PAID', 'anulación de crédito sin cobros deja cartera en cero')
+  pass(voidOperation.result.kind === 'void' && voidOperation.result.stockDeltas[0].quantity === -70, 'auditoría identifica anulación y devolución de stock')
+
+  const centralVoid = await command(admin, 'sale', { sourceLocation: 'centralWarehouse', lines: [{ productId: ids.central, quantity: 10, actualUnitPrice: 30 }], ...payment(300) })
+  await command(admin, 'voidSale', { saleId: centralVoid.id, reason: 'Venta central registrada por error' })
+  pass((await read('distBalances', `central__${ids.central}`)).quantity === 80, 'anulación administrativa devuelve al almacén central')
+
+  const paidVoid = await command(seller, 'sale', { sourceLocation: 'route', routeId: route, routeName: 'Ruta Hugo QA', dispatchId: dispatch.id, customerId: customer, lines: [{ productId: ids.paidVoid, quantity: 20, actualUnitPrice: 30 }], ...payment(600, 'credit') })
+  await root.collection('distReceivables').doc(paidVoid.id).update({ paidAmount: 100, balance: 500, status: 'PARTIAL' })
+  await command(seller, 'voidSale', { saleId: paidVoid.id, reason: 'Debe rechazarse por cobro' }, 'rejected')
+  pass((await read('distBalances', `route__${route}__${ids.paidVoid}`)).quantity === 80, 'anulación con cobros se rechaza sin alterar stock')
+
+  const foreign = `${prefix}-foreign`
+  await root.collection('members').doc(foreign).set({ role: 'distributor', active: true, routeId: `${route}-foreign`, displayName: 'Otro vendedor' })
+  await command(foreign, 'voidSale', { saleId: paidVoid.id, reason: 'Venta ajena' }, 'rejected')
+  pass((await read('distBalances', `route__${route}__${ids.paidVoid}`)).quantity === 80, 'distribuidor no puede anular una venta ajena')
+
+  const closedVoid = await command(seller, 'sale', { sourceLocation: 'route', routeId: route, routeName: 'Ruta Hugo QA', dispatchId: dispatch.id, customerId: customer, lines: [{ productId: ids.closedVoid, quantity: 20, actualUnitPrice: 30 }], ...payment(600) })
+  await root.collection('distDispatches').doc(dispatch.id).update({ status: 'closed' })
+  await command(admin, 'voidSale', { saleId: closedVoid.id, reason: 'Ruta cerrada' }, 'rejected')
+  pass((await read('distBalances', `route__${route}__${ids.closedVoid}`)).quantity === 80, 'ni administración anula una venta de ruta cerrada ni altera su stock')
   console.log(`${passed} comprobaciones de precio y stock aprobadas`)
 } finally {
   await env.cleanup()
