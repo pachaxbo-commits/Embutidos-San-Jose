@@ -27,6 +27,7 @@
     "test:collection-receipts": "node --experimental-strip-types src/modules/distribution/domain/__tests__/collectionReceipts.test.ts",
     "test:confirmations": "node --experimental-strip-types src/modules/distribution/domain/__tests__/collectionAndClosureConfirmations.test.ts",
     "test:sale-correction": "node --experimental-strip-types src/modules/distribution/domain/__tests__/saleCorrectionAudit.test.ts",
+    "test:sale-price-correction": "node firebase/tests/salePriceCorrection.test.mjs",
     "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
     "test:android-documents": "node scripts/test-android-document-flows.mjs",
     "test:web-updater": "node scripts/validate-web-updater.cjs",

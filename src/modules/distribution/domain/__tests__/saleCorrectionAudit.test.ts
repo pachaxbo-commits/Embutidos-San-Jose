@@ -16,6 +16,7 @@ import {
   getSeenSaleCorrectionIds,
   markSaleCorrectionsSeen,
   getUnseenSaleCorrections,
+  recalculateCorrectedPayment,
 } from '../saleCorrectionAudit.ts'
 import { computeSaleTotal, round2 } from '../engine.ts'
 import type { DistClosure, DistDispatch, DistSale, DistSaleLine } from '../../types.ts'
@@ -30,13 +31,15 @@ export async function runSaleCorrectionTestSuite() {
 
   // Mock de localStorage para Node.js
   const storageMap = new Map<string, string>()
-  const mockLocalStorage = {
+  const mockLocalStorage: Storage = {
+    get length() { return storageMap.size },
+    key: (index: number) => Array.from(storageMap.keys())[index] ?? null,
     getItem: (key: string) => storageMap.get(key) || null,
-    setItem: (key: string, value: string) => storageMap.set(key, String(value)),
-    removeItem: (key: string) => storageMap.delete(key),
+    setItem: (key: string, value: string) => { storageMap.set(key, String(value)) },
+    removeItem: (key: string) => { storageMap.delete(key) },
     clear: () => storageMap.clear(),
   }
-  ;(globalThis as any).window = { localStorage: mockLocalStorage }
+  Object.defineProperty(globalThis, 'window', { value: { localStorage: mockLocalStorage }, configurable: true })
 
   const line1: DistSaleLine = {
     productId: 'prod-chorizo',
@@ -281,6 +284,27 @@ export async function runSaleCorrectionTestSuite() {
   assert.equal(historicalAudit.isCorrected, true, 'Criterio 19: Auditoría histórica sigue disponible para consulta')
   assert.equal(historicalAudit.lineChanges.length, 3, 'Criterio 19: Los 3 cambios de líneas siguen intactos')
 
+  const priceCorrectedLine: DistSaleLine = { ...line1, actualUnitPrice: 45, subtotal: 225 }
+  const priceAudit = getSaleAuditSummary({
+    ...originalSale,
+    lines: [priceCorrectedLine, line2, line3],
+    total: 415,
+    latestCorrectionId: 'correction-price',
+    revision: 1,
+    originalSnapshot: {
+      lines: [line1, line2, line3], total: 390, paymentKind: 'credit', cashAmount: 0, qrAmount: 0, creditAmount: 390,
+    },
+  })
+  const priceChange = priceAudit.lineChanges.find((change) => change.productId === line1.productId)
+  assert.equal(priceChange?.status, 'modified', 'Precio: un cambio solo de precio figura como MODIFICADO')
+  assert.equal(priceChange?.priceBefore, 40, 'Precio: conserva el precio anterior')
+  assert.equal(priceChange?.priceAfter, 45, 'Precio: muestra el precio corregido')
+  assert.equal(priceChange?.subtotalBefore, 200, 'Precio: conserva el subtotal anterior')
+  assert.equal(priceChange?.subtotalAfter, 225, 'Precio: muestra el subtotal corregido')
+  assert.equal(recalculateCorrectedPayment({ ...originalSale, paymentKind: 'cash', cashAmount: 390, qrAmount: 0, creditAmount: 0 }, 415).cashAmount, 415, 'Pago: efectivo puro conserva todo el nuevo total en efectivo')
+  const mixedPayment = recalculateCorrectedPayment({ ...originalSale, paymentKind: 'mixed', cashAmount: 100, qrAmount: 100, creditAmount: 190 }, 415)
+  assert.equal(round2(mixedPayment.cashAmount + mixedPayment.qrAmount + mixedPayment.creditAmount), 415, 'Pago: mixto siempre cuadra con el total corregido')
+
   // =========================================================================
   // CRITERIOS 20 a 26: Flujo de creación de venta paso a paso y validación de stock
   // =========================================================================
@@ -386,11 +410,11 @@ export async function runSaleCorrectionTestSuite() {
     { productId: 'prod-chorizo', actualUnitPrice: 40, quantity: 2, subtotal: 80 },
     { productId: 'prod-mortadela', actualUnitPrice: 25, quantity: 1, subtotal: 25 },
   ] as unknown as DistSaleLine[]
-  const totalBeforeRemoval = computeSaleTotal(cartWith2 as any)
+  const totalBeforeRemoval = computeSaleTotal(cartWith2)
   assert.equal(totalBeforeRemoval, 105, 'Criterio 26: Total inicial Bs 105')
 
   const cartAfterRemoval = cartWith2.filter((l) => l.productId !== 'prod-mortadela')
-  const totalAfterRemoval = computeSaleTotal(cartAfterRemoval as any)
+  const totalAfterRemoval = computeSaleTotal(cartAfterRemoval)
   assert.equal(totalAfterRemoval, 80, 'Criterio 26: Total tras eliminar mortadela es Bs 80')
   assert.equal(cartAfterRemoval.length, 1, 'Criterio 26: Carrito tiene 1 línea')
 

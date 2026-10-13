@@ -13,6 +13,10 @@ export interface SaleLineAuditChange {
   unitType: UnitType
   qtyBefore: number
   qtyAfter: number
+  priceBefore: number
+  priceAfter: number
+  subtotalBefore: number
+  subtotalAfter: number
   status: 'eliminated' | 'modified' | 'added' | 'unchanged'
   returnedStockToRoute: number
 }
@@ -29,6 +33,22 @@ export interface SaleAuditSummary {
   lineChanges: SaleLineAuditChange[]
   eliminatedLinesCount: number
   modifiedLinesCount: number
+}
+
+export function recalculateCorrectedPayment(
+  sale: Pick<DistSale, 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount' | 'total'>,
+  newTotal: number,
+) {
+  const total = round2(newTotal)
+  if (sale.paymentKind === 'cash') return { cashAmount: total, qrAmount: 0, creditAmount: 0 }
+  if (sale.paymentKind === 'qr') return { cashAmount: 0, qrAmount: total, creditAmount: 0 }
+  if (sale.paymentKind === 'credit') return { cashAmount: 0, qrAmount: 0, creditAmount: total }
+  const previousTotal = sale.total > 0 ? sale.total : 1
+  const cashAmount = round2((total * sale.cashAmount) / previousTotal)
+  let qrAmount = round2((total * sale.qrAmount) / previousTotal)
+  if (cashAmount + qrAmount > total) qrAmount = round2(Math.max(0, total - cashAmount))
+  const creditAmount = round2(Math.max(0, total - cashAmount - qrAmount))
+  return { cashAmount, qrAmount, creditAmount }
 }
 
 /**
@@ -141,6 +161,10 @@ export function getSaleAuditSummary(sale: DistSale): SaleAuditSummary {
     const current = currentLines.find((l) => l.productId === orig.productId)
     const qtyBefore = orig.quantity
     const qtyAfter = current ? current.quantity : 0
+    const priceBefore = orig.actualUnitPrice
+    const priceAfter = current?.actualUnitPrice ?? 0
+    const subtotalBefore = orig.subtotal
+    const subtotalAfter = current?.subtotal ?? 0
 
     if (!current || qtyAfter <= 0) {
       lineChanges.push({
@@ -150,10 +174,18 @@ export function getSaleAuditSummary(sale: DistSale): SaleAuditSummary {
         unitType: orig.unitType,
         qtyBefore,
         qtyAfter: 0,
+        priceBefore,
+        priceAfter: 0,
+        subtotalBefore,
+        subtotalAfter: 0,
         status: 'eliminated',
         returnedStockToRoute: qtyBefore,
       })
-    } else if (Math.abs(qtyAfter - qtyBefore) > 0.0001) {
+    } else if (
+      Math.abs(qtyAfter - qtyBefore) > 0.0001 ||
+      Math.abs(priceAfter - priceBefore) > 0.0001 ||
+      Math.abs(subtotalAfter - subtotalBefore) > 0.0001
+    ) {
       lineChanges.push({
         productId: orig.productId,
         productName: orig.productNameSnapshot,
@@ -161,6 +193,10 @@ export function getSaleAuditSummary(sale: DistSale): SaleAuditSummary {
         unitType: orig.unitType,
         qtyBefore,
         qtyAfter,
+        priceBefore,
+        priceAfter,
+        subtotalBefore,
+        subtotalAfter,
         status: 'modified',
         returnedStockToRoute: qtyAfter < qtyBefore ? round2(qtyBefore - qtyAfter) : 0,
       })
@@ -172,6 +208,10 @@ export function getSaleAuditSummary(sale: DistSale): SaleAuditSummary {
         unitType: orig.unitType,
         qtyBefore,
         qtyAfter,
+        priceBefore,
+        priceAfter,
+        subtotalBefore,
+        subtotalAfter,
         status: 'unchanged',
         returnedStockToRoute: 0,
       })
@@ -188,6 +228,10 @@ export function getSaleAuditSummary(sale: DistSale): SaleAuditSummary {
         unitType: curr.unitType,
         qtyBefore: 0,
         qtyAfter: curr.quantity,
+        priceBefore: 0,
+        priceAfter: curr.actualUnitPrice,
+        subtotalBefore: 0,
+        subtotalAfter: curr.subtotal,
         status: 'added',
         returnedStockToRoute: 0,
       })

@@ -42,6 +42,7 @@ import { getProductPresentation } from '../domain/productPresentation'
 import {
   checkSaleCorrectionAvailability,
   getSaleAuditSummary,
+  recalculateCorrectedPayment,
 } from '../domain/saleCorrectionAudit'
 
 interface CartLine extends DistSaleLine {
@@ -145,8 +146,10 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [historySearch, setHistorySearch] = useState('')
   const [correctionTarget, setCorrectionTarget] = useState<DistSale | null>(null)
   const [correctionQuantities, setCorrectionQuantities] = useState<Record<string, string>>({})
+  const [correctionPrices, setCorrectionPrices] = useState<Record<string, string>>({})
   const [correctionReason, setCorrectionReason] = useState('')
   const [correctionSearch, setCorrectionSearch] = useState('')
+  const [isReviewingCorrection, setIsReviewingCorrection] = useState(false)
   const [productPendingRemoval, setProductPendingRemoval] = useState<DistProduct | null>(null)
   const [correctionSuccessMessage, setCorrectionSuccessMessage] = useState<string | null>(null)
   const [auditInspectingSale, setAuditInspectingSale] = useState<DistSale | null>(null)
@@ -458,6 +461,27 @@ export function SellView({ session, data }: DistributionViewProps) {
       )
     : null
 
+  const correctionOriginalByProduct = useMemo(() => {
+    const grouped = new Map<string, DistSaleLine>()
+    for (const line of correctionTarget?.lines || []) {
+      const existing = grouped.get(line.productId)
+      if (!existing) {
+        grouped.set(line.productId, { ...line, allocations: [...(line.allocations || [])] })
+        continue
+      }
+      const quantity = round2(existing.quantity + line.quantity)
+      const subtotal = round2(existing.subtotal + line.subtotal)
+      grouped.set(line.productId, {
+        ...existing,
+        quantity,
+        subtotal,
+        actualUnitPrice: round2(subtotal / quantity),
+        allocations: [...(existing.allocations || []), ...(line.allocations || [])],
+      })
+    }
+    return grouped
+  }, [correctionTarget])
+
   const correctionProducts = useMemo(() => {
     if (!correctionTarget) return []
     const dispatch = data.openDispatches.find((d) => d.id === correctionTarget.dispatchId) || (isDistributor ? openDispatch : null)
@@ -496,30 +520,46 @@ export function SellView({ session, data }: DistributionViewProps) {
     return data.products
       .map((product) => {
         const qty = round2(Number(correctionQuantities[product.id]) || 0)
-        const originalLine = correctionTarget.lines.find((l) => l.productId === product.id)
-        const price = originalLine?.actualUnitPrice ?? product.referencePrice
+        const originalLine = correctionOriginalByProduct.get(product.id)
+        const priceRaw = correctionPrices[product.id] ?? String(originalLine?.actualUnitPrice ?? product.referencePrice)
+        const price = Number(priceRaw)
         return {
           product,
           quantity: qty,
           unitPrice: price,
-          subtotal: round2(qty * price),
+          priceRaw,
+          priceValid: Number.isFinite(price) && price > 0,
+          subtotal: Number.isFinite(price) && price > 0 ? round2(qty * price) : 0,
           originalQuantity: originalLine ? originalLine.quantity : 0,
+          originalPrice: originalLine?.actualUnitPrice ?? product.referencePrice,
         }
       })
       .filter((item) => item.quantity > 0)
-  }, [correctionTarget, correctionQuantities, data.products])
+  }, [correctionTarget, correctionOriginalByProduct, correctionQuantities, correctionPrices, data.products])
 
   const newCorrectionTotal = round2(correctionLines.reduce((sum, l) => sum + l.subtotal, 0))
 
-  const submitCorrection = async () => {
-    if (!correctionTarget || isSubmitting) return
+  const validateCorrection = () => {
+    if (!correctionTarget) return false
     if (!correctionReason.trim()) {
       setError('La razón de la edición es obligatoria.')
-      return
+      return false
     }
     if (correctionLines.length === 0) {
       setError('La venta debe conservar al menos un producto.')
-      return
+      return false
+    }
+    const invalidPrice = correctionLines.find((line) => !line.priceValid)
+    if (invalidPrice) {
+      setError(`Indica un precio mayor a Bs 0 para ${invalidPrice.product.name}.`)
+      return false
+    }
+    const hasChange = correctionLines.length !== correctionOriginalByProduct.size || correctionLines.some((line) =>
+      Math.abs(line.quantity - line.originalQuantity) > 0.001 || Math.abs(line.unitPrice - line.originalPrice) > 0.001,
+    )
+    if (!hasChange) {
+      setError('Realiza al menos un cambio de cantidad o precio antes de confirmar.')
+      return false
     }
 
     for (const line of correctionLines) {
@@ -530,10 +570,20 @@ export function SellView({ session, data }: DistributionViewProps) {
           setError(
             `Stock insuficiente en tu camión para ${line.product.name}. Aumentas +${formatQty(increase, line.product.unitType)}, pero solo hay ${formatQty(stock, line.product.unitType)} disponibles.`,
           )
-          return
+          return false
         }
       }
     }
+    setError(null)
+    return true
+  }
+
+  const reviewCorrection = () => {
+    if (validateCorrection()) setIsReviewingCorrection(true)
+  }
+
+  const submitCorrection = async () => {
+    if (!correctionTarget || isSubmitting || !validateCorrection()) return
 
     const lines: DistSaleLine[] = correctionLines.map((item) => ({
       productId: item.product.id,
@@ -543,13 +593,12 @@ export function SellView({ session, data }: DistributionViewProps) {
       quantity: item.quantity,
       unitType: item.product.unitType,
       actualUnitPrice: item.unitPrice,
+      referenceUnitPrice: correctionOriginalByProduct.get(item.product.id)?.referenceUnitPrice ?? item.product.referencePrice,
+      isPromotional: Math.abs(item.unitPrice - (correctionOriginalByProduct.get(item.product.id)?.referenceUnitPrice ?? item.product.referencePrice)) > 0.001,
       subtotal: item.subtotal,
     }))
 
-    const oldTotal = correctionTarget.total || 1
-    const cashAmount = round2((newCorrectionTotal * correctionTarget.cashAmount) / oldTotal)
-    const qrAmount = round2((newCorrectionTotal * correctionTarget.qrAmount) / oldTotal)
-    const creditAmount = round2(newCorrectionTotal - cashAmount - qrAmount)
+    const { cashAmount, qrAmount, creditAmount } = recalculateCorrectedPayment(correctionTarget, newCorrectionTotal)
 
     setIsSubmitting(true)
     try {
@@ -563,6 +612,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         creditAmount,
       })
       setCorrectionTarget(null)
+      setIsReviewingCorrection(false)
       setCorrectionSuccessMessage('Venta corregida correctamente. Los cambios y el stock fueron actualizados.')
       setError(null)
     } catch (e) {
@@ -1107,12 +1157,20 @@ export function SellView({ session, data }: DistributionViewProps) {
                         setCorrectionTarget(sale)
                         setCorrectionReason('')
                         setCorrectionSearch('')
+                        setIsReviewingCorrection(false)
                         setError(null)
                         const init: Record<string, string> = {}
+                        const priceInit: Record<string, string> = {}
+                        const subtotalInit: Record<string, number> = {}
                         sale.lines.forEach(l => {
-                          init[l.productId] = String(l.quantity)
+                          const quantity = round2((Number(init[l.productId]) || 0) + l.quantity)
+                          const subtotal = round2((subtotalInit[l.productId] || 0) + l.subtotal)
+                          init[l.productId] = String(quantity)
+                          subtotalInit[l.productId] = subtotal
+                          priceInit[l.productId] = String(round2(subtotal / quantity))
                         })
                         setCorrectionQuantities(init)
+                        setCorrectionPrices(priceInit)
                       }}
                     >
                       <Pencil size={14} /> Corregir
@@ -1143,8 +1201,11 @@ export function SellView({ session, data }: DistributionViewProps) {
       </Modal>
 
       <Modal
-        isOpen={Boolean(correctionTarget)}
-        onClose={() => setCorrectionTarget(null)}
+        isOpen={Boolean(correctionTarget) && !isReviewingCorrection}
+        onClose={() => {
+          setCorrectionTarget(null)
+          setIsReviewingCorrection(false)
+        }}
         title="Corrección auditada de venta"
         subtitle={
           correctionTarget
@@ -1153,8 +1214,8 @@ export function SellView({ session, data }: DistributionViewProps) {
         }
         size="lg"
         footer={
-          <PrimaryButton full disabled={isSubmitting} onClick={() => void submitCorrection()}>
-            {isSubmitting ? 'Guardando...' : `Confirmar corrección · Nuevo total ${formatBs(newCorrectionTotal)}`}
+          <PrimaryButton full disabled={isSubmitting} onClick={reviewCorrection}>
+            {`Revisar corrección · Nuevo total ${formatBs(newCorrectionTotal)}`}
           </PrimaryButton>
         }
       >
@@ -1175,11 +1236,14 @@ export function SellView({ session, data }: DistributionViewProps) {
 
           <div className="grid max-h-[50dvh] gap-2 overflow-y-auto pr-1">
             {correctionProducts.map((product) => {
-              const originalLine = correctionTarget?.lines.find((l) => l.productId === product.id)
+              const originalLine = correctionOriginalByProduct.get(product.id)
               const originalQty = originalLine ? originalLine.quantity : 0
               const currentVal = correctionQuantities[product.id] ?? '0'
               const currentNum = round2(Number(currentVal) || 0)
-              const unitPrice = originalLine?.actualUnitPrice ?? product.referencePrice
+              const originalPrice = originalLine?.actualUnitPrice ?? product.referencePrice
+              const priceVal = correctionPrices[product.id] ?? String(originalPrice)
+              const unitPrice = Number(priceVal)
+              const validPrice = Number.isFinite(unitPrice) && unitPrice > 0
               const stock = availableStock.get(product.id) ?? 0
               const step = product.unitType === 'kg' ? 0.1 : 1
               const increase = round2(Math.max(0, currentNum - originalQty))
@@ -1216,7 +1280,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                           </p>
                         )}
                         <p className="mt-0.5 text-[10px] font-bold text-slate-600">
-                          En venta original: {formatQty(originalQty, product.unitType)} · Precio: {formatBs(unitPrice)}
+                          Cantidad actual: {formatQty(originalQty, product.unitType)} · Precio actual registrado: {formatBs(originalPrice)}
                         </p>
                         <p className={`text-[10px] font-bold ${isOverStock ? 'text-rose-700' : 'text-slate-500'}`}>
                           Disponible en ruta: {formatQty(stock, product.unitType)}
@@ -1224,7 +1288,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                         </p>
                         {originalQty > 0 && currentNum === 0 && (
                           <p className="mt-1.5 rounded-lg border border-rose-200 bg-rose-50/90 px-2 py-1 text-[10px] font-bold text-rose-800">
-                            Línea eliminada en corrección: retornarán {formatQty(originalQty, product.unitType)} al stock disponible de la ruta.
+                            Línea eliminada en corrección: retornarán {formatQty(originalQty, product.unitType)} al stock {correctionTarget?.sourceLocation === 'route' ? 'de la ruta' : 'central'}.
                           </p>
                         )}
                       </div>
@@ -1232,7 +1296,7 @@ export function SellView({ session, data }: DistributionViewProps) {
 
                     <div className="shrink-0 text-right">
                       <p className="text-xs font-black tabular-nums text-slate-900">
-                        {formatBs(round2(currentNum * unitPrice))}
+                        {validPrice ? formatBs(round2(currentNum * unitPrice)) : 'Precio inválido'}
                       </p>
                       {currentNum > 0 ? (
                         <button
@@ -1259,9 +1323,27 @@ export function SellView({ session, data }: DistributionViewProps) {
                     </div>
                   </div>
 
-                  <div className="mt-2.5 flex items-center justify-end gap-2 border-t border-slate-200/60 pt-2">
+                  <div className="mt-2.5 flex flex-wrap items-end justify-end gap-2 border-t border-slate-200/60 pt-2">
+                    <div className="w-full min-w-0 sm:mr-auto sm:w-auto sm:flex-1">
+                      <label className="mb-1 block text-[10px] font-black uppercase text-slate-600">Nuevo precio (Bs)</label>
+                      <NumberInput
+                        min={0.01}
+                        step={0.01}
+                        value={priceVal}
+                        disabled={currentNum <= 0}
+                        aria-label={`Nuevo precio de ${product.name}`}
+                        onChange={(e) => setCorrectionPrices((prices) => ({ ...prices, [product.id]: e.target.value }))}
+                        className={`h-8 w-full text-xs font-bold ${!validPrice && currentNum > 0 ? 'border-rose-400' : ''}`}
+                      />
+                      {currentNum > 0 && validPrice && Math.abs(unitPrice - originalPrice) > 0.001 && (
+                        <p className="mt-1 text-[10px] font-black text-amber-800">
+                          {formatBs(originalPrice)} → {formatBs(unitPrice)}
+                        </p>
+                      )}
+                    </div>
                     <button
                       type="button"
+                      aria-label={`Reducir cantidad de ${product.name}`}
                       disabled={currentNum <= 0}
                       onClick={() =>
                         setCorrectionQuantities((c) => ({
@@ -1279,6 +1361,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                         min={0}
                         step={step}
                         value={currentVal}
+                        aria-label={`Cantidad corregida de ${product.name}`}
                         onChange={(e) =>
                           setCorrectionQuantities((c) => ({
                             ...c,
@@ -1291,6 +1374,7 @@ export function SellView({ session, data }: DistributionViewProps) {
 
                     <button
                       type="button"
+                      aria-label={`Aumentar cantidad de ${product.name}`}
                       onClick={() =>
                         setCorrectionQuantities((c) => ({
                           ...c,
@@ -1313,6 +1397,12 @@ export function SellView({ session, data }: DistributionViewProps) {
             )}
           </div>
 
+          <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center">
+            <div><p className="text-[9px] font-bold uppercase text-slate-500">Total anterior</p><p className="text-xs font-black">{formatBs(correctionTarget?.total || 0)}</p></div>
+            <div><p className="text-[9px] font-bold uppercase text-slate-500">Nuevo total</p><p className="text-xs font-black text-[var(--primary)]">{formatBs(newCorrectionTotal)}</p></div>
+            <div><p className="text-[9px] font-bold uppercase text-slate-500">Diferencia</p><p className="text-xs font-black">{formatBs(round2(newCorrectionTotal - (correctionTarget?.total || 0)))}</p></div>
+          </div>
+
           <Field label="Motivo de la corrección" required hint="Explica detalladamente por qué se realiza esta modificación.">
             <TextArea
               value={correctionReason}
@@ -1323,6 +1413,59 @@ export function SellView({ session, data }: DistributionViewProps) {
 
           {error && <p className="text-xs font-bold text-rose-700">{error}</p>}
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(correctionTarget) && isReviewingCorrection}
+        onClose={() => setIsReviewingCorrection(false)}
+        title="Revisar corrección"
+        subtitle="Confirma los cambios antes de actualizar la venta"
+        size="md"
+        footer={
+          <div className="grid w-full grid-cols-2 gap-2">
+            <SecondaryButton onClick={() => setIsReviewingCorrection(false)}>Volver a editar</SecondaryButton>
+            <PrimaryButton disabled={isSubmitting} onClick={() => void submitCorrection()}>
+              {isSubmitting ? 'Confirmando...' : 'Confirmar corrección'}
+            </PrimaryButton>
+          </div>
+        }
+      >
+        {correctionTarget && (
+          <div className="space-y-3 text-xs">
+            <div className="max-h-[48dvh] space-y-2 overflow-y-auto pr-1">
+              {Array.from(correctionOriginalByProduct.values()).filter((originalLine) => !correctionLines.some((line) => line.product.id === originalLine.productId)).map((originalLine) => (
+                <div key={originalLine.productId} className="rounded-2xl border border-rose-200 bg-rose-50 p-3">
+                  <p className="font-black text-rose-900">{originalLine.productNameSnapshot}</p>
+                  <p className="mt-1 font-bold text-rose-800">Cantidad: {formatQty(originalLine.quantity, originalLine.unitType)} → 0</p>
+                  <p className="text-slate-600">Precio: {formatBs(originalLine.actualUnitPrice)}</p>
+                  <p className="mt-1 font-black text-rose-900">Subtotal: {formatBs(originalLine.subtotal)} → {formatBs(0)}</p>
+                </div>
+              ))}
+              {correctionLines.map((line) => {
+                const quantityChanged = Math.abs(line.quantity - line.originalQuantity) > 0.001
+                const priceChanged = Math.abs(line.unitPrice - line.originalPrice) > 0.001
+                return (
+                  <div key={line.product.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <p className="font-black text-slate-900">{line.product.name}</p>
+                    <p className={quantityChanged ? 'mt-1 font-bold text-amber-800' : 'mt-1 text-slate-600'}>
+                      Cantidad: {formatQty(line.originalQuantity, line.product.unitType)} → {formatQty(line.quantity, line.product.unitType)}
+                    </p>
+                    <p className={priceChanged ? 'font-bold text-amber-800' : 'text-slate-600'}>
+                      Precio: {formatBs(line.originalPrice)} → {formatBs(line.unitPrice)}
+                    </p>
+                    <p className="mt-1 font-black text-slate-900">Subtotal corregido: {formatBs(line.subtotal)}</p>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+              <p>Total anterior: <strong>{formatBs(correctionTarget.total)}</strong></p>
+              <p>Nuevo total: <strong>{formatBs(newCorrectionTotal)}</strong></p>
+              <p>Diferencia: <strong>{formatBs(round2(newCorrectionTotal - correctionTarget.total))}</strong></p>
+              <p className="mt-2 border-t border-amber-200 pt-2"><strong>Motivo:</strong> {correctionReason.trim()}</p>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modal de confirmación para eliminar producto de la venta */}
@@ -1367,7 +1510,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                 </p>
               )}
               {(() => {
-                const orig = correctionTarget?.lines.find((l) => l.productId === productPendingRemoval.id)
+                const orig = correctionOriginalByProduct.get(productPendingRemoval.id)
                 const origQty = orig?.quantity ?? 0
                 return (
                   <div className="space-y-1.5 pt-1 border-t border-rose-200/80">
@@ -1382,7 +1525,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                       <strong className="text-slate-900">
                         {formatQty(origQty, productPendingRemoval.unitType)}
                       </strong>{' '}
-                      se devolverán automáticamente al stock de la ruta del distribuidor.
+                      se devolverán automáticamente al stock {correctionTarget?.sourceLocation === 'route' ? 'de la ruta del distribuidor' : 'del almacén central'}.
                     </p>
                   </div>
                 )
@@ -1541,9 +1684,13 @@ export function SellView({ session, data }: DistributionViewProps) {
 
                           {change.returnedStockToRoute > 0 && (
                             <span className="font-extrabold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-lg text-[10px]">
-                              +{formatQty(change.returnedStockToRoute, change.unitType as UnitType)} devueltos a ruta
+                              +{formatQty(change.returnedStockToRoute, change.unitType as UnitType)} devueltos a {auditInspectingSale.sourceLocation === 'route' ? 'ruta' : 'central'}
                             </span>
                           )}
+                        </div>
+                        <div className="mt-1 grid grid-cols-1 gap-0.5 text-[10px] font-semibold text-slate-600">
+                          <p>Precio: <span className={Math.abs(change.priceAfter - change.priceBefore) > 0.001 ? 'font-black text-amber-900' : ''}>{formatBs(change.priceBefore)} → {formatBs(change.priceAfter)}</span></p>
+                          <p>Subtotal: <span className={Math.abs(change.subtotalAfter - change.subtotalBefore) > 0.001 ? 'font-black text-amber-900' : ''}>{formatBs(change.subtotalBefore)} → {formatBs(change.subtotalAfter)}</span></p>
                         </div>
                       </div>
                     )

@@ -1273,22 +1273,78 @@ async function editSale(o, p) {
   check(Array.isArray(p.lines) && p.lines.length, "La venta debe conservar al menos un producto.");
   check(previous.lines.every(line => Array.isArray(line.allocations)), "Esta venta histórica no tiene lotes auditables y requiere revisión administrativa.");
   const loc = sale.sourceLocation === "route" ? location("route", sale.routeId) : "central";
-  for (const line of previous.lines) await o.restore(line.productId, loc, line.allocations);
+  const requestedProductIds = new Set();
+  for (const input of p.lines) {
+    check(!requestedProductIds.has(input.productId), "No repitas el mismo producto en la corrección.");
+    requestedProductIds.add(input.productId);
+  }
+  const previousByProduct = new Map();
+  for (const line of previous.lines) {
+    const existing = previousByProduct.get(line.productId);
+    if (!existing) {
+      previousByProduct.set(line.productId, { ...line, allocations: [...line.allocations] });
+      continue;
+    }
+    const quantity = round(existing.quantity + line.quantity);
+    const subtotal = round(existing.subtotal + line.subtotal);
+    previousByProduct.set(line.productId, {
+      ...existing,
+      quantity,
+      subtotal,
+      actualUnitPrice: round(subtotal / quantity),
+      allocations: [...existing.allocations, ...line.allocations],
+      costTotal: existing.costTotal == null || line.costTotal == null ? null : round(existing.costTotal + line.costTotal),
+    });
+  }
+  const restoredByProduct = new Map();
   const lines = [];
   for (const input of p.lines) {
     const product = await o.product(input.productId);
     const quantity = o.amount(input.quantity, product);
     check(Number.isFinite(input.actualUnitPrice) && input.actualUnitPrice > 0, "Precio inválido.");
-    const allocations = await o.take(product.id, loc, quantity);
-    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice: round(product.referencePrice), isPromotional: round(input.actualUnitPrice) !== round(product.referencePrice), subtotal: round(quantity * input.actualUnitPrice), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
+    const previousLine = previousByProduct.get(product.id);
+    let allocations = [];
+    if (previousLine) {
+      let retained = quantity;
+      const returned = [];
+      for (const allocation of previousLine.allocations) {
+        const keptQuantity = round(Math.min(retained, allocation.quantity));
+        if (keptQuantity > 0) allocations.push({ ...allocation, quantity: keptQuantity });
+        const returnedQuantity = round(allocation.quantity - keptQuantity);
+        if (returnedQuantity > 0) returned.push({ ...allocation, quantity: returnedQuantity });
+        retained = round(retained - keptQuantity);
+      }
+      if (returned.length) {
+        await o.restore(product.id, loc, returned);
+        restoredByProduct.set(product.id, returned);
+      }
+      if (retained > 0) allocations.push(...await o.take(product.id, loc, retained));
+    } else {
+      allocations = await o.take(product.id, loc, quantity);
+    }
+    const referenceUnitPrice = round(previousLine?.referenceUnitPrice ?? product.referencePrice);
+    const promotional = round(input.actualUnitPrice) !== referenceUnitPrice;
+    check(o.member.role === "admin" || !promotional || input.isPromotional === true, "Marca la venta como promocional para modificar el precio.");
+    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice, isPromotional: promotional, subtotal: round(quantity * input.actualUnitPrice), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
+  }
+  for (const previousLine of previousByProduct.values()) {
+    if (!requestedProductIds.has(previousLine.productId)) {
+      await o.restore(previousLine.productId, loc, previousLine.allocations);
+      restoredByProduct.set(previousLine.productId, previousLine.allocations);
+    }
   }
   const productIds = [...new Set([...previous.lines, ...lines].map(line => line.productId))];
-  const stockDeltas = productIds.map(productId => ({ productId, quantity: round(lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0) - previous.lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0)) }));
+  const stockDeltas = productIds.map(productId => ({ productId, quantity: round(lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0) - previous.lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0)), ...(restoredByProduct.has(productId) ? { allocations: restoredByProduct.get(productId) } : {}) }));
   for (const delta of stockDeltas) {
     if (delta.quantity > 0) o.ledger(delta.productId, delta.quantity, loc, null, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
     if (delta.quantity < 0) o.ledger(delta.productId, -delta.quantity, null, loc, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
   }
   const total = round(lines.reduce((sum, line) => sum + line.subtotal, 0));
+  const hasLineChange = lines.length !== previousByProduct.size || lines.some(line => {
+    const before = previousByProduct.get(line.productId);
+    return !before || round(before.quantity) !== line.quantity || round(before.actualUnitPrice) !== line.actualUnitPrice;
+  });
+  check(hasLineChange, "Realiza al menos un cambio de cantidad o precio antes de confirmar.");
   const cashAmount = round(Number(p.cashAmount) || 0), qrAmount = round(Number(p.qrAmount) || 0), creditAmount = round(Number(p.creditAmount) || 0);
   check(["cash", "qr", "credit", "mixed"].includes(p.paymentKind), "Forma de pago inválida.");
   check(Math.abs(total - cashAmount - qrAmount - creditAmount) < 0.01 && [cashAmount, qrAmount, creditAmount].every(value => value >= 0), "Los pagos corregidos no coinciden con el total.");
