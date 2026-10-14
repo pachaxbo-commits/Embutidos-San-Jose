@@ -217,3 +217,14 @@ Estado al cerrar esta limpieza:
 - El respaldo contiene exclusivamente los documentos aprobados y debe completarse antes del primer borrado.
 - Se incorporaron al registro operativo autorizaciones de crédito, correcciones de venta, solicitudes de ajuste y turnos de almacén.
 - Android: `versionCode 38`, `versionName 1.4.18`; misma firma oficial.
+
+## Auditoría de caja y continuidad offline 1.4.21 (14 de octubre de 2026)
+
+- `submitOperation()` deja de usar `navigator.onLine` como condición para devolver una venta, cobro o gasto provisional: espera el acuse local de Firestore y permite continuar antes de la confirmación remota, conservando `operationId`.
+- El ticket impreso y la imagen compartida identifican la operación provisional como pendiente de sincronización. La app mantiene las proyecciones temporales de stock y cartera; las operaciones rechazadas quedan visibles con tipo, fecha, cliente si está disponible, motivo y acceso de revisión.
+- Una venta a contado/QR no queda bloqueada por una consulta remota de estado de crédito que no hace falta para decidir el pago. Una venta a crédito sin estado local exige verificación y se detiene con mensaje explícito si no puede completarse.
+- Reportes web filtra los arqueos por el `dayKey` del período seleccionado; antes el resumen en pantalla sumaba cierres históricos de otras fechas. Las tablas PDF/Excel ya filtraban por período.
+- Conciliación auditada solo lectura para el 10/10/2026 desde el respaldo interno previo a limpieza selectiva: ventas Bs 12.881 (efectivo 7.470,50; QR 2.682; crédito 2.728,50), cobros efectivo Bs 985, gastos Bs 913,60, reclamos `revenueDelta` -Bs 1 sin movimiento de caja, efectivo esperado Bs 7.541,90 y declarado Bs 7.314,90. Diferencia comparable: faltante Bs 227, íntegramente en Zona Sud; Zona Norte cuadró. No hubo Administración, Impulsación, ventas anuladas/corregidas ni operaciones de campo pendientes/rechazadas ese día.
+- El historial del 10/10 ya no está en las colecciones activas porque el 14/10 se ejecutó una limpieza selectiva; permanece dentro del respaldo de mantenimiento usado para la auditoría. No se modificaron datos de producción.
+- Pruebas focalizadas: cola/proyecciones offline, escritura local y reconexión en Firestore Emulator, conciliación del 10/10, pruebas de distribución, cierres, cobros, créditos/gastos, reportes y actualizador.
+- Android: `versionCode 41`, `versionName 1.4.21`; misma firma oficial y `applicationId com.pachax.flow`.

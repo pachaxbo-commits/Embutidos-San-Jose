@@ -20,6 +20,7 @@ import {
   subscribeAdjustmentRequests,
 } from '../data/distributionRepository'
 import { centralBalanceId, routeBalanceId, toDayKey } from '../domain/engine'
+import { pendingCollectionsFromOperations, pendingExpensesFromOperations, pendingSalesFromOperations, projectBalances, projectReceivables } from '../domain/offlineProjections'
 import type {
   DistBalance,
   DistLot, DistStockMovement, DistTransfer, DistClaim, DistCreditStatus, DistCreditOverride, DistAdjustmentRequest,
@@ -221,22 +222,11 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
   }, [enabled, routeId, distributorUid, dayKeysSignature, canReadFinance, onError, onLoaded])
 
-  const pendingSales = operations.filter(o => o.status === 'queued' && o.type === 'sale' && !sales.some(s => s.id === o.id)).map(o => ({ ...o.payload, id:o.id, createdAt:o.createdAt, dayKey:toDayKey(o.createdAt), pendingConfirmation:true } as unknown as DistSale))
-  const pendingCollections = operations.filter(o => o.status === 'queued' && o.type === 'collection' && !collections.some(c => c.id === o.id)).map(o => {
-    const p = o.payload as unknown as { receivable: DistReceivable; amount: number; method: 'cash'|'qr'|'mixed'; cashAmount?: number; qrAmount?: number; routeId: string; collectedByName: string }
-    return { ...p, id: o.id, operationId: o.id, receivableId: p.receivable.id, customerId: p.receivable.customerId, customerName: p.receivable.customerName, collectedByUid: o.createdBy, createdAt: o.createdAt, dayKey: toDayKey(o.createdAt), pendingConfirmation: true } as unknown as DistCollection
-  })
-  const pendingExpenses = operations.filter(o => o.status === 'queued' && o.type === 'expense' && !expenses.some(e => e.id === o.id)).map(o => ({ ...o.payload, id:o.id, createdAt:o.createdAt, dayKey:toDayKey(o.createdAt), pendingConfirmation:true } as unknown as DistExpense))
-  const visibleReceivables = receivables.map(r => {
-    const pending = pendingCollections.filter(c => c.receivableId === r.id).reduce((n,c)=>n+c.amount,0)
-    return { ...r, balance:Math.max(0,Math.round((r.balance-pending)*100)/100), pendingConfirmation:pending>0 }
-  })
-  const visibleBalances = balances.map(b => {
-    const pendingQty = pendingSales.filter(s => s.sourceLocation === 'route' ? b.locationKind === 'route' && b.routeId === s.routeId : b.id === centralBalanceId(b.productId)).flatMap(s => s.lines).filter(l => l.productId === b.productId).reduce((n,l)=>n+l.quantity,0)
-    const loc = b.locationKind === 'route' ? `route__${b.routeId}` : (b.warehouseId && b.warehouseId !== 'central' ? `warehouse__${b.warehouseId}` : 'central')
-    const unavailable = lots.filter(l => l.productId === b.productId && (l.quarantined || (l.expiresOn && l.expiresOn < toDayKey()))).reduce((n,l)=>n+(l.quantities[loc]||0),0)
-    return {...b, quantity:Math.max(0, b.quantity-pendingQty), availableQuantity:Math.max(0,b.quantity-pendingQty-unavailable)}
-  })
+  const pendingSales = pendingSalesFromOperations(operations, sales)
+  const pendingCollections = pendingCollectionsFromOperations(operations, collections)
+  const pendingExpenses = pendingExpensesFromOperations(operations, expenses)
+  const visibleReceivables = projectReceivables(receivables, pendingCollections)
+  const visibleBalances = projectBalances(balances, pendingSales, lots, toDayKey())
   return {
     supportSettings,
     lots, operations, movements, transfers, claims, creditStatus, creditOverrides,

@@ -6,6 +6,7 @@ import { WarehousesView } from './WarehousesView'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
 import {
+  AlertTriangle,
   Boxes,
   ClipboardList,
   Grid3x3,
@@ -31,7 +32,7 @@ import { Modal } from '../../../components/ui/Modal'
 import { TextInput } from '../../../components/ui/Form'
 import { ErrorBoundary } from '../../../components/ErrorBoundary'
 import { useBackButtonBridge } from '../../../hooks/useBackHandler'
-import { buildDayRange, useDistributionData, useSyncStatus } from '../state/useDistributionStore'
+import { useDistributionData, useSyncStatus } from '../state/useDistributionStore'
 import { toDayKey } from '../domain/engine'
 import { PrimaryButton, SyncStatusPill } from './shared'
 import { DashboardView } from './DashboardView'
@@ -56,6 +57,10 @@ const AndroidUpdater = IS_NATIVE_ANDROID
   ? lazy(() => import('../../../features/android-updater/AndroidUpdater'))
   : null
 
+const REJECTED_OPERATION_LABELS: Record<string, string> = { sale: 'Venta', collection: 'Cobro de cartera', expense: 'Gasto', creditStatus: 'Verificación de crédito' }
+const rejectedOperationLabel = (type: string) => REJECTED_OPERATION_LABELS[type] || 'Operación'
+const rejectedOperationModule = (type: string): ModuleId => type === 'sale' ? 'dist.sales' : type === 'expense' ? 'dist.expenses' : 'dist.credits'
+
 export interface DistributionSession {
   restaurantId: string
   restaurantName: string
@@ -70,7 +75,6 @@ export interface DistributionSession {
   dayKeys: string[]
   setDayKeys: (dayKeys: string[]) => void
 }
-
 export interface DistributionViewProps {
   session: DistributionSession
   data: DistributionData
@@ -174,6 +178,7 @@ export function DistributionApp({
   }
 
   const syncState = useSyncStatus()
+  const rejectedOperationCount = data.operations.filter(operation => operation.status === 'rejected' && !operation.acknowledged).length
 
   // Los cuatro accesos de la barra inferior dependen del trabajo real de cada
   // rol, no del orden del catalogo de modulos.
@@ -276,6 +281,7 @@ export function DistributionApp({
           <div className="flex shrink-0 items-center gap-2">
             <span className="sm:hidden"><SyncStatusPill state={syncState} compact /></span>
             <span className="hidden sm:inline-flex"><SyncStatusPill state={syncState} /></span>
+            {rejectedOperationCount > 0 && <span title="Revisa las alertas para ver el motivo de las operaciones rechazadas." className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-black text-rose-800"><AlertTriangle size={12} />{rejectedOperationCount} rechazadas</span>}
             <button
               type="button"
               onClick={() => setIsSignOutOpen(true)}
@@ -327,7 +333,25 @@ export function DistributionApp({
           )}
         </nav>
 
-        <main className="min-w-0 flex-1 pb-bottom-nav">{data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}{syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}{data.operations.filter(o=>o.status==='queued').length>0&&<p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o=>o.status==='queued').length}. Esperando confirmación del servidor. No vuelvas a registrarlas.</p>}{data.operations.filter(o=>o.status==='rejected' && !o.acknowledged).map(o=><p key={o.id} role="alert" className="mb-2 rounded-xl bg-rose-50 p-3 text-sm">No se aplicó una operación: {o.error} <button className="ml-2 underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button></p>)}<ErrorBoundary key={activeModule} onReset={() => selectModule('dist.dashboard')}>{renderModule()}</ErrorBoundary></main>
+        <main className="min-w-0 flex-1 pb-bottom-nav">
+          {data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}
+          {syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}
+          {data.operations.filter(o => o.status === 'queued').length > 0 && <p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o => o.status === 'queued').length}. Se guardaron en el dispositivo y se enviarán al recuperar conexión. No vuelvas a registrarlas.</p>}
+          {data.operations.filter(o => o.status === 'rejected' && !o.acknowledged).map(o => {
+            const payload = o.payload as { customerId?: string; customerName?: string; receivable?: { customerName?: string } }
+            const customerName = payload.customerName || payload.receivable?.customerName || data.customers.find(customer => customer.id === payload.customerId)?.name
+            return <article key={o.id} role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+              <p className="font-extrabold">Una operación realizada sin conexión fue rechazada al sincronizar.</p>
+              <p className="mt-1">Tipo: {rejectedOperationLabel(o.type)} · Fecha: {new Date(o.createdAt).toLocaleString('es-BO')}{customerName ? ` · Cliente: ${customerName}` : ''}</p>
+              <p className="mt-1"><span className="font-bold">Motivo:</span> {o.error || 'El servidor no aceptó la operación.'}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold" onClick={() => selectModule(rejectedOperationModule(o.type))}>Revisar en {o.type === 'sale' ? 'Ventas' : o.type === 'expense' ? 'Gastos' : 'Créditos'}</button>
+                <button className="rounded-lg px-3 py-1.5 font-bold underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button>
+              </div>
+            </article>
+          })}
+          <ErrorBoundary key={activeModule} onReset={() => selectModule('dist.dashboard')}>{renderModule()}</ErrorBoundary>
+        </main>
       </div>
 
       <BottomNav
@@ -443,5 +467,3 @@ export function DistributionApp({
     </div>
   )
 }
-
-export { buildDayRange }

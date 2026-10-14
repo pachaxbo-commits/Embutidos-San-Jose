@@ -348,10 +348,13 @@ export function SellView({ session, data }: DistributionViewProps) {
     if (selectedCustomer) {
       let credit = data.creditStatus.find(c => c.id === selectedCustomer.id)
       if (!selectedCustomer.identityNumber) { setError('Completa el CI del cliente antes de vender.'); return }
-      if (!credit) {
+      // Si falta el último estado local, no se consulta al servidor como
+      // requisito previo de una venta al contado/QR: la falta de red no debe
+      // congelar la venta. Para crédito sí se exige verificación explícita.
+      if (!credit && paymentKind === 'credit') {
         setIsSubmitting(true)
-        try { credit = await submitOperation<DistCreditStatus>('creditStatus', { customerId:selectedCustomer.id }, newOperationId('credit-status')) }
-        catch (e) { setError((e as Error).message); return }
+        try { credit = await submitOperation<DistCreditStatus>('creditStatus', { customerId:selectedCustomer.id }, newOperationId('credit-status'), undefined, 3000) }
+        catch (e) { setError(`No se pudo verificar el estado de crédito del cliente. La venta a crédito no se autorizó por seguridad. ${(e as Error).message}`); return }
         finally { setIsSubmitting(false) }
       }
       // Se evalúa al confirmar, no durante el render de React.
@@ -359,7 +362,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       // La validación ocurre dentro del evento Confirmar, no durante el render.
       const override = data.creditOverrides.find(item => item.customerId === selectedCustomer.id && !item.revokedAt && Date.parse(item.activeUntil) > Date.now())
       // eslint-disable-next-line react-hooks/purity
-      if (!override && credit.oldestPendingAt && Date.parse(credit.oldestPendingAt) + blockDays * 86400000 <= Date.now()) { setError(`Venta bloqueada: el cliente tiene créditos pendientes de ${blockDays} días o más.`); return }
+      if (credit && !override && credit.oldestPendingAt && Date.parse(credit.oldestPendingAt) + blockDays * 86400000 <= Date.now()) { setError(`Venta bloqueada: el cliente tiene créditos pendientes de ${blockDays} días o más.`); return }
     }
     if (cart.length === 0) {
       setError('Agrega al menos un producto.')
@@ -439,7 +442,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       setIsCheckoutOpen(false)
       setCart([])
       operationIdRef.current = null
-      setPrintState(sale.pendingConfirmation ? { ok: false, message: 'Venta pendiente de confirmación al sincronizar. Revisa Operaciones pendientes.' } : null)
+      setPrintState(sale.pendingConfirmation ? { ok: false, message: 'Venta guardada en este dispositivo. Pendiente de sincronizar; puedes imprimir o compartir el ticket.' } : null)
       setLastSale(sale)
     } catch (submitError) {
       if ((submitError as {rejected?: boolean}).rejected) operationIdRef.current = null
@@ -2037,6 +2040,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       >
         {lastSale && (
           <div className="grid gap-3">
+            {lastSale.pendingConfirmation && <p role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Pendiente de sincronizar. La venta quedó guardada en este dispositivo; el servidor todavía debe confirmarla.</p>}
             <div className="grid grid-cols-2 gap-2">
               <KpiCard label="Total" value={formatBs(lastSale.total)} tone="primary" />
               <KpiCard
@@ -2048,7 +2052,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             {/* Un fallo de impresion no revierte ni duplica la venta: solo se reintenta. */}
             <SecondaryButton
               full
-              disabled={isPrinting || lastSale.pendingConfirmation}
+              disabled={isPrinting}
               onClick={() => {
                 setIsPrinting(true)
                 void printSaleReceipt(lastSale, receiptContext, Boolean(printState?.ok || printState?.uncertain))

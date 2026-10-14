@@ -38,6 +38,7 @@ import {
   computeCreditPortfolioByRoute,
   resolveCreditProducts,
 } from '../domain/creditRoutes'
+import { closuresInPeriod } from '../domain/closurePeriod'
 
 type MainCategory = 'resumen' | 'dinero' | 'ventas' | 'creditos' | 'inventario'
 type DineroSubTab = 'flujo' | 'cobros' | 'gastos' | 'arqueos'
@@ -182,8 +183,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     [data.expenses, routeFilter, sellerFilter],
   )
   const closures = useMemo(
-    () => data.closures.filter((row) => !routeFilter || matchesRoute(row.routeId, routeFilter)),
-    [data.closures, routeFilter],
+    () => closuresInPeriod(data.closures, session.dayKeys).filter((row) => !routeFilter || matchesRoute(row.routeId, routeFilter)),
+    [data.closures, session.dayKeys, routeFilter],
   )
 
   const claims = useMemo(

@@ -10,6 +10,7 @@ import { Share } from '@capacitor/share'
 import { printHtmlDocument } from '../../../services/printing/documentPrintService'
 import { getLinePresentation } from '../domain/productPresentation'
 import { buildCollectionReceiptPayload, collectionAllocationLabel, collectionMethodLabel } from '../domain/collectionReceiptPayload'
+import { provisionalReceiptNotice } from '../domain/offlineOperationPolicy'
 export { buildCollectionReceiptPayload } from '../domain/collectionReceiptPayload'
 
 /**
@@ -78,10 +79,10 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
     paymentDetails,
     cashReceived: sale.cashReceived,
     changeAmount: sale.changeAmount,
-    customMessage:
-      sale.creditAmount > 0
-        ? `SALDO GENERADO: Bs ${round2(context.creditBalance ?? sale.creditAmount).toFixed(2)}`
-        : undefined,
+    customMessage: [
+      sale.creditAmount > 0 ? `SALDO GENERADO: Bs ${round2(context.creditBalance ?? sale.creditAmount).toFixed(2)}` : '',
+      provisionalReceiptNotice(Boolean(sale.pendingConfirmation), true),
+    ].filter(Boolean).join(' · ') || undefined,
     footerMessage: context.receiptFooter,
     isCopy: false,
     copies: 1,
@@ -154,7 +155,7 @@ async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): P
   const width = 720
   const rowHeight = 76
   const presentationLines = sale.lines.filter(l => Boolean(getLinePresentation(l))).length
-  const height = 430 + sale.lines.length * rowHeight + presentationLines * 24 + (sale.changeAmount ? 56 : 0)
+  const height = 430 + sale.lines.length * rowHeight + presentationLines * 24 + (sale.changeAmount ? 56 : 0) + (sale.pendingConfirmation ? 30 : 0)
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
@@ -190,6 +191,7 @@ async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): P
   if (sale.qrAmount > 0) { ctx.fillText(`QR: Bs ${round2(sale.qrAmount).toFixed(2)}`, width - 42, y); y += 28 }
   if (sale.creditAmount > 0) { ctx.fillText(`Crédito: Bs ${round2(sale.creditAmount).toFixed(2)}`, width - 42, y); y += 28 }
   if (sale.changeAmount) { ctx.fillStyle = '#047857'; ctx.font = '700 21px Arial'; ctx.fillText(`Cambio devuelto: Bs ${round2(sale.changeAmount).toFixed(2)}`, width - 42, y) }
+  if (sale.pendingConfirmation) { ctx.textAlign = 'center'; ctx.fillStyle = '#92400e'; ctx.font = '700 17px Arial'; ctx.fillText(provisionalReceiptNotice(true), width / 2, height - 62) }
   ctx.textAlign = 'center'; ctx.fillStyle = '#64748b'; ctx.font = '18px Arial'; ctx.fillText(context.receiptFooter || 'Gracias por su preferencia', width / 2, height - 34)
   const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('No se pudo crear el recibo.')), 'image/png'))
   return new File([blob], `recibo-san-jose-${sale.id.slice(-6)}.png`, { type: 'image/png' })

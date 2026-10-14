@@ -6,6 +6,8 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { getFirebaseContext } from "../../../lib/firebase";
+import { shouldReturnProvisional } from "../domain/offlineOperationPolicy";
+export { shouldReturnProvisional } from "../domain/offlineOperationPolicy";
 
 export class RejectedOperationError extends Error {
   rejected = true;
@@ -33,6 +35,7 @@ export async function submitOperation<T>(
   payload: unknown,
   id: string,
   provisional?: T,
+  timeoutMs = 45000,
 ): Promise<T> {
   const ctx = await getFirebaseContext();
   if (!ctx?.auth.currentUser) throw new Error("Inicia sesión para continuar.");
@@ -46,8 +49,6 @@ export async function submitOperation<T>(
     id,
   );
   const existing = await getDocFromCache(ref).catch(() => null);
-  let writeError: Error | undefined;
-  let rejectWrite: ((error: Error) => void) | undefined;
   if (existing?.exists()) {
     if (existing.data().status === "confirmed")
       return existing.data().result as T;
@@ -56,60 +57,74 @@ export async function submitOperation<T>(
         existing.data().error ||
           "Operación rechazada. Revisa los datos antes de repetirla.",
       );
-  } else {
-    void setDoc(ref, {
-      id,
-      restaurantId: ctx.restaurantId,
-      createdBy: ctx.auth.currentUser.uid,
-      createdAt: new Date().toISOString(),
-      type,
-      payload: JSON.parse(JSON.stringify(payload)),
-      status: "queued",
-    }).catch((error) => {
-      writeError = error;
-      rejectWrite?.(error);
-      localStorage.setItem(
-        "pachax_dist_sync_error",
-        `No se pudo enviar la operación: ${error.message}`,
-      );
-      window.dispatchEvent(new Event("distribution-operation-error"));
-    });
+    if (shouldReturnProvisional(existing.data().status, false, provisional !== undefined))
+      return provisional as T;
   }
-  if (!online && provisional !== undefined) return provisional;
   return await new Promise<T>((resolve, reject) => {
     let stop = () => {};
-    const finishError = (error: Error) => {
+    let listening = false;
+    let settled = false;
+    let writeError: Error | undefined;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      stop();
-      reject(error);
+      if (listening) stop();
+      callback();
     };
-    rejectWrite = finishError;
+    const finishError = (error: Error) => {
+      finish(() => reject(error));
+    };
+    const rejectWrite = finishError;
     const timer = setTimeout(() => {
-      stop();
-      reject(
-        new Error(
-          "La operación sigue pendiente de confirmación. Revisa Operaciones pendientes antes de volver a registrarla.",
-        ),
-      );
-    }, 45000);
+      finishError(new Error(
+        provisional !== undefined
+          ? "Firestore no pudo guardar la operación en este dispositivo. Verifica la conexión y vuelve a intentarlo."
+          : "La operación sigue pendiente de confirmación. Revisa Operaciones pendientes antes de volver a registrarla.",
+      ));
+    }, provisional === undefined ? timeoutMs : 3000);
     stop = onSnapshot(
       ref,
+      { includeMetadataChanges: true },
       (snapshot) => {
         if (!snapshot.exists()) return;
         const op = snapshot.data();
         if (op.status === "confirmed") {
-          clearTimeout(timer);
-          stop();
-          resolve(op.result as T);
+          finish(() => resolve(op.result as T));
+          return;
         }
         if (op.status === "rejected") {
-          clearTimeout(timer);
-          stop();
-          reject(new RejectedOperationError(op.error));
+          finish(() => reject(new RejectedOperationError(op.error)));
+          return;
         }
+        if (shouldReturnProvisional(op.status, snapshot.metadata.hasPendingWrites, provisional !== undefined))
+          finish(() => resolve(provisional as T));
       },
       finishError,
     );
+    listening = true;
+    if (settled) stop();
+    if (!existing?.exists()) {
+      // Start listening before writing so the local-cache acknowledgement is
+      // observed even when navigator.onLine incorrectly remains true.
+      void setDoc(ref, {
+        id,
+        restaurantId: ctx.restaurantId,
+        createdBy: ctx.auth.currentUser!.uid,
+        createdAt: new Date().toISOString(),
+        type,
+        payload: JSON.parse(JSON.stringify(payload)),
+        status: "queued",
+      }).catch((error) => {
+        writeError = error;
+        rejectWrite?.(error);
+        localStorage.setItem(
+          "pachax_dist_sync_error",
+          `No se pudo enviar la operación: ${error.message}`,
+        );
+        window.dispatchEvent(new Event("distribution-operation-error"));
+      });
+    }
     if (writeError) finishError(writeError);
   });
 }
