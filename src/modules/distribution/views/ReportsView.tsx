@@ -9,13 +9,13 @@ import {
   defaultSheetIdForTab,
   filterReportSheets,
 } from '../data/reportExports'
-import { reportCreditLabel, reportDateTime, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
+import { reportDateTime, reportPaymentLabel, reportPersonName, reportRecordName } from '../domain/reportLabels'
 import { useMemo, useState } from 'react'
 import { Screen, ResponsiveTable, EmptyBlock, type ResponsiveColumn } from '../../../components/ui/Screen'
-import { Field } from '../../../components/ui/Form'
+import { Field, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
-import { AlertTriangle, ArrowRight, Award, Check, ChevronDown, ChevronRight, FileSpreadsheet, FileText, HelpCircle, Printer, Send } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Award, Check, ChevronDown, ChevronRight, FileSpreadsheet, FileText, HelpCircle, Printer, Search, Send } from 'lucide-react'
 import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../data/distributionReceiptService'
 import {
   computeMoneySummary,
@@ -32,6 +32,11 @@ import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
 import { aggregateCustomerPurchases } from '../domain/customerPurchases'
 import { computeProductProfitReport, type ProductProfitSummaryItem } from '../domain/productProfit'
+import {
+  computeAsOfReceivablesPortfolio,
+  computeCreditPortfolioByRoute,
+  resolveCreditProducts,
+} from '../domain/creditRoutes'
 
 type MainCategory = 'resumen' | 'dinero' | 'ventas' | 'creditos' | 'inventario'
 type DineroSubTab = 'flujo' | 'cobros' | 'gastos' | 'arqueos'
@@ -64,6 +69,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null)
   const [selectedProfitProduct, setSelectedProfitProduct] = useState<ProductProfitSummaryItem | null>(null)
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('')
 
   const attributionError = reportAttributionError(data, session.dayKeys, routeFilter, sellerFilter)
 
@@ -212,6 +218,14 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     [data, session.dayKeys, routeFilter, sellerFilter],
   )
 
+  const filteredCustomerPurchases = useMemo(() => {
+    const term = customerSearchTerm.trim().toLowerCase()
+    if (!term) return customerPurchasesAgg.clients
+    return customerPurchasesAgg.clients.filter((client) =>
+      [client.customerName, client.customerCode].join(' ').toLowerCase().includes(term),
+    )
+  }, [customerPurchasesAgg.clients, customerSearchTerm])
+
   const productProfitReport = useMemo(
     () =>
       computeProductProfitReport(
@@ -258,6 +272,101 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       operatingProfit,
     }
   }, [sales, claims, expenses, data.movements, session.dayKeys, routeFilter, sellerFilter])
+
+  const [creditSearchTerm, setCreditSearchTerm] = useState('')
+  const [expandedCreditCustomerId, setExpandedCreditCustomerId] = useState<string | null>(null)
+
+  const cutoffDayKey = useMemo(() => {
+    if (!session.dayKeys || session.dayKeys.length === 0) return undefined
+    const sorted = [...session.dayKeys].sort()
+    return sorted[sorted.length - 1]
+  }, [session.dayKeys])
+
+  const asOfReceivables = useMemo(() => {
+    return computeAsOfReceivablesPortfolio({
+      receivables: data.receivables,
+      collections: data.collections,
+      cutoffDayKey,
+    })
+  }, [data.receivables, data.collections, cutoffDayKey])
+
+  const salesMap = useMemo(() => new Map(data.sales.map((s) => [s.id, s])), [data.sales])
+
+  const creditPortfolio = useMemo(() => {
+    return computeCreditPortfolioByRoute({
+      receivables: asOfReceivables,
+      selectedRouteId: routeFilter,
+      routes: data.routes,
+      customers: data.customers,
+      salesById: salesMap,
+    })
+  }, [asOfReceivables, routeFilter, data.routes, data.customers, salesMap])
+
+  const filteredCustomerCredits = useMemo(() => {
+    let list = creditPortfolio.customerCredits
+    if (sellerFilter) {
+      list = list.filter((c) =>
+        c.filteredReceivables.some((r) => r.distributorUid === sellerFilter),
+      )
+    }
+    if (creditSearchTerm.trim()) {
+      const term = creditSearchTerm.toLowerCase().trim()
+      list = list.filter(
+        (c) =>
+          c.customerName.toLowerCase().includes(term) ||
+          (c.customerCode && c.customerCode.toLowerCase().includes(term)) ||
+          (c.identityNumber && c.identityNumber.toLowerCase().includes(term)),
+      )
+    }
+    return list
+  }, [creditPortfolio.customerCredits, sellerFilter, creditSearchTerm])
+
+  const periodCollections = useMemo(() => {
+    return data.collections.filter((c) => {
+      const day = c.dayKey || toDayKey(c.createdAt)
+      const inPeriod = session.dayKeys.includes(day)
+      const matchRoute = !routeFilter || c.routeId === routeFilter || c.originRouteId === routeFilter
+      const matchSeller = !sellerFilter || c.collectedByUid === sellerFilter
+      return inPeriod && matchRoute && matchSeller
+    })
+  }, [data.collections, session.dayKeys, routeFilter, sellerFilter])
+
+  const totalCollectedInPeriod = useMemo(() => {
+    return round2(periodCollections.reduce((sum, c) => sum + (c.amount || 0), 0))
+  }, [periodCollections])
+
+  const reconciliation = useMemo(() => {
+    const periodSalesTotal = round2(sales.reduce((sum, s) => sum + s.total, 0))
+    const periodCashSales = round2(sales.reduce((sum, s) => sum + s.cashAmount, 0))
+    const periodQrSales = round2(sales.reduce((sum, s) => sum + s.qrAmount, 0))
+    const periodCreditSales = round2(sales.reduce((sum, s) => sum + s.creditAmount, 0))
+
+    const periodCashCollections = round2(
+      collections.reduce((sum, c) => sum + (c.cashAmount ?? (c.method === 'cash' ? c.amount : 0)), 0),
+    )
+    const periodCashExpenses = round2(expenses.reduce((sum, e) => sum + e.amount, 0))
+
+    const periodClaimsCashIn = round2(claims.reduce((sum, c) => sum + (c.cashIn || 0), 0))
+    const periodClaimsCashOut = round2(claims.reduce((sum, c) => sum + (c.cashOut || 0), 0))
+    const claimsCashNet = round2(periodClaimsCashIn - periodClaimsCashOut)
+
+    const expectedCash = round2(periodCashSales + periodCashCollections + claimsCashNet - periodCashExpenses)
+    const declaredCash = round2(closures.reduce((sum, cl) => sum + (cl.physicalCashDeclared ?? 0), 0))
+    const cashDifference = round2(declaredCash - expectedCash)
+
+    return {
+      salesTotal: periodSalesTotal,
+      cashSales: periodCashSales,
+      qrSales: periodQrSales,
+      creditSales: periodCreditSales,
+      cashCollections: periodCashCollections,
+      cashExpenses: periodCashExpenses,
+      claimsCashNet,
+      expectedCash,
+      declaredCash,
+      cashDifference,
+    }
+  }, [sales, collections, expenses, claims, closures])
 
   const saleColumns: ResponsiveColumn<DistSale>[] = [
     {
@@ -499,10 +608,38 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       <KpiCard label="Granel" value={`${seller.kilograms} kg`} />
                       <KpiCard label="Paquetes" value={String(seller.packages)} />
                     </div>
-                    <div className="mt-2 flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
-                      <span className="text-[11px] font-extrabold uppercase text-slate-500">Debe entregar en efectivo</span>
-                      <span className="text-base font-black tabular-nums text-slate-900">{formatBs(seller.expectedCash)}</span>
-                    </div>
+                    {(() => {
+                      const sellerClosures = closures.filter((c) => c.distributorUid === seller.sellerUid)
+                      const declaredBySeller = sellerClosures.length > 0
+                        ? round2(sellerClosures.reduce((sum, c) => sum + (c.physicalCashDeclared ?? 0), 0))
+                        : null
+                      const sellerDifference = declaredBySeller !== null ? round2(declaredBySeller - seller.expectedCash) : null
+
+                      return (
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
+                          <div>
+                            <span className="block text-[11px] font-extrabold uppercase text-slate-500">Efectivo esperado</span>
+                            <span className="text-base font-black tabular-nums text-slate-900">{formatBs(seller.expectedCash)}</span>
+                          </div>
+                          {declaredBySeller !== null ? (
+                            <div className="flex items-center gap-3">
+                              <div>
+                                <span className="block text-[11px] font-extrabold uppercase text-slate-500">Declarado en arqueo</span>
+                                <span className="text-base font-black tabular-nums text-slate-900">{formatBs(declaredBySeller)}</span>
+                              </div>
+                              <div>
+                                <span className="block text-[11px] font-extrabold uppercase text-slate-500">Diferencia</span>
+                                <VarianceBadge variance={sellerDifference!} />
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                              Sin arqueo registrado
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </SectionCard>
                 ))}
               </div>
@@ -537,22 +674,113 @@ export function ReportsView({ session, data }: DistributionViewProps) {
               ))}
             </div>
 
-            {dineroSubTab === 'flujo' && (() => {
-              const sheet = reportSheets(data, session.dayKeys, routeFilter, sellerFilter).find((s) => s.id === 'cashFlow')
-              if (!sheet || sheet.rows.length <= 1) return <EmptyBlock title="Sin movimientos de efectivo en el periodo" />
-              return (
-                <SectionCard title="Movimiento de efectivo">
-                  <div className="grid gap-2">
-                    {sheet.rows.map((row, index) => (
-                      <div key={index} className="flex items-center justify-between rounded-xl bg-slate-50 p-2.5 text-xs font-bold text-slate-800">
-                        <span>{row[0]}</span>
-                        <span className="tabular-nums">{typeof row[3] === 'number' ? formatBs(row[3]) : row[3]}</span>
+            {dineroSubTab === 'flujo' && (
+              <div className="grid gap-3">
+                {/* Conciliación Matemática: Ventas Totales vs Efectivo Físico */}
+                <SectionCard title="Conciliación matemática: Ventas vs Efectivo físico">
+                  <div className="grid gap-3 text-xs">
+                    <p className="text-slate-500 text-[11px] font-medium leading-relaxed">
+                      Explica el puente contable entre el total de ventas facturadas y el efectivo real esperado/declarado en caja.
+                    </p>
+
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
+                      <div className="flex items-center justify-between font-bold text-slate-800">
+                        <span>1. Ventas Totales del Periodo (Brutas):</span>
+                        <span className="text-sm font-black text-slate-900">{formatBs(reconciliation.salesTotal)}</span>
                       </div>
-                    ))}
+                      <div className="mt-2 grid gap-1.5 pl-3 text-[11px] text-slate-600">
+                        <div className="flex justify-between">
+                          <span>• Ventas cobradas en efectivo:</span>
+                          <span className="font-bold text-emerald-700">{formatBs(reconciliation.cashSales)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>• Ventas por QR (no entran en efectivo físico):</span>
+                          <span className="font-bold text-slate-500">- {formatBs(reconciliation.qrSales)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>• Ventas a Crédito (no entran en efectivo físico):</span>
+                          <span className="font-bold text-amber-700">- {formatBs(reconciliation.creditSales)}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
+                      <span className="font-bold text-slate-800">2. Flujos adicionales de caja en efectivo:</span>
+                      <div className="mt-2 grid gap-1.5 pl-3 text-[11px] text-slate-600">
+                        <div className="flex justify-between">
+                          <span>+ Cobranzas de créditos en efectivo:</span>
+                          <span className="font-bold text-emerald-700">+ {formatBs(reconciliation.cashCollections)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>- Gastos operativos de ruta en efectivo:</span>
+                          <span className="font-bold text-rose-700">- {formatBs(reconciliation.cashExpenses)}</span>
+                        </div>
+                        {reconciliation.claimsCashNet !== 0 && (
+                          <div className="flex justify-between">
+                            <span>± Ajuste neto por reclamos en efectivo:</span>
+                            <span className="font-bold text-slate-700">{formatBs(reconciliation.claimsCashNet)}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border-2 border-slate-900 bg-slate-900 p-3.5 text-white">
+                      <div>
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-300">
+                          = Efectivo Físico Esperado en Caja:
+                        </span>
+                        <span className="text-[11px] text-slate-400">
+                          Ventas Ef. + Cobros Ef. - Gastos Ef. ± Reclamos
+                        </span>
+                      </div>
+                      <span className="text-lg font-black tabular-nums text-white">{formatBs(reconciliation.expectedCash)}</span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3.5">
+                      <div>
+                        <span className="block text-xs font-bold text-slate-800">Efectivo Físico Declarado en Arqueos:</span>
+                        <span className="text-[11px] text-slate-500">Monto real contado y entregado por distribuidores</span>
+                      </div>
+                      <span className="text-base font-black tabular-nums text-slate-900">{formatBs(reconciliation.declaredCash)}</span>
+                    </div>
+
+                    <div className={`flex items-center justify-between rounded-2xl p-3.5 text-xs font-bold ${
+                      reconciliation.cashDifference === 0
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        : reconciliation.cashDifference > 0
+                          ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                          : 'bg-rose-50 text-rose-800 border border-rose-200'
+                    }`}>
+                      <span>
+                        {reconciliation.cashDifference === 0
+                          ? 'Caja exacta sin diferencia (Cuadre perfecto)'
+                          : reconciliation.cashDifference > 0
+                            ? 'Sobrante en arqueo físico (+):'
+                            : 'Faltante en arqueo físico (-):'}
+                      </span>
+                      <span className="text-sm font-black tabular-nums">{formatBs(reconciliation.cashDifference)}</span>
+                    </div>
                   </div>
                 </SectionCard>
-              )
-            })()}
+
+                {(() => {
+                  const sheet = reportSheets(data, session.dayKeys, routeFilter, sellerFilter).find((s) => s.id === 'cashFlow')
+                  if (!sheet || sheet.rows.length <= 1) return <EmptyBlock title="Sin movimientos de efectivo en el periodo" />
+                  return (
+                    <SectionCard title="Movimiento de efectivo">
+                      <div className="grid gap-2">
+                        {sheet.rows.map((row, index) => (
+                          <div key={index} className="flex items-center justify-between rounded-xl bg-slate-50 p-2.5 text-xs font-bold text-slate-800">
+                            <span>{row[0]}</span>
+                            <span className="tabular-nums">{typeof row[3] === 'number' ? formatBs(row[3]) : row[3]}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </SectionCard>
+                  )
+                })()}
+              </div>
+            )}
 
             {dineroSubTab === 'cobros' && (
               collections.length === 0 ? (
@@ -582,29 +810,82 @@ export function ReportsView({ session, data }: DistributionViewProps) {
 
             {dineroSubTab === 'arqueos' && (
               closures.length === 0 ? (
-                <EmptyBlock title="Sin arqueos guardados" description="Aparecen cuando se cierra una ruta." />
+                <EmptyBlock title="Sin arqueos guardados" description="Aparecen cuando se cierra una ruta o la caja de administración." />
               ) : (
-                <div className="grid gap-2">
+                <div className="grid gap-3">
                   {closures.map((closure) => (
-                    <div key={closure.id} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="break-words text-xs font-extrabold text-slate-900">
-                            {closure.routeName} · {closure.distributorName}
-                          </p>
-                          <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">
-                            Esperado {formatBs(closure.expectedCash)} · Declarado {formatBs(closure.physicalCashDeclared ?? 0)}
+                    <article key={closure.id} className="w-full min-w-0 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-black uppercase text-slate-600">
+                              {closure.closureType === 'admin' ? 'Arqueo Administración' : 'Arqueo Ruta'}
+                            </span>
+                            <h4 className="text-sm font-extrabold text-slate-900">
+                              {closure.routeName} · {closure.distributorName}
+                            </h4>
+                          </div>
+                          <p className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                            {closure.closedAt ? `Cerrado el ${new Date(closure.closedAt).toLocaleString('es-BO')}` : (closure.createdAt ? `Creado el ${new Date(closure.createdAt).toLocaleString('es-BO')}` : '')}
+                            {closure.warehouseResponsibleName ? ` · Recepción almacén: ${closure.warehouseResponsibleName}` : ''}
                           </p>
                         </div>
-                        {closure.status === 'closed' ? (
-                          <VarianceBadge variance={closure.cashDifference} />
-                        ) : (
-                          <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-black text-slate-500">
-                            CAJA PENDIENTE
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {closure.status === 'closed' ? (
+                            <VarianceBadge variance={closure.cashDifference} />
+                          ) : (
+                            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-black text-amber-800">
+                              CAJA PENDIENTE
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
+
+                      {/* Auditoría de reapertura si fue reabierto */}
+                      {closure.reopenedAt && (
+                        <div className="mt-2.5 rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
+                          <span className="font-extrabold">REABIERTO:</span> el {new Date(closure.reopenedAt).toLocaleString('es-BO')}
+                          {closure.reopenedByName ? ` por ${closure.reopenedByName}` : ''}.
+                          {closure.reopenReason ? ` Motivo: "${closure.reopenReason}"` : ''}
+                        </div>
+                      )}
+
+                      {/* Grilla con los 8 valores financieros */}
+                      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-2.5">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">1. Ventas Efectivo</span>
+                          <p className="mt-0.5 text-xs font-extrabold text-slate-900">{formatBs(closure.cashSales)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-2.5">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">2. Ventas QR</span>
+                          <p className="mt-0.5 text-xs font-extrabold text-slate-900">{formatBs(closure.qrSales)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-2.5">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">3. Crédito Generado</span>
+                          <p className="mt-0.5 text-xs font-extrabold text-amber-800">{formatBs(closure.creditGenerated)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-2.5">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">4. Cobros Efectivo</span>
+                          <p className="mt-0.5 text-xs font-extrabold text-emerald-700">{formatBs(closure.cashCollections)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-2.5">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">5. Cobros QR</span>
+                          <p className="mt-0.5 text-xs font-extrabold text-slate-900">{formatBs(closure.qrCollections)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-2.5">
+                          <span className="text-[10px] font-bold uppercase text-slate-400">6. Gastos Ruta</span>
+                          <p className="mt-0.5 text-xs font-extrabold text-rose-700">{formatBs(closure.cashExpenses)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-slate-100 p-2.5">
+                          <span className="text-[10px] font-extrabold uppercase text-slate-600">7. Efectivo Esperado</span>
+                          <p className="mt-0.5 text-xs font-black text-slate-900">{formatBs(closure.expectedCash)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-slate-100 p-2.5">
+                          <span className="text-[10px] font-extrabold uppercase text-slate-600">8. Efectivo Declarado</span>
+                          <p className="mt-0.5 text-xs font-black text-slate-900">{formatBs(closure.physicalCashDeclared ?? 0)}</p>
+                        </div>
+                      </div>
+                    </article>
                   ))}
                 </div>
               )
@@ -965,7 +1246,21 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                     {/* Ranking de Clientes */}
                     <SectionCard title="Ranking de compras por cliente">
                       <div className="grid gap-2">
-                        {customerPurchasesAgg.clients.map((client, index) => {
+                        <div className="relative">
+                          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <TextInput
+                            value={customerSearchTerm}
+                            onChange={(e) => setCustomerSearchTerm(e.target.value)}
+                            placeholder="Buscar cliente por nombre o CI..."
+                            className="pl-9 h-8 text-xs font-medium"
+                          />
+                        </div>
+                        {filteredCustomerPurchases.length === 0 ? (
+                          <p className="p-3 text-center text-xs text-slate-500 font-semibold">
+                            No se encontraron compras de clientes que coincidan con la búsqueda.
+                          </p>
+                        ) : (
+                          filteredCustomerPurchases.map((client, index) => {
                           const isExpanded = expandedClientId === client.customerId
                           return (
                             <div key={client.customerId} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
@@ -1028,7 +1323,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                               )}
                             </div>
                           )
-                        })}
+                        }))}
                       </div>
 
                       {/* Consolidado Global */}
@@ -1056,27 +1351,158 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         {/* ========================================================= */}
         {mainCategory === 'creditos' && (
           <div className="grid gap-3">
-            {data.receivables.length === 0 ? (
-              <EmptyBlock title="Sin créditos registrados" />
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <KpiCard
+                label="Cartera pendiente"
+                value={formatBs(creditPortfolio.totalOutstanding)}
+                tone="warning"
+                hint={cutoffDayKey ? `Al corte de: ${cutoffDayKey}` : 'Cartera vigente'}
+              />
+              <KpiCard
+                label="Clientes con saldo"
+                value={String(creditPortfolio.totalCustomersWithBalance)}
+                tone="neutral"
+                hint={`${filteredCustomerCredits.length} cliente(s) en reporte`}
+              />
+              <KpiCard
+                label="Cobrado en el periodo"
+                value={formatBs(totalCollectedInPeriod)}
+                tone="positive"
+                hint={`${periodCollections.length} cobranza(s)`}
+              />
+            </div>
+
+            {/* Buscador de clientes */}
+            <div className="relative">
+              <Search className="absolute left-3 top-2.5 text-slate-400" size={14} />
+              <TextInput
+                value={creditSearchTerm}
+                onChange={(e) => setCreditSearchTerm(e.target.value)}
+                placeholder="Buscar cliente por nombre o CI..."
+                className="pl-9 h-8 text-xs font-medium"
+              />
+            </div>
+
+            {filteredCustomerCredits.length === 0 ? (
+              <EmptyBlock
+                title="Sin créditos para los filtros seleccionados"
+                description="Prueba cambiando la ruta o el vendedor seleccionado."
+              />
             ) : (
-              <>
-                <p className="text-[11px] font-bold text-slate-500">
-                  Cartera pendiente:{' '}
-                  {formatBs(round2(data.receivables.reduce((sum, row) => sum + (Number(row.balance) || 0), 0)))}
-                </p>
-                <ResponsiveTable
-                  rows={data.receivables.slice().sort((a, b) => b.balance - a.balance)}
-                  columns={[
-                    { key: 'distribuidor', header: 'Distribuidor', render: (row) => row.distributorName },
-                    { key: 'original', header: 'Original', render: (row) => formatBs(row.originalAmount) },
-                    { key: 'pagado', header: 'Pagado', render: (row) => formatBs(row.paidAmount) },
-                    { key: 'saldo', header: 'Saldo', align: 'right', render: (row) => formatBs(row.balance) },
-                    { key: 'estado', header: 'Estado', render: (row) => reportCreditLabel(row.status) },
-                  ]}
-                  keyOf={(row) => row.id}
-                  titleOf={(row) => row.customerName}
-                />
-              </>
+              <div className="grid gap-2">
+                {filteredCustomerCredits.map((customer, index) => {
+                  const isExpanded = expandedCreditCustomerId === customer.customerId
+                  return (
+                    <article
+                      key={customer.customerId}
+                      className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setExpandedCreditCustomerId(isExpanded ? null : customer.customerId)}
+                        className="flex min-h-[56px] w-full items-center justify-between gap-3 p-3.5 text-left transition hover:bg-slate-50"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black text-rose-700">#{index + 1}</span>
+                            <h4 className="truncate text-xs font-extrabold text-slate-900">{customer.customerName}</h4>
+                            {customer.identityNumber && (
+                              <span className="text-[10px] text-slate-400">· CI: {customer.identityNumber}</span>
+                            )}
+                            {customer.customerCode && !customer.identityNumber && (
+                              <span className="text-[10px] text-slate-400">· Cód: {customer.customerCode}</span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                            {customer.routes.map((r) => `${r.routeName}: ${formatBs(r.balance)}`).join(' · ')}
+                            {` · ${customer.filteredReceivables.length} crédito(s)`}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className="text-sm font-black tabular-nums text-slate-900">
+                            {formatBs(customer.filteredBalance)}
+                          </span>
+                          {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="border-t border-slate-100 bg-slate-50/50 p-3">
+                          <div className="grid gap-2">
+                            {customer.filteredReceivables.map((rec) => {
+                              const sale = salesMap.get(rec.saleId || '')
+                              const creditInfo = resolveCreditProducts(rec, sale)
+                              return (
+                                <div
+                                  key={rec.id}
+                                  className="rounded-2xl border border-slate-200 bg-white p-3 text-xs"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-extrabold text-slate-800">
+                                          {data.routes.find((route) => route.id === rec.routeId)?.name || (rec.routeId === 'admin' ? 'Administración' : rec.routeId || 'Ruta')}
+                                        </span>
+                                        <span className="text-[11px] text-slate-400">
+                                          · Por: {rec.distributorName || 'Distribuidor'}
+                                        </span>
+                                      </div>
+                                      <p className="mt-0.5 text-[11px] text-slate-500">
+                                        Fecha: {new Date(rec.createdAt).toLocaleDateString('es-BO')}
+                                        {rec.note && <span className="italic"> · {rec.note}</span>}
+                                      </p>
+                                    </div>
+                                    <span
+                                      className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${
+                                        rec.status === 'PAID'
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : rec.status === 'PARTIAL'
+                                            ? 'bg-amber-100 text-amber-800'
+                                            : 'bg-rose-100 text-rose-800'
+                                      }`}
+                                    >
+                                      {rec.status === 'PAID' ? 'PAGADO' : rec.status === 'PARTIAL' ? 'ABONO PARCIAL' : 'PENDIENTE'}
+                                    </span>
+                                  </div>
+
+                                  {/* Detalle de productos en el crédito */}
+                                  <div className="mt-2 rounded-xl bg-slate-50 p-2 text-[11px]">
+                                    <span className="font-bold text-slate-700">Productos: </span>
+                                    {creditInfo.lines.length > 0 ? (
+                                      <span className="text-slate-600">
+                                        {creditInfo.lines
+                                          .map((l) => `${l.productNameSnapshot} (${formatQty(l.quantity, l.unitType)})`)
+                                          .join(', ')}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-500 italic">
+                                        {rec.sourceType === 'opening_balance'
+                                          ? 'Saldo inicial / Deuda anterior'
+                                          : 'Crédito anterior sin desglose de ítems'}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="mt-2.5 flex items-center justify-between border-t border-slate-100 pt-2 text-xs">
+                                    <span className="text-slate-500">
+                                      Original: <strong className="text-slate-800">{formatBs(rec.originalAmount)}</strong>
+                                      {' · '}
+                                      Pagado: <strong className="text-emerald-700">{formatBs(rec.paidAmount)}</strong>
+                                    </span>
+                                    <span className="font-black text-rose-700 tabular-nums">
+                                      Saldo: {formatBs(rec.balance)}
+                                    </span>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  )
+                })}
+              </div>
             )}
           </div>
         )}

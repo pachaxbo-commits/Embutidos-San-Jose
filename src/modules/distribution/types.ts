@@ -24,6 +24,7 @@ export type StockMovementType =
   | 'return' // retorno fisico de ruta a central
   | 'adjustment' // ajuste manual de almacen
   | 'dispatch_correction' // correccion auditada de despacho o aumento
+  | 'dispatch_waste' // merma descontada al despachar productos al peso
   | 'shortage' // faltante detectado en conciliacion
   | 'overage' // sobrante detectado en conciliacion
 
@@ -156,6 +157,9 @@ export interface DistDispatchLine {
   productName: string
   unitType: UnitType
   quantity: number
+  waste?: number
+  wasteCost?: number | null
+  wasteAllocations?: DistLotAllocation[]
   /** Selección explícita solicitada por el operador; el servidor vuelve a validarla. */
   allocationsRequested?: Array<{ lotId: string; quantity: number }>
   allocations?: DistLotAllocation[]
@@ -383,7 +387,9 @@ export interface DistClosure extends DistBaseDoc {
   cashCollections: number
   qrCollections: number
   cashExpenses: number
+  claimCash?: number
   expectedCash: number
+  closureType?: 'route' | 'admin'
   physicalCashDeclared?: number
   cashDeclaredBy?: string
   cashDeclaredAt?: string
@@ -394,7 +400,9 @@ export interface DistClosure extends DistBaseDoc {
   closedBy?: string
   closedAt?: string
   reopenedBy?: string
+  reopenedByName?: string
   reopenedAt?: string
+  reopenReason?: string
   /** La revisión reconoce la diferencia sin modificar el cierre ni el stock. */
   varianceReviewedBy?: string
   varianceReviewedAt?: string

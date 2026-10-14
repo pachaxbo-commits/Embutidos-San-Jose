@@ -891,10 +891,9 @@ export async function saveClosure(input: SaveClosureInput): Promise<string> {
   return input.closure.id
 }
 
-/** Reapertura administrativa de una ruta cerrada */
-export async function reopenClosure(closure: DistClosure, _reopenedBy: string): Promise<void> {
-  void _reopenedBy
-  await submitOperation('reopen', { closureId: closure.id }, newOperationId('reopen'))
+/** Reapertura administrativa de una ruta o caja cerrada */
+export async function reopenClosure(closure: DistClosure, reason: string): Promise<void> {
+  await submitOperation('reopen', { closureId: closure.id, reason: reason.trim() }, newOperationId('reopen'))
 }
 
 /** Reconoce o devuelve a pendientes una diferencia histórica de productos. */

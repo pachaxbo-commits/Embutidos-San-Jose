@@ -431,6 +431,25 @@ async function dispatch(o, p, addition = false) {
       if (existing) existing.quantity = round(existing.quantity + allocation.quantity);
       else effective.allocations.push({ ...allocation });
     }
+    const waste = round(Number(l.waste) || 0);
+    if (waste > 0) {
+      check(product.unitType === "kg", "Las mermas de despacho solo aplican a productos a granel / peso (kg).");
+      const wasteAllocations = await o.take(l.productId, from, waste);
+      const wasteCost = wasteAllocations.every((a) => a.productionCost !== null)
+        ? round(wasteAllocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
+        : null;
+      effective.waste = round((effective.waste || 0) + waste);
+      effective.wasteCost = wasteCost;
+      effective.wasteAllocations = wasteAllocations;
+      o.ledger(
+        l.productId,
+        waste,
+        from,
+        null,
+        "dispatch_waste",
+        { refId: current?.id || o.id, allocations: wasteAllocations, lossCost: wasteCost, note: "Merma registrada al despachar" },
+      );
+    }
     linesByProduct.set(l.productId, effective);
     o.ledger(
       l.productId,
@@ -1344,8 +1363,15 @@ async function editSale(o, p) {
     const before = previousByProduct.get(line.productId);
     return !before || round(before.quantity) !== line.quantity || round(before.actualUnitPrice) !== line.actualUnitPrice;
   });
-  check(hasLineChange, "Realiza al menos un cambio de cantidad o precio antes de confirmar.");
   const cashAmount = round(Number(p.cashAmount) || 0), qrAmount = round(Number(p.qrAmount) || 0), creditAmount = round(Number(p.creditAmount) || 0);
+  const prevCash = round(Number(previous.cashAmount) || 0);
+  const prevQr = round(Number(previous.qrAmount) || 0);
+  const prevCredit = round(Number(previous.creditAmount) || 0);
+  const hasPaymentChange = p.paymentKind !== previous.paymentKind ||
+    cashAmount !== prevCash ||
+    qrAmount !== prevQr ||
+    creditAmount !== prevCredit;
+  check(hasLineChange || hasPaymentChange, "Realiza al menos un cambio de cantidad, precio o forma de pago antes de confirmar.");
   check(["cash", "qr", "credit", "mixed"].includes(p.paymentKind), "Forma de pago inválida.");
   check(Math.abs(total - cashAmount - qrAmount - creditAmount) < 0.01 && [cashAmount, qrAmount, creditAmount].every(value => value >= 0), "Los pagos corregidos no coinciden con el total.");
   check(!creditAmount || sale.customerId, "El crédito necesita un cliente.");
@@ -1612,6 +1638,68 @@ async function deleteProduct(o, p) {
 }
 async function closure(o, p) {
   const requested = p.closure;
+  if (requested.closureType === "admin") {
+    o.admin();
+    check(
+      Number.isFinite(requested.physicalCashDeclared) &&
+        requested.physicalCashDeclared >= 0,
+      "Efectivo declarado inválido.",
+    );
+    const dayKey = requested.dayKey || o.today;
+    const id = requested.id || `closure_admin_${dayKey}_${o.id}`;
+
+    const sales = (await o.query("distSales", "dayKey", dayKey))
+      .filter((s) => s.routeId === "admin" || (!s.routeId && s.sourceLocation === "centralWarehouse"))
+      .map((sale) => (sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale));
+
+    const collections = (await o.query("distCollections", "dayKey", dayKey))
+      .filter((x) => x.routeId === "admin" || x.collectedByUid === o.actor);
+
+    const expenses = (await o.query("distExpenses", "dayKey", dayKey))
+      .filter((x) => (x.routeId === "admin" || !x.routeId) && !x.voided);
+
+    const claims = (await o.query("distClaims", "dayKey", dayKey))
+      .filter((x) => x.routeId === "admin");
+
+    const sum = (list, key) => round(list.reduce((n, r) => n + (r[key] || 0), 0));
+    const cashSales = sum(sales, "cashAmount"),
+      cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
+      cashExpenses = sum(expenses, "amount"),
+      claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
+      expectedCash = round(
+        cashSales + cashCollections - cashExpenses + claimCash,
+      );
+
+    const c = {
+      id,
+      ...o.base(),
+      dayKey,
+      closureType: "admin",
+      dispatchId: requested.dispatchId || `admin_${dayKey}`,
+      routeId: "admin",
+      routeName: "Administración",
+      distributorUid: o.actor,
+      distributorName: o.member.displayName || "Administración",
+      status: "closed",
+      products: [],
+      cashSales,
+      qrSales: sum(sales, "qrAmount"),
+      creditGenerated: sum(sales, "creditAmount"),
+      cashCollections,
+      qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
+      cashExpenses,
+      claimCash,
+      expectedCash,
+      physicalCashDeclared: round(requested.physicalCashDeclared),
+      cashDifference: round(requested.physicalCashDeclared - expectedCash),
+      closedBy: o.actor,
+      closedAt: o.now,
+      note: requested.note || "",
+    };
+    o.put("distClosures", id, c);
+    return c;
+  }
+
   const d = await o.read("distDispatches", requested.dispatchId);
   check(d?.status === "open", "La ruta ya está cerrada.");
   const id = `closure_${d.id}`,
@@ -1796,11 +1884,17 @@ async function closure(o, p) {
   return c;
 }
 async function claim(o, p) {
-  o.admin();
+  check(["admin", "distributor"].includes(o.member.role), "Sin permiso para registrar cambios o devoluciones.");
   check(p.reason?.trim(), "Indica el motivo del cambio o devolución.");
   check(["exchange", "return"].includes(p.kind), "Tipo de reclamo inválido.");
   const s = await o.read("distSales", p.saleId);
   check(s, "No existe la venta original.");
+  const isDistributor = o.member.role === "distributor";
+  if (isDistributor) {
+    check(s.sellerUid === o.actor, "Solo puedes registrar cambios o devoluciones de tus propias ventas.");
+    const dispatch = s.dispatchId ? await o.read("distDispatches", s.dispatchId) : null;
+    check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. Requiere revisión de administración.");
+  }
   const effectiveSale = s.effectiveSnapshot
     ? { ...s, ...s.effectiveSnapshot }
     : s;
@@ -1824,8 +1918,8 @@ async function claim(o, p) {
     orig.every((l) => l.actualUnitPrice === originalUnit),
     "Esta venta tiene precios distintos para el mismo producto; revisa el comprobante con Administración.",
   );
-  const loc = location("warehouse", p.warehouseId || "central");
-  if (p.warehouseId && p.warehouseId !== "central")
+  const loc = isDistributor ? location("route", s.routeId) : location("warehouse", p.warehouseId || "central");
+  if (!isDistributor && p.warehouseId && p.warehouseId !== "central")
     check(
       (await o.read("distWarehouses", p.warehouseId))?.active,
       "Almacén no disponible.",
@@ -1999,27 +2093,34 @@ module.exports.refreshCreditStatus = refreshCreditStatus;
 
 handlers.reopen = async (o, p) => {
   o.admin();
+  check(p.reason?.trim(), "La razón de la reapertura es obligatoria.");
   const c = await o.read("distClosures", p.closureId);
   check(c?.status === "closed", "Solo se puede reabrir un cierre finalizado.");
-  const d = await o.read("distDispatches", c.dispatchId);
-  check(d?.status === "closed", "El despacho no está cerrado.");
-  const others = await o.query("distDispatches", "routeId", c.routeId);
-  check(
-    !others.some((x) => x.status === "open"),
-    "La ruta tiene otro despacho abierto.",
-  );
+  const d = c.dispatchId ? await o.read("distDispatches", c.dispatchId) : null;
+  if (d) {
+    check(d.status === "closed", "El despacho no está cerrado.");
+    const others = await o.query("distDispatches", "routeId", c.routeId);
+    check(
+      !others.some((x) => x.id !== d.id && x.status === "open"),
+      "La ruta tiene otro despacho abierto.",
+    );
+  }
   o.put("distClosures", c.id, {
     ...c,
     status: "reopened",
     reopenedBy: o.actor,
+    reopenedByName: o.member.displayName || o.actor,
     reopenedAt: o.now,
+    reopenReason: p.reason.trim(),
   });
-  o.put("distDispatches", d.id, {
-    ...d,
-    status: "open",
-    closedAt: "",
-    closureId: "",
-  });
+  if (d) {
+    o.put("distDispatches", d.id, {
+      ...d,
+      status: "open",
+      closedAt: "",
+      closureId: "",
+    });
+  }
   return { id: c.id };
 };
 

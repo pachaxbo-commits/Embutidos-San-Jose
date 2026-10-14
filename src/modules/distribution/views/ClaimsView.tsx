@@ -26,7 +26,8 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
   const [choice, setChoice] = useState<ClaimChoice>(null)
   const op = useRef<string | null>(null)
 
-  const periodSales = useMemo(() => data.sales.filter(sale => !sale.pendingConfirmation && session.dayKeys.includes(sale.dayKey)), [data.sales, session.dayKeys])
+  const isDistributor = session.role === 'distributor'
+  const periodSales = useMemo(() => data.sales.filter(sale => !sale.pendingConfirmation && session.dayKeys.includes(sale.dayKey) && (!isDistributor || sale.sellerUid === session.uid)), [data.sales, session.dayKeys, isDistributor, session.uid])
   const customersWithSales = useMemo(() => data.customers.filter(customer => periodSales.some(sale => sale.customerId === customer.id)), [data.customers, periodSales])
   const customer = data.customers.find(item => item.id === customerId)
   const customerSales = periodSales.filter(sale => sale.customerId === customerId)
@@ -34,7 +35,24 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
   const line = sale?.lines.find(item => item.productId === productId)
   const replacement = data.products.find(product => product.id === replacementProductId)
   const warehouses = [{ id: 'central', name: 'Almacén central' }, ...data.warehouses.filter(warehouse => warehouse.active)]
-  const replacementProducts = data.products.filter(product => product.active && data.balances.some(balance => balance.productId === product.id && balance.locationKind === 'central' && (balance.warehouseId || 'central') === warehouseId && (balance.availableQuantity ?? balance.quantity) > 0))
+  const distributorRouteId = session.routeId || sale?.routeId || ''
+  const replacementProducts = data.products.filter(product => {
+    if (!product.active) return false
+    if (isDistributor) {
+      return data.balances.some(
+        balance => balance.productId === product.id &&
+          balance.locationKind === 'route' &&
+          balance.routeId === distributorRouteId &&
+          (balance.availableQuantity ?? balance.quantity) > 0,
+      )
+    }
+    return data.balances.some(
+      balance => balance.productId === product.id &&
+        balance.locationKind === 'central' &&
+        (balance.warehouseId || 'central') === warehouseId &&
+        (balance.availableQuantity ?? balance.quantity) > 0,
+    )
+  })
   const difference = (kind === 'exchange' ? (replacement?.referencePrice || 0) * Number(replacementQuantity) : 0) - (line?.actualUnitPrice || 0) * Number(quantity)
   const returnedQuantityValid = Boolean(line && Number(quantity) > 0 && Number(quantity) <= line.quantity)
   const replacementValid = kind === 'return' || Boolean(replacement && Number(replacementQuantity) > 0)
@@ -82,7 +100,11 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
       {line && <SectionCard title="2. Solución para el cliente">
         <div className="grid gap-3">
           <Field label="¿Qué se realizará?"><Segmented value={kind} options={[{ value: 'exchange', label: 'Cambiar producto' }, { value: 'return', label: 'Devolver dinero' }]} onChange={value => { setKind(value); setReplacementProductId(''); resetOperation() }} /></Field>
-          <Field label="Almacén que atiende"><ChoiceButton placeholder="Selecciona almacén" label={warehouses.find(warehouse => warehouse.id === warehouseId)?.name} onClick={() => setChoice('warehouse')} /></Field>
+          {!isDistributor ? (
+            <Field label="Almacén que atiende"><ChoiceButton placeholder="Selecciona almacén" label={warehouses.find(warehouse => warehouse.id === warehouseId)?.name} onClick={() => setChoice('warehouse')} /></Field>
+          ) : (
+            <Field label="Origen del reemplazo"><div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">Stock del camión de ruta ({data.routes.find(r => r.id === distributorRouteId)?.name || 'Tu ruta asignada'})</div></Field>
+          )}
           {kind === 'exchange' && <>
             <Field label="Producto de reemplazo"><ChoiceButton placeholder="Selecciona producto disponible" label={replacement?.name} description={replacement ? formatBs(replacement.referencePrice) : undefined} onClick={() => setChoice('replacement')} /></Field>
             {replacement && <Field label={`Cantidad entregada (${replacement.unitType === 'kg' ? 'kg' : replacement.unitType === 'package' ? 'paquetes' : 'unidades'})`}><NumberInput min={0} step={replacement.unitType === 'kg' ? 0.01 : 1} value={replacementQuantity} onChange={event => { setReplacementQuantity(event.target.value); resetOperation() }} /></Field>}
@@ -99,7 +121,7 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
             setBusy(true)
             op.current ||= newOperationId('claim')
             try {
-              await registerClaim({ saleId, productId, kind, quantity: Number(quantity), replacementProductId, replacementQuantity: Number(replacementQuantity), warehouseId, reason, method: Math.abs(difference) > 0 ? method : 'none' }, op.current)
+              await registerClaim({ saleId, productId, kind, quantity: Number(quantity), replacementProductId, replacementQuantity: Number(replacementQuantity), warehouseId: isDistributor ? undefined : warehouseId, reason, method: Math.abs(difference) > 0 ? method : 'none' }, op.current)
               setMessage('Reclamo registrado. Se actualizaron stock y saldo.')
               op.current = null
               setSaleId('')
@@ -116,7 +138,7 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
 
       <SectionCard title="Historial">
         <div className="grid gap-2">
-          {data.claims.filter(claim => session.dayKeys.includes(claim.dayKey)).map(claim => <article key={claim.id} className="rounded-2xl border border-slate-200 p-3">
+          {data.claims.filter(claim => session.dayKeys.includes(claim.dayKey) && (!isDistributor || claim.sellerUid === session.uid || claim.routeId === session.routeId)).map(claim => <article key={claim.id} className="rounded-2xl border border-slate-200 p-3">
             <div className="flex items-start gap-2"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--primary-soft)] text-[var(--primary)]"><RotateCcw size={15} /></span><div className="min-w-0 flex-1"><p className="text-xs font-extrabold leading-snug text-slate-900">{claim.customerName || 'Cliente ocasional'}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-600">{claim.productName} · {formatQty(claim.quantity, claim.unitType)}</p></div><CheckCircle2 size={16} className="shrink-0 text-emerald-600" /></div>
             <p className="mt-2 text-[11px] leading-snug text-slate-600">{claim.replacement ? `Cambio por ${claim.replacement.productName} (${formatQty(claim.replacement.quantity, claim.replacement.unitType)})` : 'Devolución'} · {claim.reason}</p>
             <p className="mt-1 text-[10px] text-slate-400">{new Date(claim.createdAt).toLocaleString('es-BO')} · ajuste {formatBs(claim.revenueDelta)}</p>
@@ -130,6 +152,6 @@ export function ClaimsView({ data, session }: DistributionViewProps) {
     <ChoiceModal isOpen={choice === 'sale'} onClose={() => setChoice(null)} title={`Compras de ${customer?.name || 'cliente'}`} options={customerSales.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(item => ({ value: item.id, label: new Date(item.createdAt).toLocaleString('es-BO'), description: item.lines.map(saleLine => saleLine.productNameSnapshot).join(' · '), trailing: formatBs(item.total) }))} selectedValue={saleId} onSelect={value => { setSaleId(value); setProductId(''); resetOperation() }} />
     <ChoiceModal isOpen={choice === 'product'} onClose={() => setChoice(null)} title="Producto vendido" options={(sale?.lines || []).map(item => ({ value: item.productId, label: item.productNameSnapshot, description: `${formatQty(item.quantity, item.unitType)} vendidos a ${formatBs(item.actualUnitPrice)}`, trailing: formatBs(item.subtotal) }))} selectedValue={productId} onSelect={value => { setProductId(value); setQuantity('1'); resetOperation() }} />
     <ChoiceModal isOpen={choice === 'warehouse'} onClose={() => setChoice(null)} title="Almacén que atiende" options={warehouses.map(warehouse => ({ value: warehouse.id, label: warehouse.name }))} selectedValue={warehouseId} onSelect={value => { setWarehouseId(value); setReplacementProductId(''); resetOperation() }} />
-    <ChoiceModal isOpen={choice === 'replacement'} onClose={() => setChoice(null)} title="Producto de reemplazo" subtitle="Solo se muestra mercadería disponible" searchable options={replacementProducts.map(product => ({ value: product.id, label: product.name, description: formatBs(product.referencePrice), trailing: formatQty(data.balances.find(balance => balance.productId === product.id && balance.locationKind === 'central' && (balance.warehouseId || 'central') === warehouseId)?.availableQuantity || 0, product.unitType) }))} selectedValue={replacementProductId} onSelect={value => { setReplacementProductId(value); setReplacementQuantity('1'); resetOperation() }} emptyLabel="No hay productos disponibles en este almacén" />
+    <ChoiceModal isOpen={choice === 'replacement'} onClose={() => setChoice(null)} title="Producto de reemplazo" subtitle="Solo se muestra mercadería disponible" searchable options={replacementProducts.map(product => ({ value: product.id, label: product.name, description: formatBs(product.referencePrice), trailing: formatQty(data.balances.find(balance => balance.productId === product.id && (isDistributor ? (balance.locationKind === 'route' && balance.routeId === distributorRouteId) : (balance.locationKind === 'central' && (balance.warehouseId || 'central') === warehouseId)))?.availableQuantity || 0, product.unitType) }))} selectedValue={replacementProductId} onSelect={value => { setReplacementProductId(value); setReplacementQuantity('1'); resetOperation() }} emptyLabel={isDistributor ? 'No tienes stock disponible en tu camión para este producto' : 'No hay productos disponibles en este almacén'} />
   </Screen>
 }

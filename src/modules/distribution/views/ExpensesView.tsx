@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
@@ -7,13 +7,14 @@ import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2 } from '../domain/engine'
 import { deleteExpense, newOperationId, registerExpense } from '../data/distributionRepository'
 import { QUICK_CONCEPTS, validateExpenseInput } from '../domain/expensesValidation'
+import { RangePicker } from './RangePicker'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistExpense } from '../types'
 import type { DistributionViewProps } from './DistributionApp'
 
 /**
- * Gastos de ruta. Restan del efectivo esperado en el arqueo, igual que en el
- * Excel actual de la empresa.
+ * Gastos de ruta y administración. Restan del efectivo esperado en el arqueo,
+ * igual que en el Excel operativo de la empresa.
  */
 export function ExpensesView({ session, data }: DistributionViewProps) {
   const [isOpen, setIsOpen] = useState(false)
@@ -25,16 +26,52 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isRouteOpen, setIsRouteOpen] = useState(false)
+  const [selectedRouteFilter, setSelectedRouteFilter] = useState('all')
+  const [isRouteFilterOpen, setIsRouteFilterOpen] = useState(false)
   const [deleteMode, setDeleteMode] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<DistExpense | null>(null)
   const [feedback, setFeedback] = useState('')
 
-  const total = round2(data.expenses.reduce((sum, expense) => sum + expense.amount, 0))
+  const activeRoutes = useMemo(
+    () => data.routes.filter((route) => route.active !== false),
+    [data.routes],
+  )
+
+  const filteredExpenses = useMemo(() => {
+    if (selectedRouteFilter === 'all') return data.expenses
+    if (selectedRouteFilter === 'admin') {
+      return data.expenses.filter((e) => e.routeId === 'admin')
+    }
+    if (selectedRouteFilter === 'direct') {
+      return data.expenses.filter(
+        (e) => e.routeId === 'route-directa' || data.routes.find((r) => r.id === e.routeId)?.kind === 'direct',
+      )
+    }
+    return data.expenses.filter((e) => e.routeId === selectedRouteFilter)
+  }, [data.expenses, selectedRouteFilter, data.routes])
+
+  const total = round2(filteredExpenses.reduce((sum, expense) => sum + expense.amount, 0))
+
+  const routeFilterLabel = useMemo(() => {
+    if (selectedRouteFilter === 'all') return 'Todas las rutas / orígenes'
+    if (selectedRouteFilter === 'admin') return 'Administración'
+    if (selectedRouteFilter === 'direct') return 'Venta directa / Impulsación'
+    return data.routes.find((r) => r.id === selectedRouteFilter)?.name ?? 'Ruta seleccionada'
+  }, [selectedRouteFilter, data.routes])
+
+  const selectedRouteName = useMemo(() => {
+    const targetId = session.routeId ?? routeId
+    if (!targetId) return ''
+    if (targetId === 'admin') return 'Administración'
+    if (targetId === 'route-directa') return 'Venta directa / Impulsación'
+    return data.routes.find((r) => r.id === targetId)?.name ?? targetId
+  }, [session.routeId, routeId, data.routes])
 
   const resetForm = () => {
     setSelectedConcept('Combustible')
     setCustomConcept('')
     setAmount('')
+    setRouteId(session.routeId ?? '')
     setNote('')
     setError(null)
   }
@@ -54,11 +91,12 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
   const submit = async () => {
     if (isSubmitting) return
 
+    const effectiveRouteId = session.routeId ?? routeId
     const validation = validateExpenseInput({
       selectedConcept,
       customConcept,
       amount,
-      routeId: session.routeId ?? routeId,
+      routeId: effectiveRouteId,
       note,
     })
 
@@ -67,6 +105,12 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
       return
     }
 
+    const targetRouteName = effectiveRouteId === 'admin'
+      ? 'Administración'
+      : effectiveRouteId === 'route-directa'
+        ? (data.routes.find((r) => r.id === effectiveRouteId)?.name ?? 'Venta directa / Impulsación')
+        : (data.routes.find((route) => route.id === effectiveRouteId)?.name ?? effectiveRouteId)
+
     setIsSubmitting(true)
     try {
       await registerExpense({
@@ -74,13 +118,14 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
         concept: validation.concept!,
         amount: validation.amount!,
         routeId: validation.routeId!,
-        routeName: data.routes.find((route) => route.id === validation.routeId)?.name ?? validation.routeId!,
+        routeName: targetRouteName,
         registeredByUid: session.uid,
         registeredByName: session.userName,
         note: validation.note || '',
       })
       resetForm()
       setIsOpen(false)
+      setFeedback('Gasto registrado exitosamente.')
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo registrar el gasto.')
     } finally {
@@ -91,7 +136,11 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
   return (
     <Screen
       title="Gastos"
-      subtitle="Gastos del periodo por ruta"
+      subtitle={
+        session.role === 'admin'
+          ? 'Gastos operativos por ruta y administración'
+          : 'Gastos de ruta registrados en el periodo'
+      }
       actions={
         session.can('dist.expense.create') ? (
           <div className="flex items-center gap-2">
@@ -116,6 +165,35 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
         ) : undefined
       }
     >
+      <div className="flex flex-col gap-3">
+        <RangePicker
+          dayKeys={session.dayKeys}
+          onChange={session.setDayKeys}
+        />
+
+        {session.role === 'admin' && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 whitespace-nowrap">Ruta / Origen:</span>
+            <div className="flex-1">
+              <ChoiceButton
+                label={routeFilterLabel}
+                placeholder="Filtrar por ruta u origen"
+                onClick={() => setIsRouteFilterOpen(true)}
+              />
+            </div>
+            {selectedRouteFilter !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setSelectedRouteFilter('all')}
+                className="text-xs font-semibold text-rose-600 hover:text-rose-700 underline px-1"
+              >
+                Limpiar
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="grid w-full min-w-0 gap-3">
         <KpiCard label="Total gastos" value={formatBs(total)} tone="danger" />
         {feedback && (
@@ -129,11 +207,11 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
           </p>
         )}
 
-        {data.expenses.length === 0 ? (
+        {filteredExpenses.length === 0 ? (
           <EmptyBlock title="Sin gastos registrados" />
         ) : (
           <div className="grid gap-2">
-            {data.expenses.map((expense) => (
+            {filteredExpenses.map((expense) => (
               <div
                 key={expense.id}
                 className="flex w-full min-w-0 items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3"
@@ -211,10 +289,10 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
           </Field>
 
           {!session.routeId && (
-            <Field label="Ruta" required>
+            <Field label="Ruta / Origen" required>
               <ChoiceButton
-                label={data.routes.find((route) => route.id === routeId)?.name}
-                placeholder="Selecciona ruta"
+                label={selectedRouteName}
+                placeholder="Selecciona ruta u origen"
                 onClick={() => setIsRouteOpen(true)}
               />
             </Field>
@@ -272,14 +350,47 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
         {error && <p className="mt-3 text-xs font-bold text-rose-600">{error}</p>}
       </Modal>
 
+      {/* Selector de ruta para nuevo gasto */}
       <ChoiceModal
         isOpen={isRouteOpen}
         onClose={() => setIsRouteOpen(false)}
-        title="Ruta del gasto"
+        title="Ruta u origen del gasto"
         searchable
-        options={data.routes.map((route) => ({ value: route.id, label: route.name }))}
+        options={[
+          { value: 'admin', label: 'Administración' },
+          { value: 'route-directa', label: 'Venta directa / Impulsación' },
+          ...activeRoutes
+            .filter((route) => route.id !== 'route-directa')
+            .map((route) => ({ value: route.id, label: route.name })),
+        ]}
         selectedValue={routeId}
         onSelect={setRouteId}
+      />
+
+      {/* Selector de filtro por ruta */}
+      <ChoiceModal
+        isOpen={isRouteFilterOpen}
+        onClose={() => setIsRouteFilterOpen(false)}
+        title="Filtrar por ruta u origen"
+        subtitle="Selecciona la ruta u origen para ver sus gastos"
+        searchable
+        options={[
+          { value: 'all', label: 'Todas las rutas / orígenes' },
+          { value: 'admin', label: 'Administración' },
+          { value: 'direct', label: 'Venta directa / Impulsación' },
+          ...data.routes
+            .filter((route) => route.id !== 'route-directa')
+            .map((route) => ({
+              value: route.id,
+              label: route.name,
+              description: route.active === false ? 'Inactiva' : undefined,
+            })),
+        ]}
+        selectedValue={selectedRouteFilter}
+        onSelect={(value) => {
+          setSelectedRouteFilter(value)
+          setIsRouteFilterOpen(false)
+        }}
       />
     </Screen>
   )

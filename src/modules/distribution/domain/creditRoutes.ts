@@ -1,5 +1,5 @@
 import { round2, toDayKey } from './engine.ts'
-import type { DistCustomer, DistReceivable, DistRoute, DistSale, DistSaleLine } from '../types.ts'
+import type { DistCollection, DistCustomer, DistReceivable, DistRoute, DistSale, DistSaleLine } from '../types.ts'
 
 export interface CustomerRouteDebt {
   routeId: string
@@ -312,3 +312,92 @@ export function computeCreditPortfolioByRoute({
     availableRoutes,
   }
 }
+
+/**
+ * Calcula la cartera de créditos As-Of (al corte de una fecha determinada).
+ *
+ * Reglas de cálculo As-Of:
+ * 1. Ignora créditos creados DESPUÉS de la fecha de corte (`cutoffDayKey`).
+ * 2. Para los créditos creados en o antes de la fecha de corte, solo toma en cuenta
+ *    las cobranzas realizadas EN O ANTES de la fecha de corte.
+ * 3. Las cobranzas posteriores a la fecha de corte NO descuentan el saldo As-Of.
+ * 4. Calcula `paidAmount`, `balance` y `status` al momento exacto del corte.
+ */
+export function computeAsOfReceivablesPortfolio({
+  receivables,
+  collections,
+  cutoffDayKey,
+}: {
+  receivables: DistReceivable[]
+  collections: DistCollection[]
+  cutoffDayKey?: string
+}): DistReceivable[] {
+  if (!cutoffDayKey) return receivables
+
+  // 1. Filtrar cobranzas realizadas en o antes de cutoffDayKey
+  const validCollections = collections.filter((c) => {
+    const day = c.dayKey || toDayKey(c.createdAt)
+    return day <= cutoffDayKey
+  })
+
+  // 2. Mapear pagos acumulados por receivableId
+  const paidByReceivable = new Map<string, number>()
+  const unallocatedByCustomer = new Map<string, number>()
+
+  for (const c of validCollections) {
+    if (c.allocations && c.allocations.length > 0) {
+      for (const a of c.allocations) {
+        paidByReceivable.set(
+          a.receivableId,
+          round2((paidByReceivable.get(a.receivableId) || 0) + (Number(a.amount) || 0)),
+        )
+      }
+    } else if (c.receivableId) {
+      paidByReceivable.set(
+        c.receivableId,
+        round2((paidByReceivable.get(c.receivableId) || 0) + (Number(c.amount) || 0)),
+      )
+    } else {
+      unallocatedByCustomer.set(
+        c.customerId,
+        round2((unallocatedByCustomer.get(c.customerId) || 0) + (Number(c.amount) || 0)),
+      )
+    }
+  }
+
+  // 3. Filtrar créditos creados en o antes de cutoffDayKey
+  const eligibleReceivables = receivables
+    .filter((r) => {
+      const day = r.dayKey || toDayKey(r.createdAt)
+      return day <= cutoffDayKey
+    })
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+
+  // 4. Si hay cobros no asignados por cliente, aplicarlos FIFO a sus créditos hasta esa fecha
+  const remainingUnallocated = new Map(unallocatedByCustomer)
+
+  return eligibleReceivables.map((r) => {
+    let paid = paidByReceivable.get(r.id) || 0
+
+    // Si aún tiene saldo y el cliente tiene pagos sin asignar
+    const unallocated = remainingUnallocated.get(r.customerId) || 0
+    if (unallocated > 0 && paid < r.originalAmount) {
+      const needed = round2(r.originalAmount - paid)
+      const toApply = Math.min(needed, unallocated)
+      paid = round2(paid + toApply)
+      remainingUnallocated.set(r.customerId, round2(unallocated - toApply))
+    }
+
+    const asOfPaid = round2(Math.min(r.originalAmount, paid))
+    const asOfBalance = round2(Math.max(0, r.originalAmount - asOfPaid))
+    const asOfStatus = asOfBalance === 0 ? 'PAID' : (asOfPaid > 0 ? 'PARTIAL' : 'OPEN')
+
+    return {
+      ...r,
+      paidAmount: asOfPaid,
+      balance: asOfBalance,
+      status: asOfStatus,
+    }
+  })
+}
+

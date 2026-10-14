@@ -488,7 +488,7 @@ export function computeProductProfitReport(
   const losses = movements
     .filter((m) => dayKeys.length === 0 || dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
     .filter((m) => !routeFilter || m.routeId === routeFilter)
-    .filter((m) => m.type === 'shortage' || (m.type === 'adjustment' && m.centralDelta < 0))
+    .filter((m) => m.type === 'shortage' || m.type === 'dispatch_waste' || (m.type === 'adjustment' && m.centralDelta < 0))
   const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
 
   let operationalTotals: ProductProfitOperationalTotals

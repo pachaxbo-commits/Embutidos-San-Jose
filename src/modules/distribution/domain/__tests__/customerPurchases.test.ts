@@ -196,7 +196,7 @@ ok(result.grandTotalPackages === 5, 'Grand total packages debe ser 5')
 const formattedBreakdown = formatKgBreakdown(result.topClient!.exactKg, result.topClient!.estimatedKg)
 ok(/equiv\./.test(formattedBreakdown), 'Debe indicar equiv. cuando hay ambos tipos de kg')
 ok(/exactos/.test(formattedBreakdown), 'Debe indicar kg exactos')
-ok(/est\./.test(formattedBreakdown), 'Debe indicar kg estimados')
+ok(/estimados/.test(formattedBreakdown), 'Debe indicar kg estimados')
 
 // 4. Presentación única y fallback
 ok(

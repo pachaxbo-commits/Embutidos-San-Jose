@@ -113,23 +113,44 @@ export function RangePicker({
 
       {rangeError && <p role="alert" className="text-xs text-rose-700">{rangeError}</p>}
       {routes && onRouteFilterChange && (
-        <Field label="Ruta">
+        <Field label="Ruta / Origen">
           <ChoiceButton
-            label={routeFilter ? routes.find(route => route.id === routeFilter)?.name : 'Todas las rutas'}
-            placeholder="Todas las rutas"
+            label={
+              !routeFilter
+                ? 'Todas las rutas / orígenes'
+                : routeFilter === 'admin'
+                  ? 'Administración'
+                  : routeFilter === 'route-directa'
+                    ? 'Venta directa / Impulsación'
+                    : routes.find((route) => route.id === routeFilter)?.name || routeFilter
+            }
+            placeholder="Todas las rutas / orígenes"
             onClick={() => setIsRouteOpen(true)}
           />
         </Field>
       )}
-      {routes && onRouteFilterChange && <ChoiceModal
-        isOpen={isRouteOpen}
-        onClose={() => setIsRouteOpen(false)}
-        title="Filtrar por ruta"
-        searchable
-        options={[{ value: '', label: 'Todas las rutas' }, ...routes.map(route => ({ value: route.id, label: route.name }))]}
-        selectedValue={routeFilter ?? ''}
-        onSelect={onRouteFilterChange}
-      />}
+      {routes && onRouteFilterChange && (
+        <ChoiceModal
+          isOpen={isRouteOpen}
+          onClose={() => setIsRouteOpen(false)}
+          title="Filtrar por ruta u origen"
+          searchable
+          options={[
+            { value: '', label: 'Todas las rutas / orígenes' },
+            { value: 'admin', label: 'Administración' },
+            { value: 'route-directa', label: 'Venta directa / Impulsación' },
+            ...routes
+              .filter((r) => r.id !== 'route-directa')
+              .map((route) => ({
+                value: route.id,
+                label: route.name,
+                description: route.active === false ? 'Inactiva' : undefined,
+              })),
+          ]}
+          selectedValue={routeFilter ?? ''}
+          onSelect={onRouteFilterChange}
+        />
+      )}
     </div>
   )
 }

@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
+import { ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import {
@@ -42,7 +43,6 @@ import { getProductPresentation } from '../domain/productPresentation'
 import {
   checkSaleCorrectionAvailability,
   getSaleAuditSummary,
-  recalculateCorrectedPayment,
 } from '../domain/saleCorrectionAudit'
 
 interface CartLine extends DistSaleLine {
@@ -149,6 +149,12 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [correctionPrices, setCorrectionPrices] = useState<Record<string, string>>({})
   const [correctionReason, setCorrectionReason] = useState('')
   const [correctionSearch, setCorrectionSearch] = useState('')
+  const [correctionAddedProductIds, setCorrectionAddedProductIds] = useState<string[]>([])
+  const [isAddProductPickerOpen, setIsAddProductPickerOpen] = useState(false)
+  const [correctionPaymentKind, setCorrectionPaymentKind] = useState<PaymentKind>('cash')
+  const [correctionCashAmount, setCorrectionCashAmount] = useState<string>('0')
+  const [correctionQrAmount, setCorrectionQrAmount] = useState<string>('0')
+  const [correctionCreditAmount, setCorrectionCreditAmount] = useState<string>('0')
   const [isReviewingCorrection, setIsReviewingCorrection] = useState(false)
   const [productPendingRemoval, setProductPendingRemoval] = useState<DistProduct | null>(null)
   const [correctionSuccessMessage, setCorrectionSuccessMessage] = useState<string | null>(null)
@@ -465,7 +471,8 @@ export function SellView({ session, data }: DistributionViewProps) {
 
   const correctionOriginalByProduct = useMemo(() => {
     const grouped = new Map<string, DistSaleLine>()
-    for (const line of correctionTarget?.lines || []) {
+    const lines = correctionTarget?.effectiveSnapshot?.lines ?? correctionTarget?.lines ?? []
+    for (const line of lines) {
       const existing = grouped.get(line.productId)
       if (!existing) {
         grouped.set(line.productId, { ...line, allocations: [...(line.allocations || [])] })
@@ -484,30 +491,39 @@ export function SellView({ session, data }: DistributionViewProps) {
     return grouped
   }, [correctionTarget])
 
-  const correctionProducts = useMemo(() => {
-    if (!correctionTarget) return []
+  const allowedProductIds = useMemo(() => {
+    if (!correctionTarget) return new Set<string>()
     const dispatch = data.openDispatches.find((d) => d.id === correctionTarget.dispatchId) || (isDistributor ? openDispatch : null)
     let allowedIds: Set<string>
+    const effectiveLines = correctionTarget.effectiveSnapshot?.lines ?? correctionTarget.lines ?? []
     if (dispatch) {
       allowedIds = new Set<string>()
       dispatch.lines.forEach((l) => allowedIds.add(l.productId))
       dispatch.additions.forEach((a) => a.quantityByProduct.forEach((l) => allowedIds.add(l.productId)))
-      correctionTarget.lines.forEach((l) => allowedIds.add(l.productId))
+      effectiveLines.forEach((l) => allowedIds.add(l.productId))
     } else {
       allowedIds = new Set(
         data.products
           .filter(
             (p) =>
               p.active !== false &&
-              ((availableStock.get(p.id) ?? 0) > 0 || correctionTarget.lines.some((l) => l.productId === p.id)),
+              ((availableStock.get(p.id) ?? 0) > 0 || effectiveLines.some((l) => l.productId === p.id)),
           )
           .map((p) => p.id),
       )
     }
+    return allowedIds
+  }, [correctionTarget, data.openDispatches, data.products, isDistributor, openDispatch, availableStock])
 
+  const correctionProducts = useMemo(() => {
+    if (!correctionTarget) return []
+    const visibleIds = new Set<string>([
+      ...Array.from(correctionOriginalByProduct.keys()),
+      ...correctionAddedProductIds,
+    ])
     const term = correctionSearch.trim().toLowerCase()
     return data.products
-      .filter((p) => allowedIds.has(p.id) && p.active !== false)
+      .filter((p) => visibleIds.has(p.id) && p.active !== false)
       .filter(
         (p) =>
           !term ||
@@ -515,7 +531,18 @@ export function SellView({ session, data }: DistributionViewProps) {
           (p.presentation || '').toLowerCase().includes(term) ||
           p.category.toLowerCase().includes(term),
       )
-  }, [correctionTarget, data.openDispatches, data.products, isDistributor, openDispatch, availableStock, correctionSearch])
+  }, [correctionTarget, correctionOriginalByProduct, correctionAddedProductIds, data.products, correctionSearch])
+
+  const addableProducts = useMemo(() => {
+    if (!correctionTarget) return []
+    const visibleIds = new Set<string>([
+      ...Array.from(correctionOriginalByProduct.keys()),
+      ...correctionAddedProductIds,
+    ])
+    return data.products
+      .filter((p) => allowedProductIds.has(p.id) && !visibleIds.has(p.id) && p.active !== false)
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'))
+  }, [correctionTarget, allowedProductIds, correctionOriginalByProduct, correctionAddedProductIds, data.products])
 
   const correctionLines = useMemo(() => {
     if (!correctionTarget) return []
@@ -541,6 +568,24 @@ export function SellView({ session, data }: DistributionViewProps) {
 
   const newCorrectionTotal = round2(correctionLines.reduce((sum, l) => sum + l.subtotal, 0))
 
+  const parsedCorrectionPayments = useMemo(() => {
+    let cash = 0
+    let qr = 0
+    let credit = 0
+    if (correctionPaymentKind === 'cash') {
+      cash = newCorrectionTotal
+    } else if (correctionPaymentKind === 'qr') {
+      qr = newCorrectionTotal
+    } else if (correctionPaymentKind === 'credit') {
+      credit = newCorrectionTotal
+    } else {
+      cash = round2(Number(correctionCashAmount) || 0)
+      qr = round2(Number(correctionQrAmount) || 0)
+      credit = round2(Number(correctionCreditAmount) || 0)
+    }
+    return { cash, qr, credit }
+  }, [correctionPaymentKind, newCorrectionTotal, correctionCashAmount, correctionQrAmount, correctionCreditAmount])
+
   const validateCorrection = () => {
     if (!correctionTarget) return false
     if (!correctionReason.trim()) {
@@ -556,11 +601,56 @@ export function SellView({ session, data }: DistributionViewProps) {
       setError(`Indica un precio mayor a Bs 0 para ${invalidPrice.product.name}.`)
       return false
     }
-    const hasChange = correctionLines.length !== correctionOriginalByProduct.size || correctionLines.some((line) =>
-      Math.abs(line.quantity - line.originalQuantity) > 0.001 || Math.abs(line.unitPrice - line.originalPrice) > 0.001,
+
+    const { cash: parsedCash, qr: parsedQr, credit: parsedCredit } = parsedCorrectionPayments
+    if (Math.abs(newCorrectionTotal - (parsedCash + parsedQr + parsedCredit)) > 0.01) {
+      setError(
+        `La suma de los pagos (${formatBs(parsedCash + parsedQr + parsedCredit)}) debe coincidir con el total (${formatBs(newCorrectionTotal)}).`,
+      )
+      return false
+    }
+
+    if (parsedCredit > 0 && !correctionTarget.customerId) {
+      setError('El crédito requiere que la venta esté asignada a un cliente.')
+      return false
+    }
+
+    const existingReceivable = data.receivables.find(
+      (r) => r.saleId === correctionTarget.id || r.id === correctionTarget.id,
     )
-    if (!hasChange) {
-      setError('Realiza al menos un cambio de cantidad o precio antes de confirmar.')
+    const alreadyPaid = existingReceivable?.paidAmount || 0
+    if (parsedCredit < alreadyPaid) {
+      setError(
+        `El crédito corregido (${formatBs(parsedCredit)}) no puede ser menor a lo ya cobrado de este crédito (${formatBs(alreadyPaid)}).`,
+      )
+      return false
+    }
+
+    const effective = correctionTarget.effectiveSnapshot ?? correctionTarget
+    const origCash = round2(
+      Number(effective.cashAmount) || (effective.paymentKind === 'cash' ? effective.total : 0),
+    )
+    const origQr = round2(
+      Number(effective.qrAmount) || (effective.paymentKind === 'qr' ? effective.total : 0),
+    )
+    const origCredit = round2(
+      Number(effective.creditAmount) || (effective.paymentKind === 'credit' ? effective.total : 0),
+    )
+    const hasPaymentChange =
+      correctionPaymentKind !== effective.paymentKind ||
+      Math.abs(parsedCash - origCash) > 0.01 ||
+      Math.abs(parsedQr - origQr) > 0.01 ||
+      Math.abs(parsedCredit - origCredit) > 0.01
+
+    const hasLineChange =
+      correctionLines.length !== correctionOriginalByProduct.size ||
+      correctionLines.some(
+        (line) =>
+          Math.abs(line.quantity - line.originalQuantity) > 0.001 ||
+          Math.abs(line.unitPrice - line.originalPrice) > 0.001,
+      )
+    if (!hasLineChange && !hasPaymentChange) {
+      setError('Realiza al menos un cambio de cantidad, precio o forma de pago antes de confirmar.')
       return false
     }
 
@@ -600,7 +690,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       subtotal: item.subtotal,
     }))
 
-    const { cashAmount, qrAmount, creditAmount } = recalculateCorrectedPayment(correctionTarget, newCorrectionTotal)
+    const { cash: cashAmount, qr: qrAmount, credit: creditAmount } = parsedCorrectionPayments
 
     setIsSubmitting(true)
     try {
@@ -608,7 +698,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         saleId: correctionTarget.id,
         reason: correctionReason.trim(),
         lines,
-        paymentKind: correctionTarget.paymentKind,
+        paymentKind: correctionPaymentKind,
         cashAmount,
         qrAmount,
         creditAmount,
@@ -1169,7 +1259,11 @@ export function SellView({ session, data }: DistributionViewProps) {
                   </div>
                 </div>
                 <p className="my-2 text-[11px] text-slate-600">
-                  {sale.voidedAt ? `Anulada: ${sale.voidReason || 'sin motivo visible'}` : sale.lines.map(line => `${formatQty(line.quantity, line.unitType)} ${line.productNameSnapshot}`).join(' · ')}
+                  {sale.voidedAt
+                    ? `Anulada: ${sale.voidReason || 'sin motivo visible'}`
+                    : (sale.effectiveSnapshot?.lines ?? sale.lines)
+                        .map((line) => `${formatQty(line.quantity, line.unitType)} ${line.productNameSnapshot}`)
+                        .join(' · ')}
                 </p>
                 <div className="grid grid-cols-2 gap-2 items-center sm:grid-cols-4">
                   <SecondaryButton disabled={Boolean(sale.voidedAt)} onClick={() => void printSaleReceipt(sale, receiptContext, true)}>
@@ -1184,12 +1278,15 @@ export function SellView({ session, data }: DistributionViewProps) {
                         setCorrectionTarget(sale)
                         setCorrectionReason('')
                         setCorrectionSearch('')
+                        setCorrectionAddedProductIds([])
                         setIsReviewingCorrection(false)
                         setError(null)
+                        const effective = sale.effectiveSnapshot ?? sale
+                        const currentLines = effective.lines ?? []
                         const init: Record<string, string> = {}
                         const priceInit: Record<string, string> = {}
                         const subtotalInit: Record<string, number> = {}
-                        sale.lines.forEach(l => {
+                        currentLines.forEach((l) => {
                           const quantity = round2((Number(init[l.productId]) || 0) + l.quantity)
                           const subtotal = round2((subtotalInit[l.productId] || 0) + l.subtotal)
                           init[l.productId] = String(quantity)
@@ -1198,6 +1295,17 @@ export function SellView({ session, data }: DistributionViewProps) {
                         })
                         setCorrectionQuantities(init)
                         setCorrectionPrices(priceInit)
+                        const effectiveKind = (effective.paymentKind ?? 'cash') as PaymentKind
+                        setCorrectionPaymentKind(effectiveKind)
+                        setCorrectionCashAmount(
+                          String(effective.cashAmount ?? (effectiveKind === 'cash' ? effective.total : 0)),
+                        )
+                        setCorrectionQrAmount(
+                          String(effective.qrAmount ?? (effectiveKind === 'qr' ? effective.total : 0)),
+                        )
+                        setCorrectionCreditAmount(
+                          String(effective.creditAmount ?? (effectiveKind === 'credit' ? effective.total : 0)),
+                        )
                       }}
                     >
                       <Pencil size={14} /> Corregir
@@ -1463,12 +1571,107 @@ export function SellView({ session, data }: DistributionViewProps) {
                 </div>
               )
             })}
+            {addableProducts.length > 0 && (
+              <SecondaryButton
+                full
+                onClick={() => setIsAddProductPickerOpen(true)}
+              >
+                <Plus size={15} /> Agregar otro producto a la venta
+              </SecondaryButton>
+            )}
             {correctionProducts.length === 0 && (
               <EmptyBlock
-                title="Sin productos de despacho"
-                description="No hay productos de tu despacho que coincidan con la búsqueda."
+                title="Sin productos seleccionados"
+                description="Agrega al menos un producto a la venta usando el botón superior."
               />
             )}
+          </div>
+
+          {/* Forma de pago de la corrección */}
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <label className="mb-2 block text-[10px] font-black uppercase tracking-wider text-slate-600">
+              Forma de pago
+            </label>
+            <Segmented
+              value={correctionPaymentKind}
+              options={[
+                { value: 'cash', label: 'Efectivo' },
+                { value: 'qr', label: 'QR' },
+                { value: 'credit', label: 'Crédito' },
+                { value: 'mixed', label: 'Mixto' },
+              ]}
+              onChange={(value) => {
+                const k = value as PaymentKind
+                setCorrectionPaymentKind(k)
+                if (k === 'cash') {
+                  setCorrectionCashAmount(String(newCorrectionTotal))
+                  setCorrectionQrAmount('0')
+                  setCorrectionCreditAmount('0')
+                } else if (k === 'qr') {
+                  setCorrectionCashAmount('0')
+                  setCorrectionQrAmount(String(newCorrectionTotal))
+                  setCorrectionCreditAmount('0')
+                } else if (k === 'credit') {
+                  setCorrectionCashAmount('0')
+                  setCorrectionQrAmount('0')
+                  setCorrectionCreditAmount(String(newCorrectionTotal))
+                }
+              }}
+            />
+
+            {correctionPaymentKind === 'mixed' && (
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div>
+                  <label className="mb-1 block text-[10px] font-black uppercase text-slate-500">
+                    Efectivo (Bs)
+                  </label>
+                  <NumberInput
+                    min={0}
+                    step={0.01}
+                    value={correctionCashAmount}
+                    onChange={(e) => setCorrectionCashAmount(e.target.value)}
+                    className="h-8 text-xs font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-black uppercase text-slate-500">
+                    QR (Bs)
+                  </label>
+                  <NumberInput
+                    min={0}
+                    step={0.01}
+                    value={correctionQrAmount}
+                    onChange={(e) => setCorrectionQrAmount(e.target.value)}
+                    className="h-8 text-xs font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-black uppercase text-slate-500">
+                    Crédito (Bs)
+                  </label>
+                  <NumberInput
+                    min={0}
+                    step={0.01}
+                    value={correctionCreditAmount}
+                    onChange={(e) => setCorrectionCreditAmount(e.target.value)}
+                    className="h-8 text-xs font-bold"
+                  />
+                </div>
+              </div>
+            )}
+
+            {correctionPaymentKind === 'credit' && !correctionTarget?.customerId && (
+              <p className="mt-2 text-[10px] font-bold text-rose-700">
+                Esta venta no tiene cliente registrado. El crédito requiere asignar un cliente.
+              </p>
+            )}
+
+            <div className="mt-2 flex items-center justify-between border-t border-slate-200/80 pt-2 text-[10px] font-bold text-slate-600">
+              <span>Suma de pagos: {formatBs(round2(parsedCorrectionPayments.cash + parsedCorrectionPayments.qr + parsedCorrectionPayments.credit))}</span>
+              <span className={Math.abs(newCorrectionTotal - (parsedCorrectionPayments.cash + parsedCorrectionPayments.qr + parsedCorrectionPayments.credit)) > 0.01 ? 'text-rose-700' : 'text-emerald-700'}>
+                {Math.abs(newCorrectionTotal - (parsedCorrectionPayments.cash + parsedCorrectionPayments.qr + parsedCorrectionPayments.credit)) > 0.01 ? `Diferencia: ${formatBs(round2(newCorrectionTotal - (parsedCorrectionPayments.cash + parsedCorrectionPayments.qr + parsedCorrectionPayments.credit)))}` : 'Cuadra exacto'}
+              </span>
+            </div>
           </div>
 
           <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center">
@@ -1488,6 +1691,38 @@ export function SellView({ session, data }: DistributionViewProps) {
           {error && <p className="text-xs font-bold text-rose-700">{error}</p>}
         </div>
       </Modal>
+
+      <ChoiceModal
+        isOpen={isAddProductPickerOpen}
+        onClose={() => setIsAddProductPickerOpen(false)}
+        title="Agregar producto a la venta"
+        subtitle="Selecciona un producto disponible en tu despacho"
+        searchable
+        options={addableProducts.map((p) => {
+          const stock = availableStock.get(p.id) ?? 0
+          return {
+            value: p.id,
+            label: p.name,
+            description: `${getProductPresentation(p) ? `${getProductPresentation(p)} · ` : ''}Disponible: ${formatQty(stock, p.unitType)} · Ref: ${formatBs(p.referencePrice)}`,
+          }
+        })}
+        selectedValue=""
+        onSelect={(productId) => {
+          const product = data.products.find((p) => p.id === productId)
+          if (product) {
+            setCorrectionAddedProductIds((prev) => [...prev, product.id])
+            setCorrectionQuantities((prev) => ({
+              ...prev,
+              [product.id]: '1',
+            }))
+            setCorrectionPrices((prev) => ({
+              ...prev,
+              [product.id]: String(product.referencePrice),
+            }))
+          }
+          setIsAddProductPickerOpen(false)
+        }}
+      />
 
       <Modal
         isOpen={Boolean(correctionTarget) && isReviewingCorrection}
@@ -1532,6 +1767,19 @@ export function SellView({ session, data }: DistributionViewProps) {
                 )
               })}
             </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 space-y-1">
+              <p className="font-black text-slate-900 mb-1">Forma de pago corregida:</p>
+              <p className="text-slate-700">
+                Modalidad: <span className="font-bold">{correctionPaymentKind === 'cash' ? 'Efectivo' : correctionPaymentKind === 'qr' ? 'QR' : correctionPaymentKind === 'credit' ? 'Crédito' : 'Mixto'}</span>
+              </p>
+              <div className="grid grid-cols-3 gap-1 pt-1 text-[11px]">
+                <div>Efectivo: <strong>{formatBs(parsedCorrectionPayments.cash)}</strong></div>
+                <div>QR: <strong>{formatBs(parsedCorrectionPayments.qr)}</strong></div>
+                <div>Crédito: <strong>{formatBs(parsedCorrectionPayments.credit)}</strong></div>
+              </div>
+            </div>
+
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
               <p>Total anterior: <strong>{formatBs(correctionTarget.total)}</strong></p>
               <p>Nuevo total: <strong>{formatBs(newCorrectionTotal)}</strong></p>

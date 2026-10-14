@@ -54,7 +54,7 @@ export function formatKgBreakdown(exactKg: number, estimatedKg: number): string 
   const totalFmt = total.toLocaleString('es-BO', { minimumFractionDigits: 1, maximumFractionDigits: 2 })
 
   if (estimatedKg > 0 && exactKg > 0) {
-    return `${totalFmt} kg equiv. (${exactFmt} kg exactos + ${estFmt} est.)`
+    return `${totalFmt} kg equiv. (${exactFmt} kg exactos + ${estFmt} kg estimados)`
   }
   if (estimatedKg > 0) {
     return `${totalFmt} kg estimados`

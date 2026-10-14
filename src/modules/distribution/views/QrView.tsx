@@ -1,56 +1,257 @@
-import { toDayKey } from '../domain/engine'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Check, CheckCircle2 } from 'lucide-react'
 import { Screen } from '../../../components/ui/Screen'
 import { Modal } from '../../../components/ui/Modal'
+import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Field, TextInput } from '../../../components/ui/Form'
 import { RangePicker } from './RangePicker'
 import { verifyQr } from '../data/distributionRepository'
+import { useTenantMembers } from '../state/useTenantMembers'
 import { KpiCard, PrimaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 
 export function QrView({ session, data }: DistributionViewProps) {
+  const { members } = useTenantMembers()
   const [target, setTarget] = useState<{ type: 'sale' | 'collection' | 'claim'; id: string } | null>(null)
   const [reference, setReference] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const rows = [
-    ...data.sales.filter(s => s.qrAmount > 0 && !s.pendingConfirmation).map(s => ({ id: s.id, type: 'sale' as const, amount: s.qrAmount, name: s.customerName || 'Cliente ocasional', at: s.createdAt })),
-    ...data.collections.filter(c => (c.qrAmount ?? (c.method === 'qr' ? c.amount : 0)) > 0 && !c.pendingConfirmation).map(c => ({ id: c.id, type: 'collection' as const, amount: c.qrAmount ?? c.amount, name: c.customerName, at: c.createdAt })),
-    ...data.claims.filter(c => c.qrIn > 0 && session.dayKeys.includes(toDayKey(c.createdAt))).map(c => ({ id:c.id, type:'claim' as const, amount:c.qrIn, name:c.customerName, at:c.createdAt })),
-  ].sort((a, b) => b.at.localeCompare(a.at))
+  const [selectedSellerFilter, setSelectedSellerFilter] = useState('all')
+  const [isSellerFilterOpen, setIsSellerFilterOpen] = useState(false)
+
+  const allRows = useMemo(() => [
+    ...data.sales
+      .filter((s) => s.qrAmount > 0 && !s.pendingConfirmation)
+      .map((s) => ({
+        id: s.id,
+        type: 'sale' as const,
+        amount: s.qrAmount,
+        name: s.customerName || 'Cliente ocasional',
+        at: s.createdAt,
+        sellerUid: s.sellerUid,
+        sellerName: s.sellerName,
+        routeId: s.routeId,
+        sourceLocation: s.sourceLocation,
+      })),
+    ...data.collections
+      .filter((c) => (c.qrAmount ?? (c.method === 'qr' ? c.amount : 0)) > 0)
+      .map((c) => ({
+        id: c.id,
+        type: 'collection' as const,
+        amount: c.qrAmount ?? (c.method === 'qr' ? c.amount : 0),
+        name: c.customerName,
+        at: c.createdAt,
+        sellerUid: c.collectedByUid,
+        sellerName: c.collectedByName,
+        routeId: c.routeId,
+        sourceLocation: undefined,
+      })),
+    ...data.claims
+      .filter((c) => c.qrIn > 0)
+      .map((c) => ({
+        id: c.id,
+        type: 'claim' as const,
+        amount: c.qrIn,
+        name: c.customerName,
+        at: c.createdAt,
+        sellerUid: c.sellerUid,
+        sellerName: c.sellerName,
+        routeId: c.routeId,
+        sourceLocation: undefined,
+      })),
+  ].sort((a, b) => b.at.localeCompare(a.at)), [data.sales, data.collections, data.claims, session.dayKeys])
+
+  const rows = useMemo(() => {
+    if (selectedSellerFilter === 'all') return allRows
+    if (selectedSellerFilter === 'admin') {
+      return allRows.filter((r) => r.routeId === 'admin' || (!r.routeId && r.sourceLocation === 'centralWarehouse'))
+    }
+    if (selectedSellerFilter === 'direct') {
+      return allRows.filter(
+        (r) => r.routeId === 'route-directa' || data.routes.find((route) => route.id === r.routeId)?.kind === 'direct',
+      )
+    }
+    return allRows.filter((r) => r.sellerUid === selectedSellerFilter)
+  }, [allRows, selectedSellerFilter, data.routes])
+
   const requiresVerification = data.supportSettings.requireQrVerification
-  const confirmed = requiresVerification ? rows.filter(r => data.qrVerifications.some(v => v.id === `${r.type}_${r.id}`)) : rows
+  const confirmed = requiresVerification ? rows.filter((r) => data.qrVerifications.some((v) => v.id === `${r.type}_${r.id}`)) : rows
   const total = rows.reduce((sum, r) => sum + r.amount, 0)
   const verified = confirmed.reduce((sum, r) => sum + r.amount, 0)
+
+  const distributorMembers = useMemo(
+    () => members.filter((m) => m.role === 'distributor'),
+    [members],
+  )
+
+  const sellerFilterLabel = useMemo(() => {
+    if (selectedSellerFilter === 'all') return 'Todos los responsables'
+    if (selectedSellerFilter === 'admin') return 'Administración'
+    if (selectedSellerFilter === 'direct') return 'Venta directa / Impulsación'
+    return members.find((m) => m.uid === selectedSellerFilter)?.displayName || 'Responsable seleccionado'
+  }, [selectedSellerFilter, members])
+
   const submit = async () => {
     if (!target || busy) return
-    setBusy(true); setError('')
-    try { await verifyQr(target.type, target.id, reference); setTarget(null) }
-    catch (e) { setError((e as Error).message) }
-    finally { setBusy(false) }
+    setBusy(true)
+    setError('')
+    try {
+      await verifyQr(target.type, target.id, reference)
+      setTarget(null)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
   }
-  return <Screen title="Verificar QR" subtitle={requiresVerification ? 'Confirma cada depósito después de revisarlo en el banco' : 'La confirmación manual está desactivada en Configuración'}>
-    <div className="grid gap-3">
-      <RangePicker dayKeys={session.dayKeys} onChange={session.setDayKeys} />
-      <div className="grid grid-cols-2 gap-2"><KpiCard label="QR confirmado" value={formatBs(verified)} tone="positive" /><KpiCard label="QR pendiente" value={formatBs(total - verified)} tone="warning" /></div>
-      <p className="text-xs text-slate-600">El QR confirmado cuenta como ingreso bancario. Nunca aumenta el efectivo que el vendedor debe entregar.</p>
-      {!rows.length && <p className="p-4 text-sm text-slate-500">No hay pagos QR en este periodo.</p>}
-      {rows.map(row => {
-        const verification = data.qrVerifications.find(v => v.id === `${row.type}_${row.id}`)
-        return <div key={`${row.type}_${row.id}`} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border bg-white p-3 ${verification ? 'border-emerald-200' : 'border-slate-200'}`}>
-          <div className="min-w-0"><p className="break-words text-sm font-bold">{row.name} · {formatBs(row.amount)}</p>
-          <p className="text-[11px] text-slate-500">{row.type === 'sale' ? 'Venta' : row.type === 'claim' ? 'Diferencia de cambio' : 'Cobro'} · {new Date(row.at).toLocaleString('es-BO')}</p>
-          {verification && <p className="mt-1 break-words text-[10px] font-semibold text-emerald-700">{verification.reference} · {new Date(verification.verifiedAt).toLocaleString('es-BO')}</p>}</div>
-          {verification || !requiresVerification ? <span title={verification ? 'Depósito confirmado' : 'Confirmación automática'} className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-50 text-emerald-700"><CheckCircle2 size={20} /></span> :
-            <button type="button" aria-label={`Confirmar depósito de ${row.name}`} onClick={() => { setTarget({ type: row.type, id: row.id }); setReference(''); setError('') }} className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--primary)] text-white shadow-sm"><Check size={20} /></button>}
-        </div>
-      })}
-    </div>
-    <Modal isOpen={!!target} onClose={() => setTarget(null)} title="Confirmar QR recibido" footer={<PrimaryButton full disabled={busy} onClick={() => void submit()}>{busy ? 'Confirmando...' : 'Guardar verificacion'}</PrimaryButton>}>
-      <Field label="Referencia bancaria / comprobante" required><TextInput value={reference} onChange={e => setReference(e.target.value)} /></Field>
-      <p className="mt-2 text-xs text-slate-500">Confirma solo despues de comprobar el abono en la cuenta bancaria. Requiere conexion.</p>
-      {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
-    </Modal>
-  </Screen>
+
+  return (
+    <Screen
+      title="Pagos por QR"
+      subtitle={
+        session.role === 'admin'
+          ? 'Conciliación bancaria y verificación de transferencias QR'
+          : 'Comprobantes QR registrados en el periodo'
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <RangePicker
+          dayKeys={session.dayKeys}
+          onChange={session.setDayKeys}
+        />
+
+        {session.role === 'admin' && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 whitespace-nowrap">Responsable:</span>
+            <div className="flex-1">
+              <ChoiceButton
+                label={sellerFilterLabel}
+                placeholder="Seleccionar responsable"
+                onClick={() => setIsSellerFilterOpen(true)}
+              />
+            </div>
+            {selectedSellerFilter !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setSelectedSellerFilter('all')}
+                className="text-xs font-semibold text-rose-600 hover:text-rose-700 underline px-1"
+              >
+                Limpiar
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <KpiCard label="Total por QR" value={formatBs(total)} />
+        <KpiCard
+          label={requiresVerification ? 'Verificado en banco' : 'Confirmado'}
+          value={formatBs(verified)}
+          tone={requiresVerification && verified < total ? 'warning' : 'positive'}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {rows.map((r) => {
+          const v = data.qrVerifications.find((x) => x.id === `${r.type}_${r.id}`)
+          const isDone = !requiresVerification || !!v
+          return (
+            <article
+              key={`${r.type}_${r.id}`}
+              className="flex items-center justify-between rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
+            >
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5 pr-3">
+                <span className="text-xs font-semibold text-slate-400">
+                  {r.type === 'sale' ? 'Venta' : r.type === 'collection' ? 'Cobranza' : 'Reclamo'} ·{' '}
+                  {new Date(r.at).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+                <span className="truncate text-sm font-bold text-slate-800">{r.name}</span>
+                {session.role === 'admin' && r.sellerName && (
+                  <span className="text-[11px] font-medium text-slate-500">
+                    Por: {r.sellerName}
+                  </span>
+                )}
+                {v && (
+                  <span className="text-xs font-medium text-emerald-700">
+                    Ref: {v.reference} · por {v.verifiedBy}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-base font-black tabular-nums text-slate-900">{formatBs(r.amount)}</span>
+                {isDone ? (
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                    <CheckCircle2 size={18} />
+                  </span>
+                ) : session.role === 'admin' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTarget({ type: r.type, id: r.id })
+                      setReference('')
+                      setError('')
+                    }}
+                    className="flex h-8 items-center gap-1 rounded-2xl bg-slate-900 px-3 text-xs font-bold text-white shadow-sm hover:bg-slate-800"
+                  >
+                    <Check size={14} /> Verificar
+                  </button>
+                ) : (
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                    Pendiente
+                  </span>
+                )}
+              </div>
+            </article>
+          )
+        })}
+        {rows.length === 0 && (
+          <p className="p-4 text-center text-sm font-semibold text-slate-400">
+            No hay operaciones por QR en el período seleccionado.
+          </p>
+        )}
+      </div>
+
+      <Modal
+        isOpen={Boolean(target)}
+        onClose={() => setTarget(null)}
+        title="Verificar pago QR"
+      >
+        <Field label="Referencia bancaria">
+          <TextInput
+            value={reference}
+            onChange={(e) => setReference(e.target.value)}
+            placeholder="Nº de comprobante / lote banco"
+          />
+        </Field>
+        <PrimaryButton onClick={() => void submit()} disabled={busy}>
+          {busy ? 'Guardando...' : 'Confirmar verificación'}
+        </PrimaryButton>
+        {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
+      </Modal>
+
+      <ChoiceModal
+        isOpen={isSellerFilterOpen}
+        onClose={() => setIsSellerFilterOpen(false)}
+        title="Filtrar por responsable / origen"
+        subtitle="Selecciona el vendedor u origen de los cobros QR"
+        searchable
+        options={[
+          { value: 'all', label: 'Todos los responsables' },
+          { value: 'admin', label: 'Administración' },
+          { value: 'direct', label: 'Venta directa / Impulsación' },
+          ...distributorMembers.map((m) => ({
+            value: m.uid,
+            label: m.displayName,
+            description: m.routeId ? (data.routes.find((r) => r.id === m.routeId)?.name ?? 'Ruta asignada') : 'Distribuidor',
+          })),
+        ]}
+        selectedValue={selectedSellerFilter}
+        onSelect={(value) => {
+          setSelectedSellerFilter(value)
+          setIsSellerFilterOpen(false)
+        }}
+      />
+    </Screen>
+  )
 }

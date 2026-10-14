@@ -28,6 +28,7 @@ interface DraftLine {
   id: string
   productId: string
   quantity: string
+  waste?: string
   allocations: Array<{ id: string; lotId: string; quantity: string }>
 }
 
@@ -467,11 +468,13 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       if (!draft.productId || !(quantity > 0)) continue
       const product = activeProducts.find((item) => item.id === draft.productId)
       if (!product) continue
+      const wasteNum = round2(Number(draft.waste) || 0)
       lines.push({
         productId: product.id,
         productName: product.presentation ? `${product.name} - ${product.presentation}` : product.name,
         unitType: product.unitType,
         quantity,
+        waste: wasteNum > 0 ? wasteNum : undefined,
         allocationsRequested: draft.allocations.map(part => ({ lotId: part.lotId, quantity: round2(Number(part.quantity)) })),
       })
     }
@@ -496,7 +499,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     const lotError = validateLotAssignments(); if (lotError) { setError(lotError); return }
     if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
-    const stockError = validateStockAvailability(lines, central)
+    const stockCheckLines = lines.map(l => ({ ...l, quantity: round2(l.quantity + (l.waste || 0)) }))
+    const stockError = validateStockAvailability(stockCheckLines, central)
     if (stockError) {
       setError(stockError)
       return
@@ -540,7 +544,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     const lotError = validateLotAssignments(); if (lotError) { setError(lotError); return }
     if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
-    const stockError = validateStockAvailability(lines, central)
+    const stockCheckLines = lines.map(l => ({ ...l, quantity: round2(l.quantity + (l.waste || 0)) }))
+    const stockError = validateStockAvailability(stockCheckLines, central)
     if (stockError) {
       setError(stockError)
       return
@@ -580,6 +585,18 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           return <div key={line.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
             <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Disponible: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p></div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
             <Field label="Cantidad total a despachar" required><NumberInput aria-label={`Cantidad total de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
+            {product.unitType === 'kg' && (
+              <Field label="Merma en almacén (kg - opcional)" hint="Se descuenta del inventario central por corte/pérdida y no sube al camión.">
+                <NumberInput
+                  aria-label={`Merma de ${product.name}`}
+                  value={line.waste ?? ''}
+                  min={0}
+                  step={0.01}
+                  placeholder="0 kg"
+                  onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, waste: event.target.value } : item))}
+                />
+              </Field>
+            )}
             <div className="rounded-2xl border border-slate-200 bg-white p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-black text-slate-800">Lotes utilizados</p><button type="button" className="rounded-xl bg-slate-100 px-3 py-2 text-[11px] font-extrabold text-slate-700" onClick={() => distributeFefo(line)}>Distribuir por FEFO</button></div>
               <div className="grid gap-2">{line.allocations.map(part => <div key={part.id} className="grid gap-2 rounded-xl border border-slate-200 p-2 sm:grid-cols-[minmax(0,1fr)_110px_40px] sm:items-center"><SelectInput aria-label={`Lote de ${product.name}`} value={part.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, lotId: event.target.value } : entry) } : item))}><option value="">Selecciona lote</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · {formatQty(lot.quantities[lotLocation], product.unitType)} · vence {lot.expiresOn || 'sin fecha'}</option>)}</SelectInput><NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} /><button type="button" aria-label="Quitar lote" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.filter(entry => entry.id !== part.id) } : item))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></div>)}</div>
               <button type="button" className="mt-2 w-full rounded-xl border border-dashed border-[var(--primary)] px-3 py-2 text-xs font-extrabold text-[var(--primary)]" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: [...item.allocations, { id: newOperationId('lot'), lotId: '', quantity: '' }] } : item))}>+ Agregar otro lote</button>
@@ -658,6 +675,10 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                       <p className="text-[11px] font-semibold text-slate-500">
                         Carga inicial {formatQty(totals.initialDispatch, totals.unitType)} · Aumentos{' '}
                         {formatQty(totals.additions, totals.unitType)}
+                        {(() => {
+                          const w = (dispatch.lines || []).filter(l => l.productId === productId).reduce((n, l) => n + (l.waste || 0), 0);
+                          return w > 0 ? ` · Merma: ${formatQty(w, totals.unitType)}` : '';
+                        })()}
                       </p>
                     </div>
                     <span className="shrink-0 text-sm font-black tabular-nums text-slate-900">

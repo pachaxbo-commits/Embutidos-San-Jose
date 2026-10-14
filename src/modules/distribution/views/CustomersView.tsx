@@ -33,6 +33,10 @@ export function CustomersView({ session, data }: DistributionViewProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isRouteOpen, setIsRouteOpen] = useState(false)
   const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest')
+  const [selectedRouteFilter, setSelectedRouteFilter] = useState<string>('all')
+  const [isRouteFilterOpen, setIsRouteFilterOpen] = useState(false)
+
+  const activeRoutes = useMemo(() => data.routes.filter((r) => r.active !== false), [data.routes])
 
   const balanceByCustomer = useMemo(() => {
     const map = new Map<string, number>()
@@ -44,9 +48,26 @@ export function CustomersView({ session, data }: DistributionViewProps) {
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
-    const matching = term ? data.customers.filter((customer) => [customer.name, customer.customerCode, customer.identityNumber, customer.phone].join(' ').toLowerCase().includes(term)) : data.customers
-    return [...matching].sort((a, b) => sortOrder === 'newest' ? (b.createdAt || '').localeCompare(a.createdAt || '') : (a.createdAt || '').localeCompare(b.createdAt || ''))
-  }, [data.customers, search, sortOrder])
+    let list = data.customers
+    if (selectedRouteFilter === 'none') {
+      list = list.filter((c) => !c.routeId || c.routeId === 'admin' || c.routeId === 'no-route')
+    } else if (selectedRouteFilter !== 'all') {
+      list = list.filter((c) => c.routeId === selectedRouteFilter)
+    }
+    if (term) {
+      list = list.filter((customer) =>
+        [customer.name, customer.customerCode, customer.identityNumber, customer.phone, customer.address]
+          .join(' ')
+          .toLowerCase()
+          .includes(term),
+      )
+    }
+    return [...list].sort((a, b) =>
+      sortOrder === 'newest'
+        ? (b.createdAt || '').localeCompare(a.createdAt || '')
+        : (a.createdAt || '').localeCompare(b.createdAt || ''),
+    )
+  }, [data.customers, selectedRouteFilter, search, sortOrder])
 
   const openCreate = () => {
     setEditing(null)
@@ -99,7 +120,7 @@ export function CustomersView({ session, data }: DistributionViewProps) {
   return (
     <Screen
       title="Clientes"
-      subtitle={`${data.customers.length} clientes registrados`}
+      subtitle={`${filtered.length} de ${data.customers.length} clientes registrados`}
       actions={
         <PrimaryButton onClick={openCreate}>
           <Plus size={16} /> Nuevo
@@ -116,7 +137,39 @@ export function CustomersView({ session, data }: DistributionViewProps) {
             className="pl-9"
           />
         </div>
-        <div className="flex items-center gap-2 text-[11px] font-bold text-slate-500"><ArrowDownUp size={14} /><span>Orden:</span><button type="button" onClick={() => setSortOrder('newest')} className={`rounded-full px-3 py-1.5 ${sortOrder === 'newest' ? 'bg-[var(--primary-soft)] text-[var(--primary)]' : 'bg-white'}`}>Más nuevos</button><button type="button" onClick={() => setSortOrder('oldest')} className={`rounded-full px-3 py-1.5 ${sortOrder === 'oldest' ? 'bg-[var(--primary-soft)] text-[var(--primary)]' : 'bg-white'}`}>Más antiguos</button></div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="w-full sm:w-auto">
+            <ChoiceButton
+              label={
+                selectedRouteFilter === 'all'
+                  ? 'Todas las rutas'
+                  : selectedRouteFilter === 'none'
+                    ? 'Administración / Sin ruta'
+                    : data.routes.find((r) => r.id === selectedRouteFilter)?.name || 'Ruta seleccionada'
+              }
+              onClick={() => setIsRouteFilterOpen(true)}
+              placeholder="Filtrar por ruta"
+            />
+          </div>
+          <div className="flex items-center gap-2 text-[11px] font-bold text-slate-500">
+            <ArrowDownUp size={14} />
+            <span>Orden:</span>
+            <button
+              type="button"
+              onClick={() => setSortOrder('newest')}
+              className={`rounded-full px-3 py-1.5 ${sortOrder === 'newest' ? 'bg-[var(--primary-soft)] text-[var(--primary)]' : 'bg-white'}`}
+            >
+              Más nuevos
+            </button>
+            <button
+              type="button"
+              onClick={() => setSortOrder('oldest')}
+              className={`rounded-full px-3 py-1.5 ${sortOrder === 'oldest' ? 'bg-[var(--primary-soft)] text-[var(--primary)]' : 'bg-white'}`}
+            >
+              Más antiguos
+            </button>
+          </div>
+        </div>
 
         {filtered.length === 0 ? (
           <EmptyBlock title="Sin clientes" description="Puedes crearlos aqui o directamente al vender." />
@@ -124,6 +177,9 @@ export function CustomersView({ session, data }: DistributionViewProps) {
           <div className="grid gap-2">
             {filtered.map((customer) => {
               const balance = balanceByCustomer.get(customer.id) ?? 0
+              const routeName = customer.routeId === 'admin'
+                ? 'Administración'
+                : data.routes.find((r) => r.id === customer.routeId)?.name || 'Sin ruta asignada'
               return (
                 <button
                   key={customer.id}
@@ -136,6 +192,9 @@ export function CustomersView({ session, data }: DistributionViewProps) {
                     <p className="break-words text-sm font-extrabold text-slate-900">{customer.name}</p>
                     <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">
                       {[customer.identityNumber ? `CI: ${customer.identityNumber}` : 'CI pendiente', customer.phone, customer.address].filter(Boolean).join(' · ') || 'Sin datos de contacto'}
+                    </p>
+                    <p className="mt-0.5 text-[10px] font-bold text-slate-400">
+                      Ruta: {routeName}
                     </p>
                   </div>
                   {balance > 0 && (
@@ -204,6 +263,23 @@ export function CustomersView({ session, data }: DistributionViewProps) {
         options={[{ value: '', label: 'Sin asignar' }, ...data.routes.map(route => ({ value: route.id, label: route.name }))]}
         selectedValue={routeId}
         onSelect={setRouteId}
+      />
+      <ChoiceModal
+        isOpen={isRouteFilterOpen}
+        onClose={() => setIsRouteFilterOpen(false)}
+        title="Filtrar clientes por ruta"
+        subtitle="Selecciona la ruta de los clientes"
+        searchable
+        options={[
+          { value: 'all', label: 'Todas las rutas' },
+          { value: 'none', label: 'Administración / Sin ruta asignada' },
+          ...activeRoutes.map((r) => ({ value: r.id, label: r.name })),
+        ]}
+        selectedValue={selectedRouteFilter}
+        onSelect={(value) => {
+          setSelectedRouteFilter(value)
+          setIsRouteFilterOpen(false)
+        }}
       />
     </Screen>
   )

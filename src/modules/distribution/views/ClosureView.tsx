@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
-import { Field, NumberInput, TextInput } from '../../../components/ui/Form'
+import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -9,8 +9,7 @@ import { declareRouteReturn, reopenClosure, saveClosure, setClosureVarianceRevie
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
-import { printClosureTicket, printOperationalSheet } from '../data/distributionDocumentPrintService'
-import { exportPdf } from '../data/reportExports'
+import { printClosureTicket, printClosureSheet, shareClosurePdf } from '../data/distributionDocumentPrintService'
 import { getProductPresentation } from '../domain/productPresentation'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
@@ -46,6 +45,15 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [reviewingClosureId, setReviewingClosureId] = useState('')
   const [confirmingDeclaration, setConfirmingDeclaration] = useState(false)
   const [confirmingClosure, setConfirmingClosure] = useState(false)
+  const [reopenTarget, setReopenTarget] = useState<DistClosure | null>(null)
+  const [reopenReason, setReopenReason] = useState('')
+  const [isReopening, setIsReopening] = useState(false)
+  const todayKey = toDayKey(new Date())
+  const [adminDayKey, setAdminDayKey] = useState(todayKey)
+  const [adminDeclaredCash, setAdminDeclaredCash] = useState('')
+  const [adminNote, setAdminNote] = useState('')
+  const [confirmingAdminClosure, setConfirmingAdminClosure] = useState(false)
+  const [closureTab, setClosureTab] = useState<'routes' | 'admin'>(availableDispatches.length === 0 && session.role === 'admin' ? 'admin' : 'routes')
 
   const dispatch = availableDispatches.find(item => item.id === selectedDispatchId) ?? availableDispatches[0] ?? null
 
@@ -111,6 +119,102 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   // guardar -368 en un cierre a medias confundia a quien revisaba el arqueo.
   const isCashDeclared = declaredCash !== ''
   const cashDifference = isCashDeclared ? round2(declaredValue - money.expectedCash) : 0
+
+  const existingAdminClosure = useMemo(() => {
+    return data.closures.find(c => c.closureType === 'admin' && c.dayKey === adminDayKey) ?? null
+  }, [data.closures, adminDayKey])
+
+  const adminMoney = useMemo(() => {
+    const sales = data.sales
+      .filter(s => s.dayKey === adminDayKey && (s.routeId === 'admin' || (!s.routeId && s.sourceLocation === 'centralWarehouse')))
+      .map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s)
+    const collections = data.collections
+      .filter(c => c.dayKey === adminDayKey && (c.routeId === 'admin' || c.collectedByUid === session.uid))
+    const expenses = data.expenses
+      .filter(e => e.dayKey === adminDayKey && (e.routeId === 'admin' || !e.routeId) && !e.voided)
+    const claims = data.claims
+      .filter(c => c.dayKey === adminDayKey && c.routeId === 'admin')
+
+    const cashSales = round2(sales.reduce((n, s) => n + (s.cashAmount || 0), 0))
+    const qrSales = round2(sales.reduce((n, s) => n + (s.qrAmount || 0), 0))
+    const creditGenerated = round2(sales.reduce((n, s) => n + (s.creditAmount || 0), 0))
+    const cashCollections = round2(collections.reduce((n, c) => n + (Number.isFinite(c.cashAmount) ? c.cashAmount! : c.method === 'cash' ? c.amount : 0), 0))
+    const qrCollections = round2(collections.reduce((n, c) => n + (Number.isFinite(c.qrAmount) ? c.qrAmount! : c.method === 'qr' ? c.amount : 0), 0))
+    const cashExpenses = round2(expenses.reduce((n, e) => n + (e.amount || 0), 0))
+    const claimCash = round2(claims.reduce((n, c) => n + (c.cashIn || 0) - (c.cashOut || 0), 0))
+    const expectedCash = round2(cashSales + cashCollections - cashExpenses + claimCash)
+
+    return {
+      cashSales,
+      qrSales,
+      creditGenerated,
+      cashCollections,
+      qrCollections,
+      cashExpenses,
+      claimCash,
+      expectedCash,
+    }
+  }, [data.sales, data.collections, data.expenses, data.claims, adminDayKey, session.uid])
+
+  const adminDeclaredVal = round2(Number(adminDeclaredCash) || 0)
+  const isAdminCashDeclared = adminDeclaredCash.trim() !== ''
+  const adminCashDifference = isAdminCashDeclared ? round2(adminDeclaredVal - adminMoney.expectedCash) : 0
+
+  const executeAdminClosure = async () => {
+    if (isSubmittingRef.current || isSubmitting) return
+    isSubmittingRef.current = true
+    setIsSubmitting(true)
+    setError(null)
+    const now = new Date().toISOString()
+    const closureDoc: DistClosure = {
+      id: `closure_admin_${adminDayKey}`,
+      restaurantId: session.restaurantId,
+      branchId: 'main',
+      createdAt: now,
+      createdBy: session.uid,
+      dayKey: adminDayKey,
+      schemaVersion: 1,
+      closureType: 'admin',
+      dispatchId: `admin_${adminDayKey}`,
+      warehouseId: 'central',
+      routeId: 'admin',
+      routeName: 'Administración',
+      distributorUid: session.uid,
+      distributorName: session.userName || 'Administración',
+      status: 'closed',
+      products: [],
+      declaredReturns: {},
+      returnDeclaredBy: '',
+      returnDeclaredAt: '',
+      cashDeclaredBy: session.uid,
+      cashDeclaredAt: now,
+      cashSales: adminMoney.cashSales,
+      qrSales: adminMoney.qrSales,
+      creditGenerated: adminMoney.creditGenerated,
+      cashCollections: adminMoney.cashCollections,
+      qrCollections: adminMoney.qrCollections,
+      cashExpenses: adminMoney.cashExpenses,
+      claimCash: adminMoney.claimCash,
+      expectedCash: adminMoney.expectedCash,
+      physicalCashDeclared: adminDeclaredVal,
+      cashDifference: adminCashDifference,
+      closedBy: session.uid,
+      closedAt: now,
+      note: adminNote.trim(),
+    }
+    try {
+      await saveClosure({ closure: closureDoc, applyStockReturn: false })
+      setConfirmingAdminClosure(false)
+      setAdminDeclaredCash('')
+      setAdminNote('')
+    } catch (e) {
+      setError((e as Error).message || 'No se pudo guardar el arqueo de Administración.')
+      setConfirmingAdminClosure(false)
+    } finally {
+      isSubmittingRef.current = false
+      setIsSubmitting(false)
+    }
+  }
 
   const buildClosureDoc = (status: DistClosure['status']): DistClosure | null => {
     if (!dispatch) return null
@@ -310,22 +414,11 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               <div className="grid gap-2 md:grid-cols-2">{closure.products.length === 0 ? <p className="text-xs text-slate-500">Almacén todavía no confirmó las cantidades.</p> : closure.products.map(row => <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Entregado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía volver</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Devuelto</dt><dd className="text-xs font-black">{formatQty(row.actualReturn, row.unitType)}</dd></div></dl></div>)}</div>
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared ?? 0)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
-              {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => void reopenClosure(closure, session.uid).catch(e => setError(e.message))}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
+              {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => { setReopenTarget(closure); setReopenReason(''); }}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
               <div className="grid grid-cols-3 gap-2">
                 <SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton>
-                <SecondaryButton onClick={() => {
-                  void printOperationalSheet(
-                    'Cierre de ruta',
-                    `${closure.routeName} · ${closure.distributorName}`,
-                    closure.products.map(row => ({ name: row.productName, detail: `Entregado ${formatQty(row.totalLoaded, row.unitType)} · vendido ${formatQty(row.sold, row.unitType)} · devuelto ${formatQty(row.actualReturn, row.unitType)}` })),
-                    closure.status === 'closed' ? [
-                      { label: 'Efectivo esperado', value: formatBs(closure.expectedCash) },
-                      { label: 'Efectivo declarado', value: formatBs(closure.physicalCashDeclared ?? 0) },
-                      { label: 'Diferencia', value: formatBs(closure.cashDifference) },
-                    ] : [],
-                  ).catch(printError => setError(printError.message))
-                }}><FileText size={15} /> Hoja de cierre</SecondaryButton>
-                <SecondaryButton onClick={() => void exportPdf([{name:'Cierre de ruta',headers:['Producto','Entregado','Vendido','Debía volver','Devuelto','Diferencia'],rows:[...closure.products.map(row=>[row.productName,formatQty(row.totalLoaded,row.unitType),formatQty(row.sold,row.unitType),formatQty(row.expectedReturn,row.unitType),formatQty(row.actualReturn,row.unitType),formatQty(row.variance,row.unitType)]),['EFECTIVO','','','','Esperado',formatBs(closure.expectedCash)],['','','','','Declarado',formatBs(closure.physicalCashDeclared ?? 0)],['','','','','Diferencia',formatBs(closure.cashDifference)]]}],`${closure.routeName} · ${closure.distributorName} · Encargado almacén: ${closure.warehouseResponsibleName || 'registro anterior'} · Generado ${new Date().toLocaleString('es-BO')}`,`Cierre-${closure.dayKey || 'ruta'}.pdf`).catch(pdfError=>setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
+                <SecondaryButton onClick={() => void printClosureSheet(closure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de cierre</SecondaryButton>
+                <SecondaryButton onClick={() => void shareClosurePdf(closure).catch(pdfError => setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
               </div>
             </div>}
           </article>
@@ -334,9 +427,251 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     </SectionCard>
   )
 
+
+  const adminClosureContent = (
+    <div className="grid w-full min-w-0 gap-3">
+      <SectionCard title="Arqueo de caja — Administración">
+        <div className="grid gap-3">
+          <p className="text-xs text-slate-500 font-medium">Conciliación de dinero físico de venta directa, cobros y gastos de oficina.</p>
+          <Field label="Fecha de arqueo" hint="Consulta y concilia los movimientos registrados en esta fecha">
+            <TextInput
+              type="date"
+              value={adminDayKey}
+              onChange={e => setAdminDayKey(e.target.value)}
+              className="max-w-xs font-bold"
+            />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <KpiCard label="Ventas efectivo" value={formatBs(adminMoney.cashSales)} />
+            <KpiCard label="Ventas QR" value={formatBs(adminMoney.qrSales)} />
+            <KpiCard label="Crédito generado" value={formatBs(adminMoney.creditGenerated)} tone="warning" />
+            <KpiCard label="Cobros efectivo" value={formatBs(adminMoney.cashCollections)} />
+            <KpiCard label="Cobros QR" value={formatBs(adminMoney.qrCollections)} />
+            <KpiCard label="Gastos oficina" value={formatBs(adminMoney.cashExpenses)} tone="danger" />
+            <KpiCard label="Ajuste devoluciones" value={formatBs(adminMoney.claimCash)} />
+            <KpiCard label="Efectivo esperado" value={formatBs(adminMoney.expectedCash)} tone="primary" />
+          </div>
+
+          {existingAdminClosure ? (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+              <div className="flex items-center gap-2 text-emerald-900 font-bold text-sm mb-2">
+                <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+                <span>Caja de Administración cerrada para el {existingAdminClosure.dayKey}</span>
+              </div>
+              <p className="text-xs text-emerald-800 mb-3">
+                Cerrado por <strong>{existingAdminClosure.distributorName || 'Administración'}</strong> el{' '}
+                {new Date(existingAdminClosure.closedAt || existingAdminClosure.createdAt).toLocaleString('es-BO')}.
+              </p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 mb-3">
+                <div className="rounded-xl bg-white p-2.5 border border-emerald-100">
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Efectivo esperado</span>
+                  <p className="text-sm font-black text-slate-800 tabular-nums">{formatBs(existingAdminClosure.expectedCash)}</p>
+                </div>
+                <div className="rounded-xl bg-white p-2.5 border border-emerald-100">
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Efectivo declarado</span>
+                  <p className="text-sm font-black text-slate-800 tabular-nums">{formatBs(existingAdminClosure.physicalCashDeclared ?? 0)}</p>
+                </div>
+                <div className="rounded-xl bg-white p-2.5 border border-emerald-100 col-span-2 sm:col-span-1">
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Diferencia</span>
+                  <div className="mt-0.5"><VarianceBadge variance={existingAdminClosure.cashDifference} /></div>
+                </div>
+              </div>
+              {existingAdminClosure.note && (
+                <p className="text-xs text-slate-600 italic mb-3">Nota: {existingAdminClosure.note}</p>
+              )}
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-emerald-200">
+                <SecondaryButton onClick={() => void printClosureTicket(existingAdminClosure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton>
+                <SecondaryButton onClick={() => void printClosureSheet(existingAdminClosure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de arqueo</SecondaryButton>
+                <SecondaryButton onClick={() => void shareClosurePdf(existingAdminClosure).catch(pdfError => setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
+                <SecondaryButton onClick={() => { setReopenTarget(existingAdminClosure); setReopenReason(''); }}><Unlock size={15} /> Reabrir arqueo</SecondaryButton>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 pt-2 border-t border-slate-100">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Efectivo físico en caja (Bs)" required hint="Conteo físico del efectivo en caja de administración al cierre del día">
+                  <NumberInput
+                    value={adminDeclaredCash}
+                    min={0}
+                    step={0.5}
+                    placeholder="0.00"
+                    onChange={e => setAdminDeclaredCash(e.target.value)}
+                  />
+                </Field>
+                <Field label="Observación o nota" hint="Opcional: detalles sobre billetes retenidos, diferencias, etc.">
+                  <TextInput
+                    value={adminNote}
+                    onChange={e => setAdminNote(e.target.value)}
+                    placeholder="Sin observaciones"
+                  />
+                </Field>
+              </div>
+
+              {isAdminCashDeclared && (
+                <div className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
+                  <span className="text-xs font-extrabold uppercase text-slate-500">Diferencia proyectada</span>
+                  <VarianceBadge variance={adminCashDifference} />
+                </div>
+              )}
+
+              <PrimaryButton
+                full
+                disabled={isSubmitting || !isAdminCashDeclared}
+                onClick={() => setConfirmingAdminClosure(true)}
+              >
+                <Lock size={16} /> Cerrar caja de Administración
+              </PrimaryButton>
+            </div>
+          )}
+        </div>
+      </SectionCard>
+      {closureHistory}
+    </div>
+  )
+
+  const reopenModal = (
+    <Modal
+      isOpen={Boolean(reopenTarget)}
+      onClose={() => { if (!isReopening) setReopenTarget(null) }}
+      title="Reabrir cierre"
+      subtitle={reopenTarget ? `${reopenTarget.routeName} · ${reopenTarget.distributorName}` : ''}
+      footer={
+        <div className="grid grid-cols-2 gap-2 w-full">
+          <SecondaryButton disabled={isReopening} onClick={() => setReopenTarget(null)}>
+            Cancelar
+          </SecondaryButton>
+          <PrimaryButton
+            disabled={isReopening || reopenReason.trim().length < 3}
+            onClick={async () => {
+              if (!reopenTarget || reopenReason.trim().length < 3) return
+              setIsReopening(true)
+              setError(null)
+              try {
+                await reopenClosure(reopenTarget, reopenReason.trim())
+                setReopenTarget(null)
+                setReopenReason('')
+              } catch (e) {
+                setError((e as Error).message)
+              } finally {
+                setIsReopening(false)
+              }
+            }}
+          >
+            {isReopening ? 'Reabriendo…' : 'Confirmar reapertura'}
+          </PrimaryButton>
+        </div>
+      }
+    >
+      <div className="grid gap-3">
+        <p className="text-xs text-slate-600 leading-relaxed">
+          Al reabrir el cierre, la ruta o caja volverá a estado abierto para permitir ajustes operativos o correcciones auditadas.
+        </p>
+        <Field label="Motivo obligatorio de la reapertura" required hint="Quedará registrado en la auditoría con tu nombre y fecha.">
+          <TextInput
+            value={reopenReason}
+            onChange={e => setReopenReason(e.target.value)}
+            placeholder="Ej. Corrección de conteo físico, ajuste de venta en ruta..."
+            autoFocus
+          />
+        </Field>
+      </div>
+    </Modal>
+  )
+
+  const adminClosureModal = (
+    <Modal
+      isOpen={confirmingAdminClosure}
+      onClose={() => { if (!isSubmitting) setConfirmingAdminClosure(false) }}
+      title="Confirmar cierre de caja Administración"
+      subtitle={`Fecha: ${adminDayKey}`}
+      footer={
+        <div className="grid grid-cols-2 gap-2 w-full">
+          <SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingAdminClosure(false)}>
+            Volver a revisar
+          </SecondaryButton>
+          <PrimaryButton disabled={isSubmitting} onClick={() => void executeAdminClosure()}>
+            {isSubmitting ? 'Cerrando…' : 'Sí, confirmar cierre'}
+          </PrimaryButton>
+        </div>
+      }
+    >
+      <div className="grid gap-3">
+        <div className="grid grid-cols-2 gap-2">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center">
+            <p className="text-[10px] font-bold uppercase text-slate-500">Efectivo esperado</p>
+            <p className="mt-1 text-lg font-black text-slate-800 tabular-nums">{formatBs(adminMoney.expectedCash)}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center">
+            <p className="text-[10px] font-bold uppercase text-slate-500">Efectivo declarado</p>
+            <p className="mt-1 text-lg font-black text-slate-800 tabular-nums">{formatBs(adminDeclaredVal)}</p>
+          </div>
+        </div>
+
+        {Math.abs(adminCashDifference) < 0.01 ? (
+          <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3.5 text-center">
+            <p className="text-xs font-black uppercase tracking-wider text-emerald-800">Caja cuadrada (Bs 0.00)</p>
+            <p className="text-[11px] text-emerald-700 mt-0.5">El conteo físico coincide con los movimientos del día.</p>
+          </div>
+        ) : adminCashDifference < 0 ? (
+          <div className="rounded-2xl border border-rose-300 bg-rose-50 p-3.5 text-center">
+            <p className="text-xs font-black uppercase tracking-wider text-rose-800">
+              Faltante en caja: {formatBs(adminCashDifference)}
+            </p>
+            <p className="text-[11px] text-rose-700 mt-0.5">El efectivo físico es menor al esperado por el sistema.</p>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3.5 text-center">
+            <p className="text-xs font-black uppercase tracking-wider text-amber-800">
+              Sobrante en caja: +{formatBs(adminCashDifference)}
+            </p>
+            <p className="text-[11px] text-amber-700 mt-0.5">El efectivo físico es mayor al esperado por el sistema.</p>
+          </div>
+        )}
+
+        <p className="text-xs text-slate-600 leading-relaxed">
+          Esta acción cerrará formalmente el arqueo de caja de Administración para la fecha seleccionada.
+        </p>
+      </div>
+    </Modal>
+  )
+
   if (!dispatch) {
+    if (session.role === 'admin' && closureTab === 'admin') {
+      return (
+        <Screen title="Cierre y arqueo de caja">
+          <div className="mb-3">
+            <Segmented
+              value={closureTab}
+              options={[
+                { value: 'routes', label: 'Cierres de ruta' },
+                { value: 'admin', label: 'Caja Administración' },
+              ]}
+              onChange={val => setClosureTab(val as 'routes' | 'admin')}
+            />
+          </div>
+          {adminClosureContent}
+          {reopenModal}
+          {adminClosureModal}
+          {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
+        </Screen>
+      )
+    }
+
     return (
       <Screen title="Cierre de ruta">
+        {session.role === 'admin' && (
+          <div className="mb-3">
+            <Segmented
+              value={closureTab}
+              options={[
+                { value: 'routes', label: 'Cierres de ruta' },
+                { value: 'admin', label: 'Caja Administración' },
+              ]}
+              onChange={val => setClosureTab(val as 'routes' | 'admin')}
+            />
+          </div>
+        )}
         {justClosedRouteName && (
           <div className="flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 mb-3">
             <CheckCircle2 size={20} className="shrink-0 text-emerald-600" />
@@ -356,14 +691,31 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           description={isDistributor ? 'El arqueo se habilita cuando Almacén registra una carga abierta para tu usuario.' : 'El arqueo se hace sobre un despacho abierto. Registra un despacho primero.'}
         />
         {closureHistory}
+        {reopenModal}
+        {adminClosureModal}
         {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
       </Screen>
     )
   }
 
   return (
-    <Screen title="Cierre de ruta" subtitle={`${dispatch.routeName} · ${dispatch.distributorName}`}>
-      <div className="grid w-full min-w-0 gap-3">
+    <Screen title="Cierre y arqueo de caja" subtitle={closureTab === 'admin' ? 'Administración' : `${dispatch.routeName} · ${dispatch.distributorName}`}>
+      {session.role === 'admin' && (
+        <div className="mb-3">
+          <Segmented
+            value={closureTab}
+            options={[
+              { value: 'routes', label: 'Cierres de ruta' },
+              { value: 'admin', label: 'Caja Administración' },
+            ]}
+            onChange={val => setClosureTab(val as 'routes' | 'admin')}
+          />
+        </div>
+      )}
+      {closureTab === 'admin' ? (
+        adminClosureContent
+      ) : (
+        <div className="grid w-full min-w-0 gap-3">
         {justClosedRouteName && (
           <div role="status" className="flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900">
             <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
@@ -567,13 +919,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               Estado del cierre: {existingClosure ? CLOSURE_STATUS[existingClosure.status] || 'Pendiente' : 'Devolución pendiente de declarar'}
             </p>
             {existingClosure?.status === 'closed' && session.can('dist.reports.view') && (
-              <SecondaryButton onClick={() => void reopenClosure(existingClosure, session.uid)}>
+              <SecondaryButton onClick={() => { setReopenTarget(existingClosure); setReopenReason(''); }}>
                 <Unlock size={15} /> Reabrir (administracion)
               </SecondaryButton>
             )}
           </div>
         {closureHistory}
       </div>
+      )}
       <ChoiceModal
         isOpen={isDispatchOpen}
         onClose={() => setIsDispatchOpen(false)}
@@ -654,6 +1007,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         )}
       </Modal>
 
+      {reopenModal}
+      {adminClosureModal}
       {/* Modal Dedicado de Confirmación de Cierre Final de Ruta */}
       <Modal
         isOpen={confirmingClosure && Boolean(dispatch)}
