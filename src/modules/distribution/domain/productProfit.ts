@@ -6,7 +6,7 @@ import type {
   DistStockMovement,
   UnitType,
 } from '../types.ts'
-import { round2, toDayKey } from './engine.ts'
+import { matchesRoute, round2, toDayKey } from './engine.ts'
 
 export interface ProductProfitLineDetail {
   saleId: string
@@ -487,7 +487,7 @@ export function computeProductProfitReport(
   const spent = round2(expenses.reduce((n, e) => n + e.amount, 0))
   const losses = movements
     .filter((m) => dayKeys.length === 0 || dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
-    .filter((m) => !routeFilter || m.routeId === routeFilter)
+    .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
     .filter((m) => m.type === 'shortage' || m.type === 'dispatch_waste' || (m.type === 'adjustment' && m.centralDelta < 0))
   const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
 

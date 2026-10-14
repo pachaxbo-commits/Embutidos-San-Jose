@@ -50,7 +50,7 @@ export function CustomersView({ session, data }: DistributionViewProps) {
     const term = search.trim().toLowerCase()
     let list = data.customers
     if (selectedRouteFilter === 'none') {
-      list = list.filter((c) => !c.routeId || c.routeId === 'admin' || c.routeId === 'no-route')
+      list = list.filter((c) => !c.routeId || c.routeId === 'administracion' || c.routeId === 'admin' || c.routeId === 'no-route')
     } else if (selectedRouteFilter !== 'all') {
       list = list.filter((c) => c.routeId === selectedRouteFilter)
     }
@@ -177,9 +177,11 @@ export function CustomersView({ session, data }: DistributionViewProps) {
           <div className="grid gap-2">
             {filtered.map((customer) => {
               const balance = balanceByCustomer.get(customer.id) ?? 0
-              const routeName = customer.routeId === 'admin'
+              const routeName = (customer.routeId === 'administracion' || customer.routeId === 'admin')
                 ? 'Administración'
-                : data.routes.find((r) => r.id === customer.routeId)?.name || 'Sin ruta asignada'
+                : (customer.routeId === 'route-impulsacion' || customer.routeId === 'route-directa')
+                  ? 'Impulsación'
+                  : data.routes.find((r) => r.id === customer.routeId)?.name || 'Sin ruta asignada'
               return (
                 <button
                   key={customer.id}

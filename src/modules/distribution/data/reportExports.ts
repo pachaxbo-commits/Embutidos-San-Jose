@@ -2,7 +2,7 @@ import type { jsPDF } from "jspdf";
 import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
-import { round2, toDayKey } from "../domain/engine";
+import { matchesRoute, round2, toDayKey } from "../domain/engine";
 import {
   aggregateCustomerPurchases,
   type CustomerPurchasesAggregation,
@@ -380,7 +380,7 @@ export function reportSheets(
     routeId?: string;
   }) =>
     days.includes(r.dayKey || toDayKey(r.createdAt)) &&
-    (!route || r.routeId === route);
+    (!route || matchesRoute(r.routeId, route));
   const sales = data.sales.filter(
       (s) =>
         inScope(s) &&

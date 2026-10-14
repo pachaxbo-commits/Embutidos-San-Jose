@@ -36,7 +36,7 @@ const ROUTES = [
   { id: 'route-norte', name: 'Zona Norte', kind: 'route' },
   { id: 'route-sud', name: 'Zona Sud', kind: 'route' },
   { id: 'route-sacaba', name: 'Sacaba', kind: 'route' },
-  { id: 'route-directa', name: 'Venta directa / Impulsacion', kind: 'direct' },
+  { id: 'route-impulsacion', name: 'Impulsación', kind: 'route' },
 ]
 
 /** Stock inicial del almacen central (kg) */

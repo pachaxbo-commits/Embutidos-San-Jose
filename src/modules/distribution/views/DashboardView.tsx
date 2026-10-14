@@ -9,6 +9,7 @@ import {
   computeSoldByProduct,
   computeSoldKilograms,
   computeSoldPackages,
+  matchesRoute,
   round2,
 } from '../domain/engine'
 import { closuresInPeriod, pendingDifferenceClosures as findPendingDifferenceClosures } from '../domain/closurePeriod'
@@ -70,15 +71,15 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
   )
 
   const sales = useMemo(
-    () => (routeFilter ? data.sales.filter((sale) => sale.routeId === routeFilter) : data.sales),
+    () => (routeFilter ? data.sales.filter((sale) => matchesRoute(sale.routeId, routeFilter)) : data.sales),
     [data.sales, routeFilter],
   )
   const collections = useMemo(
-    () => (routeFilter ? data.collections.filter((item) => item.routeId === routeFilter) : data.collections),
+    () => (routeFilter ? data.collections.filter((item) => matchesRoute(item.routeId, routeFilter)) : data.collections),
     [data.collections, routeFilter],
   )
   const expenses = useMemo(
-    () => (routeFilter ? data.expenses.filter((item) => item.routeId === routeFilter) : data.expenses),
+    () => (routeFilter ? data.expenses.filter((item) => matchesRoute(item.routeId, routeFilter)) : data.expenses),
     [data.expenses, routeFilter],
   )
 
@@ -219,7 +220,7 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
     const closedDispatchIds = new Set<string>()
 
     for (const closure of periodClosures) {
-      if (routeFilter && closure.routeId !== routeFilter) continue
+      if (routeFilter && !matchesRoute(closure.routeId, routeFilter)) continue
       closedDispatchIds.add(closure.dispatchId)
       const isReconciled = closure.status !== 'draft'
       for (const row of closure.products) {
@@ -238,7 +239,7 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
     // Rutas todavia en curso: se concilian contra sus ventas del periodo.
     for (const dispatch of visibleOpenDispatches) {
       if (closedDispatchIds.has(dispatch.id)) continue
-      if (routeFilter && dispatch.routeId !== routeFilter) continue
+      if (routeFilter && !matchesRoute(dispatch.routeId, routeFilter)) continue
       const rows = buildReconciliation(
         dispatch,
         sales.filter(

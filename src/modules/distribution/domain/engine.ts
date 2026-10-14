@@ -28,6 +28,39 @@ export function centralBalanceId(productId: string): string {
   return `central__${productId}`
 }
 
+/** Identificador canónico de Administración */
+export const ADMIN_CANONICAL_ROUTE_ID = 'administracion'
+/** Identificador canónico de Impulsación */
+export const IMPULSACION_ROUTE_ID = 'route-impulsacion'
+
+/**
+ * Determina si el routeId de un documento coincide con el filtro de ruta seleccionado,
+ * con soporte bidireccional y compatibilidad hacia atrás para 'admin' y 'administracion',
+ * y para 'route-impulsacion' y el legacy 'route-directa'.
+ */
+export function matchesRoute(recordRouteId?: string | null, filterRouteId?: string | null): boolean {
+  if (!filterRouteId) return true
+  const cleanFilter = filterRouteId.trim()
+  const cleanRecord = (recordRouteId ?? '').trim()
+  if (cleanFilter === 'administracion' || cleanFilter === 'admin') {
+    return cleanRecord === 'administracion' || cleanRecord === 'admin'
+  }
+  if (cleanFilter === 'route-impulsacion' || cleanFilter === 'route-directa') {
+    return cleanRecord === 'route-impulsacion' || cleanRecord === 'route-directa'
+  }
+  return cleanRecord === cleanFilter
+}
+
+/**
+ * Obtiene el nombre canónico de una ruta para UI / etiquetas.
+ */
+export function getCanonicalRouteName(routeId?: string | null, routeNameFallback?: string): string {
+  if (!routeId) return routeNameFallback || ''
+  if (routeId === 'administracion' || routeId === 'admin') return 'Administración'
+  if (routeId === 'route-impulsacion' || routeId === 'route-directa') return 'Impulsación'
+  return routeNameFallback || routeId
+}
+
 export function routeBalanceId(routeId: string, productId: string): string {
   return `route__${routeId}__${productId}`
 }

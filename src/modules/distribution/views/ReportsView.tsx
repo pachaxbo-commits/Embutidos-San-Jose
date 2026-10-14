@@ -23,6 +23,7 @@ import {
   computeSoldByProduct,
   computeSoldKilograms,
   computeSoldPackages,
+  matchesRoute,
   round2,
   toDayKey,
 } from '../domain/engine'
@@ -132,7 +133,11 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         throw new Error('Selecciona al menos un reporte.')
       }
       const routeName = routeFilter
-        ? reportRecordName(data.routes.find((route) => route.id === routeFilter)?.name, 'Ruta seleccionada')
+        ? (routeFilter === 'administracion' || routeFilter === 'admin'
+            ? 'Administración'
+            : routeFilter === 'route-impulsacion' || routeFilter === 'route-directa'
+              ? 'Impulsación'
+              : reportRecordName(data.routes.find((route) => route.id === routeFilter)?.name, 'Ruta seleccionada'))
         : 'Todas las rutas'
       const sellerName = sellerFilter
         ? reportPersonName(allSellers.find((seller) => seller.sellerUid === sellerFilter)?.sellerName)
@@ -156,7 +161,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     () =>
       data.sales
         .filter((sale) => !sale.pendingConfirmation)
-        .filter((sale) => !routeFilter || sale.routeId === routeFilter)
+        .filter((sale) => !routeFilter || matchesRoute(sale.routeId, routeFilter))
         .filter((sale) => !sellerFilter || sale.sellerUid === sellerFilter),
     [data.sales, routeFilter, sellerFilter],
   )
@@ -164,7 +169,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     () =>
       data.collections
         .filter((row) => !row.pendingConfirmation)
-        .filter((row) => !routeFilter || row.routeId === routeFilter)
+        .filter((row) => !routeFilter || matchesRoute(row.routeId, routeFilter))
         .filter((row) => !sellerFilter || row.collectedByUid === sellerFilter),
     [data.collections, routeFilter, sellerFilter],
   )
@@ -172,12 +177,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     () =>
       data.expenses
         .filter((row) => !row.pendingConfirmation && !row.voided)
-        .filter((row) => !routeFilter || row.routeId === routeFilter)
+        .filter((row) => !routeFilter || matchesRoute(row.routeId, routeFilter))
         .filter((row) => !sellerFilter || row.registeredByUid === sellerFilter),
     [data.expenses, routeFilter, sellerFilter],
   )
   const closures = useMemo(
-    () => data.closures.filter((row) => !routeFilter || row.routeId === routeFilter),
+    () => data.closures.filter((row) => !routeFilter || matchesRoute(row.routeId, routeFilter)),
     [data.closures, routeFilter],
   )
 
@@ -185,7 +190,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     () =>
       data.claims
         .filter((claim) => session.dayKeys.includes(claim.dayKey || toDayKey(claim.createdAt)))
-        .filter((claim) => !routeFilter || claim.routeId === routeFilter)
+        .filter((claim) => !routeFilter || matchesRoute(claim.routeId, routeFilter))
         .filter(
           (claim) =>
             !sellerFilter ||
@@ -256,7 +261,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
 
     const losses = data.movements
       .filter((m) => session.dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
-      .filter((m) => !routeFilter || m.routeId === routeFilter)
+      .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
       .filter((m) => m.type === 'shortage' || (m.type === 'adjustment' && m.centralDelta < 0))
     const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
     const operatingProfit =
@@ -325,7 +330,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     return data.collections.filter((c) => {
       const day = c.dayKey || toDayKey(c.createdAt)
       const inPeriod = session.dayKeys.includes(day)
-      const matchRoute = !routeFilter || c.routeId === routeFilter || c.originRouteId === routeFilter
+      const matchRoute = !routeFilter || matchesRoute(c.routeId, routeFilter) || matchesRoute(c.originRouteId, routeFilter)
       const matchSeller = !sellerFilter || c.collectedByUid === sellerFilter
       return inPeriod && matchRoute && matchSeller
     })
@@ -368,11 +373,22 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     }
   }, [sales, collections, expenses, claims, closures])
 
+  const isMultiDay = session.dayKeys.length > 1
+  const formatReportDateTime = (isoDate: string) => {
+    const d = new Date(isoDate)
+    if (isNaN(d.getTime())) return isoDate
+    const timeStr = d.toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })
+    if (!isMultiDay) return timeStr
+    const day = String(d.getDate()).padStart(2, '0')
+    const month = String(d.getMonth() + 1).padStart(2, '0')
+    return `${day}/${month} ${timeStr}`
+  }
+
   const saleColumns: ResponsiveColumn<DistSale>[] = [
     {
       key: 'hora',
-      header: 'Hora',
-      render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }),
+      header: isMultiDay ? 'Fecha / Hora' : 'Hora',
+      render: (row) => formatReportDateTime(row.createdAt),
     },
     { key: 'vendedor', header: 'Vendedor', render: (row) => row.sellerName },
     { key: 'ruta', header: 'Ruta', render: (row) => row.routeName, hideOnMobile: true },
@@ -396,8 +412,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const collectionColumns: ResponsiveColumn<DistCollection>[] = [
     {
       key: 'hora',
-      header: 'Hora',
-      render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }),
+      header: isMultiDay ? 'Fecha / Hora' : 'Hora',
+      render: (row) => formatReportDateTime(row.createdAt),
     },
     { key: 'cobrador', header: 'Cobro', render: (row) => row.collectedByName },
     {
@@ -416,8 +432,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const expenseColumns: ResponsiveColumn<DistExpense>[] = [
     {
       key: 'hora',
-      header: 'Hora',
-      render: (row) => new Date(row.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' }),
+      header: isMultiDay ? 'Fecha / Hora' : 'Hora',
+      render: (row) => formatReportDateTime(row.createdAt),
     },
     { key: 'ruta', header: 'Ruta', render: (row) => row.routeName },
     { key: 'quien', header: 'Registro', render: (row) => row.registeredByName },
@@ -1441,7 +1457,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                                     <div>
                                       <div className="flex items-center gap-2">
                                         <span className="font-extrabold text-slate-800">
-                                          {data.routes.find((route) => route.id === rec.routeId)?.name || (rec.routeId === 'admin' ? 'Administración' : rec.routeId || 'Ruta')}
+                                          {data.routes.find((route) => route.id === rec.routeId)?.name || (rec.routeId === 'administracion' || rec.routeId === 'admin' ? 'Administración' : rec.routeId === 'route-impulsacion' || rec.routeId === 'route-directa' ? 'Impulsación' : rec.routeId || 'Ruta')}
                                         </span>
                                         <span className="text-[11px] text-slate-400">
                                           · Por: {rec.distributorName || 'Distribuidor'}

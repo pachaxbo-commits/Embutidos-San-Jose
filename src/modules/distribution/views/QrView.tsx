@@ -6,6 +6,7 @@ import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Field, TextInput } from '../../../components/ui/Form'
 import { RangePicker } from './RangePicker'
 import { verifyQr } from '../data/distributionRepository'
+import { matchesRoute } from '../domain/engine'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { KpiCard, PrimaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -63,16 +64,14 @@ export function QrView({ session, data }: DistributionViewProps) {
 
   const rows = useMemo(() => {
     if (selectedSellerFilter === 'all') return allRows
-    if (selectedSellerFilter === 'admin') {
-      return allRows.filter((r) => r.routeId === 'admin' || (!r.routeId && r.sourceLocation === 'centralWarehouse'))
+    if (selectedSellerFilter === 'administracion' || selectedSellerFilter === 'admin') {
+      return allRows.filter((r) => matchesRoute(r.routeId, 'administracion') || (!r.routeId && r.sourceLocation === 'centralWarehouse'))
     }
-    if (selectedSellerFilter === 'direct') {
-      return allRows.filter(
-        (r) => r.routeId === 'route-directa' || data.routes.find((route) => route.id === r.routeId)?.kind === 'direct',
-      )
+    if (selectedSellerFilter === 'route-impulsacion' || selectedSellerFilter === 'direct') {
+      return allRows.filter((r) => matchesRoute(r.routeId, 'route-impulsacion'))
     }
     return allRows.filter((r) => r.sellerUid === selectedSellerFilter)
-  }, [allRows, selectedSellerFilter, data.routes])
+  }, [allRows, selectedSellerFilter])
 
   const requiresVerification = data.supportSettings.requireQrVerification
   const confirmed = requiresVerification ? rows.filter((r) => data.qrVerifications.some((v) => v.id === `${r.type}_${r.id}`)) : rows
@@ -86,8 +85,8 @@ export function QrView({ session, data }: DistributionViewProps) {
 
   const sellerFilterLabel = useMemo(() => {
     if (selectedSellerFilter === 'all') return 'Todos los responsables'
-    if (selectedSellerFilter === 'admin') return 'Administración'
-    if (selectedSellerFilter === 'direct') return 'Venta directa / Impulsación'
+    if (selectedSellerFilter === 'administracion' || selectedSellerFilter === 'admin') return 'Administración'
+    if (selectedSellerFilter === 'route-impulsacion' || selectedSellerFilter === 'direct') return 'Impulsación'
     return members.find((m) => m.uid === selectedSellerFilter)?.displayName || 'Responsable seleccionado'
   }, [selectedSellerFilter, members])
 
@@ -238,15 +237,21 @@ export function QrView({ session, data }: DistributionViewProps) {
         searchable
         options={[
           { value: 'all', label: 'Todos los responsables' },
-          { value: 'admin', label: 'Administración' },
-          { value: 'direct', label: 'Venta directa / Impulsación' },
+          { value: 'administracion', label: 'Administración' },
+          { value: 'route-impulsacion', label: 'Impulsación' },
           ...distributorMembers.map((m) => ({
             value: m.uid,
             label: m.displayName,
             description: m.routeId ? (data.routes.find((r) => r.id === m.routeId)?.name ?? 'Ruta asignada') : 'Distribuidor',
           })),
         ]}
-        selectedValue={selectedSellerFilter}
+        selectedValue={
+          selectedSellerFilter === 'admin'
+            ? 'administracion'
+            : selectedSellerFilter === 'direct'
+              ? 'route-impulsacion'
+              : selectedSellerFilter
+        }
         onSelect={(value) => {
           setSelectedSellerFilter(value)
           setIsSellerFilterOpen(false)

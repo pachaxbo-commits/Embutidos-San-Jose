@@ -31,6 +31,7 @@
     "test:selective-cleanup": "node firebase/tests/selectiveCleanup.test.mjs",
     "test:credits-and-expenses": "node --experimental-strip-types src/modules/distribution/domain/__tests__/creditsAndExpenses1417.test.ts",
     "test:asof-credits": "node --experimental-strip-types src/modules/distribution/domain/__tests__/asOfCreditsAndReconciliation.test.ts",
+    "test:audit-fixes-1420": "node --experimental-strip-types src/modules/distribution/domain/__tests__/auditFixes1420.test.ts",
     "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
     "test:android-documents": "node scripts/test-android-document-flows.mjs",
     "test:web-updater": "node scripts/validate-web-updater.cjs",

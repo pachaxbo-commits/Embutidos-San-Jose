@@ -4,7 +4,7 @@ import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { buildReconciliation, computeMoneySummary, round2, toDayKey } from '../domain/engine'
+import { buildReconciliation, computeMoneySummary, matchesRoute, round2, toDayKey } from '../domain/engine'
 import { declareRouteReturn, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -126,14 +126,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
   const adminMoney = useMemo(() => {
     const sales = data.sales
-      .filter(s => s.dayKey === adminDayKey && (s.routeId === 'admin' || (!s.routeId && s.sourceLocation === 'centralWarehouse')))
+      .filter(s => s.dayKey === adminDayKey && (matchesRoute(s.routeId, 'administracion') || (!s.routeId && s.sourceLocation === 'centralWarehouse')))
       .map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s)
     const collections = data.collections
-      .filter(c => c.dayKey === adminDayKey && (c.routeId === 'admin' || c.collectedByUid === session.uid))
+      .filter(c => c.dayKey === adminDayKey && (matchesRoute(c.routeId, 'administracion') || c.collectedByUid === session.uid))
     const expenses = data.expenses
-      .filter(e => e.dayKey === adminDayKey && (e.routeId === 'admin' || !e.routeId) && !e.voided)
+      .filter(e => e.dayKey === adminDayKey && (matchesRoute(e.routeId, 'administracion') || !e.routeId) && !e.voided)
     const claims = data.claims
-      .filter(c => c.dayKey === adminDayKey && c.routeId === 'admin')
+      .filter(c => c.dayKey === adminDayKey && matchesRoute(c.routeId, 'administracion'))
 
     const cashSales = round2(sales.reduce((n, s) => n + (s.cashAmount || 0), 0))
     const qrSales = round2(sales.reduce((n, s) => n + (s.qrAmount || 0), 0))
@@ -177,7 +177,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       closureType: 'admin',
       dispatchId: `admin_${adminDayKey}`,
       warehouseId: 'central',
-      routeId: 'admin',
+      routeId: 'administracion',
       routeName: 'Administración',
       distributorUid: session.uid,
       distributorName: session.userName || 'Administración',

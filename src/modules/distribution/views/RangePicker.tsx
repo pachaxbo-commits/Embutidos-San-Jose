@@ -118,10 +118,10 @@ export function RangePicker({
             label={
               !routeFilter
                 ? 'Todas las rutas / orígenes'
-                : routeFilter === 'admin'
+                : routeFilter === 'administracion' || routeFilter === 'admin'
                   ? 'Administración'
-                  : routeFilter === 'route-directa'
-                    ? 'Venta directa / Impulsación'
+                  : routeFilter === 'route-impulsacion' || routeFilter === 'route-directa'
+                    ? 'Impulsación'
                     : routes.find((route) => route.id === routeFilter)?.name || routeFilter
             }
             placeholder="Todas las rutas / orígenes"
@@ -137,17 +137,23 @@ export function RangePicker({
           searchable
           options={[
             { value: '', label: 'Todas las rutas / orígenes' },
-            { value: 'admin', label: 'Administración' },
-            { value: 'route-directa', label: 'Venta directa / Impulsación' },
+            { value: 'administracion', label: 'Administración' },
+            { value: 'route-impulsacion', label: 'Impulsación' },
             ...routes
-              .filter((r) => r.id !== 'route-directa')
+              .filter((r) => r.id !== 'route-directa' && r.id !== 'route-impulsacion' && r.id !== 'administracion' && r.id !== 'admin')
               .map((route) => ({
                 value: route.id,
                 label: route.name,
                 description: route.active === false ? 'Inactiva' : undefined,
               })),
           ]}
-          selectedValue={routeFilter ?? ''}
+          selectedValue={
+            routeFilter === 'admin'
+              ? 'administracion'
+              : routeFilter === 'route-directa'
+                ? 'route-impulsacion'
+                : (routeFilter ?? '')
+          }
           onSelect={onRouteFilterChange}
         />
       )}

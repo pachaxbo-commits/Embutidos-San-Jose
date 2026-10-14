@@ -1,11 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, Copy, Download, FileText, Mail, MessageCircle, Minus, PackagePlus, Pencil, Plus, Printer, RotateCcw, Search, Send, Trash2, Truck, Undo2 } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
-import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
+import { Field, NumberInput, Segmented, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { computeLoadedByProduct, round2, validateStockAvailability } from '../domain/engine'
-import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
+import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, subscribeClosedDispatches, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -67,6 +67,39 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [correctionReason, setCorrectionReason] = useState('')
   const [correctionError, setCorrectionError] = useState<string | null>(null)
   const [isSubmittingCorrection, setIsSubmittingCorrection] = useState(false)
+
+  const [dispatchTab, setDispatchTab] = useState<'open' | 'closed'>('open')
+  const [closedDispatches, setClosedDispatches] = useState<DistDispatch[]>([])
+  const [closedSearch, setClosedSearch] = useState('')
+  const [expandedClosedDispatchId, setExpandedClosedDispatchId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const routeId = session.role === 'distributor' ? session.routeId ?? null : null
+    const distributorUid = session.role === 'distributor' ? session.uid : undefined
+    const unsubscribe = subscribeClosedDispatches(
+      routeId,
+      (rows) => {
+        setClosedDispatches(rows)
+      },
+      (err) => setError(err.message),
+      distributorUid,
+    )
+    return () => unsubscribe()
+  }, [session.role, session.routeId, session.uid])
+
+  const visibleClosedDispatches = useMemo(() => {
+    let list = closedDispatches.filter(d => session.role !== 'warehouse' || (d.warehouseId || 'central') === (session.warehouseId || 'central'))
+    if (closedSearch.trim()) {
+      const q = closedSearch.toLowerCase().trim()
+      list = list.filter(d =>
+        (d.routeName && d.routeName.toLowerCase().includes(q)) ||
+        (d.distributorName && d.distributorName.toLowerCase().includes(q)) ||
+        (d.warehouseResponsibleName && d.warehouseResponsibleName.toLowerCase().includes(q)) ||
+        (d.corrections && d.corrections.some(c => c.productName.toLowerCase().includes(q) || (c.reason && c.reason.toLowerCase().includes(q))))
+      )
+    }
+    return list
+  }, [closedDispatches, session.role, session.warehouseId, closedSearch])
 
   const canCorrect = (session.role === 'admin' || session.role === 'warehouse') && session.can('dist.dispatch.create')
 
@@ -635,9 +668,20 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       }
     >
       <div className="grid w-full min-w-0 gap-3">
-        {data.openDispatches.length === 0 && (
-          <EmptyBlock title="Sin despachos abiertos" description="Crea un despacho para cargar una ruta." />
-        )}
+        <Segmented
+          options={[
+            { value: 'open', label: `Abiertos (${data.openDispatches.length})` },
+            { value: 'closed', label: `Historial cerrados (${closedDispatches.length})` },
+          ]}
+          value={dispatchTab}
+          onChange={(val) => setDispatchTab(val as 'open' | 'closed')}
+        />
+
+        {dispatchTab === 'open' && (
+          <div className="grid w-full min-w-0 gap-3">
+            {data.openDispatches.length === 0 && (
+              <EmptyBlock title="Sin despachos abiertos" description="Crea un despacho para cargar una ruta." />
+            )}
 
         {data.openDispatches.filter(d => session.role !== 'warehouse' || (d.warehouseId || 'central') === (session.warehouseId || 'central')).map((dispatch) => {
           const loaded = computeLoadedByProduct(dispatch)
@@ -773,6 +817,159 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
             </SectionCard>
           )
         })}
+          </div>
+        )}
+
+        {dispatchTab === 'closed' && (
+          <div className="grid w-full min-w-0 gap-3">
+            <TextInput
+              placeholder="Buscar en despachos cerrados por ruta, vendedor, producto..."
+              value={closedSearch}
+              onChange={(e) => setClosedSearch(e.target.value)}
+            />
+            {visibleClosedDispatches.length === 0 ? (
+              <EmptyBlock
+                title="Sin despachos cerrados"
+                description={
+                  closedSearch
+                    ? 'No se encontraron despachos cerrados con esa búsqueda.'
+                    : 'Cuando una ruta finalice su cierre, el despacho aparecerá aquí.'
+                }
+              />
+            ) : (
+              visibleClosedDispatches.map((dispatch) => {
+                const loaded = computeLoadedByProduct(dispatch)
+                const expanded = expandedClosedDispatchId === dispatch.id
+                const hasCorrections = Boolean(dispatch.corrections && dispatch.corrections.length > 0)
+                const closedTimestamp = dispatch.closedAt || dispatch.createdAt
+                return (
+                  <SectionCard
+                    key={dispatch.id}
+                    title={`${dispatch.routeName} · ${dispatch.distributorName}`}
+                    action={
+                      <div className="flex items-center gap-1.5">
+                        {hasCorrections && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-800">
+                            {dispatch.corrections!.length} CORRECCIÓN{dispatch.corrections!.length === 1 ? '' : 'ES'}
+                          </span>
+                        )}
+                        <SecondaryButton onClick={() => setExpandedClosedDispatchId(expanded ? null : dispatch.id)}>
+                          {expanded ? 'Ocultar' : 'Ver detalle'}
+                        </SecondaryButton>
+                      </div>
+                    }
+                  >
+                    <p className="-mt-1 mb-2 text-xs font-semibold text-slate-500">
+                      {closedTimestamp ? new Date(closedTimestamp).toLocaleString('es-BO') : ''} · Cierre finalizado
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <SecondaryButton onClick={() => void printDispatchTicket(dispatch).catch(printError => setError(printError.message))}>
+                        <Printer size={15} /> Ticket
+                      </SecondaryButton>
+                      <SecondaryButton onClick={() => void printDispatchSheet(dispatch).catch(printError => setError(printError.message))}>
+                        <FileText size={15} /> Hoja
+                      </SecondaryButton>
+                      <SecondaryButton
+                        onClick={() => {
+                          if (Capacitor.isNativePlatform()) {
+                            void shareDispatch(dispatch).catch(shareError => setError(shareError.message))
+                          } else {
+                            setSharingDispatch(dispatch)
+                          }
+                        }}
+                      >
+                        <Send size={15} /> Compartir
+                      </SecondaryButton>
+                    </div>
+
+                    {expanded && (
+                      <div className="mt-3 grid gap-3 border-t border-slate-100 pt-3">
+                        <div>
+                          <p className="mb-1 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
+                            Carga final registrada
+                          </p>
+                          <div className="grid gap-1.5">
+                            {[...loaded.entries()].map(([productId, totals]) => (
+                              <div key={productId} className="flex min-w-0 items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs">
+                                <span className="font-bold text-slate-800">
+                                  {data.products.find((product) => product.id === productId)?.name || totals.productName}
+                                </span>
+                                <span className="font-black tabular-nums text-slate-900">
+                                  {formatQty(totals.totalLoaded, totals.unitType)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* SECCIÓN OBLIGATORIA: Correcciones realizadas (Solo lectura) */}
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3">
+                          <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-amber-900">
+                            <RotateCcw size={14} className="text-amber-700" />
+                            <span>Correcciones realizadas</span>
+                          </div>
+                          {!hasCorrections ? (
+                            <p className="text-xs font-semibold text-slate-500">
+                              Este despacho no tuvo correcciones auditadas.
+                            </p>
+                          ) : (
+                            <div className="grid gap-2">
+                              {dispatch.corrections!.map((corr) => {
+                                const delta = corr.newQuantity - corr.oldQuantity
+                                const isIncrease = delta > 0
+                                const isDelete = corr.newQuantity === 0
+                                return (
+                                  <div key={corr.id} className="rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-xs">
+                                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                                      <span className="font-extrabold text-slate-900">
+                                        {corr.productName}
+                                      </span>
+                                      <span className="text-[11px] font-semibold text-slate-500">
+                                        {new Date(corr.correctedAt).toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit', year: 'numeric' })} {new Date(corr.correctedAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })}
+                                      </span>
+                                    </div>
+                                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                      <div>
+                                        <dt className="text-[10px] font-bold uppercase text-slate-400">Lote</dt>
+                                        <dd className="text-xs font-bold text-slate-700">{corr.lotCode || 'Sin lote'}</dd>
+                                      </div>
+                                      <div>
+                                        <dt className="text-[10px] font-bold uppercase text-slate-400">Cant. Anterior</dt>
+                                        <dd className="text-xs font-bold text-slate-700">{formatQty(corr.oldQuantity, corr.unitType)}</dd>
+                                      </div>
+                                      <div>
+                                        <dt className="text-[10px] font-bold uppercase text-slate-400">Cant. Nueva</dt>
+                                        <dd className="text-xs font-bold text-slate-700">{formatQty(corr.newQuantity, corr.unitType)}</dd>
+                                      </div>
+                                      <div>
+                                        <dt className="text-[10px] font-bold uppercase text-slate-400">Diferencia</dt>
+                                        <dd className={`text-xs font-black ${isDelete ? 'text-rose-700' : isIncrease ? 'text-blue-700' : 'text-slate-800'}`}>
+                                          {delta > 0 ? `+${formatQty(delta, corr.unitType)}` : formatQty(delta, corr.unitType)}
+                                        </dd>
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap items-center justify-between gap-1 border-t border-slate-100 pt-2 text-[11px]">
+                                      <span className="italic text-slate-600">
+                                        <strong>Motivo:</strong> {corr.reason}
+                                      </span>
+                                      <span className="font-semibold text-slate-500">
+                                        <strong>Responsable:</strong> {corr.correctedByName || corr.correctedBy}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </SectionCard>
+                )
+              })
+            )}
+          </div>
+        )}
       </div>
 
       <Modal

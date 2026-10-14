@@ -4,7 +4,7 @@ import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { round2 } from '../domain/engine'
+import { matchesRoute, round2 } from '../domain/engine'
 import { deleteExpense, newOperationId, registerExpense } from '../data/distributionRepository'
 import { QUICK_CONCEPTS, validateExpenseInput } from '../domain/expensesValidation'
 import { RangePicker } from './RangePicker'
@@ -39,31 +39,29 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
 
   const filteredExpenses = useMemo(() => {
     if (selectedRouteFilter === 'all') return data.expenses
-    if (selectedRouteFilter === 'admin') {
-      return data.expenses.filter((e) => e.routeId === 'admin')
+    if (selectedRouteFilter === 'administracion' || selectedRouteFilter === 'admin') {
+      return data.expenses.filter((e) => matchesRoute(e.routeId, 'administracion'))
     }
-    if (selectedRouteFilter === 'direct') {
-      return data.expenses.filter(
-        (e) => e.routeId === 'route-directa' || data.routes.find((r) => r.id === e.routeId)?.kind === 'direct',
-      )
+    if (selectedRouteFilter === 'route-impulsacion' || selectedRouteFilter === 'direct') {
+      return data.expenses.filter((e) => matchesRoute(e.routeId, 'route-impulsacion'))
     }
-    return data.expenses.filter((e) => e.routeId === selectedRouteFilter)
-  }, [data.expenses, selectedRouteFilter, data.routes])
+    return data.expenses.filter((e) => matchesRoute(e.routeId, selectedRouteFilter))
+  }, [data.expenses, selectedRouteFilter])
 
   const total = round2(filteredExpenses.reduce((sum, expense) => sum + expense.amount, 0))
 
   const routeFilterLabel = useMemo(() => {
     if (selectedRouteFilter === 'all') return 'Todas las rutas / orígenes'
-    if (selectedRouteFilter === 'admin') return 'Administración'
-    if (selectedRouteFilter === 'direct') return 'Venta directa / Impulsación'
+    if (selectedRouteFilter === 'administracion' || selectedRouteFilter === 'admin') return 'Administración'
+    if (selectedRouteFilter === 'route-impulsacion' || selectedRouteFilter === 'direct') return 'Impulsación'
     return data.routes.find((r) => r.id === selectedRouteFilter)?.name ?? 'Ruta seleccionada'
   }, [selectedRouteFilter, data.routes])
 
   const selectedRouteName = useMemo(() => {
     const targetId = session.routeId ?? routeId
     if (!targetId) return ''
-    if (targetId === 'admin') return 'Administración'
-    if (targetId === 'route-directa') return 'Venta directa / Impulsación'
+    if (targetId === 'administracion' || targetId === 'admin') return 'Administración'
+    if (targetId === 'route-impulsacion' || targetId === 'route-directa') return 'Impulsación'
     return data.routes.find((r) => r.id === targetId)?.name ?? targetId
   }, [session.routeId, routeId, data.routes])
 
@@ -105,11 +103,12 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
       return
     }
 
-    const targetRouteName = effectiveRouteId === 'admin'
-      ? 'Administración'
-      : effectiveRouteId === 'route-directa'
-        ? (data.routes.find((r) => r.id === effectiveRouteId)?.name ?? 'Venta directa / Impulsación')
-        : (data.routes.find((route) => route.id === effectiveRouteId)?.name ?? effectiveRouteId)
+    const targetRouteName =
+      effectiveRouteId === 'administracion' || effectiveRouteId === 'admin'
+        ? 'Administración'
+        : effectiveRouteId === 'route-impulsacion' || effectiveRouteId === 'route-directa'
+          ? 'Impulsación'
+          : (data.routes.find((route) => route.id === effectiveRouteId)?.name ?? effectiveRouteId)
 
     setIsSubmitting(true)
     try {
@@ -357,13 +356,13 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
         title="Ruta u origen del gasto"
         searchable
         options={[
-          { value: 'admin', label: 'Administración' },
-          { value: 'route-directa', label: 'Venta directa / Impulsación' },
+          { value: 'administracion', label: 'Administración' },
+          { value: 'route-impulsacion', label: 'Impulsación' },
           ...activeRoutes
-            .filter((route) => route.id !== 'route-directa')
+            .filter((route) => route.id !== 'route-directa' && route.id !== 'route-impulsacion' && route.id !== 'administracion' && route.id !== 'admin')
             .map((route) => ({ value: route.id, label: route.name })),
         ]}
-        selectedValue={routeId}
+        selectedValue={routeId === 'admin' ? 'administracion' : routeId === 'route-directa' ? 'route-impulsacion' : routeId}
         onSelect={setRouteId}
       />
 
@@ -376,17 +375,23 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
         searchable
         options={[
           { value: 'all', label: 'Todas las rutas / orígenes' },
-          { value: 'admin', label: 'Administración' },
-          { value: 'direct', label: 'Venta directa / Impulsación' },
+          { value: 'administracion', label: 'Administración' },
+          { value: 'route-impulsacion', label: 'Impulsación' },
           ...data.routes
-            .filter((route) => route.id !== 'route-directa')
+            .filter((route) => route.id !== 'route-directa' && route.id !== 'route-impulsacion' && route.id !== 'administracion' && route.id !== 'admin')
             .map((route) => ({
               value: route.id,
               label: route.name,
               description: route.active === false ? 'Inactiva' : undefined,
             })),
         ]}
-        selectedValue={selectedRouteFilter}
+        selectedValue={
+          selectedRouteFilter === 'admin'
+            ? 'administracion'
+            : selectedRouteFilter === 'direct'
+              ? 'route-impulsacion'
+              : selectedRouteFilter
+        }
         onSelect={(value) => {
           setSelectedRouteFilter(value)
           setIsRouteFilterOpen(false)

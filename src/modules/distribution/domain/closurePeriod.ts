@@ -1,5 +1,5 @@
 import type { DistClosure, ClosureStatus } from "../types.ts";
-import { toDayKey } from "./engine.ts";
+import { matchesRoute, toDayKey } from "./engine.ts";
 
 /**
  * Normaliza cualquier documento de cierre (incluyendo borradores parciales creados por el distribuidor)
@@ -71,7 +71,7 @@ export function closuresInPeriod(closures: DistClosure[], days: string[]): DistC
 export function pendingDifferenceClosures(closures: DistClosure[], routeId = ""): DistClosure[] {
   const getTimestamp = (c: DistClosure) => c.warehouseClosedAt || c.closedAt || c.returnDeclaredAt || c.createdAt || "";
   return closures
-    .filter(closure => !routeId || closure.routeId === routeId)
+    .filter(closure => !routeId || matchesRoute(closure.routeId, routeId))
     .filter(closure => ["warehouse_done", "closed"].includes(closure.status))
     .filter(closure => !closure.varianceReviewedAt && closureHasProductDifference(closure))
     .sort((a, b) => getTimestamp(b).localeCompare(getTimestamp(a)));

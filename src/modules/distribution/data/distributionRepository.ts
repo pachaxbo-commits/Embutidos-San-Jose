@@ -415,6 +415,30 @@ export function subscribeOpenDispatches(
   )
 }
 
+/** Despachos cerrados. Con routeId se limita a la ruta del distribuidor. */
+export function subscribeClosedDispatches(
+  routeId: string | null,
+  onData: (rows: DistDispatch[]) => void,
+  onError?: (error: Error) => void,
+  distributorUid?: string,
+) {
+  return subscribeQuery<DistDispatch>(
+    (context) => {
+      const base = collectionRef(context, DIST_COLLECTIONS.dispatches)
+      if (distributorUid) return query(base, where('distributorUid', '==', distributorUid))
+      return routeId
+        ? query(base, where('status', '==', 'closed'), where('routeId', '==', routeId))
+        : query(base, where('status', '==', 'closed'))
+    },
+    rows => onData(
+      rows
+        .filter(row => row.status === 'closed')
+        .sort((a, b) => (b.closedAt || b.createdAt).localeCompare(a.closedAt || a.createdAt))
+    ),
+    onError,
+  )
+}
+
 function subscribeDayScoped<T>(
   collectionName: string,
   dayKeys: string[],

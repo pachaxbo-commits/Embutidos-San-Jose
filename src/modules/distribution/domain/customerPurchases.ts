@@ -1,4 +1,4 @@
-import { round2, toDayKey } from './engine.ts'
+import { matchesRoute, round2, toDayKey } from './engine.ts'
 import type { DistSale, DistProduct, UnitType, DistCustomer } from '../types.ts'
 import { getLinePresentation } from './productPresentation.ts'
 
@@ -78,7 +78,7 @@ export function aggregateCustomerPurchases(
 ): CustomerPurchasesAggregation {
   const inScope = (sale: DistSale) =>
     dayKeys.includes(sale.dayKey || toDayKey(sale.createdAt)) &&
-    (!routeFilter || sale.routeId === routeFilter) &&
+    (!routeFilter || matchesRoute(sale.routeId, routeFilter)) &&
     (!sellerFilter || sale.sellerUid === sellerFilter) &&
     !sale.pendingConfirmation
 

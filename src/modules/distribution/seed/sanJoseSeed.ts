@@ -216,8 +216,8 @@ export const SAN_JOSE_ROUTES: SeedRoute[] = [
   { id: 'route-norte', name: 'Zona Norte', kind: 'route' },
   { id: 'route-sud', name: 'Zona Sud', kind: 'route' },
   { id: 'route-sacaba', name: 'Sacaba', kind: 'route' },
-  // La impulsacion no es un permiso aparte: es un canal con tipo 'direct'.
-  { id: 'route-directa', name: 'Venta directa / Impulsacion', kind: 'direct' },
+  // Canal independiente de Impulsación
+  { id: 'route-impulsacion', name: 'Impulsación', kind: 'route' },
 ]
 
 /** Distribuidores sugeridos para la demo (se crean desde la pantalla Usuarios) */

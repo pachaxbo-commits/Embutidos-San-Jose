@@ -1,4 +1,4 @@
-import { round2, toDayKey } from './engine.ts'
+import { matchesRoute, round2, toDayKey } from './engine.ts'
 import type { DistCollection, DistCustomer, DistReceivable, DistRoute, DistSale, DistSaleLine } from '../types.ts'
 
 export interface CustomerRouteDebt {
@@ -49,18 +49,24 @@ export function resolveReceivableRouteId(
   customersById?: Map<string, DistCustomer>,
 ): string {
   if (receivable.routeId && receivable.routeId.trim()) {
-    return receivable.routeId.trim()
+    const rId = receivable.routeId.trim()
+    if (rId === 'admin') return 'administracion'
+    return rId
   }
   if (receivable.saleId && salesById) {
     const sale = salesById.get(receivable.saleId)
     if (sale?.routeId && sale.routeId.trim()) {
-      return sale.routeId.trim()
+      const rId = sale.routeId.trim()
+      if (rId === 'admin') return 'administracion'
+      return rId
     }
   }
   if (customersById) {
     const customer = customersById.get(receivable.customerId)
     if (customer?.routeId && customer.routeId.trim()) {
-      return customer.routeId.trim()
+      const rId = customer.routeId.trim()
+      if (rId === 'admin') return 'administracion'
+      return rId
     }
   }
   return 'no-route'
@@ -70,9 +76,13 @@ export function resolveReceivableRouteId(
  * Obtiene el nombre legible de una ruta.
  */
 export function getRouteDisplayName(routeId: string, routes: DistRoute[]): string {
-  if (routeId === 'admin' || routeId === 'central') return 'Administración'
+  if (routeId === 'administracion' || routeId === 'admin' || routeId === 'central') return 'Administración'
+  if (routeId === 'route-impulsacion' || routeId === 'route-directa') return 'Impulsación'
   if (routeId === 'no-route') return 'Sin ruta / Histórico'
   const found = routes.find((r) => r.id === routeId)
+  if (found?.name === 'Venta directa / Impulsacion' || found?.name === 'Venta directa / Impulsación') {
+    return 'Impulsación'
+  }
   return found?.name || routeId
 }
 
@@ -197,24 +207,37 @@ export function computeCreditPortfolioByRoute({
 
   // Opciones de rutas disponibles para el selector
   const availableRoutes: RouteOption[] = []
-  // Agregar rutas activas de la empresa
+  // Agregar rutas activas de la empresa (sin mezclar Venta directa / Impulsación)
   for (const route of routes) {
+    if (route.id === 'route-directa' || route.id === 'administracion' || route.id === 'admin') continue
     const stats = routeTotals.get(route.id)
+    const name = route.id === 'route-impulsacion'
+      ? 'Impulsación'
+      : (route.name === 'Venta directa / Impulsacion' || route.name === 'Venta directa / Impulsación')
+        ? 'Impulsación'
+        : route.name
     availableRoutes.push({
       id: route.id,
-      name: route.name,
+      name,
       totalBalance: stats ? stats.balance : 0,
       customerCount: stats ? stats.customerIds.size : 0,
     })
   }
-  // Si hay deudas en Administración que no estén en routes
-  if (routeTotals.has('admin') && !routes.some((r) => r.id === 'admin')) {
-    const stats = routeTotals.get('admin')!
+  // Si hay deudas en Administración (administracion o admin)
+  const adminBalance = round2(
+    (routeTotals.get('administracion')?.balance || 0) +
+    (routeTotals.get('admin')?.balance || 0)
+  )
+  const adminCustomers = new Set<string>([
+    ...(routeTotals.get('administracion')?.customerIds || []),
+    ...(routeTotals.get('admin')?.customerIds || []),
+  ])
+  if (adminBalance > 0 || routeTotals.has('administracion') || routeTotals.has('admin')) {
     availableRoutes.push({
-      id: 'admin',
+      id: 'administracion',
       name: 'Administración',
-      totalBalance: stats.balance,
-      customerCount: stats.customerIds.size,
+      totalBalance: adminBalance,
+      customerCount: adminCustomers.size,
     })
   }
   // Si hay deudas históricas sin ruta que no estén en routes
@@ -280,7 +303,7 @@ export function computeCreditPortfolioByRoute({
     routeDebt.receivables.push(r)
 
     // Si coincide con el filtro de ruta
-    if (isAll || item.resolvedRouteId === filterRoute) {
+    if (isAll || matchesRoute(item.resolvedRouteId, filterRoute)) {
       entry.filteredBalance = round2(entry.filteredBalance + bal)
       entry.filteredReceivables.push(r)
     }
