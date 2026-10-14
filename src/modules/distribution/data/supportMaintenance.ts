@@ -21,6 +21,10 @@ export interface ResetPreview {
   totalDocuments: number
   counts: Record<string, number>
   preserved: string[]
+  selectedGroups: CleanupGroupKey[]
+  resolvedGroups: CleanupGroupKey[]
+  dependencyReasons: Partial<Record<CleanupGroupKey, CleanupGroupKey>>
+  preservedGroups: CleanupGroupKey[]
 }
 
 export interface ResetResult {
@@ -28,6 +32,41 @@ export interface ResetResult {
   backupId: string
   deletedDocuments: number
   completedAt: string
+  backedUpDocuments: number
+  customersPreserved: number
+  deletedByCollection: Record<string, number>
+}
+
+export type CleanupGroupKey = 'customers' | 'credits' | 'sales' | 'expenses' | 'inventory' | 'dispatches' | 'closures' | 'claims' | 'qr' | 'technical'
+
+export const CLEANUP_GROUPS: Array<{ key: CleanupGroupKey; label: string; description: string; dependencies: CleanupGroupKey[] }> = [
+  { key: 'customers', label: 'Clientes', description: 'Clientes registrados y sus CI.', dependencies: ['sales', 'credits', 'claims', 'qr'] },
+  { key: 'credits', label: 'Créditos y cobros', description: 'Deudas, cobros, estados y autorizaciones.', dependencies: ['qr'] },
+  { key: 'sales', label: 'Ventas', description: 'Ventas y sus correcciones auditadas.', dependencies: ['credits', 'claims', 'qr'] },
+  { key: 'expenses', label: 'Gastos', description: 'Gastos registrados en rutas.', dependencies: [] },
+  { key: 'inventory', label: 'Inventario operativo y lotes', description: 'Existencias, lotes, movimientos y ajustes.', dependencies: ['dispatches', 'sales'] },
+  { key: 'dispatches', label: 'Despachos y transferencias', description: 'Cargas, despachos y traslados de stock.', dependencies: ['closures', 'sales'] },
+  { key: 'closures', label: 'Cierres y arqueos', description: 'Cierres de ruta y conciliaciones.', dependencies: [] },
+  { key: 'claims', label: 'Cambios y devoluciones', description: 'Cambios, devoluciones y diferencias asociadas.', dependencies: ['qr'] },
+  { key: 'qr', label: 'Verificaciones QR', description: 'Confirmaciones bancarias relacionadas.', dependencies: [] },
+  { key: 'technical', label: 'Historial y operaciones técnicas', description: 'Cola operativa y turnos de almacén.', dependencies: [] },
+]
+
+export const RECOMMENDED_CLEANUP_GROUPS = CLEANUP_GROUPS.map(group => group.key).filter(key => key !== 'customers')
+
+export function resolveCleanupGroups(selected: CleanupGroupKey[]) {
+  const resolved = new Set(selected)
+  const reasons: Partial<Record<CleanupGroupKey, CleanupGroupKey>> = {}
+  const queue = [...selected]
+  while (queue.length) {
+    const parent = queue.shift()!
+    const group = CLEANUP_GROUPS.find(item => item.key === parent)
+    for (const dependency of group?.dependencies || []) {
+      if (!resolved.has(dependency)) { resolved.add(dependency); queue.push(dependency) }
+      if (!selected.includes(dependency) && !reasons[dependency]) reasons[dependency] = parent
+    }
+  }
+  return { resolved: CLEANUP_GROUPS.map(group => group.key).filter(key => resolved.has(key)), reasons }
 }
 
 export const DEFAULT_SUPPORT_SETTINGS: SupportSettings = {
@@ -75,9 +114,9 @@ export async function saveSupportSettings(settings: SupportSettings): Promise<vo
   })
 }
 
-export async function prepareCleanDelivery(): Promise<ResetPreview> {
-  const call = await callable<{ action: 'prepareCleanDelivery' }, ResetPreview>('changeSanJoseMemberPassword')
-  return (await call({ action: 'prepareCleanDelivery' })).data
+export async function prepareCleanDelivery(selectedGroups: CleanupGroupKey[]): Promise<ResetPreview> {
+  const call = await callable<{ action: 'prepareCleanDelivery'; selectedGroups: CleanupGroupKey[] }, ResetPreview>('changeSanJoseMemberPassword')
+  return (await call({ action: 'prepareCleanDelivery', selectedGroups })).data
 }
 
 export async function executeCleanDelivery(input: { requestId: string; password: string; phrase: string }): Promise<ResetResult> {

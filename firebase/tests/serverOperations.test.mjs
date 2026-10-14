@@ -190,7 +190,7 @@ ok(portfolioCollection.result.allocations[0].sourceType==='opening_balance'&&por
   ok(settingsQuery.docs.some(entry=>entry.id==='main'),`${role} puede suscribirse a la configuración operativa`)
  }
  const supportRequest={auth:{uid:support,token:{auth_time:Math.floor(Date.now()/1000)}},data:{}}
- const preview=await prepareCleanDelivery(db,supportRequest)
+ const preview=await prepareCleanDelivery(db,{...supportRequest,data:{selectedGroups:['customers','credits','sales','expenses','inventory','dispatches','closures','claims','qr','technical']}})
  ok(preview.totalDocuments>0&&preview.counts.distSales>0,'entrega limpia muestra conteo sin devolver datos comerciales')
  const reset=await executeCleanDelivery(db,{...supportRequest,data:{requestId:preview.requestId,phrase:'LIMPIAR EMBUTIDOS SAN JOSE',acknowledgement:true}})
  ok(reset.deletedDocuments>0&&(await root.collection('distSales').get()).empty,'entrega limpia respalda y elimina los datos operativos')

@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle2, DatabaseBackup, Printer, Save, ShieldCheck, Wrench } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, DatabaseBackup, Lock, Printer, Save, ShieldCheck, Wrench } from 'lucide-react'
 import { Field, NumberInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { Modal } from '../../../components/ui/Modal'
 import { Screen } from '../../../components/ui/Screen'
 import {
   DEFAULT_SUPPORT_SETTINGS,
+  CLEANUP_GROUPS,
+  RECOMMENDED_CLEANUP_GROUPS,
   executeCleanDelivery,
   loadSupportSettings,
   prepareCleanDelivery,
   saveSupportSettings,
+  resolveCleanupGroups,
+  type CleanupGroupKey,
   type ResetPreview,
   type SupportSettings,
 } from '../data/supportMaintenance'
@@ -22,6 +26,8 @@ const SCOPE_LABELS: Record<string, string> = {
   distClosures: 'Cierres y arqueos', distQrVerifications: 'Verificaciones QR', distLots: 'Lotes y vencimientos',
   distLotHistory: 'Historial de lotes', distClaims: 'Cambios y devoluciones', distCreditStatus: 'Estados de crédito',
   distOperations: 'Operaciones técnicas',
+  distCreditOverrides: 'Autorizaciones de crédito', distSaleCorrections: 'Correcciones de venta',
+  distAdjustmentRequests: 'Solicitudes de ajuste', distWarehouseShifts: 'Turnos de almacén',
 }
 
 export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpenPrinterSettings: () => void; initialSettings?: SupportSettings }) {
@@ -35,6 +41,8 @@ export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpen
   const [password, setPassword] = useState('')
   const [phrase, setPhrase] = useState('')
   const [acknowledged, setAcknowledged] = useState(false)
+  const [selectedGroups, setSelectedGroups] = useState<CleanupGroupKey[]>([...RECOMMENDED_CLEANUP_GROUPS])
+  const cleanupSelection = resolveCleanupGroups(selectedGroups)
 
   useEffect(() => {
     if (initialSettings) {
@@ -65,7 +73,7 @@ export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpen
 
   const inspectReset = async () => {
     setBusy(true); setError(null)
-    try { setPreview(await prepareCleanDelivery()) }
+    try { setPreview(await prepareCleanDelivery(selectedGroups)) }
     catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }
 
@@ -75,7 +83,7 @@ export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpen
     try {
       const result = await executeCleanDelivery({ requestId: preview.requestId, password, phrase })
       setResetOpen(false); setPreview(null); setPassword(''); setPhrase(''); setAcknowledged(false)
-      setFeedback(`Entrega limpia terminada. Se respaldaron y retiraron ${result.deletedDocuments} registros. Respaldo: ${result.backupId}.`)
+      setFeedback(`Limpieza terminada correctamente. Se retiraron ${result.deletedDocuments} registros. Clientes conservados: ${result.customersPreserved}. Respaldo: ${result.backupId}.`)
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }
 
@@ -113,13 +121,34 @@ export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpen
 
       <SectionCard title="Acceso protegido">
         <div className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3"><ShieldCheck size={20} className="mt-0.5 text-emerald-700" /><div><strong className="text-sm text-emerald-900">Información comercial bloqueada</strong><p className="mt-1 text-xs font-medium leading-relaxed text-emerald-800">Este rol no puede consultar ventas, clientes, créditos, cobros, gastos, stock, cierres ni reportes.</p></div></div>
-        <div className="mt-3 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3"><DatabaseBackup size={20} className="mt-0.5 text-amber-700" /><div className="flex-1"><strong className="text-sm text-amber-900">Preparar entrega limpia</strong><p className="mt-1 text-xs font-medium leading-relaxed text-amber-800">Conserva usuarios, productos, rutas, almacenes y configuración. Antes de limpiar crea un respaldo interno restringido.</p><div className="mt-3"><SecondaryButton onClick={() => { setResetOpen(true); setPreview(null); setError(null) }}><Wrench size={16} /> Revisar limpieza</SecondaryButton></div></div></div>
+        <div className="mt-3 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3"><DatabaseBackup size={20} className="mt-0.5 text-amber-700" /><div className="flex-1"><strong className="text-sm text-amber-900">Preparar entrega limpia</strong><p className="mt-1 text-xs font-medium leading-relaxed text-amber-800">Selecciona qué información deseas retirar. Se creará un respaldo antes de eliminar cualquier dato. Por defecto se conservan los clientes registrados.</p><div className="mt-3"><SecondaryButton onClick={() => { setResetOpen(true); setPreview(null); setSelectedGroups([...RECOMMENDED_CLEANUP_GROUPS]); setError(null) }}><Wrench size={16} /> Revisar limpieza</SecondaryButton></div></div></div>
       </SectionCard>
     </div>
 
-    <Modal isOpen={resetOpen} onClose={() => !busy && setResetOpen(false)} title="Preparar entrega limpia" subtitle={preview ? 'Segunda y última confirmación' : 'Primera confirmación: revisar el alcance'} footer={preview ? <PrimaryButton full disabled={busy || !password || !acknowledged || phrase !== RESET_PHRASE} onClick={() => void executeReset()}>{busy ? 'Creando respaldo y limpiando...' : 'Crear respaldo y limpiar datos'}</PrimaryButton> : <PrimaryButton full disabled={busy} onClick={() => void inspectReset()}>{busy ? 'Calculando...' : 'Mostrar datos que se limpiarán'}</PrimaryButton>}>
-      {!preview ? <div className="grid gap-3"><div className="flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3"><AlertTriangle size={20} className="shrink-0 text-amber-700" /><p className="text-xs font-semibold leading-relaxed text-amber-900">Esta acción se usa una sola vez antes de la entrega. Todavía no eliminará nada: primero mostrará un conteo.</p></div><p className="text-xs font-semibold text-slate-600">Se conservarán usuarios, catálogo de productos, rutas, almacenes, fotografías de productos y configuración.</p></div> : <div className="grid gap-3">
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs font-extrabold text-slate-900">{preview.totalDocuments} registros serán respaldados y retirados</p><div className="mt-2 grid grid-cols-2 gap-1.5">{Object.entries(preview.counts).filter(([,count]) => count > 0).map(([name,count]) => <span key={name} className="rounded-xl bg-white px-2 py-1 text-[10px] font-bold text-slate-600">{SCOPE_LABELS[name] || name}: {count}</span>)}</div></div>
+    <Modal isOpen={resetOpen} onClose={() => !busy && setResetOpen(false)} title="Preparar entrega limpia" subtitle={preview ? '3. Confirmar identidad y alcance' : '1. Seleccionar datos · 2. Revisar conteo'} size="lg" footer={preview ? <PrimaryButton full disabled={busy || !password || !acknowledged || phrase !== RESET_PHRASE} onClick={() => void executeReset()}>{busy ? 'Creando respaldo y limpiando...' : 'Crear respaldo y limpiar datos'}</PrimaryButton> : <PrimaryButton full disabled={busy || selectedGroups.length === 0} onClick={() => void inspectReset()}>{busy ? 'Calculando...' : 'Mostrar datos que se limpiarán'}</PrimaryButton>}>
+      {!preview ? <div className="grid gap-3">
+        <div className="flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3"><AlertTriangle size={20} className="shrink-0 text-amber-700" /><div><p className="text-xs font-extrabold text-amber-950">Limpieza recomendada</p><p className="mt-1 text-xs font-semibold leading-relaxed text-amber-900">Conserva clientes, productos, rutas, usuarios y configuración. Todavía no se eliminará nada.</p></div></div>
+        <div className="flex flex-wrap gap-2">
+          <SecondaryButton onClick={() => { setSelectedGroups([...RECOMMENDED_CLEANUP_GROUPS]); setPreview(null) }}>Limpieza recomendada</SecondaryButton>
+          <SecondaryButton onClick={() => { setSelectedGroups(CLEANUP_GROUPS.map(group => group.key)); setPreview(null) }}>Seleccionar todo</SecondaryButton>
+          <SecondaryButton onClick={() => { setSelectedGroups([]); setPreview(null) }}>Limpiar selección</SecondaryButton>
+        </div>
+        <div><p className="mb-2 text-xs font-black text-slate-900">¿Qué datos deseas limpiar?</p><div className="grid gap-2 sm:grid-cols-2">
+          {CLEANUP_GROUPS.map(group => {
+            const forcedBy = cleanupSelection.reasons[group.key]
+            const checked = cleanupSelection.resolved.includes(group.key)
+            return <label key={group.key} className={`flex min-h-[76px] items-start gap-3 rounded-2xl border-2 p-3 ${checked ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-white'}`}>
+              <input type="checkbox" checked={checked} disabled={Boolean(forcedBy)} onChange={event => { setPreview(null); setSelectedGroups(current => event.target.checked ? [...new Set([...current, group.key])] : current.filter(key => key !== group.key)) }} className="mt-0.5 h-5 w-5 shrink-0 accent-rose-600" />
+              <span className="min-w-0"><strong className="block text-xs text-slate-900">{group.label}</strong><small className="mt-0.5 block text-[10px] leading-relaxed text-slate-500">{group.description}</small>{forcedBy && <small className="mt-1 flex items-center gap-1 text-[9px] font-extrabold text-rose-700"><Lock size={10} /> Requerido por {CLEANUP_GROUPS.find(item => item.key === forcedBy)?.label}</small>}</span>
+            </label>
+          })}
+        </div></div>
+        <p className="text-xs font-semibold text-slate-600">Siempre se conservan usuarios, productos y fotografías, rutas, almacenes, configuración, respaldos y auditoría de mantenimiento.</p>
+      </div> : <div className="grid gap-3">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3"><p className="text-xs font-extrabold text-rose-950">SE ELIMINARÁ · {preview.totalDocuments} registros</p><div className="mt-2 grid grid-cols-2 gap-1.5">{Object.entries(preview.counts).filter(([,count]) => count > 0).map(([name,count]) => <span key={name} className="rounded-xl bg-white px-2 py-1 text-[10px] font-bold text-slate-700">{SCOPE_LABELS[name] || name}: {count}</span>)}</div></div>
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3"><p className="text-xs font-extrabold text-emerald-950">SE CONSERVARÁ</p><p className="mt-1 text-[10px] font-semibold leading-relaxed text-emerald-800">{preview.preserved.join(' · ')}{preview.preservedGroups.length ? ` · ${preview.preservedGroups.map(key => CLEANUP_GROUPS.find(group => group.key === key)?.label).filter(Boolean).join(' · ')}` : ''}</p></div>
+        {Object.keys(preview.dependencyReasons).length > 0 && <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3"><p className="text-xs font-extrabold text-sky-950">Dependencias incluidas automáticamente</p>{Object.entries(preview.dependencyReasons).map(([child,parent]) => <p key={child} className="mt-1 text-[10px] font-semibold text-sky-800">{CLEANUP_GROUPS.find(group => group.key === child)?.label}: requerido por {CLEANUP_GROUPS.find(group => group.key === parent)?.label}. Solo se retirarán documentos relacionados cuando corresponda.</p>)}</div>}
+        <SecondaryButton full onClick={() => { setPreview(null); setPassword(''); setPhrase(''); setAcknowledged(false) }}>Cambiar selección</SecondaryButton>
         <Field label="Contraseña actual" required><TextInput type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} /></Field>
         <Field label={`Escribe: ${RESET_PHRASE}`} required><TextArea value={phrase} onChange={e => setPhrase(e.target.value.toUpperCase())} /></Field>
         <label className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-3"><input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} className="mt-0.5 h-5 w-5 accent-rose-600" /><span className="text-xs font-bold leading-relaxed text-rose-900">Confirmo que revisé el conteo y que deseo preparar una base operativa limpia.</span></label>
