@@ -2,43 +2,42 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, HandCoins, History, Printer, Search, Share2, ShieldAlert, UserPlus } from 'lucide-react'
 import { RangePicker } from './RangePicker'
 import { Modal } from '../../../components/ui/Modal'
-import { ChoiceButton } from '../../../components/ui/ChoiceModal'
+import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { toDayKey, round2 } from '../domain/engine'
 import { newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride } from '../data/distributionRepository'
 import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
+import {
+  computeCreditPortfolioByRoute,
+  getRouteDisplayName,
+  type CustomerCreditRouteView,
+} from '../domain/creditRoutes'
+import { CreditProducts } from './CreditProducts'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
-import type { DistCollection, DistReceivable } from '../types'
+import type { DistCollection } from '../types'
 import { printCollectionReceipt, printLargeCollectionReceipt, shareCollectionReceipt } from '../data/distributionReceiptService'
-
-interface CustomerCredit {
-  customerId: string
-  customerName: string
-  balance: number
-  originalAmount: number
-  lastMovementAt: string
-  receivables: DistReceivable[]
-}
 
 /**
  * Cartera por cliente y cobranzas.
  * La interfaz trabaja por SALDO TOTAL DEL CLIENTE.
- * No se cobra por producto ni se topa el cobro a la venta más antigua.
- * El servidor distribuye el pago FIFO entre las deudas activas.
+ * Permite filtrar por ruta de origen de la deuda para organización y control de cobros.
+ * El servidor distribuye el pago FIFO entre las deudas activas del cliente.
  */
 export function CreditsView({ session, data }: DistributionViewProps) {
   const [period, setPeriod] = useState<string[]>([])
   const [search, setSearch] = useState('')
-  const [selected, setSelected] = useState<CustomerCredit | null>(null)
-  const [collectCustomer, setCollectCustomer] = useState<CustomerCredit | null>(null)
+  const [selectedRouteId, setSelectedRouteId] = useState<string>('all')
+  const [isRouteModalOpen, setIsRouteModalOpen] = useState(false)
+  const [selected, setSelected] = useState<CustomerCreditRouteView | null>(null)
+  const [collectCustomer, setCollectCustomer] = useState<CustomerCreditRouteView | null>(null)
   const [openingBalanceOpen, setOpeningBalanceOpen] = useState(false)
   const [openingCustomerId, setOpeningCustomerId] = useState('')
   const [openingAmount, setOpeningAmount] = useState('')
   const [openingDate, setOpeningDate] = useState(toDayKey(new Date()))
   const [openingNote, setOpeningNote] = useState('')
-  const [overrideCustomer, setOverrideCustomer] = useState<CustomerCredit | null>(null)
+  const [overrideCustomer, setOverrideCustomer] = useState<CustomerCreditRouteView | null>(null)
   const [overrideDays, setOverrideDays] = useState('1')
   const [overrideReason, setOverrideReason] = useState('')
   const [amount, setAmount] = useState('')
@@ -79,45 +78,39 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     )
   }, [data.customers, customerPickerSearch])
 
-  const byCustomer = useMemo(() => {
-    const map = new Map<string, CustomerCredit>()
-    for (const receivable of data.receivables) {
-      if (period.length && !period.includes(receivable.dayKey || toDayKey(receivable.createdAt))) continue
-      const current = map.get(receivable.customerId)
-      const entry: CustomerCredit = current ?? {
-        customerId: receivable.customerId,
-        customerName: receivable.customerName || 'Cliente',
-        balance: 0,
-        originalAmount: 0,
-        lastMovementAt: receivable.createdAt,
-        receivables: [],
-      }
-      entry.balance = round2(entry.balance + (Number(receivable.balance) || 0))
-      entry.originalAmount = round2(entry.originalAmount + (Number(receivable.originalAmount) || 0))
-      entry.receivables.push(receivable)
-      if (receivable.createdAt > entry.lastMovementAt) entry.lastMovementAt = receivable.createdAt
-      map.set(receivable.customerId, entry)
-    }
-    return [...map.values()].sort((a, b) => b.balance - a.balance)
-  }, [data.receivables, period])
+  const salesById = useMemo(() => new Map(data.sales.map((s) => [s.id, s])), [data.sales])
+
+  const { customerCredits, totalOutstanding, totalCustomersWithBalance, availableRoutes } = useMemo(() => {
+    return computeCreditPortfolioByRoute({
+      receivables: data.receivables,
+      selectedRouteId,
+      routes: data.routes,
+      customers: data.customers,
+      salesById,
+      period,
+    })
+  }, [data.receivables, selectedRouteId, data.routes, data.customers, salesById, period])
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
     return term
-      ? byCustomer.filter((entry) =>
-          [
-            entry.customerName,
-            data.customers.find((c) => c.id === entry.customerId)?.customerCode,
-            data.customers.find((c) => c.id === entry.customerId)?.identityNumber,
-          ]
+      ? customerCredits.filter((entry) =>
+          [entry.customerName, entry.customerCode, entry.identityNumber]
+            .filter(Boolean)
             .join(' ')
             .toLowerCase()
             .includes(term),
         )
-      : byCustomer
-  }, [byCustomer, search, data.customers])
+      : customerCredits
+  }, [customerCredits, search])
 
-  const totalOutstanding = round2(byCustomer.reduce((sum, entry) => sum + entry.balance, 0))
+  const grandTotalBalance = useMemo(() => {
+    return round2(
+      data.receivables
+        .filter((r) => !period.length || period.includes(r.dayKey || toDayKey(r.createdAt)))
+        .reduce((sum, r) => sum + (Number(r.balance) || 0), 0),
+    )
+  }, [data.receivables, period])
 
   const exportCredits = async (kind: 'pdf' | 'excel') => {
     setExporting(true)
@@ -140,12 +133,13 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [collectionReferenceDebt, setCollectionReferenceDebt] = useState<number | undefined>(undefined)
   const [confirmingCollection, setConfirmingCollection] = useState(false)
 
-  const openCustomerCollection = (entry: CustomerCredit, referenceDebt?: number) => {
+  const openCustomerCollection = (entry: CustomerCreditRouteView, referenceDebt?: number) => {
     setCollectCustomer(entry)
-    setCollectionReferenceDebt(referenceDebt !== undefined ? Math.min(referenceDebt, entry.balance) : undefined)
-    setAmount('0')
+    const suggested = referenceDebt !== undefined ? Math.min(referenceDebt, entry.totalBalance) : entry.filteredBalance || entry.totalBalance
+    setCollectionReferenceDebt(referenceDebt !== undefined ? Math.min(referenceDebt, entry.totalBalance) : undefined)
+    setAmount(String(suggested))
     setMethod('cash')
-    setCashAmount('0')
+    setCashAmount(String(suggested))
     setQrAmount('0')
     setNote('')
     setError(null)
@@ -181,8 +175,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       setError('Ingresa el monto que realmente vas a cobrar.')
       return
     }
-    if (value > collectCustomer.balance) {
-      setError(`El monto no puede superar la deuda total del cliente (${formatBs(collectCustomer.balance)}).`)
+    if (value > collectCustomer.totalBalance) {
+      setError(`El monto no puede superar la deuda total del cliente (${formatBs(collectCustomer.totalBalance)}).`)
       return
     }
 
@@ -205,8 +199,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       setConfirmingCollection(false)
       return
     }
-    if (value > collectCustomer.balance) {
-      setError(`El monto no puede superar la deuda total del cliente (${formatBs(collectCustomer.balance)}).`)
+    if (value > collectCustomer.totalBalance) {
+      setError(`El monto no puede superar la deuda total del cliente (${formatBs(collectCustomer.totalBalance)}).`)
       setConfirmingCollection(false)
       return
     }
@@ -222,7 +216,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     setIsSubmitting(true)
     setError(null)
     try {
-      const oldestDebt = collectCustomer.receivables
+      const oldestDebt = collectCustomer.allReceivables
         .filter((item) => item.balance > 0)
         .sort((a, b) => (a.sourceDate || a.createdAt).localeCompare(b.sourceDate || b.createdAt))[0]
 
@@ -260,7 +254,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     taxId: data.supportSettings.taxId,
     address: data.supportSettings.address,
     phone: data.supportSettings.phone,
-    routeName: data.routes.find(route => route.id === session.routeId)?.name || 'Administración',
+    routeName: data.routes.find((route) => route.id === session.routeId)?.name || 'Administración',
     distributorName: session.userName,
   }
 
@@ -270,7 +264,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     setReceiptFeedback(result.message)
   }
 
-  const submitOpeningBalance = async (andCollectNow = false) => {
+  const submitOpeningBalance = async () => {
     const value = round2(Number(openingAmount))
     if (!openingCustomerId || !(value > 0) || !openingNote.trim()) {
       setError('Selecciona cliente, monto y describe el origen de la deuda.')
@@ -278,7 +272,6 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     }
     setIsSubmitting(true)
     try {
-      const customer = data.customers.find((c) => c.id === openingCustomerId)
       await registerOpeningBalance({
         customerId: openingCustomerId,
         amount: value,
@@ -288,26 +281,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       setOpeningBalanceOpen(false)
       setOpeningAmount('')
       setOpeningNote('')
-
-      if (andCollectNow && customer) {
-        const existing = byCustomer.find((c) => c.customerId === openingCustomerId)
-        const target: CustomerCredit = existing
-          ? {
-              ...existing,
-              balance: round2(existing.balance + value),
-            }
-          : {
-              customerId: customer.id,
-              customerName: customer.name,
-              balance: value,
-              originalAmount: value,
-              lastMovementAt: new Date().toISOString(),
-              receivables: [],
-            }
-        openCustomerCollection(target, value)
-      } else {
-        setToast('Deuda anterior registrada exitosamente.')
-      }
+      setToast('Deuda anterior registrada exitosamente.')
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -320,13 +294,25 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     ? data.creditOverrides.find((o) => o.customerId === selected.customerId && !o.revokedAt && o.activeUntil > nowIso)
     : null
 
+  const selectedRouteName =
+    selectedRouteId === 'all' || !selectedRouteId
+      ? 'Todas las rutas'
+      : availableRoutes.find((r) => r.id === selectedRouteId)?.name || 'Ruta seleccionada'
+
   return (
     <Screen
       title="Créditos"
       subtitle="Cartera general de clientes por saldo total"
       actions={
         session.role === 'admin' ? (
-          <PrimaryButton onClick={() => { setOpeningBalanceOpen(true); setError(null) }}>Saldo anterior</PrimaryButton>
+          <PrimaryButton
+            onClick={() => {
+              setOpeningBalanceOpen(true)
+              setError(null)
+            }}
+          >
+            Saldo anterior
+          </PrimaryButton>
         ) : undefined
       }
     >
@@ -334,7 +320,11 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         {toast && (
           <div className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800">
             <span>{toast}</span>
-            <button type="button" onClick={() => setToast(null)} className="ml-2 text-emerald-600 hover:text-emerald-900">
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="ml-2 text-emerald-600 hover:text-emerald-900"
+            >
               ✕
             </button>
           </div>
@@ -343,14 +333,38 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         <p className="text-xs text-slate-600">
           La cobranza amortiza la deuda total del cliente. El sistema distribuye automáticamente el abono a las ventas más antiguas.
         </p>
+
+        {/* Filtro de Ruta */}
+        <div className="w-full">
+          <ChoiceButton
+            label={selectedRouteName}
+            description={
+              selectedRouteId === 'all' || !selectedRouteId
+                ? `Cartera general completa (${formatBs(totalOutstanding)})`
+                : `Filtrando por ${selectedRouteName} (${formatBs(totalOutstanding)})`
+            }
+            placeholder="Selecciona ruta"
+            onClick={() => setIsRouteModalOpen(true)}
+          />
+        </div>
+
         <RangePicker dayKeys={period.length ? period : [toDayKey(new Date())]} onChange={setPeriod} />
         <button className="text-left text-sm font-bold text-[var(--primary)]" onClick={() => setPeriod([])}>
           {period.length ? 'Ver todos los créditos' : 'Mostrando todos los créditos'}
         </button>
+
         <div className="grid grid-cols-2 gap-2">
-          <KpiCard label="Cartera pendiente" value={formatBs(totalOutstanding)} tone="warning" />
-          <KpiCard label="Clientes con saldo" value={String(byCustomer.filter((entry) => entry.balance > 0).length)} />
+          <KpiCard
+            label={selectedRouteId === 'all' || !selectedRouteId ? 'Cartera pendiente' : `Cartera (${selectedRouteName})`}
+            value={formatBs(totalOutstanding)}
+            tone="warning"
+          />
+          <KpiCard
+            label="Clientes con saldo"
+            value={String(totalCustomersWithBalance)}
+          />
         </div>
+
         <div className="grid grid-cols-2 gap-2">
           <SecondaryButton disabled={exporting} onClick={() => void exportCredits('pdf')}>
             Descargar PDF
@@ -379,13 +393,21 @@ export function CreditsView({ session, data }: DistributionViewProps) {
 
         <div className="grid gap-2">
           {filtered.map((entry) => {
-            const hasOpeningBalance = entry.receivables.some((r) => r.sourceType === 'opening_balance' && r.balance > 0)
-            const openingDebtSum = entry.receivables
+            const hasOpeningBalance = entry.filteredReceivables.some(
+              (r) => r.sourceType === 'opening_balance' && r.balance > 0,
+            )
+            const openingDebtSum = entry.filteredReceivables
               .filter((r) => r.sourceType === 'opening_balance' && r.balance > 0)
               .reduce((sum, r) => sum + r.balance, 0)
             const overrideActive = data.creditOverrides.some(
               (o) => o.customerId === entry.customerId && !o.revokedAt && o.activeUntil > nowIso,
             )
+
+            const isCrossRoute =
+              entry.totalBalance > entry.filteredBalance &&
+              entry.filteredBalance > 0 &&
+              selectedRouteId !== 'all' &&
+              Boolean(selectedRouteId)
 
             return (
               <div
@@ -409,10 +431,33 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                     )}
                   </div>
                   <p className="text-xs text-slate-500">
-                    {data.customers.find((c) => c.id === entry.customerId)?.customerCode ||
-                      data.customers.find((c) => c.id === entry.customerId)?.identityNumber}
+                    {entry.customerCode || entry.identityNumber}
                   </p>
-                  <p className="text-[11px] font-semibold text-slate-500">
+
+                  {/* Detalle de ruta de origen */}
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-slate-600">
+                    {selectedRouteId && selectedRouteId !== 'all' ? (
+                      <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-bold text-slate-700">
+                        Ruta: {selectedRouteName}
+                      </span>
+                    ) : entry.routes.length === 1 ? (
+                      <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-bold text-slate-700">
+                        Ruta: {entry.routes[0].routeName}
+                      </span>
+                    ) : entry.routes.length > 1 ? (
+                      <span className="rounded-md bg-amber-50 px-1.5 py-0.5 font-bold text-amber-800">
+                        {entry.routes.map((r) => `${r.routeName}: ${formatBs(r.balance)}`).join(' · ')}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {isCrossRoute && (
+                    <p className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                      Deuda total del cliente: {formatBs(entry.totalBalance)}
+                    </p>
+                  )}
+
+                  <p className="text-[11px] font-semibold text-slate-400">
                     Último movimiento: {new Date(entry.lastMovementAt).toLocaleDateString('es-BO')}
                   </p>
                   {hasOpeningBalance && (
@@ -423,11 +468,18 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                 </button>
 
                 <div className="flex shrink-0 items-center justify-between gap-3 sm:flex-col sm:items-end sm:justify-center">
-                  <span
-                    className={`text-base font-black tabular-nums ${entry.balance > 0 ? 'text-[var(--primary)]' : 'text-emerald-600'}`}
-                  >
-                    {formatBs(entry.balance)}
-                  </span>
+                  <div className="text-right">
+                    <p className="text-[10px] font-bold uppercase text-slate-400">
+                      {selectedRouteId !== 'all' && selectedRouteId ? 'En esta ruta' : 'Deuda pendiente'}
+                    </p>
+                    <span
+                      className={`text-base font-black tabular-nums ${
+                        entry.filteredBalance > 0 ? 'text-[var(--primary)]' : 'text-emerald-600'
+                      }`}
+                    >
+                      {formatBs(entry.filteredBalance)}
+                    </span>
+                  </div>
                   <div className="flex gap-2">
                     {hasOpeningBalance && session.can('dist.collection.create') && (
                       <button
@@ -438,10 +490,10 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                         Cobrar deuda anterior
                       </button>
                     )}
-                    {entry.balance > 0 && session.can('dist.collection.create') && (
+                    {entry.filteredBalance > 0 && session.can('dist.collection.create') && (
                       <button
                         type="button"
-                        onClick={() => openCustomerCollection(entry)}
+                        onClick={() => openCustomerCollection(entry, entry.filteredBalance)}
                         className="flex items-center gap-1 rounded-xl bg-[var(--primary)] px-3 py-1 text-xs font-extrabold text-white hover:opacity-90"
                       >
                         <HandCoins size={13} /> Cobrar
@@ -455,12 +507,46 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         </div>
       </div>
 
+      {/* Modal de Selector de Ruta */}
+      <ChoiceModal
+        isOpen={isRouteModalOpen}
+        onClose={() => setIsRouteModalOpen(false)}
+        title="Ruta de cartera"
+        subtitle="Filtra clientes y deudas por la ruta de origen del crédito"
+        searchable
+        options={[
+          {
+            value: 'all',
+            label: 'Todas las rutas',
+            description: 'Cartera general completa',
+            trailing: formatBs(grandTotalBalance),
+          },
+          ...availableRoutes.map((r) => ({
+            value: r.id,
+            label: r.name,
+            description: `${r.customerCount} cliente${r.customerCount === 1 ? '' : 's'} con saldo`,
+            trailing: formatBs(r.totalBalance),
+          })),
+        ]}
+        selectedValue={selectedRouteId || 'all'}
+        onSelect={(val) => {
+          setSelectedRouteId(val)
+          setIsRouteModalOpen(false)
+        }}
+      />
+
       {/* Modal de Detalle de Cartera del Cliente */}
       <Modal
         isOpen={Boolean(selected)}
         onClose={() => setSelected(null)}
         title={selected?.customerName ?? ''}
-        subtitle={selected ? `Deuda total acumulada: ${formatBs(selected.balance)}` : ''}
+        subtitle={
+          selected
+            ? selectedRouteId !== 'all' && selectedRouteId
+              ? `Deuda en ${selectedRouteName}: ${formatBs(selected.filteredBalance)} · Deuda total: ${formatBs(selected.totalBalance)}`
+              : `Deuda total acumulada: ${formatBs(selected.totalBalance)}`
+            : ''
+        }
         size="lg"
       >
         {selected && (
@@ -480,23 +566,23 @@ export function CreditsView({ session, data }: DistributionViewProps) {
               </div>
             )}
 
-            {selected.balance > 0 && session.can('dist.collection.create') && (
+            {selected.totalBalance > 0 && session.can('dist.collection.create') && (
               <button
                 type="button"
-                onClick={() => openCustomerCollection(selected)}
+                onClick={() => openCustomerCollection(selected, selected.filteredBalance || selected.totalBalance)}
                 className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-2xl text-xs font-black text-white shadow-sm"
                 style={{ backgroundColor: 'var(--primary)' }}
               >
-                <HandCoins size={16} /> REGISTRAR COBRO (DEUDA TOTAL: {formatBs(selected.balance)})
+                <HandCoins size={16} /> REGISTRAR COBRO (DEUDA TOTAL: {formatBs(selected.totalBalance)})
               </button>
             )}
 
-            {selected.receivables.some((r) => r.sourceType === 'opening_balance' && r.balance > 0) &&
+            {selected.allReceivables.some((r) => r.sourceType === 'opening_balance' && r.balance > 0) &&
               session.can('dist.collection.create') && (
                 <button
                   type="button"
                   onClick={() => {
-                    const debtSum = selected.receivables
+                    const debtSum = selected.allReceivables
                       .filter((r) => r.sourceType === 'opening_balance' && r.balance > 0)
                       .reduce((sum, r) => sum + r.balance, 0)
                     openCustomerCollection(selected, debtSum)
@@ -505,7 +591,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                 >
                   <HandCoins size={15} /> Cobrar deuda anterior (
                   {formatBs(
-                    selected.receivables
+                    selected.allReceivables
                       .filter((r) => r.sourceType === 'opening_balance' && r.balance > 0)
                       .reduce((sum, r) => sum + r.balance, 0),
                   )}
@@ -544,48 +630,78 @@ export function CreditsView({ session, data }: DistributionViewProps) {
 
             <div className="grid gap-2">
               <p className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Origen de las deudas</p>
-              {selected.receivables
+              {selected.allReceivables
                 .slice()
                 .sort((a, b) => (b.sourceDate || b.createdAt).localeCompare(a.sourceDate || a.createdAt))
                 .filter((r) => r.balance > 0 || paidOpen)
-                .map((receivable) => (
-                  <div key={receivable.id} className="rounded-2xl border border-slate-200 bg-white p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-xs font-extrabold text-slate-900">
-                          {receivable.sourceType === 'opening_balance'
-                            ? 'Saldo inicial / Deuda anterior'
-                            : 'Venta a crédito'}
-                        </p>
-                        <p className="text-[11px] font-semibold text-slate-500">
-                          {new Date(receivable.sourceDate || receivable.createdAt).toLocaleDateString('es-BO')} ·{' '}
-                          {receivable.distributorName || 'Registro anterior'}
-                        </p>
-                        {receivable.note && (
-                          <p className="mt-0.5 text-[11px] text-slate-500 italic">{receivable.note}</p>
-                        )}
-                        <p className="mt-1 text-[11px] font-semibold text-slate-600">
-                          Monto original: {formatBs(receivable.originalAmount)} · Pagado: {formatBs(receivable.paidAmount)}
-                        </p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <span
-                          className={`text-xs font-black tabular-nums ${receivable.balance > 0 ? 'text-[var(--primary)]' : 'text-emerald-600'}`}
-                        >
-                          Saldo: {formatBs(receivable.balance)}
-                        </span>
+                .map((receivable) => {
+                  const isVoid = Boolean(
+                    (receivable as unknown as Record<string, unknown>).voidedAt ||
+                      (receivable as unknown as Record<string, unknown>).voidReason ||
+                      (receivable as unknown as Record<string, unknown>).isVoid ||
+                      receivable.note?.toLowerCase().includes('anulad'),
+                  )
+                  const isOpening = receivable.sourceType === 'opening_balance'
+
+                  return (
+                    <div key={receivable.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-extrabold text-slate-900">
+                              {isOpening ? 'Saldo inicial / Deuda anterior' : isVoid ? 'Venta anulada' : 'Venta a crédito'}
+                            </p>
+                            {isVoid && (
+                              <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[9px] font-black text-rose-800">
+                                ANULADA
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] font-semibold text-slate-500">
+                            {new Date(receivable.sourceDate || receivable.createdAt).toLocaleDateString('es-BO')} ·{' '}
+                            {receivable.distributorName || 'Registro anterior'}
+                            {receivable.routeId && (
+                              <span> · {getRouteDisplayName(receivable.routeId, data.routes)}</span>
+                            )}
+                          </p>
+                          {receivable.note && (
+                            <p className="mt-0.5 text-[11px] text-slate-500 italic">{receivable.note}</p>
+                          )}
+
+                          {/* Detalle de productos cuando no es opening balance */}
+                          {!isOpening && (
+                            <CreditProducts
+                              lines={receivable.saleLines}
+                              saleId={receivable.saleId}
+                              isVoid={isVoid}
+                            />
+                          )}
+
+                          <p className="mt-1 text-[11px] font-semibold text-slate-600">
+                            Monto original: {formatBs(receivable.originalAmount)} · Pagado: {formatBs(receivable.paidAmount)}
+                          </p>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <span
+                            className={`text-xs font-black tabular-nums ${
+                              receivable.balance > 0 ? 'text-[var(--primary)]' : 'text-emerald-600'
+                            }`}
+                          >
+                            Saldo: {formatBs(receivable.balance)}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
 
-              {selected.receivables.some((r) => r.balance <= 0) && (
+              {selected.allReceivables.some((r) => r.balance <= 0) && (
                 <button
                   type="button"
                   onClick={() => setPaidOpen((value) => !value)}
                   className="mt-1 flex min-h-[40px] w-full items-center justify-between rounded-2xl border border-slate-200 px-3 text-left text-xs font-extrabold text-slate-700"
                 >
-                  <span>Créditos saldados ({selected.receivables.filter((r) => r.balance <= 0).length})</span>
+                  <span>Créditos saldados ({selected.allReceivables.filter((r) => r.balance <= 0).length})</span>
                   {paidOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
               )}
@@ -612,7 +728,26 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                         {collection.collectedByName}
                       </p>
                       {collection.note && <p className="mt-0.5 text-slate-500 italic">{collection.note}</p>}
-                      <div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={() => void printCollection(collection)} className="flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 px-3 font-extrabold text-slate-700"><Printer size={14} /> Imprimir</button><button type="button" onClick={() => void shareCollectionReceipt(collection, receiptContext).catch(error => setReceiptFeedback((error as Error).message))} className="flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 px-3 font-extrabold text-slate-700"><Share2 size={14} /> Compartir</button></div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void printCollection(collection)}
+                          className="flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 px-3 font-extrabold text-slate-700"
+                        >
+                          <Printer size={14} /> Imprimir
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void shareCollectionReceipt(collection, receiptContext).catch((error) =>
+                              setReceiptFeedback((error as Error).message),
+                            )
+                          }
+                          className="flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 px-3 font-extrabold text-slate-700"
+                        >
+                          <Share2 size={14} /> Compartir
+                        </button>
+                      </div>
                     </div>
                   ))}
                 {!data.collections.some((collection) => collection.customerId === selected.customerId) && (
@@ -624,8 +759,57 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         )}
       </Modal>
 
-      <Modal isOpen={Boolean(lastCollection)} onClose={() => setLastCollection(null)} title="Cobro registrado correctamente" subtitle={lastCollection ? `${lastCollection.customerName} · ${formatBs(lastCollection.amount)}` : ''} footer={<PrimaryButton full onClick={() => setLastCollection(null)}>Finalizar</PrimaryButton>}>
-        {lastCollection && <div className="grid gap-3"><div className="rounded-2xl bg-emerald-50 p-4 text-center"><p className="text-xs font-extrabold uppercase text-emerald-700">Monto recibido</p><p className="mt-1 text-2xl font-black text-emerald-800">{formatBs(lastCollection.amount)}</p>{lastCollection.portfolioBalanceAfter !== undefined && <p className="mt-1 text-xs font-bold text-emerald-700">Saldo restante: {formatBs(lastCollection.portfolioBalanceAfter)}</p>}</div><div className="grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printCollection(lastCollection)}><Printer size={16} /> Imprimir ticket</SecondaryButton><SecondaryButton onClick={() => void shareCollectionReceipt(lastCollection, receiptContext).then(shared => setReceiptFeedback(shared ? 'Opciones para compartir abiertas.' : 'Envío cancelado.')).catch(error => setReceiptFeedback((error as Error).message))}><Share2 size={16} /> Compartir</SecondaryButton></div>{session.role === 'admin' && <SecondaryButton full onClick={() => void printLargeCollectionReceipt(lastCollection, receiptContext).catch(error => setReceiptFeedback((error as Error).message))}><Printer size={16} /> Imprimir en hoja normal</SecondaryButton>}{receiptFeedback && <p className="text-center text-xs font-bold text-slate-600">{receiptFeedback}</p>}</div>}
+      <Modal
+        isOpen={Boolean(lastCollection)}
+        onClose={() => setLastCollection(null)}
+        title="Cobro registrado correctamente"
+        subtitle={lastCollection ? `${lastCollection.customerName} · ${formatBs(lastCollection.amount)}` : ''}
+        footer={
+          <PrimaryButton full onClick={() => setLastCollection(null)}>
+            Finalizar
+          </PrimaryButton>
+        }
+      >
+        {lastCollection && (
+          <div className="grid gap-3">
+            <div className="rounded-2xl bg-emerald-50 p-4 text-center">
+              <p className="text-xs font-extrabold uppercase text-emerald-700">Monto recibido</p>
+              <p className="mt-1 text-2xl font-black text-emerald-800">{formatBs(lastCollection.amount)}</p>
+              {lastCollection.portfolioBalanceAfter !== undefined && (
+                <p className="mt-1 text-xs font-bold text-emerald-700">
+                  Saldo restante: {formatBs(lastCollection.portfolioBalanceAfter)}
+                </p>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <SecondaryButton onClick={() => void printCollection(lastCollection)}>
+                <Printer size={16} /> Imprimir ticket
+              </SecondaryButton>
+              <SecondaryButton
+                onClick={() =>
+                  void shareCollectionReceipt(lastCollection, receiptContext)
+                    .then((shared) => setReceiptFeedback(shared ? 'Opciones para compartir abiertas.' : 'Envío cancelado.'))
+                    .catch((error) => setReceiptFeedback((error as Error).message))
+                }
+              >
+                <Share2 size={16} /> Compartir
+              </SecondaryButton>
+            </div>
+            {session.role === 'admin' && (
+              <SecondaryButton
+                full
+                onClick={() =>
+                  void printLargeCollectionReceipt(lastCollection, receiptContext).catch((error) =>
+                    setReceiptFeedback((error as Error).message),
+                  )
+                }
+              >
+                <Printer size={16} /> Imprimir en hoja normal
+              </SecondaryButton>
+            )}
+            {receiptFeedback && <p className="text-center text-xs font-bold text-slate-600">{receiptFeedback}</p>}
+          </div>
+        )}
       </Modal>
 
       {/* Modal de Cobro a Nivel Cliente */}
@@ -638,11 +822,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
           }
         }}
         title="Registrar cobro de cliente"
-        subtitle={
-          collectCustomer
-            ? `${collectCustomer.customerName}`
-            : ''
-        }
+        subtitle={collectCustomer ? `${collectCustomer.customerName}` : ''}
         footer={
           <PrimaryButton full disabled={isSubmitting} onClick={requestCollectionConfirmation}>
             Cobrar
@@ -654,16 +834,43 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-slate-600">Deuda total del cliente:</span>
-                <span className="font-black text-rose-700 tabular-nums">{formatBs(collectCustomer.balance)}</span>
+                <span className="font-black text-rose-700 tabular-nums">
+                  {formatBs(collectCustomer.totalBalance)}
+                </span>
               </div>
+              {collectCustomer.filteredBalance > 0 &&
+                collectCustomer.totalBalance > collectCustomer.filteredBalance &&
+                selectedRouteId !== 'all' && (
+                  <div className="mt-1 flex items-center justify-between border-t border-slate-200 pt-1">
+                    <span className="font-semibold text-slate-700">Deuda en esta ruta ({selectedRouteName}):</span>
+                    <span className="font-black text-amber-800 tabular-nums">
+                      {formatBs(collectCustomer.filteredBalance)}
+                    </span>
+                  </div>
+                )}
               {collectionReferenceDebt !== undefined && (
                 <div className="mt-1 flex items-center justify-between border-t border-slate-200 pt-1">
-                  <span className="font-semibold text-amber-700">Deuda anterior registrada:</span>
-                  <span className="font-black text-amber-800 tabular-nums">{formatBs(collectionReferenceDebt)}</span>
+                  <span className="font-semibold text-amber-700">Monto sugerido / seleccionado:</span>
+                  <span className="font-black text-amber-800 tabular-nums">
+                    {formatBs(collectionReferenceDebt)}
+                  </span>
                 </div>
               )}
             </div>
           )}
+
+          {collectCustomer &&
+            collectCustomer.totalBalance > collectCustomer.filteredBalance &&
+            collectCustomer.filteredBalance > 0 &&
+            selectedRouteId !== 'all' && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                <p className="font-black">Cliente con deudas en múltiples rutas</p>
+                <p className="mt-0.5 text-[11px] leading-tight text-amber-800">
+                  Aviso: Las cobranzas se amortizan contablemente por orden de antigüedad (FIFO) a la cartera total del cliente.
+                </p>
+              </div>
+            )}
+
           <Field
             label="Monto a cobrar (Bs)"
             required
@@ -672,7 +879,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             <NumberInput
               value={amount}
               min={0}
-              max={collectCustomer?.balance}
+              max={collectCustomer?.totalBalance}
               step={1}
               onChange={(event) => handleAmountChange(event.target.value)}
             />
@@ -699,7 +906,11 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             </div>
           )}
           <Field label="Observación">
-            <TextArea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ej: Abono cuenta general" />
+            <TextArea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Ej: Abono cuenta general"
+            />
           </Field>
           <p className="text-[11px] font-semibold text-slate-500">
             El pago amortiza la deuda general del cliente y se distribuye a las ventas pendientes por orden de antigüedad.
@@ -729,74 +940,63 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       >
         {collectCustomer && (
           <div className="grid gap-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs grid gap-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500">Cliente:</span>
-                <span className="font-extrabold text-slate-900">{collectCustomer.customerName}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500">Saldo actual:</span>
-                <span className="font-bold text-slate-800 tabular-nums">{formatBs(collectCustomer.balance)}</span>
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-4 text-center">
-              <p className="text-xs font-extrabold uppercase tracking-wide text-emerald-700">Monto a cobrar</p>
-              <p className="mt-1 text-3xl font-black text-emerald-800 tabular-nums">{formatBs(round2(Number(amount)))}</p>
-              <div className="mt-2 text-xs font-semibold text-emerald-900">
-                Forma de cobro:{' '}
-                <span className="font-black">
-                  {method === 'cash' ? 'Efectivo' : method === 'qr' ? 'QR' : 'Mixto'}
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
+              <p className="font-extrabold text-slate-900">{collectCustomer.customerName}</p>
+              <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2">
+                <span className="font-semibold text-slate-600">Monto a cobrar:</span>
+                <span className="text-base font-black text-emerald-700 tabular-nums">
+                  {formatBs(round2(Number(amount)))}
                 </span>
-                {method === 'mixed' && (
-                  <span className="block mt-0.5 text-[11px] text-emerald-700">
-                    Efectivo: {formatBs(round2(Number(cashAmount)))} · QR: {formatBs(round2(Number(qrAmount)))}
-                  </span>
-                )}
+              </div>
+              <div className="mt-1 flex items-center justify-between">
+                <span className="font-semibold text-slate-600">Método de pago:</span>
+                <span className="font-bold text-slate-800">
+                  {method === 'cash' ? 'Efectivo' : method === 'qr' ? 'QR' : `Mixto (Efectivo ${formatBs(round2(Number(cashAmount)))} + QR ${formatBs(round2(Number(qrAmount)))})`}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center justify-between border-t border-slate-200 pt-1">
+                <span className="font-semibold text-slate-600">Saldo restante estimado:</span>
+                <span className="font-black text-slate-900 tabular-nums">
+                  {formatBs(Math.max(0, round2(collectCustomer.totalBalance - Number(amount))))}
+                </span>
               </div>
             </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs flex items-center justify-between">
-              <span className="font-semibold text-slate-600">Saldo que quedará después del cobro:</span>
-              <span className="text-sm font-black text-slate-900 tabular-nums">
-                {formatBs(Math.max(0, round2(collectCustomer.balance - round2(Number(amount)))))}
-              </span>
-            </div>
-
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-center text-xs font-bold text-amber-800">
-              ¿Estás seguro de registrar este cobro?
-            </div>
-
-            {error && <p className="text-xs font-bold text-rose-600 text-center">{error}</p>}
+            {note && (
+              <p className="text-xs text-slate-600 italic">
+                <span className="font-bold not-italic">Nota:</span> {note}
+              </p>
+            )}
+            <p className="text-[11px] font-semibold text-slate-500">
+              Al confirmar, el cobro se registrará en el servidor y amortizará las ventas más antiguas del cliente.
+            </p>
           </div>
         )}
       </Modal>
 
-      {/* Modal de Saldo Inicial / Deuda Anterior */}
+      {/* Modal de Saldo Anterior */}
       <Modal
         isOpen={openingBalanceOpen}
         onClose={() => setOpeningBalanceOpen(false)}
-        title="Saldo inicial / Deuda anterior"
-        subtitle="Registra deudas previas que el cliente traía de gestiones anteriores"
+        title="Registrar deuda anterior"
+        subtitle="Añade una deuda previa a la cartera de un cliente"
         footer={
-          <div className="grid grid-cols-2 gap-2 w-full">
-            <SecondaryButton disabled={isSubmitting} onClick={() => void submitOpeningBalance(false)}>
-              Guardar deuda
-            </SecondaryButton>
-            <PrimaryButton disabled={isSubmitting} onClick={() => void submitOpeningBalance(true)}>
-              Cobrar ahora
-            </PrimaryButton>
-          </div>
+          <PrimaryButton full disabled={isSubmitting} onClick={() => void submitOpeningBalance()}>
+            {isSubmitting ? 'Guardando...' : 'Guardar saldo anterior'}
+          </PrimaryButton>
         }
       >
         <div className="grid gap-3">
-          <Field label="Cliente" required hint="Selecciona un cliente existente o regístralo al instante.">
+          <Field label="Cliente" required>
             <ChoiceButton
-              placeholder="Buscar o seleccionar cliente..."
               label={data.customers.find((c) => c.id === openingCustomerId)?.name}
+              placeholder="Seleccionar cliente"
               description={
-                data.customers.find((c) => c.id === openingCustomerId)
-                  ? `CI: ${data.customers.find((c) => c.id === openingCustomerId)?.identityNumber || 'Sin CI'}${
+                openingCustomerId
+                  ? `CI: ${
+                      data.customers.find((c) => c.id === openingCustomerId)?.identityNumber ||
+                      data.customers.find((c) => c.id === openingCustomerId)?.customerCode ||
+                      'Sin carnet'
+                    }${
                       data.customers.find((c) => c.id === openingCustomerId)?.phone
                         ? ` · Tel: ${data.customers.find((c) => c.id === openingCustomerId)?.phone}`
                         : ''
@@ -809,17 +1009,17 @@ export function CreditsView({ session, data }: DistributionViewProps) {
               }}
             />
           </Field>
-          <Field label="Monto (Bs)" required>
-            <NumberInput value={openingAmount} min={0} onChange={(e) => setOpeningAmount(e.target.value)} />
+          <Field label="Monto adeudado (Bs)" required>
+            <NumberInput value={openingAmount} min={0} step={1} onChange={(e) => setOpeningAmount(e.target.value)} />
           </Field>
-          <Field label="Fecha de origen" required>
+          <Field label="Fecha de la deuda">
             <TextInput type="date" value={openingDate} onChange={(e) => setOpeningDate(e.target.value)} />
           </Field>
-          <Field label="Origen / Observación" required>
+          <Field label="Origen / Motivo de la deuda" required>
             <TextArea
               value={openingNote}
               onChange={(e) => setOpeningNote(e.target.value)}
-              placeholder="Ej: Saldo de libreta antigua / Deuda gestión anterior"
+              placeholder="Ej: Deuda pendiente del mes anterior según libreta..."
             />
           </Field>
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
