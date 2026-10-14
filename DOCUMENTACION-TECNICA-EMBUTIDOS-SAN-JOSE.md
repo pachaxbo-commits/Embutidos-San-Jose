@@ -207,3 +207,13 @@ Estado al cerrar esta limpieza:
 - Un crédito sin cobros queda saldado en cero al anular; con cobros parciales la operación se rechaza para exigir revisión administrativa.
 - Caso real Hugo del 13 de octubre: la venta de 70 kg seguía activa en una ruta abierta, como única línea y con crédito sin cobros. La corrección anterior confirmó 70 kg al mismo precio, por lo que no existió devolución de stock. No se alteró producción manualmente.
 - Android: `versionCode 36`, `versionName 1.4.16`; misma firma oficial.
+
+## Limpieza selectiva 1.4.18 (14 de octubre de 2026)
+
+- Soporte conserva el flujo protegido de vista previa, reautenticación, frase, confirmación, respaldo, bloqueo de doble ejecución y auditoría.
+- La limpieza ahora permite elegir categorías; el preset recomendado conserva clientes e identidades, además de usuarios, productos, fotografías, rutas, almacenes, configuración, respaldos y auditoría de mantenimiento.
+- Las dependencias se resuelven nuevamente en servidor y por documento cuando corresponde. Borrar créditos/cobros conserva clientes y ventas, y elimina únicamente las verificaciones QR relacionadas con esos cobros.
+- El `requestId` guarda el alcance exacto en una subcolección interna; la ejecución ignora cualquier alcance nuevo enviado por el navegador.
+- El respaldo contiene exclusivamente los documentos aprobados y debe completarse antes del primer borrado.
+- Se incorporaron al registro operativo autorizaciones de crédito, correcciones de venta, solicitudes de ajuste y turnos de almacén.
+- Android: `versionCode 38`, `versionName 1.4.18`; misma firma oficial.

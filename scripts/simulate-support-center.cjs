@@ -26,8 +26,12 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
 
       if (viewport.width === 360) {
         await page.getByRole('button', { name: /Revisar limpieza/ }).click()
+        assert(await page.getByText('¿Qué datos deseas limpiar?').isVisible())
+        const customers = page.getByText('Clientes', { exact: true }).locator('..').locator('input[type=checkbox]')
+        assert(!(await customers.isChecked()), 'Clientes debe conservarse en el preset recomendado')
         await page.getByRole('button', { name: /Mostrar datos que se limpiarán/ }).click()
-        await page.getByText(/registros serán respaldados/).waitFor()
+        await page.getByText(/SE ELIMINARÁ/).waitFor()
+        await page.getByText(/SE CONSERVARÁ/).waitFor()
         const execute = page.getByRole('button', { name: /Crear respaldo y limpiar datos/ })
         assert(await execute.isDisabled(), 'la confirmación final debe iniciar bloqueada')
         await page.getByLabel('Contraseña actual').fill('demo1234')
@@ -35,7 +39,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
         await page.getByText(/Confirmo que revisé el conteo/).click()
         assert(!(await execute.isDisabled()), 'la confirmación final debe habilitarse después de los tres controles')
         await execute.click()
-        await page.getByText(/Entrega limpia terminada/).waitFor({ timeout: 30000 })
+        await page.getByText(/Limpieza terminada correctamente/).waitFor({ timeout: 30000 })
         results.resetCompleted = true
       }
       await context.close()
