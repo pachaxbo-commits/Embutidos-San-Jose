@@ -5,7 +5,7 @@ import {
   getDocFromCache,
   updateDoc,
 } from "firebase/firestore";
-import { getFirebaseContext } from "../../../lib/firebase";
+import { assertFirebaseWritesAllowed, getFirebaseContext } from "../../../lib/firebase";
 import { shouldReturnProvisional } from "../domain/offlineOperationPolicy";
 export { shouldReturnProvisional } from "../domain/offlineOperationPolicy";
 
@@ -39,6 +39,7 @@ export async function submitOperation<T>(
 ): Promise<T> {
   const ctx = await getFirebaseContext();
   if (!ctx?.auth.currentUser) throw new Error("Inicia sesión para continuar.");
+  assertFirebaseWritesAllowed(ctx.app.options.projectId);
   if (!online && provisional === undefined)
     throw new Error("Esta operación requiere conexión.");
   const ref = doc(
@@ -132,6 +133,7 @@ export async function submitOperation<T>(
 export async function acknowledgeOperation(id: string) {
   const ctx = await getFirebaseContext();
   if (!ctx) throw new Error("Inicia sesión.");
+  assertFirebaseWritesAllowed(ctx.app.options.projectId);
   await updateDoc(
     doc(ctx.db, "restaurants", ctx.restaurantId, "distOperations", id),
     { acknowledged: true },

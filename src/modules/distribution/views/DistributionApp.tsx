@@ -17,6 +17,7 @@ import {
   Truck,
   Users,
   Wallet,
+  TrendingUp,
   HandCoins,
   UserCog,
   BarChart3,
@@ -45,6 +46,7 @@ import { CreditsView } from './CreditsView'
 import { CollectionsView } from './CollectionsView'
 import { CustomersView } from './CustomersView'
 import { ExpensesView } from './ExpensesView'
+import { OperatingResultView } from './OperatingResultView'
 import { ClosureView } from './ClosureView'
 import { ProductsView } from './ProductsView'
 import { ReportsView } from './ReportsView'
@@ -95,6 +97,7 @@ const MODULE_ICONS: Partial<Record<ModuleId, BottomNavItem<ModuleId>['icon']>> =
   'dist.collections': HandCoins,
   'dist.customers': Users,
   'dist.expenses': Wallet,
+  'dist.operating-result': TrendingUp,
   'dist.closure': ClipboardList,
   'dist.products': Grid3x3,
   'dist.reports': BarChart3,
@@ -251,6 +254,8 @@ export function DistributionApp({
         return <CustomersView {...viewProps} />
       case 'dist.expenses':
         return <ExpensesView {...viewProps} />
+      case 'dist.operating-result':
+        return <OperatingResultView {...viewProps} />
       case 'dist.closure':
         return <ClosureView {...viewProps} />
       case 'dist.products':

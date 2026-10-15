@@ -201,6 +201,21 @@ console.log('=== Iniciando pruebas unitarias: Reporte de Ganancias por Producto 
 // CASO 5: Venta corregida con eliminación de producto erróneo
 // -------------------------------------------------------------
 {
+  const originalLine: DistSaleLine = { productId: 'prod-chorizo', productNameSnapshot: 'Chorizo Parrillero', unitType: 'kg', quantity: 10, actualUnitPrice: 30, subtotal: 300, costTotal: 200 }
+  const correctedLine: DistSaleLine = { ...originalLine, quantity: 5, actualUnitPrice: 40, subtotal: 200, costTotal: 100 }
+  const sale = makeSale({
+    id: 'sale-snapshot-authority', total: 300, lines: [originalLine], latestCorrectionId: 'corr-snapshot',
+    effectiveSnapshot: { lines: [correctedLine], total: 200, paymentKind: 'cash', cashAmount: 200, qrAmount: 0, creditAmount: 0 },
+  })
+  const report = computeProductProfitReport([sale])
+  const item = report.items.find((entry) => entry.productId === 'prod-chorizo')
+  ok(item?.quantity === 5 && item.salesBs === 200 && item.costBs === 100, 'Snapshot efectivo prevalece sobre la venta original al calcular rentabilidad')
+}
+
+// -------------------------------------------------------------
+// CASO 6: Venta corregida con eliminación de producto erróneo
+// -------------------------------------------------------------
+{
   const sales: DistSale[] = [
     makeSale({
       id: 'sale-corr-del',

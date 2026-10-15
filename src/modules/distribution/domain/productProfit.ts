@@ -118,11 +118,12 @@ export function computeProductProfitReport(
 
   // 1. Procesar líneas de ventas efectivas (respetando correcciones auditadas)
   for (const sale of sales) {
-    if (sale.saleKind === 'courtesy' || sale.effectiveSnapshot?.saleKind === 'courtesy') continue
+    const effectiveSale = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    if (effectiveSale.saleKind === 'courtesy') continue
     const isCorrected = Boolean(
       sale.latestCorrectionId || sale.editedAt || (sale.revisions && sale.revisions.length > 0),
     )
-    const effectiveLines: DistSaleLine[] = sale.lines || []
+    const effectiveLines: DistSaleLine[] = effectiveSale.lines || []
 
     for (const line of effectiveLines) {
       if (line.quantity <= 0) continue

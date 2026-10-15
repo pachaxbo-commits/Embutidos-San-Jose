@@ -239,7 +239,8 @@ export function computeMoneySummary(
     qrCollections += Number(qr) || 0
   }
 
-  const cashExpenses = expenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0)
+  const cashExpenses = expenses.reduce((sum, expense) =>
+    sum + ((expense.paymentMethod ?? 'cash') === 'cash' ? (Number(expense.amount) || 0) : 0), 0)
 
   return {
     salesTotal: round2(salesTotal),

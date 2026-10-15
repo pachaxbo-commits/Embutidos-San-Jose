@@ -1,0 +1,98 @@
+import type { DistClaim, DistExpense, DistSale, DistStockMovement, ExpenseGroup } from '../types.ts'
+import { matchesRoute, round2, toDayKey } from './engine.ts'
+import { computeProductProfitReport, type ProductProfitReport } from './productProfit.ts'
+import { effectiveExpenseGroup } from './expenseCategories.ts'
+
+export interface OperatingResultExpenseRow {
+  id: string; dayKey: string; group: ExpenseGroup; category: string; concept: string
+  origin: string; responsible: string; amount: number; paymentMethod: 'cash' | 'transfer' | 'other'
+}
+export interface OperatingResultDetail {
+  key: 'grossSales' | 'adjustments' | 'netSales' | 'costOfSales' | 'grossMargin' | ExpenseGroup | 'losses' | 'courtesies' | 'result'
+  label: string; amount: number | null; rows: Array<Record<string, string | number>>; explanation?: string
+}
+export interface OperatingResult {
+  grossSales: number; adjustments: number; netSales: number; costOfSales: number | null; grossMargin: number | null
+  expenseTotals: Record<ExpenseGroup, number>; losses: number | null; courtesyCost: number
+  operatingResult: number | null; costsKnown: boolean; report: ProductProfitReport; details: OperatingResultDetail[]
+  expenses: OperatingResultExpenseRow[]
+}
+
+const ZERO: Record<ExpenseGroup, number> = { administration: 0, indirect: 0, equipment: 0, other: 0, production_additional: 0 }
+
+export function computeOperatingResult(
+  sales: DistSale[], claims: DistClaim[], expenses: DistExpense[], movements: DistStockMovement[], dayKeys: string[], routeFilter = '',
+): OperatingResult {
+  const inScope = (dayKey: string, routeId?: string) =>
+    (dayKeys.length === 0 || dayKeys.includes(dayKey)) && (!routeFilter || matchesRoute(routeId || '', routeFilter))
+  const scopedSales = sales.filter((sale) => inScope(sale.dayKey || toDayKey(sale.createdAt), sale.routeId))
+  const scopedClaims = claims.filter((claim) => inScope(claim.dayKey || toDayKey(claim.createdAt), claim.routeId))
+  const scopedExpenses = expenses.filter((expense) => !expense.voided && expense.affectsOperatingResult !== false && inScope(expense.dayKey || toDayKey(expense.createdAt), expense.routeId))
+  const scopedMovements = movements.filter((movement) => inScope(movement.dayKey || toDayKey(movement.createdAt), movement.routeId))
+  const report = computeProductProfitReport(scopedSales, scopedClaims, scopedExpenses, scopedMovements, dayKeys, routeFilter)
+  const commercialSales = scopedSales.filter((sale) => sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy')
+  const grossSales = round2(commercialSales.reduce((sum, sale) => sum + (sale.effectiveSnapshot?.total ?? sale.total), 0))
+  const adjustments = round2(scopedClaims.reduce((sum, claim) => sum + claim.revenueDelta, 0))
+  const netSales = round2(report.totals.salesBs)
+  const costOfSales = report.totals.costBs
+  const grossMargin = report.totals.profitBs
+  const expenseTotals = { ...ZERO }
+  const expenseRows: OperatingResultExpenseRow[] = scopedExpenses.map((expense) => {
+    const group = effectiveExpenseGroup(expense)
+    expenseTotals[group] = round2(expenseTotals[group] + expense.amount)
+    return {
+      id: expense.id,
+      dayKey: expense.dayKey || toDayKey(expense.createdAt),
+      group,
+      category: expense.categoryName || 'Por clasificar',
+      concept: expense.concept,
+      origin: expense.routeName || 'Sin origen',
+      responsible: expense.registeredByName || 'Sin responsable',
+      amount: expense.amount,
+      paymentMethod: expense.paymentMethod || 'cash',
+    }
+  })
+  const losses = scopedMovements.filter((movement) =>
+    movement.type === 'shortage' || movement.type === 'return_waste' || movement.type === 'dispatch_waste' ||
+    (movement.type === 'adjustment' && movement.centralDelta < 0),
+  )
+  const lossCostsKnown = losses.every((movement) => typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost))
+  const lossCost = lossCostsKnown ? round2(losses.reduce((sum, movement) => sum + (movement.lossCost || 0), 0)) : null
+  const courtesies = scopedSales.filter((sale) => sale.saleKind === 'courtesy' || sale.effectiveSnapshot?.saleKind === 'courtesy')
+  const courtesyMovements = scopedMovements.filter((movement) => movement.type === 'courtesy')
+  const courtesyCostBySale = courtesies.map((sale) => sale.courtesyCost ?? courtesyMovements.find((movement) => movement.refId === sale.id)?.lossCost)
+  const unlinkedCourtesyMovements = courtesyMovements.filter((movement) => !movement.refId || !courtesies.some((sale) => sale.id === movement.refId))
+  const courtesyKnown = courtesyCostBySale.every((cost) => typeof cost === 'number' && Number.isFinite(cost)) && unlinkedCourtesyMovements.every((movement) => typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost))
+  const courtesyCost = round2(courtesyCostBySale.reduce<number>((sum, cost) => sum + (typeof cost === 'number' ? cost : 0), 0) + unlinkedCourtesyMovements.reduce((sum, movement) => sum + (movement.lossCost || 0), 0))
+  const costsKnown = costOfSales !== null && lossCostsKnown && courtesyKnown
+  const operatingResult = costsKnown
+    ? round2((grossMargin ?? 0) - Object.values(expenseTotals).reduce((sum, amount) => sum + amount, 0) - (lossCost ?? 0) - courtesyCost)
+    : null
+  const expenseRowsFor = (group?: ExpenseGroup) => expenseRows.filter((expense) => !group || expense.group === group).map((expense) => ({
+    fecha: expense.dayKey, categoría: expense.category, concepto: expense.concept, origen: expense.origin,
+    responsable: expense.responsible, monto: expense.amount,
+  }))
+  const saleRows = report.allLineDetails.filter((line) => !line.isClaimRelated).map((line) => ({
+    fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, cliente: line.customerName,
+    origen: line.routeName, responsable: line.sellerName, monto: line.saleBs,
+  }))
+  const claimRows = scopedClaims.map((claim) => ({ fecha: claim.dayKey || toDayKey(claim.createdAt), producto: claim.productName,
+    tipo: claim.kind === 'return' ? 'Devolución' : 'Cambio', cliente: claim.customerName, origen: claim.routeId, monto: claim.revenueDelta }))
+  const movementRows = losses.map((movement) => ({ fecha: movement.dayKey || toDayKey(movement.createdAt), tipo: movement.type,
+    producto: movement.productName || movement.productId, origen: movement.routeId || 'Administración', monto: movement.lossCost ?? 'Costo no registrado' }))
+  const courtesyRows = courtesies.map((sale, index) => ({ fecha: sale.dayKey || toDayKey(sale.createdAt), motivo: sale.courtesyReason || 'Cortesía',
+    origen: sale.routeName, responsable: sale.sellerName, monto: courtesyCostBySale[index] ?? 'Costo no registrado' }))
+  courtesyRows.push(...unlinkedCourtesyMovements.map((movement) => ({ fecha: movement.dayKey || toDayKey(movement.createdAt), motivo: 'Cortesía sin venta vinculada', origen: movement.routeId || 'Administración', responsable: movement.responsibleName || 'Sin responsable', monto: movement.lossCost ?? 'Costo no registrado' })))
+  const details: OperatingResultDetail[] = [
+    { key: 'grossSales', label: 'Ventas brutas', amount: grossSales, rows: saleRows },
+    { key: 'adjustments', label: 'Cambios y devoluciones', amount: adjustments, rows: claimRows },
+    { key: 'netSales', label: 'Ventas netas', amount: netSales, rows: [...saleRows, ...claimRows] },
+    { key: 'costOfSales', label: 'Costo de lo vendido', amount: costOfSales, rows: report.allLineDetails.map((line) => ({ fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, costo: line.costBs ?? 'Costo histórico no registrado' })) },
+    { key: 'grossMargin', label: 'Margen bruto', amount: grossMargin, rows: report.items.map((item) => ({ producto: item.productName, ventas: item.salesBs, costo: item.costBs ?? 'No registrado', margen: item.profitBs ?? 'No disponible' })) },
+    ...(['administration', 'indirect', 'equipment', 'production_additional', 'other'] as ExpenseGroup[]).map((group) => ({ key: group, label: group === 'administration' ? 'Gastos de administración' : group === 'indirect' ? 'Gastos indirectos' : group === 'equipment' ? 'Gastos de equipamiento' : group === 'production_additional' ? 'Producción adicional' : 'Otros / por clasificar', amount: expenseTotals[group], rows: expenseRowsFor(group) })),
+    { key: 'losses', label: 'Mermas y pérdidas', amount: lossCost, rows: movementRows, explanation: lossCostsKnown ? undefined : 'Hay movimientos sin costo histórico; no se estima una cifra incompleta.' },
+    { key: 'courtesies', label: 'Costo de cortesías', amount: courtesyKnown ? courtesyCost : null, rows: courtesyRows },
+    { key: 'result', label: 'Resultado operativo estimado', amount: operatingResult, rows: [] },
+  ]
+  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows }
+}

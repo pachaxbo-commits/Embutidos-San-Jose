@@ -5,7 +5,7 @@ export type ModuleId =
   | 'dist.inventory' | 'dist.dispatches' | 'dist.sales' | 'dist.credits'
   | 'dist.collections' | 'dist.customers' | 'dist.expenses' | 'dist.closure'
   | 'dist.reports' | 'dist.users' | 'dist.products' | 'dist.support'
-  | 'dist.quotes'
+  | 'dist.quotes' | 'dist.operating-result'
   | 'printer-settings'
 
 export interface ModuleDefinition {
@@ -32,7 +32,8 @@ export const SAN_JOSE_APP_CONFIG = {
     { id: 'dist.sales', label: 'Ventas', requiredPermission: 'dist.sale.create' },
     { id: 'dist.quotes', label: 'Cotizaciones', requiredPermission: 'dist.sale.create', navigableBy: ['admin', 'distributor'] },
     { id: 'dist.credits', label: 'Creditos', requiredPermission: 'dist.credit.view' },
-    { id: 'dist.expenses', label: 'Gastos', requiredPermission: 'dist.expense.create' },
+    { id: 'dist.expenses', label: 'Egresos', requiredPermission: 'dist.expense.create' },
+    { id: 'dist.operating-result', label: 'Resultado del negocio', requiredPermission: 'dist.reports.view', navigableBy: ['admin'] },
     { id: 'dist.closure', label: 'Cierre', anyOfPermissions: ['dist.closure.money', 'dist.closure.warehouse'] },
     { id: 'dist.inventory', label: 'Inventario', requiredPermission: 'dist.inventory.view', navigableBy: ['admin', 'warehouse'] },
     { id: 'dist.dispatches', label: 'Despachos', requiredPermission: 'dist.dispatch.create' },
