@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { Download, FileSpreadsheet, FileText, Printer, Share2 } from 'lucide-react'
 import { Capacitor } from '@capacitor/core'
 import { Modal } from '../../../components/ui/Modal'
@@ -150,7 +150,7 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
           {amountButton('Ventas netas', result.netSales, 'netSales', 'text-[var(--primary)]')}
           {amountButton('Costo de lo vendido', result.costOfSales, 'costOfSales')}
           {amountButton('Margen bruto', result.grossMargin, 'grossMargin', 'text-emerald-700')}
-          {EXPENSE_GROUPS.map((group) => amountButton(group.label, result.expenseTotals[group.id], group.id))}
+          {EXPENSE_GROUPS.map((group) => <Fragment key={group.id}>{amountButton(group.label, result.expenseTotals[group.id], group.id)}</Fragment>)}
           {amountButton('Mermas y pérdidas', result.losses, 'losses', 'text-amber-800')}
           {amountButton('Costo de cortesías', result.courtesyCost, 'courtesies')}
           {amountButton('Resultado operativo estimado', result.operatingResult, 'result', 'text-[var(--primary)]')}
