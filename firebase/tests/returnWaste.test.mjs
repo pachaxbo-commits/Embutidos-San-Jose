@@ -14,7 +14,7 @@ const root = db.doc('restaurants/sanjose')
 const prefix = `rw-${Date.now().toString(36)}`
 const admin = `${prefix}-admin`, warehouse = `${prefix}-warehouse`, seller = `${prefix}-seller`
 const route = `${prefix}-route`, product = `${prefix}-product`, dispatchId = `${prefix}-dispatch`
-const routeLoc = `route__${route}`, lotId = `${prefix}-lot`
+const routeLoc = `route__${route}`, lotId = `${prefix}-lot-a`, lotIdB = `${prefix}-lot-b`
 let checks = 0
 const pass = (condition, message) => { assert.ok(condition, message); checks++; console.log('PASS', message) }
 const read = async (collection, id) => (await root.collection(collection).doc(id).get()).data()
@@ -35,8 +35,9 @@ try {
   await root.collection('distRoutes').doc(route).set({ id: route, restaurantId: 'sanjose', name: 'Ruta QA', active: true })
   await root.collection('distBalances').doc(`${routeLoc}__${product}`).set({ id: `${routeLoc}__${product}`, restaurantId: 'sanjose', locationKind: 'route', routeId: route, productId: product, quantity: 6 })
   await root.collection('distBalances').doc(`central__${product}`).set({ id: `central__${product}`, restaurantId: 'sanjose', locationKind: 'central', productId: product, quantity: 0 })
-  await root.collection('distLots').doc(lotId).set({ id: lotId, restaurantId: 'sanjose', productId: product, productName: 'Chorizo QA', unitType: 'kg', lotCode: 'LOTE-QA-6', expiresOn: '2099-01-01', productionCost: 8, quantities: { [routeLoc]: 6, central: 0 } })
-  await root.collection('distDispatches').doc(dispatchId).set({ id: dispatchId, restaurantId: 'sanjose', status: 'open', routeId: route, routeName: 'Ruta QA', distributorUid: seller, distributorName: 'Vendedor QA', warehouseId: 'central', lines: [{ productId: product, productName: 'Chorizo QA', unitType: 'kg', quantity: 6, allocations: [{ lotId, lotCode: 'LOTE-QA-6', quantity: 6, productionCost: 8 }] }], additions: [] })
+  await root.collection('distLots').doc(lotId).set({ id: lotId, restaurantId: 'sanjose', productId: product, productName: 'Chorizo QA', unitType: 'kg', lotCode: 'LOTE-QA-A', expiresOn: '2099-01-01', productionCost: 8, quantities: { [routeLoc]: 2, central: 0 } })
+  await root.collection('distLots').doc(lotIdB).set({ id: lotIdB, restaurantId: 'sanjose', productId: product, productName: 'Chorizo QA', unitType: 'kg', lotCode: 'LOTE-QA-B', expiresOn: '2099-01-01', productionCost: 8, quantities: { [routeLoc]: 4, central: 0 } })
+  await root.collection('distDispatches').doc(dispatchId).set({ id: dispatchId, restaurantId: 'sanjose', status: 'open', routeId: route, routeName: 'Ruta QA', distributorUid: seller, distributorName: 'Vendedor QA', warehouseId: 'central', lines: [{ productId: product, productName: 'Chorizo QA', unitType: 'kg', quantity: 6, allocations: [{ lotId, lotCode: 'LOTE-QA-A', quantity: 2, productionCost: 8 }, { lotId: lotIdB, lotCode: 'LOTE-QA-B', quantity: 4, productionCost: 8 }] }], additions: [] })
   const closureId = `closure_${dispatchId}`
   await root.collection('distClosures').doc(closureId).set({ id: closureId, restaurantId: 'sanjose', dispatchId, routeId: route, routeName: 'Ruta QA', distributorUid: seller, distributorName: 'Vendedor QA', status: 'draft', declaredReturns: { [product]: 6 }, returnDeclaredAt: new Date().toISOString(), products: [] })
 
@@ -51,10 +52,11 @@ try {
   pass(row.physicalReturn === 6 && row.actualReturn === 5.54 && row.shortage === 0 && row.overage === 0, '6 kg recibidos y 0,46 kg de merma registran 5,54 aptos sin faltante ni sobrante')
   pass((await read('distBalances', `${routeLoc}__${product}`)).quantity === 0 && (await read('distBalances', `central__${product}`)).quantity === 5.54, 'ruta se reconcilia en cero y solo 5,54 kg vendibles vuelven a almacén')
   let lot = await read('distLots', lotId)
-  pass(lot.quantities[routeLoc] === 0 && lot.quantities.central === 5.54, 'retorno apto conserva el lote original')
+  let lotB = await read('distLots', lotIdB)
+  pass(lot.quantities[routeLoc] === 0 && lot.quantities.central === 2 && lotB.quantities[routeLoc] === 0 && lotB.quantities.central === 3.54, 'retorno apto vuelve proporcionalmente a los dos lotes originales sin mezclar asignaciones')
   const firstMovements = await root.collection('distStockMovements').where('refId', '==', first.id).get()
   const wasteMovement = firstMovements.docs.map((doc) => doc.data()).find((movement) => movement.type === 'return_waste')
-  pass(wasteMovement?.lossCost === 3.68 && wasteMovement.allocations[0].lotCode === 'LOTE-QA-6', 'merma conserva lote, costo histórico y costo de pérdida sin volver al stock vendible')
+  pass(wasteMovement?.lossCost === 3.68 && wasteMovement.allocations[0].lotCode === 'LOTE-QA-B', 'merma conserva lote, costo histórico y costo de pérdida sin volver al stock vendible')
 
   await run(admin, 'closure', { mode: 'money', closure: { dispatchId, status: 'closed', physicalCashDeclared: 0 } })
   const reopened = await run(admin, 'reopen', { closureId, reason: 'Corregir pesaje de recepción' })
@@ -65,7 +67,8 @@ try {
   pass(Boolean(reversedWaste?.reversedAt && reversedWaste.reversalOperationId), 'la merma anterior queda auditada como revertida para no duplicar pérdidas en reportes')
   pass((await read('distBalances', `${routeLoc}__${product}`)).quantity === 6 && (await read('distBalances', `central__${product}`)).quantity === 0, 'reapertura revierte exactamente la aplicación previa al lote y balances originales')
   lot = await read('distLots', lotId)
-  pass(lot.quantities[routeLoc] === 6 && lot.quantities.central === 0, 'reapertura devuelve al lote de ruta las cantidades aptas y mermadas')
+  lotB = await read('distLots', lotIdB)
+  pass(lot.quantities[routeLoc] === 2 && lot.quantities.central === 0 && lotB.quantities[routeLoc] === 4 && lotB.quantities.central === 0, 'reapertura devuelve al lote de ruta las cantidades aptas y mermadas')
 
   await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId, products: [{ productId: product, actualReturn: 5.34, physicalReturn: 5.8, returnWaste: 0.46, returnWasteReason: 'Producto deteriorado' }] } })
   closure = await read('distClosures', closureId)
@@ -75,6 +78,24 @@ try {
   pass((await read('distBalances', `${routeLoc}__${product}`)).quantity === 0 && (await read('distBalances', `central__${product}`)).quantity === 5.34, 'segunda aplicación vuelve a reconciliar la ruta una sola vez')
   const wasteMovements = (await root.collection('distStockMovements').where('productId', '==', product).get()).docs.map((doc) => doc.data()).filter((movement) => movement.type === 'return_waste' && !movement.reversedAt)
   pass(wasteMovements.length === 1 && wasteMovements[0].lossCost === 3.68, 'al cerrar de nuevo, reportes solo conservan el costo de la merma vigente')
+
+  const overProduct = `${prefix}-over-product`, overDispatch = `${prefix}-over-dispatch`, overLot = `${prefix}-over-lot`
+  await root.collection('distProducts').doc(overProduct).set({ id: overProduct, restaurantId: 'sanjose', name: 'Producto sobrante QA', unitType: 'kg', active: true })
+  await root.collection('distBalances').doc(`${routeLoc}__${overProduct}`).set({ id: `${routeLoc}__${overProduct}`, restaurantId: 'sanjose', locationKind: 'route', routeId: route, productId: overProduct, quantity: 6 })
+  await root.collection('distBalances').doc(`central__${overProduct}`).set({ id: `central__${overProduct}`, restaurantId: 'sanjose', locationKind: 'central', productId: overProduct, quantity: 0 })
+  await root.collection('distLots').doc(overLot).set({ id: overLot, restaurantId: 'sanjose', productId: overProduct, productName: 'Producto sobrante QA', unitType: 'kg', lotCode: 'LOTE-SOBRANTE-QA', expiresOn: '2099-01-01', productionCost: 8, quantities: { [routeLoc]: 6, central: 0 } })
+  await root.collection('distDispatches').doc(overDispatch).set({ id: overDispatch, restaurantId: 'sanjose', status: 'open', routeId: route, routeName: 'Ruta QA', distributorUid: seller, distributorName: 'Vendedor QA', warehouseId: 'central', lines: [{ productId: overProduct, productName: 'Producto sobrante QA', unitType: 'kg', quantity: 6, allocations: [{ lotId: overLot, lotCode: 'LOTE-SOBRANTE-QA', quantity: 6, productionCost: 8 }] }], additions: [] })
+  const overClosureId = `closure_${overDispatch}`
+  await root.collection('distClosures').doc(overClosureId).set({ id: overClosureId, restaurantId: 'sanjose', dispatchId: overDispatch, routeId: route, routeName: 'Ruta QA', distributorUid: seller, distributorName: 'Vendedor QA', status: 'draft', declaredReturns: { [overProduct]: 6 }, returnDeclaredAt: new Date().toISOString(), products: [] })
+  await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: overDispatch, products: [{ productId: overProduct, actualReturn: 5.54, physicalReturn: 6.46, returnWaste: 0.46, returnWasteReason: 'Producto deteriorado' }] } })
+  const overClosure = await read('distClosures', overClosureId)
+  const overRow = overClosure.products[0]
+  const overLots = await root.collection('distLots').where('productId', '==', overProduct).get()
+  const quarantineLot = overLots.docs.map((doc) => doc.data()).find((item) => item.quarantined)
+  const overageMovement = (await root.collection('distStockMovements').where('dispatchId', '==', overDispatch).get()).docs.map((doc) => doc.data()).find((movement) => movement.type === 'overage')
+  pass(overRow.actualReturn === 5.54 && overRow.returnWaste === 0.46 && overRow.overage === 0.46 && overRow.shortage === 0, 'sobrante real y merma se mantienen separados en la misma recepción')
+  pass((await read('distBalances', `${routeLoc}__${overProduct}`)).quantity === 0 && (await read('distBalances', `central__${overProduct}`)).quantity === 6 && quarantineLot?.quantities.central === 0.46, 'solo 5,54 kg vendibles y 0,46 kg en cuarentena llegan al almacén; ruta queda en cero')
+  pass(overageMovement?.routeDelta === 0 && overageMovement.centralDelta === 0.46, 'sobrante sin lote de ruta verificable no inventa una salida en la ruta')
 
   console.log(`${checks} comprobaciones de retorno/merma aprobadas`)
 } finally {
