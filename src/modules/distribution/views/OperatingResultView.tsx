@@ -18,7 +18,7 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
   const sections: Array<[string, number | null]> = [
     ['Ventas brutas', result.grossSales], ['Cambios y devoluciones', result.adjustments],
     ['Ventas netas', result.netSales], ['Costo de lo vendido', result.costOfSales], ['Margen bruto', result.grossMargin],
-    ...EXPENSE_GROUPS.map((group) => [group.label, result.expenseTotals[group.id]] as [string, number]),
+    ...EXPENSE_GROUPS.map((group) => [group.label, result.expenseTotals[group.id]] as [string, number | null]),
     ['Mermas y pérdidas', result.losses], ['Costo de cortesías', result.courtesyCost],
     ['Resultado operativo estimado', result.operatingResult],
   ]
@@ -102,7 +102,7 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
   const [routeFilter, setRouteFilter] = useState('')
   const [selectedDetail, setSelectedDetail] = useState<OperatingResultDetail | null>(null)
   const [feedback, setFeedback] = useState('')
-  const result = useMemo(() => computeOperatingResult(data.sales, data.claims, data.expenses, data.movements, session.dayKeys, routeFilter), [data.sales, data.claims, data.expenses, data.movements, session.dayKeys, routeFilter])
+  const result = useMemo(() => computeOperatingResult(data.sales, data.claims, data.expenses, data.movements, session.dayKeys, routeFilter, data.routes), [data.sales, data.claims, data.expenses, data.movements, data.routes, session.dayKeys, routeFilter])
   const period = describeRange(session.dayKeys)
   const amount = (value: number | null) => value === null ? 'No disponible' : formatBs(value)
   const runExport = async (kind: 'pdf' | 'excel') => {

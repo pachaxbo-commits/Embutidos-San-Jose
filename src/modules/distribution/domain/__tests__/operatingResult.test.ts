@@ -27,6 +27,8 @@ equal(result.courtesyCost, 0, 'sin cortesía vinculada a venta no se inventa cos
 equal(result.operatingResult, -5, 'resultado luego de egresos y pérdida')
 equal(result.details.find((entry) => entry.key === 'administration')?.rows[0]?.categoría, 'Servicios', 'detalle clasificado')
 equal(result.expenses.find((row) => row.paymentMethod === 'transfer')?.amount, 10, 'detalle con forma de pago')
+equal(result.details.find((entry) => entry.key === 'adjustments')?.rows[0]?.origen, 'Ruta A', 'el detalle evita mostrar el ID de la ruta')
+equal(result.details.find((entry) => entry.key === 'losses')?.rows[0]?.tipo, 'Faltante', 'el detalle traduce tipos internos de movimientos')
 
 const courtesy = sale({ id: 'courtesy', operationId: 'courtesy', saleKind: 'courtesy', total: 0, cashAmount: 0, creditAmount: 0, lines: [], courtesyCost: 4 })
 const withCourtesy = computeOperatingResult([sale(), courtesy], [claim()], [expense()], [movement(), movement({ id: 'c-mov', type: 'courtesy', lossCost: 4, refId: 'courtesy', refType: 'sale' })], ['2026-10-10'])
@@ -38,6 +40,12 @@ equal(withCourtesy.operatingResult, 1, 'cortesías descontadas una sola vez')
 const unknownCost = computeOperatingResult([sale({ lines: [{ productId: 'p1', productNameSnapshot: 'Chorizo', unitType: 'kg', quantity: 10, actualUnitPrice: 10, subtotal: 100 }] })], [], [], [], ['2026-10-10'])
 equal(unknownCost.operatingResult, null, 'no se fabrica resultado si falta costo histórico')
 equal(unknownCost.costsKnown, false, 'costos desconocidos')
+
+const legacyCourtesyWithoutCost = sale({ id: 'legacy-courtesy', operationId: 'legacy-courtesy', saleKind: 'courtesy', total: 0, cashAmount: 0, creditAmount: 0, lines: [] })
+const unknownCourtesyCost = computeOperatingResult([sale(), legacyCourtesyWithoutCost], [], [], [], ['2026-10-10'])
+equal(unknownCourtesyCost.courtesyCost, null, 'no presenta como completo el costo de una cortesía histórica sin costo verificable')
+equal(unknownCourtesyCost.details.find((entry) => entry.key === 'courtesies')?.amount, null, 'el detalle marca el costo de cortesías no disponible')
+equal(unknownCourtesyCost.operatingResult, null, 'no calcula resultado cuando el costo de cortesía no puede verificarse')
 
 const money = computeMoneySummary([], [], [expense(), expense({ id: '2', operationId: 'e2', amount: 10, paymentMethod: 'transfer' }), expense({ id: '3', operationId: 'e3', amount: 3, paymentMethod: 'other' })])
 equal(money.cashExpenses, 10, 'solo efectivo reduce caja; QR/transferencia y otros no')

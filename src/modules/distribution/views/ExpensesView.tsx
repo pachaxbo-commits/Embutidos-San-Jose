@@ -79,7 +79,8 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
     finally { setBusy(false) }
   }
 
-  return <Screen title="Egresos" subtitle={session.role === 'admin' ? 'Salidas de dinero por grupo, origen y forma de pago' : 'Egresos registrados para tu ruta'} actions={<div className="flex flex-wrap gap-2">{session.role === 'admin' && <SecondaryButton disabled={readOnlyPreview} onClick={() => setCategoriesOpen(true)}><Pencil size={15}/> Categorías</SecondaryButton>}{session.can('dist.expense.create') && <PrimaryButton disabled={readOnlyPreview} onClick={() => { resetForm(); setFormOpen(true) }}><Plus size={16}/> Nuevo egreso</PrimaryButton>}</div>}>
+  return <Screen title="Egresos" subtitle={session.role === 'admin' ? 'Salidas de dinero por grupo, origen y forma de pago' : 'Egresos registrados para tu ruta'}>
+    <div className="mb-3 flex min-w-0 flex-wrap justify-end gap-2">{session.role === 'admin' && <SecondaryButton disabled={readOnlyPreview} onClick={() => setCategoriesOpen(true)}><Pencil size={15}/> Categorías</SecondaryButton>}{session.can('dist.expense.create') && <PrimaryButton disabled={readOnlyPreview} onClick={() => { resetForm(); setFormOpen(true) }}><Plus size={16}/> Nuevo egreso</PrimaryButton>}</div>
     {readOnlyPreview && <p role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">Vista previa — los cambios están deshabilitados porque esta versión está conectada a producción.</p>}
     <RangePicker dayKeys={session.dayKeys} onChange={session.setDayKeys}/>
     {session.role === 'admin' && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
