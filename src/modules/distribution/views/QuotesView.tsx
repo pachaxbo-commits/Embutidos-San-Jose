@@ -131,11 +131,11 @@ export function QuotesView({ session, data }: DistributionViewProps) {
     ctx.fillText(`Cliente: ${documentText.customer}`, 60, y, 880); y += 36
     if (documentText.phone) { ctx.fillText(`Teléfono: ${documentText.phone}`, 60, y); y += 36 }
     ctx.fillText(`Válida hasta: ${documentText.validUntil}`, 60, y); y += 55
-    ctx.fillStyle = '#172033'; ctx.font = 'bold 23px Arial'; ctx.fillText('PRODUCTO',60,y); ctx.fillText('CANT.',625,y); ctx.fillText('PRECIO',760,y); ctx.fillText('TOTAL',940,y); y += 45; ctx.font = '21px Arial'
+    ctx.fillStyle = '#172033'; ctx.font = 'bold 23px Arial'; ctx.fillText('PRODUCTO',60,y); ctx.fillText('CANT.',625,y); ctx.textAlign='right'; ctx.fillText('PRECIO',820,y); ctx.fillText('TOTAL',940,y); ctx.textAlign='left'; y += 45; ctx.font = '21px Arial'
     const wrapProduct = (value: string) => { const result: string[]=[]; let current=''; for(const word of value.split(/\s+/)){const next=current?`${current} ${word}`:word;if(ctx.measureText(next).width>480&&current){result.push(current);current=word}else current=next}if(current)result.push(current);return result }
-    quote.lines.forEach(line => { const nameLines=wrapProduct(line.productNameSnapshot); nameLines.forEach((text,index)=>ctx.fillText(text,60,y+index*27,480)); ctx.fillText(formatQty(line.quantity,line.unitType),625,y); ctx.fillText(formatBs(line.unitPrice),760,y); ctx.textAlign = 'right'; ctx.fillText(formatBs(line.subtotal),940,y); ctx.textAlign='left'; y+=Math.max(42,nameLines.length*30) })
+    quote.lines.forEach(line => { const nameLines=wrapProduct(line.productNameSnapshot); nameLines.forEach((text,index)=>ctx.fillText(text,60,y+index*27,480)); ctx.fillText(formatQty(line.quantity,line.unitType),625,y); ctx.textAlign = 'right'; ctx.fillText(formatBs(line.unitPrice),820,y); ctx.fillText(formatBs(line.subtotal),940,y); ctx.textAlign='left'; y+=Math.max(42,nameLines.length*30) })
     ctx.strokeStyle='#cbd5e1'; ctx.beginPath(); ctx.moveTo(60,y); ctx.lineTo(940,y); ctx.stroke(); y+=55
-    ctx.fillStyle='#b51224'; ctx.font='bold 34px Arial'; ctx.textAlign='right'; ctx.fillText(`TOTAL REFERENCIAL ${formatBs(quote.total)}`,940,y); ctx.textAlign='left'; y += 60
+    ctx.fillStyle='#b51224'; ctx.font='bold 32px Arial'; ctx.fillText('TOTAL REFERENCIAL',60,y); ctx.textAlign='right'; ctx.fillText(formatBs(quote.total),940,y); ctx.textAlign='left'; y += 60
     ctx.fillStyle='#475569'; ctx.font='20px Arial'; ctx.fillText(documentText.footer,60,y); y += 34
     if (documentText.note) { ctx.font='19px Arial'; ctx.fillStyle='#334155'; const words=documentText.note.split(/\s+/); let line=''; for(const word of words){const next=line?`${line} ${word}`:word;if(ctx.measureText(next).width>870&&line){ctx.fillText(`Observación: ${line}`,60,y,880);line=word;y+=28}else line=next}if(line)ctx.fillText(`Observación: ${line}`,60,y,880) }
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve,'image/png')); if (!blob) return
