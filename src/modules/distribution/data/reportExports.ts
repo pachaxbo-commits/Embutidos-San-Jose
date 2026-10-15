@@ -382,7 +382,7 @@ export function reportSheets(
   }) =>
     days.includes(r.dayKey || toDayKey(r.createdAt)) &&
     (!route || matchesRoute(r.routeId, route));
-  const sales = data.sales.filter(
+  const allSales = data.sales.filter(
       (s) =>
         inScope(s) &&
         !s.pendingConfirmation &&
@@ -409,10 +409,12 @@ export function reportSheets(
         inScope(r) &&
         (!seller || r.registeredByUid === seller),
     );
+  const sales = allSales.filter(s => s.saleKind !== 'courtesy')
+  const courtesySales = allSales.filter(s => s.saleKind === 'courtesy')
   const claims = data.claims.filter(
     (c) =>
       inScope(c) &&
-      (!seller ||
+        (!seller ||
         c.sellerUid === seller ||
         (!c.sellerUid && data.sales.some((s) => s.id === c.saleId && s.sellerUid === seller))),
   );
@@ -421,7 +423,7 @@ export function reportSheets(
     .filter(inScope)
     .filter(
       (m) =>
-        m.type === "shortage" ||
+        m.type === "shortage" || m.type === "return_waste" || m.type === "courtesy" ||
         (m.type === "adjustment" && m.centralDelta < 0),
     );
   const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0));
@@ -509,6 +511,15 @@ export function reportSheets(
         s.total,
         ] as Cell[]),
         ["TOTAL", "", "", "", "", "", round2(sales.reduce((n, s) => n + s.cashAmount, 0)), round2(sales.reduce((n, s) => n + s.qrAmount, 0)), round2(sales.reduce((n, s) => n + s.creditAmount, 0)), round2(sales.reduce((n, s) => n + s.total, 0))],
+      ],
+    },
+    {
+      id: 'courtesies',
+      name: 'Entregas de cortesía',
+      headers: ['Fecha y hora', 'Comprobante', 'Vendedor', 'Ruta', 'Cliente', 'Producto', 'Cantidad', 'Unidad', 'Valor referencial (Bs)', 'Costo de producción (Bs)', 'Motivo'],
+      rows: [
+        ...courtesySales.flatMap(s => s.lines.map(line => [reportDateTime(s.createdAt), reportReceiptNumber(s.id), reportPersonName(s.sellerName), reportRecordName(s.routeName, 'Ruta registrada'), s.customerName || 'Sin cliente', line.productNameSnapshot, line.quantity, reportUnitLabel(line.unitType), line.referenceSubtotal ?? round2(line.quantity * (line.referenceUnitPrice || line.actualUnitPrice)), line.costTotal ?? null, s.courtesyReason || 'Sin motivo registrado'] as Cell[])),
+        ['TOTAL', '', '', '', '', '', round2(courtesySales.reduce((sum,s)=>sum+s.lines.reduce((n,l)=>n+l.quantity,0),0)), '', round2(courtesySales.reduce((sum,s)=>sum+s.lines.reduce((n,l)=>n+(l.referenceSubtotal ?? l.quantity*(l.referenceUnitPrice||l.actualUnitPrice)),0),0)), courtesySales.every(s=>s.courtesyCost !== null && s.courtesyCost !== undefined) ? round2(courtesySales.reduce((n,s)=>n+(s.courtesyCost||0),0)) : null, 'No son ventas ni cobros'],
       ],
     },
     {
@@ -769,6 +780,19 @@ export function reportSheets(
           ] as Cell[]),
           ["TOTAL", "", "", "", round2(closures.reduce((n, c) => n + (c.expectedCash || 0), 0)), round2(closures.reduce((n, c) => n + (c.physicalCashDeclared || 0), 0)), round2(closures.reduce((n, c) => n + (c.cashDifference || 0), 0))],
         ]
+      })(),
+    },
+    {
+      id: 'returnReconciliation',
+      name: 'Detalle de retorno',
+      headers: ['Fecha', 'Ruta', 'Producto', 'Unidad', 'Cargado', 'Vendido', 'Cortesía', 'Debía retornar', 'Retorno apto', 'Merma', 'Costo merma (Bs)', 'Motivo merma', 'Faltante', 'Sobrante en cuarentena'],
+      rows: (() => {
+        const closures = data.closures.filter(inScope).filter(c => !seller || c.distributorUid === seller)
+        const products = closures.flatMap(c => c.products.map(p => ({ closure: c, product: p })))
+        const sum = (pick: (p: typeof products[number]['product']) => number) => round2(products.reduce((n, row) => n + pick(row.product), 0))
+        const rows = products.map(({closure:c,product:p}) => [reportDateTime(c.createdAt), reportRecordName(c.routeName, 'Ruta registrada'), reportRecordName(p.productName, 'Producto registrado'), reportUnitLabel(p.unitType), p.totalLoaded, p.sold, p.courtesy || 0, p.expectedReturn, p.actualReturn, p.returnWaste || 0, p.lossCost ?? null, p.returnWasteReason || '', p.shortage ?? Math.max(0, p.expectedReturn - p.actualReturn - (p.returnWaste || 0)), p.overage || 0] as Cell[])
+        const costKnown = products.every(({product:p}) => (p.returnWaste || 0) === 0 || typeof p.lossCost === 'number')
+        return [...rows, ['TOTAL', '', '', '', sum(p=>p.totalLoaded), sum(p=>p.sold), sum(p=>p.courtesy||0), sum(p=>p.expectedReturn), sum(p=>p.actualReturn), sum(p=>p.returnWaste||0), costKnown ? sum(p=>p.lossCost||0) : null, '', sum(p=>p.shortage ?? Math.max(0,p.expectedReturn-p.actualReturn-(p.returnWaste||0))), sum(p=>p.overage||0)]]
       })(),
     },
     (() => {

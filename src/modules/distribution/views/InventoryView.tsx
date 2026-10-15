@@ -22,6 +22,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   dispatch_addition: 'Aumento de despacho', dispatch_correction: 'Corrección de despacho',
   sale: 'Venta', adjustment: 'Disminución por ajuste', return: 'Devolución recibida',
   shortage: 'Faltante', overage: 'Sobrante', exchange: 'Cambio de producto',
+  return_waste: 'Merma al recibir retorno', courtesy: 'Salida por cortesía',
   customer_return: 'Devolución del cliente',
 }
 

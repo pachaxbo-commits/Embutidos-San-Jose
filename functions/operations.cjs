@@ -530,6 +530,29 @@ function dispatchCorrectionAmount(value, product) {
   check(product.unitType === "kg" || Number.isInteger(value), "Paquetes y unidades requieren cantidades enteras.");
   return round(value);
 }
+
+function splitAllocationsByAmounts(allocations, amounts) {
+  const groups = amounts.map(() => []);
+  let groupIndex = 0;
+  let remaining = amounts[0] || 0;
+  for (const allocation of allocations) {
+    let quantity = round(allocation.quantity);
+    while (quantity > 0.0001) {
+      while (groupIndex < amounts.length && remaining <= 0.0001) {
+        groupIndex += 1;
+        remaining = amounts[groupIndex] || 0;
+      }
+      check(groupIndex < amounts.length, "No se pudieron distribuir los lotes del retorno.");
+      const part = round(Math.min(quantity, remaining));
+      if (part > 0) groups[groupIndex].push({ ...allocation, quantity: part });
+      quantity = round(quantity - part);
+      remaining = round(remaining - part);
+    }
+  }
+  check(Math.abs(round(allocations.reduce((sum, part) => sum + part.quantity, 0)) - round(amounts.reduce((sum, value) => sum + value, 0))) < 0.01,
+    "Las asignaciones de lotes no coinciden con las cantidades recibidas.");
+  return groups;
+}
 async function revertLineStock(o, d, line, returnQty, reason) {
   if (returnQty <= 0) return [];
   const wh = d.warehouseId || "central";
@@ -1017,6 +1040,8 @@ async function correctDispatch(o, p) {
   return { id: d.id, corrections: d.corrections };
 }
 async function sale(o, p) {
+  const isCourtesy = p.saleKind === "courtesy";
+  check(!isCourtesy || typeof p.courtesyReason === "string" && p.courtesyReason.trim(), "Indica el motivo de la cortesía.");
   check(
     ["admin", "distributor"].includes(o.member.role),
     "No puedes registrar ventas.",
@@ -1051,36 +1076,39 @@ async function sale(o, p) {
   if (p.customerId) {
     const c = await o.read("distCustomers", p.customerId);
     check(c?.active, "El cliente está inactivo.");
-    check(c.identityNumber, "Completa el CI del cliente antes de vender.");
-    const debts = await o.query("distReceivables", "customerId", p.customerId);
-    const supportConfig = await o.read("supportConfig", "main");
-    const creditBlockDays = Number.isInteger(supportConfig?.creditBlockDays)
-      ? supportConfig.creditBlockDays
-      : 7;
-    const override = await o.read("distCreditOverrides", p.customerId);
-    const overrideActive = override && !override.revokedAt && Date.parse(override.activeUntil) > Date.now();
-    check(
-      overrideActive || !debts.some(
-        (d) =>
-          d.balance > 0 &&
-          new Date(d.createdAt).getTime() + creditBlockDays * 86400000 <= Date.now(),
-      ),
-      `Venta bloqueada: el cliente tiene créditos pendientes de ${creditBlockDays} días o más.`,
-    );
+    if (!isCourtesy) {
+      check(c.identityNumber, "Completa el CI del cliente antes de vender.");
+      const debts = await o.query("distReceivables", "customerId", p.customerId);
+      const supportConfig = await o.read("supportConfig", "main");
+      const creditBlockDays = Number.isInteger(supportConfig?.creditBlockDays)
+        ? supportConfig.creditBlockDays
+        : 7;
+      const override = await o.read("distCreditOverrides", p.customerId);
+      const overrideActive = override && !override.revokedAt && Date.parse(override.activeUntil) > Date.now();
+      check(
+        overrideActive || !debts.some(
+          (d) =>
+            d.balance > 0 &&
+            new Date(d.createdAt).getTime() + creditBlockDays * 86400000 <= Date.now(),
+        ),
+        `Venta bloqueada: el cliente tiene créditos pendientes de ${creditBlockDays} días o más.`,
+      );
+    }
     p.customerName = c.name;
-    p.customerCode = c.identityNumber;
+    p.customerCode = c.identityNumber || c.customerCode || "";
   }
   check(Array.isArray(p.lines) && p.lines.length, "Agrega productos.");
   const lines = [];
   for (const l of p.lines) {
     const product = await o.product(l.productId);
-    const promotional = round(l.actualUnitPrice) !== round(product.referencePrice);
+    const actualUnitPrice = isCourtesy ? round(product.referencePrice) : l.actualUnitPrice;
+    const promotional = !isCourtesy && round(actualUnitPrice) !== round(product.referencePrice);
     check(
       o.member.role === "admin" || !promotional || l.isPromotional === true,
       "Marca la venta como promocional para modificar el precio.",
     );
     check(
-      Number.isFinite(l.actualUnitPrice) && l.actualUnitPrice > 0,
+      Number.isFinite(actualUnitPrice) && actualUnitPrice > 0,
       "Precio inválido.",
     );
     const allocations = await o.take(l.productId, loc, l.quantity);
@@ -1092,10 +1120,11 @@ async function sale(o, p) {
       descriptionSnapshot: product.description || "",
       unitType: product.unitType,
       quantity: l.quantity,
-      actualUnitPrice: round(l.actualUnitPrice),
+      actualUnitPrice: round(actualUnitPrice),
       referenceUnitPrice: round(product.referencePrice),
       isPromotional: promotional,
-      subtotal: round(l.quantity * l.actualUnitPrice),
+      subtotal: isCourtesy ? 0 : round(l.quantity * actualUnitPrice),
+      ...(isCourtesy ? { referenceSubtotal: round(l.quantity * product.referencePrice) } : {}),
       allocations,
       costTotal: known
         ? round(
@@ -1103,9 +1132,19 @@ async function sale(o, p) {
           )
         : null,
     });
-    o.ledger(l.productId, l.quantity, loc, null, "sale", { allocations });
+    o.ledger(l.productId, l.quantity, loc, null, isCourtesy ? "courtesy" : "sale", {
+      allocations,
+      ...(isCourtesy ? { courtesyReason: p.courtesyReason.trim(), lossCost: known ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null } : {}),
+    });
   }
   const total = round(lines.reduce((n, l) => n + l.subtotal, 0));
+  if (isCourtesy) {
+    check([p.cashAmount, p.qrAmount, p.creditAmount].every((amount) => Number(amount) === 0), "Una cortesía no puede generar pagos ni crédito.");
+    p.paymentKind = "cash";
+    p.cashAmount = 0;
+    p.qrAmount = 0;
+    p.creditAmount = 0;
+  }
   check(
     [p.cashAmount, p.qrAmount, p.creditAmount].every(
       (x) => Number.isFinite(x) && x >= 0,
@@ -1116,6 +1155,13 @@ async function sale(o, p) {
   const s = {
     id: o.id,
     ...o.base(),
+    saleKind: isCourtesy ? "courtesy" : "sale",
+    ...(isCourtesy ? {
+      courtesyReason: p.courtesyReason.trim(),
+      courtesyCost: lines.every((line) => line.costTotal !== null)
+        ? round(lines.reduce((sum, line) => sum + line.costTotal, 0))
+        : null,
+    } : {}),
     operationId: o.id,
     sourceLocation: p.sourceLocation,
     routeId: p.routeId,
@@ -1475,7 +1521,8 @@ async function editSale(o, p) {
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes corregir tus propias ventas.");
   const dispatch = sale.dispatchId ? await o.read("distDispatches", sale.dispatchId) : null;
   check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. Usa un flujo administrativo posterior al cierre.");
-  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount };
+  const isCourtesy = sale.saleKind === "courtesy" || sale.effectiveSnapshot?.saleKind === "courtesy";
+  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount, saleKind: sale.saleKind || "sale" };
   const claims = await o.query("distClaims", "saleId", sale.id);
   check(claims.length === 0, "La venta tiene cambios o devoluciones y requiere revisión administrativa especializada.");
   check(Array.isArray(p.lines) && p.lines.length, "La venta debe conservar al menos un producto.");
@@ -1499,7 +1546,7 @@ async function editSale(o, p) {
       ...existing,
       quantity,
       subtotal,
-      actualUnitPrice: round(subtotal / quantity),
+      actualUnitPrice: round(subtotal / quantity || existing.actualUnitPrice),
       allocations: [...existing.allocations, ...line.allocations],
       costTotal: existing.costTotal == null || line.costTotal == null ? null : round(existing.costTotal + line.costTotal),
     });
@@ -1533,7 +1580,8 @@ async function editSale(o, p) {
     const referenceUnitPrice = round(previousLine?.referenceUnitPrice ?? product.referencePrice);
     const promotional = round(input.actualUnitPrice) !== referenceUnitPrice;
     check(o.member.role === "admin" || !promotional || input.isPromotional === true, "Marca la venta como promocional para modificar el precio.");
-    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice, isPromotional: promotional, subtotal: round(quantity * input.actualUnitPrice), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
+    const lineSubtotal = isCourtesy ? 0 : round(quantity * input.actualUnitPrice);
+    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice, isPromotional: isCourtesy ? false : promotional, subtotal: lineSubtotal, ...(isCourtesy ? { referenceSubtotal: round(quantity * referenceUnitPrice) } : {}), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
   }
   for (const previousLine of previousByProduct.values()) {
     if (!requestedProductIds.has(previousLine.productId)) {
@@ -1547,12 +1595,16 @@ async function editSale(o, p) {
     if (delta.quantity > 0) o.ledger(delta.productId, delta.quantity, loc, null, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
     if (delta.quantity < 0) o.ledger(delta.productId, -delta.quantity, null, loc, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
   }
-  const total = round(lines.reduce((sum, line) => sum + line.subtotal, 0));
+  const total = isCourtesy ? 0 : round(lines.reduce((sum, line) => sum + line.subtotal, 0));
   const hasLineChange = lines.length !== previousByProduct.size || lines.some(line => {
     const before = previousByProduct.get(line.productId);
     return !before || round(before.quantity) !== line.quantity || round(before.actualUnitPrice) !== line.actualUnitPrice;
   });
   const cashAmount = round(Number(p.cashAmount) || 0), qrAmount = round(Number(p.qrAmount) || 0), creditAmount = round(Number(p.creditAmount) || 0);
+  if (isCourtesy) {
+    check(cashAmount === 0 && qrAmount === 0 && creditAmount === 0, "Una cortesía no puede generar pagos ni crédito.");
+    check(p.paymentKind === "cash" || p.paymentKind === previous.paymentKind, "La cortesía no se puede convertir en una venta mediante la corrección.");
+  }
   const prevCash = round(Number(previous.cashAmount) || 0);
   const prevQr = round(Number(previous.qrAmount) || 0);
   const prevCredit = round(Number(previous.creditAmount) || 0);
@@ -1570,7 +1622,7 @@ async function editSale(o, p) {
   if (creditAmount > 0) o.put("distReceivables", sale.id, { ...(receivable || { id: sale.id, ...o.base(), saleId: sale.id, sourceType: "sale", customerId: sale.customerId, customerName: sale.customerName, customerCode: sale.customerCode, routeId: sale.routeId, distributorUid: sale.sellerUid, distributorName: sale.sellerName, paidAmount: 0 }), saleLines: lines, originalAmount: creditAmount, balance: round(creditAmount - alreadyPaid), status: creditAmount === alreadyPaid ? "PAID" : alreadyPaid > 0 ? "PARTIAL" : "OPEN" });
   else if (receivable) o.put("distReceivables", sale.id, { ...receivable, originalAmount: 0, balance: 0, status: "PAID", saleLines: lines });
   const revision = Number(sale.revision || 0) + 1;
-  const corrected = { lines, total, paymentKind: p.paymentKind, cashAmount, qrAmount, creditAmount };
+  const corrected = { lines, total, paymentKind: isCourtesy ? "cash" : p.paymentKind, cashAmount, qrAmount, creditAmount, saleKind: isCourtesy ? "courtesy" : "sale" };
   const correction = { id: o.id, ...o.base(), saleId: sale.id, sellerUid: sale.sellerUid, revision, reason: p.reason.trim(), original: previous, corrected, stockDeltas, moneyDelta: round(total - previous.total), creditDelta: round(creditAmount - previous.creditAmount), correctedByName: o.member.displayName || o.actor };
   o.put("distSaleCorrections", o.id, correction);
   o.put("distSales", sale.id, { ...sale, effectiveSnapshot: corrected, latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(), revision });
@@ -1591,7 +1643,7 @@ async function voidSale(o, p) {
   }
   const claims = await o.query("distClaims", "saleId", sale.id);
   check(claims.length === 0, "La venta tiene cambios o devoluciones y requiere revisión administrativa especializada.");
-  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount };
+  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount, saleKind: sale.saleKind || "sale" };
   check(Array.isArray(previous.lines) && previous.lines.length > 0, "La venta no tiene productos activos para anular.");
   check(previous.lines.every(line => Array.isArray(line.allocations) && line.allocations.length > 0), "Esta venta histórica no tiene lotes auditables y requiere revisión administrativa.");
   const receivable = await o.read("distReceivables", sale.id);
@@ -1618,7 +1670,7 @@ async function voidSale(o, p) {
     o.put("distReceivables", sale.id, { ...receivable, originalAmount: 0, balance: 0, status: "PAID", saleLines: [], voidedAt: o.now, voidedBy: o.actor, voidReason: p.reason.trim() });
   }
   const revision = Number(sale.revision || 0) + 1;
-  const corrected = { lines: [], total: 0, paymentKind: previous.paymentKind, cashAmount: 0, qrAmount: 0, creditAmount: 0 };
+  const corrected = { lines: [], total: 0, paymentKind: previous.paymentKind, cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: sale.saleKind || previous.saleKind || "sale" };
   const correction = { id: o.id, ...o.base(), kind: "void", saleId: sale.id, sellerUid: sale.sellerUid, revision, reason: p.reason.trim(), original: previous, corrected, stockDeltas, moneyDelta: round(-previous.total), creditDelta: round(-(Number(previous.creditAmount) || 0)), correctedByName: o.member.displayName || o.actor };
   o.put("distSaleCorrections", o.id, correction);
   o.put("distSales", sale.id, { ...sale, effectiveSnapshot: corrected, latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(), voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: p.reason.trim(), revision });
@@ -1640,6 +1692,77 @@ const handlers = {
   editSale,
   voidSale,
   correctDispatch,
+};
+
+function quoteStatus(quote, now = new Date()) {
+  if (quote.cancelledAt || quote.status === "cancelada") return "cancelada";
+  return quote.validUntil < dayKey(now) ? "vencida" : "vigente";
+}
+function quoteFields(p) {
+  check(Array.isArray(p.lines) && p.lines.length > 0 && p.lines.length <= 50, "Agrega al menos un producto a la cotización.");
+  const lines = p.lines.map((line) => {
+    check(Number.isFinite(line.quantity) && line.quantity > 0 && Number.isFinite(line.unitPrice) && line.unitPrice >= 0, "Revisa cantidades y precios de la cotización.");
+    check(line.unitType === "kg" || Number.isInteger(line.quantity), "Paquetes y unidades requieren cantidades enteras.");
+    const subtotal = round(line.quantity * line.unitPrice);
+    return { productId: safeId(line.productId), productNameSnapshot: String(line.productNameSnapshot || "").trim(), unitType: line.unitType, quantity: round(line.quantity), unitPrice: round(line.unitPrice), subtotal };
+  });
+  return { lines, total: round(lines.reduce((sum, line) => sum + line.subtotal, 0)) };
+}
+handlers.quoteCreate = async (o, p) => {
+  check(["admin", "distributor"].includes(o.member.role), "No tienes permiso para crear cotizaciones.");
+  check(validDate(p.validUntil) && p.validUntil >= o.today, "La fecha de vigencia no puede estar en el pasado.");
+  const routeId = o.member.role === "admin" ? "administracion" : String(o.member.routeId || "");
+  check(routeId && (o.member.role !== "distributor" || !p.routeId || p.routeId === routeId), "No tienes permiso para cotizar en esa ruta.");
+  const { lines, total } = quoteFields(p);
+  for (const line of lines) {
+    const product = await o.product(line.productId);
+    check(product.unitType === line.unitType, "La unidad del producto cambió. Actualiza la cotización.");
+    line.productNameSnapshot = product.name;
+  }
+  const route = routeId === "administracion" ? { name: "Administración" } : await o.read("distRoutes", routeId);
+  check(route, "La ruta de la cotización ya no está disponible.");
+  const customer = p.customerId ? await o.read("distCustomers", safeId(p.customerId)) : null;
+  check(!p.customerId || customer?.active !== false && customer, "El cliente seleccionado no está disponible.");
+  const now = o.now;
+  const quote = {
+    id: o.id, ...o.base(), quoteNumber: `COT-${o.today.replaceAll("-", "")}-${o.id.slice(-5).toUpperCase()}`,
+    status: "vigente", validUntil: p.validUntil, sellerUid: o.actor, sellerName: o.member.displayName || o.actor,
+    routeId, routeName: route.name, ...(customer ? { customerId: customer.id, customerName: customer.name, customerPhone: customer.phone || "" } : { customerName: String(p.customerName || "Cliente potencial").trim() || "Cliente potencial", customerPhone: String(p.customerPhone || "").trim() }),
+    lines, total, note: String(p.note || "").trim(), revision: 1, history: [],
+  };
+  o.put("distQuotes", quote.id, quote);
+  return quote;
+};
+handlers.quoteUpdate = async (o, p) => {
+  const quote = await o.read("distQuotes", safeId(p.quoteId));
+  check(quote && (o.member.role === "admin" || quote.sellerUid === o.actor), "No tienes permiso para modificar esta cotización.");
+  check(quoteStatus(quote) === "vigente", "Solo se pueden modificar cotizaciones vigentes.");
+  check(validDate(p.validUntil) && p.validUntil >= o.today, "La fecha de vigencia no puede estar en el pasado.");
+  const { lines, total } = quoteFields(p);
+  for (const line of lines) {
+    const product = await o.product(line.productId);
+    check(product.unitType === line.unitType, "La unidad del producto cambió. Actualiza la cotización.");
+    line.productNameSnapshot = product.name;
+  }
+  const customer = p.customerId ? await o.read("distCustomers", safeId(p.customerId)) : null;
+  check(!p.customerId || customer?.active !== false && customer, "El cliente seleccionado no está disponible.");
+  const nextCustomer = customer
+    ? { customerId: customer.id, customerName: customer.name, customerPhone: customer.phone || "" }
+    : { customerId: "", customerName: String(p.customerName || "Cliente potencial").trim() || "Cliente potencial", customerPhone: String(p.customerPhone || "").trim() };
+  const revision = (quote.revision || 1) + 1;
+  const updated = { ...quote, ...nextCustomer, lines, total, validUntil: p.validUntil, note: String(p.note || "").trim(), updatedAt: o.now, updatedBy: o.actor, revision, history: [...(quote.history || []).slice(-9), { at: o.now, by: o.actor, revision, previous: { total: quote.total, validUntil: quote.validUntil, customerId: quote.customerId || "", customerName: quote.customerName, lines: quote.lines, note: quote.note || "" }, next: { total, validUntil: p.validUntil, ...nextCustomer, lines, note: String(p.note || "").trim() } }] };
+  o.put("distQuotes", quote.id, updated);
+  return updated;
+};
+handlers.quoteCancel = async (o, p) => {
+  const quote = await o.read("distQuotes", safeId(p.quoteId));
+  check(quote && (o.member.role === "admin" || quote.sellerUid === o.actor), "No tienes permiso para cancelar esta cotización.");
+  check(quoteStatus(quote) === "vigente", "Solo se pueden cancelar cotizaciones vigentes.");
+  check(String(p.reason || "").trim(), "Indica el motivo de cancelación.");
+  const cancelReason = String(p.reason).trim();
+  const cancelled = { ...quote, status: "cancelada", cancelledAt: o.now, cancelledBy: o.actor, cancelledByName: o.member.displayName || o.actor, cancelReason, history: [...(quote.history || []).slice(-9), { at: o.now, by: o.actor, action: "cancelada", reason: cancelReason }] };
+  o.put("distQuotes", quote.id, cancelled);
+  return cancelled;
 };
 async function processCommand(db, ref) {
   return db.runTransaction(async (tx) => {
@@ -1853,7 +1976,8 @@ async function closure(o, p) {
       .filter((x) => x.routeId === "admin");
 
     const sum = (list, key) => round(list.reduce((n, r) => n + (r[key] || 0), 0));
-    const cashSales = sum(sales, "cashAmount"),
+    const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
+    const cashSales = sum(commercialSales, "cashAmount"),
       cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
       cashExpenses = sum(expenses, "amount"),
       claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
@@ -1874,8 +1998,8 @@ async function closure(o, p) {
       status: "closed",
       products: [],
       cashSales,
-      qrSales: sum(sales, "qrAmount"),
-      creditGenerated: sum(sales, "creditAmount"),
+      qrSales: sum(commercialSales, "qrAmount"),
+      creditGenerated: sum(commercialSales, "creditAmount"),
       cashCollections,
       qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
       cashExpenses,
@@ -1916,42 +2040,65 @@ async function closure(o, p) {
       const e = await o.loadStock(pid, route);
       await o.loadStock(pid, warehouse);
       const expected = e.balances.get(route).quantity;
-      const actual = requested.products?.find(
-        (r) => r.productId === pid,
-      )?.actualReturn;
+      const returnRow = requested.products?.find((r) => r.productId === pid);
+      const actual = Number.isFinite(Number(returnRow?.actualReturn)) ? round(Number(returnRow.actualReturn)) : Number.NaN;
+      const waste = Number.isFinite(Number(returnRow?.returnWaste || 0)) ? round(Number(returnRow.returnWaste || 0)) : Number.NaN;
+      const wasteReason = String(returnRow?.returnWasteReason || "").trim();
       check(
         Number.isFinite(actual) && actual >= 0,
         "Completa las cantidades de retorno.",
       );
-      const received = Math.min(expected, actual);
-      const parts =
-        received > 0
-          ? await o.take(pid, route, received, { allowExpired: true })
-          : [];
-      for (const a of parts) {
-        const l = e.lots.find((x) => x.id === a.lotId);
-        l.quantities[warehouse] = round(
-          (l.quantities[warehouse] || 0) + a.quantity,
-        );
+      check(Number.isFinite(waste) && waste >= 0 && (e.p.unitType === "kg" || Number.isInteger(waste)),
+        "La merma debe respetar la unidad del producto.");
+      check(waste === 0 || wasteReason.length > 0, "Indica el motivo de la merma al retorno.");
+      const normalApt = round(Math.min(actual, Math.max(0, round(expected - waste))));
+      const overage = round(actual - normalApt);
+      const shortage = round(Math.max(0, expected - actual - waste));
+      check(e.p.unitType === "kg" || Number.isInteger(actual), "Paquetes y unidades requieren cantidades enteras.");
+      check(waste <= expected + 0.001, "La merma no puede superar la cantidad que debía retornar.");
+      // Solo el retorno reconocido y la merma pueden consumir asignaciones que
+      // existen en el stock de la ruta. El sobrante físico no tiene una
+      // asignación de origen verificable: se recibe aparte, siempre en cuarentena.
+      const accountedRouteQuantity = round(normalApt + waste);
+      const receivedParts = accountedRouteQuantity > 0
+        ? await o.take(pid, route, accountedRouteQuantity, { allowExpired: true })
+        : [];
+      const [returnParts, wasteParts] = splitAllocationsByAmounts(
+        receivedParts,
+        [normalApt, waste],
+      );
+      for (const a of returnParts) {
+        const lot = e.lots.find((x) => x.id === a.lotId);
+        check(lot, "No se encontró el lote del producto retornado.");
+        lot.quantities[warehouse] = round((lot.quantities[warehouse] || 0) + a.quantity);
       }
-      o.move(e, warehouse, received);
-      if (received)
-        o.ledger(pid, received, route, warehouse, "return", {
-          allocations: parts,
+      if (normalApt > 0) {
+        o.move(e, warehouse, normalApt);
+        o.ledger(pid, normalApt, route, warehouse, "return", { allocations: returnParts });
+      }
+      if (waste > 0) {
+        const knownCost = wasteParts.every((a) => a.productionCost !== null);
+        const lossCost = knownCost
+          ? round(wasteParts.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
+          : null;
+        o.ledger(pid, waste, route, null, "return_waste", {
+          allocations: wasteParts,
+          lotCodes: [...new Set(wasteParts.map((a) => a.lotCode).filter(Boolean))],
+          lossCost,
+          reason: wasteReason,
+          dispatchId: d.id,
         });
-      if (expected > actual) {
-        const loss = await o.take(pid, route, round(expected - actual), {
-          allowExpired: true,
-        });
-        o.ledger(pid, expected - actual, route, null, "shortage", {
+      }
+      if (shortage > 0) {
+        const loss = await o.take(pid, route, shortage, { allowExpired: true });
+        const knownCost = loss.every((a) => a.productionCost !== null);
+        o.ledger(pid, shortage, route, null, "shortage", {
           allocations: loss,
-          lossCost: loss.every((a) => a.productionCost !== null)
-            ? round(loss.reduce((s, a) => s + a.quantity * a.productionCost, 0))
-            : null,
+          lossCost: knownCost ? round(loss.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null,
+          dispatchId: d.id,
         });
       }
-      if (actual > expected) {
-        const excess = round(actual - expected);
+      if (overage > 0) {
         const lotId = `${o.id}__surplus_${pid}`;
         e.lots.push({
           id: lotId,
@@ -1964,13 +2111,16 @@ async function closure(o, p) {
           expiresOn: "",
           productionCost: null,
           quarantined: true,
-          quantities: { [warehouse]: excess },
+          quantities: { [warehouse]: overage },
           createdAt: o.now,
           createdBy: o.actor,
         });
-        o.move(e, warehouse, excess);
-        o.ledger(pid, excess, null, warehouse, "overage", {
-          note: "Sobrante separado hasta verificar lote y origen.",
+        o.move(e, warehouse, overage);
+        o.ledger(pid, overage, route, warehouse, "overage", {
+          lotId,
+          allocations: [],
+          dispatchId: d.id,
+          note: "Sobrante físico sin asignación de lote verificable; separado en cuarentena hasta revisar su origen.",
         });
       }
       const initial = d.lines
@@ -1989,13 +2139,26 @@ async function closure(o, p) {
         totalLoaded: round(initial + additions),
         sold: round(
           sales
+            .filter((s) => s.saleKind !== "courtesy")
             .flatMap((s) => s.lines)
             .filter((l) => l.productId === pid)
             .reduce((s, l) => s + l.quantity, 0),
         ),
+        courtesy: round(sales
+          .filter((s) => s.saleKind === "courtesy")
+          .flatMap((s) => s.lines)
+          .filter((l) => l.productId === pid)
+          .reduce((sum, line) => sum + line.quantity, 0)),
         expectedReturn: expected,
         actualReturn: actual,
-        variance: round(actual - expected),
+        returnWaste: waste,
+        returnWasteReason: wasteReason,
+        shortage,
+        overage,
+        lossCost: wasteParts.every((a) => a.productionCost !== null)
+          ? round(wasteParts.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
+          : null,
+        variance: round(overage - shortage),
       });
     }
     const c = {
@@ -2037,7 +2200,8 @@ async function closure(o, p) {
     (x) => x.createdAt >= from,
   );
   const sum = (list, key) => round(list.reduce((n, r) => n + (r[key] || 0), 0));
-  const cashSales = sum(sales, "cashAmount"),
+  const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
+  const cashSales = sum(commercialSales, "cashAmount"),
     cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
     cashExpenses = sum(expenses, "amount"),
     claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
@@ -2053,8 +2217,8 @@ async function closure(o, p) {
     ...previous,
     status: "closed",
     cashSales,
-    qrSales: sum(sales, "qrAmount"),
-    creditGenerated: sum(sales, "creditAmount"),
+    qrSales: sum(commercialSales, "qrAmount"),
+    creditGenerated: sum(commercialSales, "creditAmount"),
     cashCollections,
     qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
     cashExpenses,
@@ -2080,6 +2244,7 @@ async function claim(o, p) {
   check(["exchange", "return"].includes(p.kind), "Tipo de reclamo inválido.");
   const s = await o.read("distSales", p.saleId);
   check(s, "No existe la venta original.");
+  check(s.saleKind !== "courtesy" && s.effectiveSnapshot?.saleKind !== "courtesy", "Las cortesías no generan cambios ni devoluciones con movimientos de dinero.");
   const isDistributor = o.member.role === "distributor";
   if (isDistributor) {
     check(s.sellerUid === o.actor, "Solo puedes registrar cambios o devoluciones de tus propias ventas.");

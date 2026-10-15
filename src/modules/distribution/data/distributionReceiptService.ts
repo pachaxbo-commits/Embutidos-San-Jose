@@ -35,7 +35,8 @@ export interface ReceiptContext {
 }
 
 export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext): PrintJobPayload {
-  const paymentLabel =
+  const isCourtesy = sale.saleKind === 'courtesy'
+  const paymentLabel = isCourtesy ? 'CORTESÍA · SIN COBRO' :
     sale.paymentKind === 'cash'
       ? 'EFECTIVO'
       : sale.paymentKind === 'qr'
@@ -44,9 +45,9 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
           ? 'CREDITO'
           : 'MIXTO'
   const paymentDetails = [
-    sale.cashAmount > 0 ? `EFECTIVO: ${round2(sale.cashAmount).toFixed(2)} Bs` : '',
-    sale.qrAmount > 0 ? `QR: ${round2(sale.qrAmount).toFixed(2)} Bs` : '',
-    sale.creditAmount > 0 ? `CREDITO: ${round2(sale.creditAmount).toFixed(2)} Bs` : '',
+    !isCourtesy && sale.cashAmount > 0 ? `EFECTIVO: ${round2(sale.cashAmount).toFixed(2)} Bs` : '',
+    !isCourtesy && sale.qrAmount > 0 ? `QR: ${round2(sale.qrAmount).toFixed(2)} Bs` : '',
+    !isCourtesy && sale.creditAmount > 0 ? `CREDITO: ${round2(sale.creditAmount).toFixed(2)} Bs` : '',
   ].filter(Boolean)
 
   return {
@@ -67,6 +68,7 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
       lineTotal: line.subtotal,
       modifiersText: [
         getLinePresentation(line),
+        isCourtesy ? `CORTESÍA · valor referencial Bs ${round2(line.referenceSubtotal || 0).toFixed(2)}` : '',
         line.isPromotional ? `PRECIO PROMOCIONAL (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})` : '',
       ].filter(Boolean) as string[],
     })),
@@ -80,6 +82,7 @@ export function buildSaleReceiptPayload(sale: DistSale, context: ReceiptContext)
     cashReceived: sale.cashReceived,
     changeAmount: sale.changeAmount,
     customMessage: [
+      isCourtesy ? `ENTREGA DE CORTESÍA · Motivo: ${sale.courtesyReason || 'No especificado'} · Valor referencial: Bs ${round2(sale.lines.reduce((sum, line) => sum + (line.referenceSubtotal || 0), 0)).toFixed(2)} · No es una venta ni genera cobro.` : '',
       sale.creditAmount > 0 ? `SALDO GENERADO: Bs ${round2(context.creditBalance ?? sale.creditAmount).toFixed(2)}` : '',
       provisionalReceiptNotice(Boolean(sale.pendingConfirmation), true),
     ].filter(Boolean).join(' · ') || undefined,
@@ -155,7 +158,7 @@ async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): P
   const width = 720
   const rowHeight = 76
   const presentationLines = sale.lines.filter(l => Boolean(getLinePresentation(l))).length
-  const height = 430 + sale.lines.length * rowHeight + presentationLines * 24 + (sale.changeAmount ? 56 : 0) + (sale.pendingConfirmation ? 30 : 0)
+  const height = 490 + sale.lines.length * rowHeight + presentationLines * 24 + (sale.changeAmount ? 56 : 0) + (sale.pendingConfirmation ? 30 : 0)
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
@@ -168,7 +171,8 @@ async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): P
   if (logo.complete && logo.naturalWidth) ctx.drawImage(logo, width / 2 - 65, 30, 130, 70)
   ctx.textAlign = 'center'; ctx.fillStyle = '#111827'; ctx.font = '700 30px Arial'; ctx.fillText(context.companyName, width / 2, 128)
   ctx.font = '20px Arial'; ctx.fillStyle = '#475569'; ctx.fillText(new Date(sale.createdAt).toLocaleString('es-BO'), width / 2, 160)
-  ctx.textAlign = 'left'; ctx.fillStyle = '#111827'; ctx.font = '700 21px Arial'; ctx.fillText(`Cliente: ${sale.customerName || 'Cliente ocasional'}`, 42, 205)
+  ctx.textAlign = 'left'; ctx.fillStyle = sale.saleKind === 'courtesy' ? '#86198f' : '#111827'; ctx.font = '700 21px Arial'; ctx.fillText(sale.saleKind === 'courtesy' ? 'ENTREGA DE CORTESÍA · SIN COBRO' : `Cliente: ${sale.customerName || 'Cliente ocasional'}`, 42, 205)
+  if (sale.saleKind === 'courtesy') { ctx.font = '17px Arial'; ctx.fillStyle = '#475569'; ctx.fillText(`Motivo: ${sale.courtesyReason || 'No especificado'}`, 42, 235) }
   if (sale.customerCode) { ctx.font = '18px Arial'; ctx.fillStyle = '#475569'; ctx.fillText(`CI: ${sale.customerCode}`, 42, 233) }
   let y = 275
   ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(42, y - 20); ctx.lineTo(width - 42, y - 20); ctx.stroke()
@@ -184,8 +188,13 @@ async function buildSaleReceiptImage(sale: DistSale, context: ReceiptContext): P
     ctx.fillText(`${line.quantity} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'} × Bs ${round2(line.actualUnitPrice).toFixed(2)}${line.isPromotional ? ` · PROMO (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})` : ''}`, 42, y)
     ctx.textAlign = 'right'; ctx.fillStyle = '#111827'; ctx.font = '700 20px Arial'; ctx.fillText(`Bs ${round2(line.subtotal).toFixed(2)}`, width - 42, y); ctx.textAlign = 'left'; y += 32
   }
+  if (sale.saleKind === 'courtesy') {
+    ctx.fillStyle = '#86198f'; ctx.font = '700 17px Arial'; ctx.fillText(`Motivo: ${sale.courtesyReason || 'No especificado'}`, 42, y)
+    y += 27; ctx.fillStyle = '#475569'; ctx.font = '17px Arial'; ctx.fillText(`Valor referencial: Bs ${round2(sale.lines.reduce((sum,line)=>sum+(line.referenceSubtotal||0),0)).toFixed(2)} · Sin cobro`, 42, y)
+    y += 28
+  }
   ctx.strokeStyle = '#e2e8f0'; ctx.beginPath(); ctx.moveTo(42, y - 28); ctx.lineTo(width - 42, y - 28); ctx.stroke()
-  ctx.fillStyle = '#111827'; ctx.font = '800 32px Arial'; ctx.fillText('TOTAL', 42, y + 8); ctx.textAlign = 'right'; ctx.fillStyle = '#c8102e'; ctx.fillText(`Bs ${round2(sale.total).toFixed(2)}`, width - 42, y + 8)
+  ctx.fillStyle = '#111827'; ctx.font = '800 32px Arial'; ctx.fillText(sale.saleKind === 'courtesy' ? 'TOTAL COBRADO' : 'TOTAL', 42, y + 8); ctx.textAlign = 'right'; ctx.fillStyle = '#c8102e'; ctx.fillText(`Bs ${round2(sale.total).toFixed(2)}`, width - 42, y + 8)
   ctx.font = '18px Arial'; ctx.fillStyle = '#475569'; y += 48
   if (sale.cashAmount > 0) { ctx.fillText(`Efectivo: Bs ${round2(sale.cashAmount).toFixed(2)}`, width - 42, y); y += 28 }
   if (sale.qrAmount > 0) { ctx.fillText(`QR: Bs ${round2(sale.qrAmount).toFixed(2)}`, width - 42, y); y += 28 }
@@ -265,7 +274,12 @@ export async function printLargeSaleReceipt(sale: DistSale, context: ReceiptCont
     return `<tr><td><strong>${escape(line.productNameSnapshot)}</strong>${pres ? `<div style="font-size:12px;color:#64748b;margin-top:2px">${escape(pres)}</div>` : ''}${line.isPromotional ? `<small>Precio promocional (oficial Bs ${round2(line.referenceUnitPrice || line.actualUnitPrice).toFixed(2)})</small>` : ''}</td><td>${escape(line.quantity)} ${line.unitType === 'kg' ? 'kg' : line.unitType === 'package' ? 'paq' : 'u'}</td><td>Bs ${round2(line.actualUnitPrice).toFixed(2)}</td><td>Bs ${round2(line.subtotal).toFixed(2)}</td></tr>`
   }).join('')
   const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comprobante San José</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;padding:18mm}.head{border-bottom:4px solid #c8102e;display:flex;align-items:center;gap:22px;padding-bottom:18px}.head img{width:105px;height:70px;object-fit:contain}.head h1{font-size:26px;margin:0}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:24px 0;padding:16px;background:#fff7f5;border-radius:12px}table{width:100%;border-collapse:collapse}th{background:#c8102e;color:#fff;text-align:left;padding:11px}td{padding:12px;border-bottom:1px solid #e2e8f0}td:nth-child(n+2),th:nth-child(n+2){text-align:right}small{display:block;color:#b45309;margin-top:4px}.total{margin-top:20px;text-align:right;font-size:28px;font-weight:800;color:#c8102e}.payments{text-align:right;line-height:1.6}.foot{text-align:center;color:#64748b;margin-top:42px;font-size:11px}</style></head><body><header class="head"><img src="/brand/san-jose-logo.png"><div><h1>${escape(context.companyName)}</h1><p>Comprobante de venta</p></div></header><section class="meta"><div><strong>Comprobante:</strong> ${escape(sale.id.slice(-6).toUpperCase())}</div><div><strong>Fecha:</strong> ${escape(new Date(sale.createdAt).toLocaleString('es-BO'))}</div><div><strong>Cliente:</strong> ${escape(sale.customerName || 'Cliente ocasional')}</div><div><strong>CI:</strong> ${escape(sale.customerCode || '-')}</div></section><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${rows}</tbody></table><div class="total">TOTAL: Bs ${round2(sale.total).toFixed(2)}</div><div class="payments">${sale.cashAmount > 0 ? `Efectivo: Bs ${round2(sale.cashAmount).toFixed(2)}<br>` : ''}${sale.qrAmount > 0 ? `QR: Bs ${round2(sale.qrAmount).toFixed(2)}<br>` : ''}${sale.creditAmount > 0 ? `Crédito: Bs ${round2(sale.creditAmount).toFixed(2)}<br>` : ''}${sale.changeAmount ? `<strong>Cambio devuelto: Bs ${round2(sale.changeAmount).toFixed(2)}</strong>` : ''}</div><p class="foot">${escape(context.receiptFooter || 'Gracias por su preferencia')} · Generado el ${new Date().toLocaleString('es-BO')}</p></body></html>`
-  await printHtmlDocument(html, `Venta ${sale.id.slice(-6).toUpperCase()}`)
+  const printable = sale.saleKind === 'courtesy'
+    ? html.replace('Comprobante de venta', 'Comprobante de entrega gratuita · CORTESÍA')
+      .replace('<table><thead>', `<p><b>ENTREGA DE CORTESÍA · SIN COBRO</b><br>Motivo: ${escape(sale.courtesyReason || 'No especificado')}<br>Valor referencial: Bs ${round2(sale.lines.reduce((sum, line) => sum + (line.referenceSubtotal || 0), 0)).toFixed(2)}. No genera venta ni reserva existencias.</p><table><thead>`)
+      .replace('TOTAL: Bs', 'TOTAL COBRADO: Bs')
+    : html
+  await printHtmlDocument(printable, `${sale.saleKind === 'courtesy' ? 'Cortesía' : 'Venta'} ${sale.id.slice(-6).toUpperCase()}`)
 }
 
 export async function printCollectionReceipt(collection: DistCollection, context: ReceiptContext, copy = false): Promise<PrintAttemptResult> {

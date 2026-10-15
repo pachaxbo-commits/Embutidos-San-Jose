@@ -23,6 +23,7 @@ import {
   Printer,
   Settings2,
   RefreshCw,
+  FileText,
 } from 'lucide-react'
 import { getVisibleModules, SAN_JOSE_APP_CONFIG, type ModuleId } from '../../../config/appConfig'
 import { hasPermission } from '../../../services/permissionService'
@@ -49,6 +50,7 @@ import { ProductsView } from './ProductsView'
 import { ReportsView } from './ReportsView'
 import { UsersView } from './UsersView'
 import { SupportView } from './SupportView'
+import { QuotesView } from './QuotesView'
 import type { Permission, UserRole } from '../../../types'
 import type { DistributionData } from '../state/useDistributionStore'
 
@@ -86,6 +88,7 @@ const MODULE_ICONS: Partial<Record<ModuleId, BottomNavItem<ModuleId>['icon']>> =
   'dist.warehouses': Boxes,
   'dist.dashboard': Home,
   'dist.sales': ShoppingCart,
+  'dist.quotes': FileText,
   'dist.inventory': Boxes,
   'dist.dispatches': Truck,
   'dist.credits': Receipt,
@@ -238,6 +241,8 @@ export function DistributionApp({
         return <DispatchesView {...viewProps} />
       case 'dist.sales':
         return <SellView {...viewProps} />
+      case 'dist.quotes':
+        return <QuotesView {...viewProps} />
       case 'dist.credits':
         return <CreditsView {...viewProps} />
       case 'dist.collections':

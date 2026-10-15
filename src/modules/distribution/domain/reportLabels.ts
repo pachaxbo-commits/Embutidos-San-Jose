@@ -37,6 +37,8 @@ const MOVEMENT_LABELS: Record<string, string> = {
   return: 'Retorno de ruta',
   adjustment: 'Ajuste de inventario',
   shortage: 'Faltante',
+  return_waste: 'Merma al recibir retorno',
+  courtesy: 'Entrega de cortesía',
   overage: 'Sobrante',
   exchange: 'Cambio de producto',
   customer_return: 'Devolución del cliente',

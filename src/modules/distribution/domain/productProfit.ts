@@ -118,6 +118,7 @@ export function computeProductProfitReport(
 
   // 1. Procesar líneas de ventas efectivas (respetando correcciones auditadas)
   for (const sale of sales) {
+    if (sale.saleKind === 'courtesy' || sale.effectiveSnapshot?.saleKind === 'courtesy') continue
     const isCorrected = Boolean(
       sale.latestCorrectionId || sale.editedAt || (sale.revisions && sale.revisions.length > 0),
     )
@@ -488,8 +489,9 @@ export function computeProductProfitReport(
   const losses = movements
     .filter((m) => dayKeys.length === 0 || dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
     .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
-    .filter((m) => m.type === 'shortage' || m.type === 'dispatch_waste' || (m.type === 'adjustment' && m.centralDelta < 0))
+    .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'courtesy' || m.type === 'dispatch_waste' || (m.type === 'adjustment' && m.centralDelta < 0))
   const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
+  const lossCostsKnown = losses.every((movement) => typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost))
 
   let operationalTotals: ProductProfitOperationalTotals
   if (sellerFilter) {
@@ -501,7 +503,7 @@ export function computeProductProfitReport(
       reasonNotAvailable:
         'Las pérdidas de inventario y gastos de ruta no se asignan por vendedor individual.',
     }
-  } else if (!allCostsKnown) {
+  } else if (!allCostsKnown || !lossCostsKnown) {
     operationalTotals = {
       isAvailable: false,
       spent,

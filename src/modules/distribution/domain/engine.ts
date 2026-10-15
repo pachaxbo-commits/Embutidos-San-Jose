@@ -132,6 +132,7 @@ export interface SoldTotals {
   productName: string
   unitType: UnitType
   quantity: number
+  courtesyQuantity: number
   amount: number
 }
 
@@ -143,8 +144,9 @@ export function computeSoldByProduct(sales: DistSale[]): Map<string, SoldTotals>
       result.set(line.productId, {
         productName: line.productNameSnapshot,
         unitType: line.unitType,
-        quantity: round2((current?.quantity ?? 0) + line.quantity),
-        amount: round2((current?.amount ?? 0) + line.subtotal),
+        quantity: round2((current?.quantity ?? 0) + (sale.saleKind === 'courtesy' ? 0 : line.quantity)),
+        courtesyQuantity: round2((current?.courtesyQuantity ?? 0) + (sale.saleKind === 'courtesy' ? line.quantity : 0)),
+        amount: round2((current?.amount ?? 0) + (sale.saleKind === 'courtesy' ? 0 : line.subtotal)),
       })
     }
   }
@@ -153,7 +155,8 @@ export function computeSoldByProduct(sales: DistSale[]): Map<string, SoldTotals>
 
 /**
  * Conciliacion fisica por producto.
- * expectedReturn = totalLoaded - sold ; variance = actualReturn - expectedReturn
+ * expectedReturn = totalLoaded - sold - courtesy ; la cortesía es salida física,
+ * pero nunca una venta. Merma y faltante se resuelven durante recepción.
  */
 export function buildReconciliation(
   dispatch: DistDispatch | null,
@@ -171,7 +174,8 @@ export function buildReconciliation(
       const sale = sold.get(productId)
       const totalLoaded = load?.totalLoaded ?? 0
       const soldQty = sale?.quantity ?? 0
-      const expectedReturn = round2(totalLoaded - soldQty)
+      const courtesyQty = sale?.courtesyQuantity ?? 0
+      const expectedReturn = round2(totalLoaded - soldQty - courtesyQty)
       const actualReturn = round2(Number(actualReturns[productId]) || 0)
 
       return {
@@ -182,6 +186,7 @@ export function buildReconciliation(
         additions: load?.additions ?? 0,
         totalLoaded,
         sold: soldQty,
+        courtesy: courtesyQty,
         expectedReturn,
         actualReturn,
         variance: round2(actualReturn - expectedReturn),
@@ -218,6 +223,7 @@ export function computeMoneySummary(
   let salesTotal = 0
 
   for (const sale of sales) {
+    if (sale.saleKind === 'courtesy') continue
     cashSales += Number(sale.cashAmount) || 0
     qrSales += Number(sale.qrAmount) || 0
     creditGenerated += Number(sale.creditAmount) || 0
@@ -408,6 +414,7 @@ export function computeSellerBreakdown(
   }
 
   for (const sale of sales) {
+    if (sale.saleKind === 'courtesy') continue
     const entry = ensure(sale.sellerUid, sale.sellerName)
     entry.salesCount += 1
     entry.salesTotal = round2(entry.salesTotal + (Number(sale.total) || 0))

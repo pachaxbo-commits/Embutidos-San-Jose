@@ -1,7 +1,7 @@
 import { PrintEngineService } from '../../../services/printing/printEngineService'
 import { getActiveReceiptPrinter } from '../../../services/printing/printerBootstrap'
 import type { PrintJobPayload } from '../../../types/printing'
-import type { DistClosure, DistDispatch, DistProduct } from '../types'
+import type { DistClosure, DistDispatch, DistProduct, DistQuote } from '../types'
 import { computeLoadedByProduct, round2 } from '../domain/engine'
 import { printHtmlDocument } from '../../../services/printing/documentPrintService'
 import { Capacitor } from '@capacitor/core'
@@ -9,6 +9,7 @@ import { Directory, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
 import { getProductPresentation } from '../domain/productPresentation'
 import { saveReport } from './reportFiles'
+import { buildQuotePrintPayload } from '../domain/quotePrintPayload'
 
 async function printTicket(payload: PrintJobPayload, key: string): Promise<string> {
   const printer = getActiveReceiptPrinter()
@@ -62,6 +63,10 @@ export function printDispatchTicket(dispatch: DistDispatch): Promise<string> {
     ),
     `dispatch:${dispatch.id}`,
   )
+}
+
+export function printQuoteTicket(quote: DistQuote): Promise<string> {
+  return printTicket(buildQuotePrintPayload(quote), `quote:${quote.id}`)
 }
 
 export function formatDispatchTextSummary(dispatch: DistDispatch): string {
@@ -435,7 +440,7 @@ export function printClosureTicket(closure: DistClosure): Promise<string> {
         quantity: row.sold,
         unitLabel: row.unitType === 'kg' ? 'kg vendidos' : 'vendidos',
         lineTotal: 0,
-        modifiersText: [`Entregado ${row.totalLoaded}`, `Devuelto ${row.actualReturn}`, `Diferencia ${row.variance}`],
+        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Apto ${row.actualReturn}`, `Merma ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
       })),
       closure.status === 'closed'
         ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared ?? 0).toFixed(2)}`
@@ -516,27 +521,33 @@ export async function generateClosurePdf(closure: DistClosure) {
 
     autoTable(doc, {
       startY: y + 3,
-      head: [['Producto', 'Cargado total', 'Vendido', 'Debía volver', 'Devuelto físicamente', 'Diferencia', 'Unidad']],
+      head: [['Producto', 'Cargado', 'Vendido', 'Cortesía', 'Debía volver', 'Apto', 'Merma', 'Faltante', 'Sobrante', 'Unidad']],
       body: closure.products.map((row) => [
         row.productName,
         row.unitType === 'kg' ? row.totalLoaded.toFixed(2) : String(row.totalLoaded),
         row.unitType === 'kg' ? row.sold.toFixed(2) : String(row.sold),
+        row.unitType === 'kg' ? (row.courtesy || 0).toFixed(2) : String(row.courtesy || 0),
         row.unitType === 'kg' ? row.expectedReturn.toFixed(2) : String(row.expectedReturn),
         row.unitType === 'kg' ? row.actualReturn.toFixed(2) : String(row.actualReturn),
-        row.variance === 0 ? '0' : `${row.variance > 0 ? '+' : ''}${row.unitType === 'kg' ? row.variance.toFixed(2) : String(row.variance)}`,
+        row.unitType === 'kg' ? (row.returnWaste || 0).toFixed(2) : String(row.returnWaste || 0),
+        row.unitType === 'kg' ? (row.shortage ?? 0).toFixed(2) : String(row.shortage ?? 0),
+        row.unitType === 'kg' ? (row.overage || 0).toFixed(2) : String(row.overage || 0),
         row.unitType === 'kg' ? 'kg' : 'paquetes',
       ]),
       theme: 'grid',
       headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
       bodyStyles: { fontSize: 7.5, cellPadding: 2 },
       columnStyles: {
-        0: { cellWidth: 55, fontStyle: 'bold' },
-        1: { cellWidth: 22, halign: 'right' },
-        2: { cellWidth: 22, halign: 'right' },
-        3: { cellWidth: 24, halign: 'right' },
-        4: { cellWidth: 26, halign: 'right', fontStyle: 'bold' },
-        5: { cellWidth: 21, halign: 'right', fontStyle: 'bold' },
-        6: { cellWidth: 18, halign: 'center' },
+        0: { cellWidth: 34, fontStyle: 'bold' },
+        1: { cellWidth: 16, halign: 'right' },
+        2: { cellWidth: 16, halign: 'right' },
+        3: { cellWidth: 16, halign: 'right' },
+        4: { cellWidth: 18, halign: 'right' },
+        5: { cellWidth: 16, halign: 'right', fontStyle: 'bold' },
+        6: { cellWidth: 16, halign: 'right' },
+        7: { cellWidth: 16, halign: 'right' },
+        8: { cellWidth: 16, halign: 'right' },
+        9: { cellWidth: 14, halign: 'center' },
       },
       margin: { left: 14, right: 14 },
     })

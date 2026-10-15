@@ -191,6 +191,8 @@ ok(result.grandTotalExactKg === 15, 'Grand total exact kg debe ser 10 + 5 = 15')
 ok(result.grandTotalEstimatedKg === 2.5, 'Grand total estimated kg debe ser 2.5')
 ok(result.grandTotalEquivalentKg === 17.5, 'Grand total equivalent kg debe ser 17.5')
 ok(result.grandTotalPackages === 5, 'Grand total packages debe ser 5')
+const withCourtesy = aggregateCustomerPurchases({ ...mockData, sales: [...sales, { ...sales[0], id: 'courtesy-only', saleKind: 'courtesy', total: 0, lines: sales[0].lines.map(line => ({ ...line, quantity: 50, subtotal: 0 })) }] }, ['2026-03-10'])
+ok(withCourtesy.grandTotalBs === result.grandTotalBs && withCourtesy.grandTotalExactKg === result.grandTotalExactKg, 'Las cortesías no se cuentan como compras de clientes')
 
 // 3. Formato explicativo de kg
 const formattedBreakdown = formatKgBreakdown(result.topClient!.exactKg, result.topClient!.estimatedKg)

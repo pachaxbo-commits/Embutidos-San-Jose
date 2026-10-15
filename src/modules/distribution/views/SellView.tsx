@@ -122,6 +122,8 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [unitPrice, setUnitPrice] = useState('0')
   const [isPromotional, setIsPromotional] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
+  const [saleMode, setSaleMode] = useState<'sale' | 'courtesy'>('sale')
+  const [courtesyReason, setCourtesyReason] = useState('')
   const [paymentKind, setPaymentKind] = useState<PaymentKind | ''>('')
   const [mixedCash, setMixedCash] = useState('0')
   const [mixedQr, setMixedQr] = useState('0')
@@ -144,6 +146,7 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [shareFeedback, setShareFeedback] = useState('')
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [historySearch, setHistorySearch] = useState('')
+  const [historyKind, setHistoryKind] = useState<'all' | 'sale' | 'courtesy'>('all')
   const [correctionTarget, setCorrectionTarget] = useState<DistSale | null>(null)
   const [correctionQuantities, setCorrectionQuantities] = useState<Record<string, string>>({})
   const [correctionPrices, setCorrectionPrices] = useState<Record<string, string>>({})
@@ -211,7 +214,7 @@ export function SellView({ session, data }: DistributionViewProps) {
   const operationIdRef = useRef<string | null>(null)
 
   const activeProducts = useMemo(() => data.products.filter((product) => product.active !== false && (availableStock.get(product.id) ?? 0) > 0), [data.products, availableStock])
-  const historySales = useMemo(() => { const term = historySearch.trim().toLowerCase(); return data.sales.filter(sale => !term || [sale.customerName, sale.sellerName, sale.routeName, ...sale.lines.map(line => line.productNameSnapshot)].join(' ').toLowerCase().includes(term)).sort((a,b) => b.createdAt.localeCompare(a.createdAt)) }, [data.sales, historySearch])
+  const historySales = useMemo(() => { const term = historySearch.trim().toLowerCase(); return data.sales.filter(sale => historyKind === 'all' || (historyKind === 'courtesy' ? sale.saleKind === 'courtesy' : sale.saleKind !== 'courtesy')).filter(sale => !term || [sale.customerName, sale.sellerName, sale.routeName, ...sale.lines.map(line => line.productNameSnapshot)].join(' ').toLowerCase().includes(term)).sort((a,b) => b.createdAt.localeCompare(a.createdAt)) }, [data.sales, historySearch, historyKind])
 
   const filteredProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -226,7 +229,8 @@ export function SellView({ session, data }: DistributionViewProps) {
     return list
   }, [activeProducts, search])
 
-  const total = computeSaleTotal(cart)
+  const total = saleMode === 'courtesy' ? 0 : computeSaleTotal(cart)
+  const courtesyReferenceTotal = round2(cart.reduce((sum, line) => sum + line.quantity * (line.referenceUnitPrice || line.actualUnitPrice), 0))
   const selectedCustomer = data.customers.find((customer) => customer.id === customerId) ?? null
 
   const filteredCustomers = useMemo(() => {
@@ -301,6 +305,8 @@ export function SellView({ session, data }: DistributionViewProps) {
     setMixedQr('0')
     setCashReceived('')
     setNote('')
+    setSaleMode('sale')
+    setCourtesyReason('')
     setLastSale(null)
     setError(null)
     setPrintState(null)
@@ -332,20 +338,21 @@ export function SellView({ session, data }: DistributionViewProps) {
     if (isSubmitting) return
     setError(null)
 
+    const isCourtesy = saleMode === 'courtesy'
     if (!customerChoiceMade) {
       setError('Selecciona un cliente o la opción Sin cliente antes de cobrar.')
       return
     }
-    if (!paymentKind) {
+    if (!isCourtesy && !paymentKind) {
       setError('Selecciona una forma de pago.')
       return
     }
-    if (!customerId && paymentKind === 'credit') {
+    if (!isCourtesy && !customerId && paymentKind === 'credit') {
       setError('Sin cliente no se permite vender a crédito.')
       return
     }
 
-    if (selectedCustomer) {
+    if (selectedCustomer && !isCourtesy) {
       let credit = data.creditStatus.find(c => c.id === selectedCustomer.id)
       if (!selectedCustomer.identityNumber) { setError('Completa el CI del cliente antes de vender.'); return }
       // Si falta el último estado local, no se consulta al servidor como
@@ -368,6 +375,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       setError('Agrega al menos un producto.')
       return
     }
+    if (isCourtesy && !courtesyReason.trim()) { setError('Indica el motivo de la cortesía.'); return }
     if (isDistributor && !openDispatch) {
       setError('Tu ruta no tiene un despacho abierto. Pide a almacen que registre tu carga.')
       return
@@ -375,26 +383,26 @@ export function SellView({ session, data }: DistributionViewProps) {
 
     const cashInput = round2(Number(mixedCash) || 0)
     const qrInput = round2(Number(mixedQr) || 0)
-    const split = splitPayment(total, paymentKind, {
+    const split = isCourtesy ? { cashAmount: 0, qrAmount: 0, creditAmount: 0 } : splitPayment(total, paymentKind || 'cash', {
       cashAmount: cashInput,
       qrAmount: qrInput,
       creditAmount: round2(total - cashInput - qrInput),
     })
 
-    const paymentError = validateSalePayment(total, split)
+    const paymentError = isCourtesy ? null : validateSalePayment(total, split)
     if (paymentError) {
       setError(paymentError)
       return
     }
-    if (split.creditAmount > 0 && !customerId) {
+    if (!isCourtesy && split.creditAmount > 0 && !customerId) {
       setError('Una venta con credito necesita cliente.')
       return
     }
-    if (paymentKind === 'cash' && !cashReceived.trim()) {
+    if (!isCourtesy && paymentKind === 'cash' && !cashReceived.trim()) {
       setError('Ingresa el efectivo recibido para calcular el cambio.')
       return
     }
-    if (paymentKind === 'cash' && (!Number.isFinite(Number(cashReceived)) || round2(Number(cashReceived)) < total)) {
+    if (!isCourtesy && paymentKind === 'cash' && (!Number.isFinite(Number(cashReceived)) || round2(Number(cashReceived)) < total)) {
       setError('El efectivo recibido debe ser igual o mayor al total de la venta.')
       return
     }
@@ -428,15 +436,16 @@ export function SellView({ session, data }: DistributionViewProps) {
         customerId: customerId || undefined,
         customerName: selectedCustomer?.name,
         customerCode: selectedCustomer?.customerCode || selectedCustomer?.identityNumber,
-        lines: cart.map(line => ({ productId: line.productId, productNameSnapshot: line.productNameSnapshot, presentationSnapshot: line.presentationSnapshot, descriptionSnapshot: line.descriptionSnapshot, quantity: line.quantity, unitType: line.unitType, actualUnitPrice: line.actualUnitPrice, referenceUnitPrice: line.referenceUnitPrice, isPromotional: line.isPromotional, subtotal: line.subtotal })),
+        lines: cart.map(line => ({ productId: line.productId, productNameSnapshot: line.productNameSnapshot, presentationSnapshot: line.presentationSnapshot, descriptionSnapshot: line.descriptionSnapshot, quantity: line.quantity, unitType: line.unitType, actualUnitPrice: isCourtesy ? (line.referenceUnitPrice || line.actualUnitPrice) : line.actualUnitPrice, referenceUnitPrice: line.referenceUnitPrice, isPromotional: isCourtesy ? false : line.isPromotional, subtotal: isCourtesy ? 0 : line.subtotal, ...(isCourtesy ? { referenceSubtotal: round2(line.quantity * (line.referenceUnitPrice || line.actualUnitPrice)) } : {}) })),
         total,
-        paymentKind,
+        paymentKind: isCourtesy ? 'cash' : paymentKind || 'cash',
         cashAmount: split.cashAmount,
         qrAmount: split.qrAmount,
         creditAmount: split.creditAmount,
-        cashReceived: paymentKind === 'cash' ? round2(Number(cashReceived)) : split.cashAmount,
-        changeAmount: paymentKind === 'cash' ? round2(Math.max(0, Number(cashReceived) - total)) : 0,
+        cashReceived: !isCourtesy && paymentKind === 'cash' ? round2(Number(cashReceived)) : split.cashAmount,
+        changeAmount: !isCourtesy && paymentKind === 'cash' ? round2(Math.max(0, Number(cashReceived) - total)) : 0,
         note: note.trim(),
+        ...(isCourtesy ? { saleKind: 'courtesy', courtesyReason: courtesyReason.trim() } : {}),
       })
 
       setIsCheckoutOpen(false)
@@ -933,8 +942,8 @@ export function SellView({ session, data }: DistributionViewProps) {
       <Modal
         isOpen={isCheckoutOpen}
         onClose={() => setIsCheckoutOpen(false)}
-        title="Cobrar venta"
-        subtitle={`Paso 3 de 3 · Forma de pago y confirmación · Total ${formatBs(total)}`}
+        title={saleMode === 'courtesy' ? 'Registrar cortesía' : 'Cobrar venta'}
+        subtitle={`Paso 3 de 3 · ${saleMode === 'courtesy' ? `Valor referencial ${formatBs(courtesyReferenceTotal)} · sin cobro` : `Forma de pago · Total ${formatBs(total)}`}`}
         footer={
           <div className="flex items-center justify-between gap-2 w-full">
             <SecondaryButton
@@ -950,13 +959,18 @@ export function SellView({ session, data }: DistributionViewProps) {
               disabled={isSubmitting || !cartStockValidation.isValid}
               onClick={() => void confirmSale()}
             >
-              {isSubmitting ? 'Registrando...' : `Confirmar venta · ${formatBs(total)}`}
+              {isSubmitting ? 'Registrando...' : saleMode === 'courtesy' ? 'Confirmar cortesía · Bs 0,00' : `Confirmar venta · ${formatBs(total)}`}
             </PrimaryButton>
           </div>
         }
       >
         <div className="grid gap-3">
           <SaleStepIndicator currentStep={3} />
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border-2 border-slate-200 bg-slate-50 p-2">
+            <button type="button" onClick={() => setSaleMode('sale')} className={`min-h-11 rounded-xl px-2 text-xs font-black ${saleMode === 'sale' ? 'bg-white text-[var(--primary)] shadow' : 'text-slate-600'}`}>Venta normal</button>
+            <button type="button" onClick={() => setSaleMode('courtesy')} className={`min-h-11 rounded-xl px-2 text-xs font-black ${saleMode === 'courtesy' ? 'bg-fuchsia-100 text-fuchsia-900 shadow' : 'text-slate-600'}`}>Entrega de cortesía</button>
+          </div>
+          {saleMode === 'courtesy' && <div className="grid gap-2 rounded-2xl border-2 border-fuchsia-200 bg-fuchsia-50 p-3"><p className="text-xs font-bold text-fuchsia-900">La cortesía descuenta existencias, pero no registra dinero, deuda ni venta. Valor de referencia: {formatBs(courtesyReferenceTotal)}.</p><Field label="Motivo obligatorio"><TextArea value={courtesyReason} onChange={e=>setCourtesyReason(e.target.value)} placeholder="Ej.: muestra, promoción autorizada…" rows={2}/></Field></div>}
 
           {!cartStockValidation.isValid && (
             <div className="flex items-center gap-2 rounded-2xl border border-rose-300 bg-rose-50 p-2.5 text-xs font-bold text-rose-800">
@@ -984,7 +998,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                       </p>
                     )}
                     <p className="text-[11px] font-semibold text-slate-500">
-                      {formatQty(line.quantity, line.unitType)} × {formatBs(line.actualUnitPrice)}
+                      {formatQty(line.quantity, line.unitType)} × {saleMode === 'courtesy' ? `precio referencial ${formatBs(line.referenceUnitPrice || line.actualUnitPrice)}` : formatBs(line.actualUnitPrice)}
                     </p>
                     {isOver && (
                       <p className="mt-1 flex items-center gap-1 text-[10px] font-black text-rose-700">
@@ -999,7 +1013,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-xs font-black tabular-nums text-slate-900">{formatBs(line.subtotal)}</span>
+                    <span className={`text-xs font-black tabular-nums ${saleMode === 'courtesy' ? 'text-fuchsia-800' : 'text-slate-900'}`}>{saleMode === 'courtesy' ? `Ref. ${formatBs(line.quantity * (line.referenceUnitPrice || line.actualUnitPrice))}` : formatBs(line.subtotal)}</span>
                     <button
                       type="button"
                       onClick={() => removeLine(line.lineId)}
@@ -1048,7 +1062,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             </div>
           )}
 
-          <Field label="Forma de pago" required hint={!customerId ? 'Sin cliente permite efectivo, QR o mixto, siempre al contado.' : 'Selecciona una opción para continuar.'}>
+          {saleMode === 'sale' && <><Field label="Forma de pago" required hint={!customerId ? 'Sin cliente permite efectivo, QR o mixto, siempre al contado.' : 'Selecciona una opción para continuar.'}>
             <Segmented value={paymentKind} options={customerId ? PAYMENT_OPTIONS : PAYMENT_OPTIONS.filter(option => option.value !== 'credit')} onChange={setPaymentKind} />
           </Field>
 
@@ -1079,7 +1093,7 @@ export function SellView({ session, data }: DistributionViewProps) {
           )}
           <Field label="Observaciones" hint="Se guarda con la venta, pero no aparecerá en el ticket.">
             <TextArea value={note} onChange={event => setNote(event.target.value)} />
-          </Field>
+          </Field></>}
 
           {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
         </div>
@@ -1213,6 +1227,7 @@ export function SellView({ session, data }: DistributionViewProps) {
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <TextInput className="pl-9" value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Buscar cliente, producto o vendedor" />
           </div>
+          <div className="grid grid-cols-3 gap-1 rounded-2xl bg-slate-100 p-1"><button type="button" onClick={()=>setHistoryKind('all')} className={`rounded-xl px-2 py-2 text-xs font-black ${historyKind==='all'?'bg-white shadow text-slate-900':'text-slate-500'}`}>Todo</button><button type="button" onClick={()=>setHistoryKind('sale')} className={`rounded-xl px-2 py-2 text-xs font-black ${historyKind==='sale'?'bg-white shadow text-slate-900':'text-slate-500'}`}>Ventas</button><button type="button" onClick={()=>setHistoryKind('courtesy')} className={`rounded-xl px-2 py-2 text-xs font-black ${historyKind==='courtesy'?'bg-fuchsia-100 shadow text-fuchsia-900':'text-slate-500'}`}>Cortesías</button></div>
           {historySales.map(sale => {
             const availability = checkSaleCorrectionAvailability(sale, session, data)
             const audit = getSaleAuditSummary(sale)
@@ -1221,12 +1236,13 @@ export function SellView({ session, data }: DistributionViewProps) {
               <article
                 key={sale.id}
                 className={`rounded-2xl border p-3 ${
-                  sale.voidedAt ? 'border-rose-300 bg-rose-50/70' : audit.isCorrected ? 'border-amber-300 bg-amber-50/70' : 'border-slate-200 bg-white'
+                  sale.saleKind === 'courtesy' ? 'border-fuchsia-300 bg-fuchsia-50/70' : sale.voidedAt ? 'border-rose-300 bg-rose-50/70' : audit.isCorrected ? 'border-amber-300 bg-amber-50/70' : 'border-slate-200 bg-white'
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
+                      {sale.saleKind === 'courtesy' && <span className="rounded-full bg-fuchsia-100 px-2 py-1 text-[10px] font-black text-fuchsia-900">CORTESÍA · SIN COBRO · VALOR REF. {formatBs(sale.lines.reduce((n,line)=>n+(line.referenceSubtotal||0),0))}</span>}
                       <p className="text-xs font-extrabold text-slate-900">
                         {sale.customerName || 'Contado sin cliente'} · {formatBs(sale.total)}
                       </p>
@@ -1275,7 +1291,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                   <SecondaryButton disabled={Boolean(sale.voidedAt)} onClick={() => void shareSaleReceipt(sale, receiptContext)}>
                     Compartir
                   </SecondaryButton>
-                  {availability.canCorrect ? (
+                  {availability.canCorrect && sale.saleKind !== 'courtesy' ? (
                     <SecondaryButton
                       onClick={() => {
                         setCorrectionTarget(sale)
@@ -2030,7 +2046,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       <Modal
         isOpen={Boolean(lastSale)}
         onClose={resetSale}
-        title="Venta registrada"
+        title={lastSale?.saleKind === 'courtesy' ? 'Cortesía registrada' : 'Venta registrada'}
         subtitle={lastSale ? formatBs(lastSale.total) : ''}
         footer={
           <PrimaryButton full onClick={resetSale}>
@@ -2042,7 +2058,7 @@ export function SellView({ session, data }: DistributionViewProps) {
           <div className="grid gap-3">
             {lastSale.pendingConfirmation && <p role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Pendiente de sincronizar. La venta quedó guardada en este dispositivo; el servidor todavía debe confirmarla.</p>}
             <div className="grid grid-cols-2 gap-2">
-              <KpiCard label="Total" value={formatBs(lastSale.total)} tone="primary" />
+            <KpiCard label={lastSale.saleKind === 'courtesy' ? 'Total cobrado' : 'Total'} value={formatBs(lastSale.total)} tone="primary" />
               <KpiCard
                 label={lastSale.creditAmount > 0 ? 'Saldo generado' : 'Cobrado'}
                 value={formatBs(lastSale.creditAmount > 0 ? lastSale.creditAmount : lastSale.total)}

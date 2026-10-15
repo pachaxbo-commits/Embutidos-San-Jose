@@ -10,6 +10,7 @@
 export type UnitType = 'kg' | 'unit' | 'package'
 
 export type PaymentKind = 'cash' | 'qr' | 'credit' | 'mixed'
+export type SaleKind = 'sale' | 'courtesy'
 
 export type SourceLocation = 'route' | 'centralWarehouse'
 
@@ -25,6 +26,8 @@ export type StockMovementType =
   | 'adjustment' // ajuste manual de almacen
   | 'dispatch_correction' // correccion auditada de despacho o aumento
   | 'dispatch_waste' // merma descontada al despachar productos al peso
+  | 'return_waste' // merma confirmada por almacén al recibir una ruta
+  | 'courtesy' // producto entregado gratuitamente
   | 'shortage' // faltante detectado en conciliacion
   | 'overage' // sobrante detectado en conciliacion
 
@@ -240,9 +243,14 @@ export interface DistSaleLine {
   referenceUnitPrice?: number
   isPromotional?: boolean
   subtotal: number
+  /** Valor de referencia no financiero cuando la línea es una cortesía. */
+  referenceSubtotal?: number
 }
 
 export interface DistSale extends DistBaseDoc {
+  saleKind?: SaleKind
+  courtesyReason?: string
+  courtesyCost?: number | null
   pendingConfirmation?: boolean
   customerCode?: string
   /** Igual a id. Explicito para trazabilidad de operaciones offline. */
@@ -276,9 +284,9 @@ export interface DistSale extends DistBaseDoc {
   voidReason?: string
   revision?: number
   /** Resultado vigente; los campos originales del documento no se sobrescriben. */
-  effectiveSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
+  effectiveSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount' | 'saleKind'>
   /** Instantánea original antes de cualquier corrección auditada */
-  originalSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount'>
+  originalSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount' | 'saleKind'>
   /** Historial acumulado de correcciones auditadas de esta venta */
   revisions?: DistSaleCorrection[]
 }
@@ -294,6 +302,34 @@ export interface DistSaleCorrection extends DistBaseDoc {
   moneyDelta: number
   creditDelta: number
   correctedByName: string
+}
+
+export interface DistQuoteLine {
+  productId: string
+  productNameSnapshot: string
+  unitType: UnitType
+  quantity: number
+  unitPrice: number
+  subtotal: number
+}
+
+export interface DistQuote extends DistBaseDoc {
+  quoteNumber: string
+  status: 'vigente' | 'vencida' | 'cancelada'
+  validUntil: string
+  sellerUid: string
+  sellerName: string
+  routeId: string
+  routeName: string
+  customerId?: string
+  customerName: string
+  customerPhone?: string
+  lines: DistQuoteLine[]
+  total: number
+  note?: string
+  cancelledAt?: string
+  cancelledBy?: string
+  updatedAt?: string
 }
 
 export type ReceivableStatus = 'OPEN' | 'PARTIAL' | 'PAID' | 'VOID'
@@ -411,8 +447,14 @@ export interface DistClosureProductRow {
   additions: number
   totalLoaded: number
   sold: number
+  courtesy?: number
   expectedReturn: number
   actualReturn: number
+  returnWaste?: number
+  returnWasteReason?: string
+  shortage?: number
+  overage?: number
+  lossCost?: number | null
   variance: number
 }
 

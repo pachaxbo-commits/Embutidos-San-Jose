@@ -77,6 +77,7 @@ export function aggregateCustomerPurchases(
   sellerFilter = '',
 ): CustomerPurchasesAggregation {
   const inScope = (sale: DistSale) =>
+    sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy' &&
     dayKeys.includes(sale.dayKey || toDayKey(sale.createdAt)) &&
     (!routeFilter || matchesRoute(sale.routeId, routeFilter)) &&
     (!sellerFilter || sale.sellerUid === sellerFilter) &&

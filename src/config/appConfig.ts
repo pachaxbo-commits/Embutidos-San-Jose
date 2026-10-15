@@ -5,6 +5,7 @@ export type ModuleId =
   | 'dist.inventory' | 'dist.dispatches' | 'dist.sales' | 'dist.credits'
   | 'dist.collections' | 'dist.customers' | 'dist.expenses' | 'dist.closure'
   | 'dist.reports' | 'dist.users' | 'dist.products' | 'dist.support'
+  | 'dist.quotes'
   | 'printer-settings'
 
 export interface ModuleDefinition {
@@ -29,6 +30,7 @@ export const SAN_JOSE_APP_CONFIG = {
   modules: [
     { id: 'dist.dashboard', label: 'Inicio', requiredPermission: 'dist.dashboard.view' },
     { id: 'dist.sales', label: 'Ventas', requiredPermission: 'dist.sale.create' },
+    { id: 'dist.quotes', label: 'Cotizaciones', requiredPermission: 'dist.sale.create', navigableBy: ['admin', 'distributor'] },
     { id: 'dist.credits', label: 'Creditos', requiredPermission: 'dist.credit.view' },
     { id: 'dist.expenses', label: 'Gastos', requiredPermission: 'dist.expense.create' },
     { id: 'dist.closure', label: 'Cierre', anyOfPermissions: ['dist.closure.money', 'dist.closure.warehouse'] },

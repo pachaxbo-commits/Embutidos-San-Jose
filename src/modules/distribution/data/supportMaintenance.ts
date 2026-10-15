@@ -37,7 +37,7 @@ export interface ResetResult {
   deletedByCollection: Record<string, number>
 }
 
-export type CleanupGroupKey = 'customers' | 'credits' | 'sales' | 'expenses' | 'inventory' | 'dispatches' | 'closures' | 'claims' | 'qr' | 'technical'
+export type CleanupGroupKey = 'customers' | 'credits' | 'sales' | 'expenses' | 'inventory' | 'dispatches' | 'closures' | 'claims' | 'qr' | 'technical' | 'quotes'
 
 export const CLEANUP_GROUPS: Array<{ key: CleanupGroupKey; label: string; description: string; dependencies: CleanupGroupKey[] }> = [
   { key: 'customers', label: 'Clientes', description: 'Clientes registrados y sus CI.', dependencies: ['sales', 'credits', 'claims', 'qr'] },
@@ -50,6 +50,7 @@ export const CLEANUP_GROUPS: Array<{ key: CleanupGroupKey; label: string; descri
   { key: 'claims', label: 'Cambios y devoluciones', description: 'Cambios, devoluciones y diferencias asociadas.', dependencies: ['qr'] },
   { key: 'qr', label: 'Verificaciones QR', description: 'Confirmaciones bancarias relacionadas.', dependencies: [] },
   { key: 'technical', label: 'Historial y operaciones técnicas', description: 'Cola operativa y turnos de almacén.', dependencies: [] },
+  { key: 'quotes', label: 'Cotizaciones', description: 'Propuestas de precios emitidas; no afectan ventas ni existencias.', dependencies: [] },
 ]
 
 export const RECOMMENDED_CLEANUP_GROUPS = CLEANUP_GROUPS.map(group => group.key).filter(key => key !== 'customers')

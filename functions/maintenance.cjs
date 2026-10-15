@@ -19,6 +19,7 @@ const CLEANUP_GROUPS = {
   claims: { label: 'Cambios y devoluciones', collections: ['distClaims'], dependencies: ['qr'] },
   qr: { label: 'Verificaciones QR', collections: ['distQrVerifications'], dependencies: [] },
   technical: { label: 'Historial y operaciones técnicas', collections: ['distOperations', 'distWarehouseShifts'], dependencies: [] },
+  quotes: { label: 'Cotizaciones', collections: ['distQuotes'], dependencies: [] },
 }
 
 const GROUP_KEYS = Object.freeze(Object.keys(CLEANUP_GROUPS))

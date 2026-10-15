@@ -42,7 +42,7 @@ import { closuresInPeriod } from '../domain/closurePeriod'
 
 type MainCategory = 'resumen' | 'dinero' | 'ventas' | 'creditos' | 'inventario'
 type DineroSubTab = 'flujo' | 'cobros' | 'gastos' | 'arqueos'
-type VentasSubTab = 'ventas' | 'productos' | 'ganancias' | 'kardex' | 'clientes'
+type VentasSubTab = 'ventas' | 'cortesias' | 'productos' | 'ganancias' | 'kardex' | 'clientes'
 type InventarioSubTab = 'existencias' | 'movimientos'
 
 const MAIN_CATEGORIES: { value: MainCategory; label: string }[] = [
@@ -161,11 +161,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const sales = useMemo(
     () =>
       data.sales
-        .filter((sale) => !sale.pendingConfirmation)
+        .filter((sale) => !sale.pendingConfirmation && sale.saleKind !== 'courtesy')
         .filter((sale) => !routeFilter || matchesRoute(sale.routeId, routeFilter))
         .filter((sale) => !sellerFilter || sale.sellerUid === sellerFilter),
     [data.sales, routeFilter, sellerFilter],
   )
+  const courtesySales = useMemo(() => data.sales.filter(sale => !sale.pendingConfirmation && sale.saleKind === 'courtesy' && (!routeFilter || matchesRoute(sale.routeId, routeFilter)) && (!sellerFilter || sale.sellerUid === sellerFilter)), [data.sales, routeFilter, sellerFilter])
   const collections = useMemo(
     () =>
       data.collections
@@ -247,9 +248,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   )
 
   const operatingFinancials = useMemo(() => {
-    const lines = sales.flatMap((s) => s.lines)
+    const commercialSales = sales.filter((s) => s.saleKind !== 'courtesy')
+    const lines = commercialSales.flatMap((s) => s.lines)
     const revenue = round2(
-      sales.reduce((n, s) => n + s.total, 0) + claims.reduce((n, c) => n + c.revenueDelta, 0),
+      commercialSales.reduce((n, s) => n + s.total, 0) + claims.reduce((n, c) => n + c.revenueDelta, 0),
     )
     const costKnown =
       lines.every((l) => typeof l.costTotal === 'number') &&
@@ -263,7 +265,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     const losses = data.movements
       .filter((m) => session.dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
       .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
-      .filter((m) => m.type === 'shortage' || (m.type === 'adjustment' && m.centralDelta < 0))
+      .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'courtesy' || (m.type === 'adjustment' && m.centralDelta < 0))
     const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
     const operatingProfit =
       costKnown && !sellerFilter ? round2(revenue - cost - spent - lossCost) : null
@@ -343,10 +345,11 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   }, [periodCollections])
 
   const reconciliation = useMemo(() => {
-    const periodSalesTotal = round2(sales.reduce((sum, s) => sum + s.total, 0))
-    const periodCashSales = round2(sales.reduce((sum, s) => sum + s.cashAmount, 0))
-    const periodQrSales = round2(sales.reduce((sum, s) => sum + s.qrAmount, 0))
-    const periodCreditSales = round2(sales.reduce((sum, s) => sum + s.creditAmount, 0))
+    const commercialSales = sales.filter(s => s.saleKind !== 'courtesy')
+    const periodSalesTotal = round2(commercialSales.reduce((sum, s) => sum + s.total, 0))
+    const periodCashSales = round2(commercialSales.reduce((sum, s) => sum + s.cashAmount, 0))
+    const periodQrSales = round2(commercialSales.reduce((sum, s) => sum + s.qrAmount, 0))
+    const periodCreditSales = round2(commercialSales.reduce((sum, s) => sum + s.creditAmount, 0))
 
     const periodCashCollections = round2(
       collections.reduce((sum, c) => sum + (c.cashAmount ?? (c.method === 'cash' ? c.amount : 0)), 0),
@@ -511,11 +514,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         {/* ========================================================= */}
         {mainCategory === 'resumen' && (
           <div className="grid gap-3">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               <KpiCard label="Ventas netas" value={formatBs(operatingFinancials.revenue)} tone="primary" hint={`${sales.length} ventas`} />
               <KpiCard label="Efectivo esperado" value={formatBs(money.expectedCash)} tone="positive" hint="Ventas + cobros + cambios - gastos" />
               <KpiCard label="Crédito generado" value={formatBs(money.creditGenerated)} tone="warning" />
               <KpiCard label="Gastos de ruta" value={formatBs(money.cashExpenses)} tone="danger" />
+              <KpiCard label="Entregas de cortesía" value={`${courtesySales.length}`} tone="warning" hint="No son ventas ni cobros" />
             </div>
 
             {/* Resultado Operativo Estimado */}
@@ -573,7 +577,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       <p className="mt-1 text-sm font-black text-rose-700">
                         {operatingFinancials.costKnown ? `- ${formatBs(operatingFinancials.lossCost)}` : '-'}
                       </p>
-                      <span className="text-[10px] text-slate-500">Faltantes en almacén</span>
+                      <span className="text-[10px] text-slate-500">Faltantes, mermas de retorno y cortesías</span>
                     </div>
                   </div>
 
@@ -919,6 +923,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
             <div className="flex flex-wrap gap-1.5 border-b border-slate-200 pb-2">
               {[
                 { value: 'ventas', label: 'Ventas' },
+                { value: 'cortesias', label: 'Cortesías' },
                 { value: 'productos', label: 'Productos vendidos' },
                 { value: 'ganancias', label: 'Ganancias' },
                 { value: 'kardex', label: 'Kardex de ventas' },
@@ -964,6 +969,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                   <p className="text-[11px] font-semibold text-slate-500">Toca una venta para reimprimir o compartir su comprobante.</p>
                 </>
               )
+            )}
+
+            {ventasSubTab === 'cortesias' && (
+              courtesySales.length === 0 ? <EmptyBlock title="Sin entregas de cortesía en el periodo" /> : <SectionCard title="Entregas gratuitas · no son ventas ni cobros"><div className="grid gap-2">{courtesySales.map(sale=><article key={sale.id} className="rounded-xl border-2 border-fuchsia-200 bg-fuchsia-50 p-3"><div className="flex flex-wrap justify-between gap-2"><strong className="text-sm text-fuchsia-950">{sale.customerName || 'Sin cliente'} · {sale.sellerName}</strong><span className="text-xs font-bold text-fuchsia-800">{new Date(sale.createdAt).toLocaleString('es-BO')}</span></div><p className="mt-1 text-xs text-slate-700">{sale.lines.map(line=>`${formatQty(line.quantity,line.unitType)} · ${line.productNameSnapshot}`).join(' / ')}</p><p className="mt-1 text-xs font-bold text-slate-700">Motivo: {sale.courtesyReason || 'No especificado'} · Valor referencial {formatBs(sale.lines.reduce((sum,line)=>sum+(line.referenceSubtotal||0),0))} · Costo {sale.courtesyCost == null ? 'No disponible' : formatBs(sale.courtesyCost)}</p></article>)}</div></SectionCard>
             )}
 
             {ventasSubTab === 'productos' && (

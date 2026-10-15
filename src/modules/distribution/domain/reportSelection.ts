@@ -1,6 +1,7 @@
 export type ReportSheetId =
   | 'summary'
   | 'sales'
+  | 'courtesies'
   | 'products'
   | 'productProfit'
   | 'salesKardex'
@@ -10,6 +11,7 @@ export type ReportSheetId =
   | 'collections'
   | 'expenses'
   | 'closures'
+  | 'returnReconciliation'
   | 'inventory'
   | 'movements'
   | 'transfers'
@@ -24,6 +26,7 @@ export interface ReportOption {
 export const REPORT_OPTIONS: readonly ReportOption[] = [
   { id: 'summary', label: 'Resumen', sheetName: 'Resumen' },
   { id: 'sales', label: 'Ventas', sheetName: 'Ventas' },
+  { id: 'courtesies', label: 'Entregas de cortesía', sheetName: 'Cortesías' },
   { id: 'products', label: 'Productos vendidos', sheetName: 'Productos vendidos' },
   { id: 'productProfit', label: 'Ganancia por productos', sheetName: 'Ganancia por productos' },
   { id: 'salesKardex', label: 'Kardex de ventas por producto', sheetName: 'Kardex de ventas' },
@@ -33,6 +36,7 @@ export const REPORT_OPTIONS: readonly ReportOption[] = [
   { id: 'collections', label: 'Cobros', sheetName: 'Cobros' },
   { id: 'expenses', label: 'Gastos', sheetName: 'Gastos' },
   { id: 'closures', label: 'Arqueos', sheetName: 'Arqueos' },
+  { id: 'returnReconciliation', label: 'Detalle de retorno, mermas y faltantes', sheetName: 'Detalle de retorno' },
   { id: 'inventory', label: 'Existencias actuales', sheetName: 'Existencias actuales' },
   { id: 'movements', label: 'Movimientos', sheetName: 'Movimientos' },
   { id: 'transfers', label: 'Transferencias', sheetName: 'Transferencias' },
@@ -58,6 +62,8 @@ export function defaultSheetIdForTab(tab: string): ReportSheetId {
       return 'summary'
     case 'ventas':
       return 'sales'
+    case 'cortesias':
+      return 'courtesies'
     case 'productos':
       return 'products'
     case 'ganancias':

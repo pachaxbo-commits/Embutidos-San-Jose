@@ -210,6 +210,12 @@ export async function runDistributionEngineTestSuite(): Promise<{ passed: number
   assert(money.cashCollections === 100, 'cobros efectivo = Bs 100')
   assert(money.cashExpenses === 20, 'gastos efectivo = Bs 20')
   assert(money.expectedCash === 368, 'efectivo esperado = 288 + 100 - 20 = Bs 368')
+  const courtesySale = { ...sales[0], id: 'courtesy-1', operationId: 'courtesy-1', saleKind: 'courtesy' as const, total: 0, cashAmount: 0, qrAmount: 0, creditAmount: 0, lines: sales[0].lines.map(line => ({ ...line, subtotal: 0, referenceSubtotal: line.quantity * line.actualUnitPrice })) }
+  const moneyWithCourtesy = computeMoneySummary([...sales, courtesySale], collections, expenses)
+  const courtesySold = computeSoldByProduct([courtesySale])
+  assert(moneyWithCourtesy.salesTotal === money.salesTotal && moneyWithCourtesy.expectedCash === money.expectedCash, 'la cortesía no suma ventas ni efectivo esperado')
+  const courtesyProduct = courtesySold.get(sales[0].lines[0].productId)
+  assert(courtesyProduct?.quantity === 0 && courtesyProduct?.courtesyQuantity === sales[0].lines[0].quantity && courtesyProduct?.amount === 0, 'la cortesía se informa separada de unidades vendidas')
   const mixedMoney = computeMoneySummary(sales, [{ ...collections[0], id: 'col-mixed', operationId: 'col-mixed', amount: 100, method: 'mixed', cashAmount: 40, qrAmount: 60 }], expenses)
   assert(mixedMoney.cashCollections === 40 && mixedMoney.qrCollections === 60 && mixedMoney.expectedCash === 308, 'cobro mixto separa efectivo y QR en el arqueo')
   assert(round2(365 - money.expectedCash) === -3, 'declarado 365 produce diferencia -3')

@@ -129,7 +129,7 @@ Reglas de continuidad:
 - Soporte no ve ventas ni información comercial. Su limpieza conserva usuarios, productos, almacenes y configuración, y requiere doble confirmación.
 - Mantener PDF y Excel en español, sin estados internos ni identificadores largos.
 - Mantener compatibilidad de impresión Bluetooth genérica y por red.
-- No implementar la merma hasta que la cliente defina exactamente desde qué cantidad se redondea, qué unidades la permiten y cómo debe registrarse la diferencia.
+- En el retorno de ruta, separar retorno apto, merma justificada y faltante no explicado. Kilogramos admiten decimales y paquetes/unidades requieren enteros; la merma exige motivo y nunca vuelve al stock vendible.
 - Tras cualquier cambio funcional, compilar web y Android, probar permisos con el emulador y verificar la web publicada.
 - Cuando un cambio requiera actualizar la aplicación Android instalada, avisar explícitamente al usuario y dejar la nueva APK compatible con la firma anterior en el Escritorio real del equipo, verificando identificador, firma y `versionCode` antes de entregarla.
 
@@ -229,12 +229,23 @@ Estado al cerrar esta limpieza:
 - Pruebas focalizadas: cola/proyecciones offline, escritura local y reconexión en Firestore Emulator, conciliación del 10/10, pruebas de distribución, cierres, cobros, créditos/gastos, reportes y actualizador.
 - Android: `versionCode 41`, `versionName 1.4.21`; misma firma oficial y `applicationId com.pachax.flow`.
 
-## Trabajo local pendiente de revisión: ajustes auditados de cartera (15 de octubre de 2026)
+## Créditos auditados 1.4.22 (15 de octubre de 2026)
 
-- En la rama `codex/receivable-adjustment-audit` se implementa edición y anulación blanda de cuentas por cobrar, solo para Administración. No está integrado a `main`, desplegado ni distribuido.
+- Se publica edición y anulación blanda de cuentas por cobrar, solo para Administración.
 - Las ediciones conservan pagos, impiden reducir la deuda por debajo de lo cobrado y guardan valores anteriores/nuevos, motivo, responsable, hora y detalle por producto en `distReceivableAdjustments`.
 - En créditos de venta sin distribución histórica por producto, la distribución inicial se calcula proporcionalmente al subtotal con ajuste determinista de centavos. Esta distribución es informativa de deuda, no altera precios, ventas ni stock.
 - Anular deuda exige motivo y doble confirmación con la frase `ELIMINAR DEUDA`; solo procede si no tiene pagos aplicados. La venta, caja, cierres y stock quedan intactos; la deuda permanece consultable como anulada.
 - Los reportes reconstruyen cartera al corte con los eventos de ajuste. La colección de auditoría se agrega a la limpieza protegida de la categoría Créditos.
-- Pruebas de emulador: 15 casos focalizados de ajustes, 20 verificaciones As-Of y 15 de limpieza selectiva. Typecheck, ESLint focalizado y builds web/Android en directorios de verificación aislados pasan. El build web estándar no pudo limpiar `dist/favicon.png` porque Windows reportó acceso denegado al archivo existente.
-- Próximo paso antes de publicar: revisión, volver a ejecutar pruebas de Rules bajo emulador configurado, confirmar si corresponde incrementar versión, compilar APK release firmada y desplegar únicamente la Function de operaciones y Rules si se aprueba.
+- Las ediciones conservan pagos, impiden reducir la deuda por debajo de lo cobrado y registran valores anteriores/nuevos, motivo, responsable, hora y detalle por producto. En créditos históricos sin asignación por producto, la distribución informativa se calcula proporcionalmente con ajuste determinista de centavos.
+- Anular deuda exige motivo y doble confirmación con `ELIMINAR DEUDA`; solo se permite sin pagos aplicados. La venta, caja, cierres y stock quedan intactos; la deuda permanece consultable como anulada.
+- Los reportes reconstruyen cartera al corte con eventos de ajuste y la auditoría se incluye en la limpieza protegida de Créditos.
+- Pruebas focalizadas de ajustes, cartera histórica As-Of y limpieza selectiva completadas antes de integrar la versión 1.4.22 / code 42.
+
+## Merma al retorno, cortesías y cotizaciones 1.4.23 (15 de octubre de 2026)
+
+- Al recibir el retorno de ruta, Almacén/Administración separa cantidad apta, merma con motivo y faltante. El retorno apto recupera las asignaciones/lotes originales; la merma queda en un movimiento `return_waste`, conserva costo histórico y no reingresa al inventario vendible. El sobrante continúa en cuarentena.
+- Las cortesías se registran en el flujo de ventas con motivo y movimiento `courtesy`. Consumen existencias/lotes, pero sus importes de efectivo, QR, crédito e ingresos son cero; se excluyen de ventas y compras por cliente y se muestran en sus propios indicadores. El costo histórico se informa una vez como pérdida/salida no comercial.
+- Se agregó Cotizaciones para Administración y Distribuidores: generan número legible, pueden incluir prospectos y precios editables, tienen vigencia/estados y no reservan stock ni crean venta o deuda. Incluye imagen PNG para descarga/compartir, ticket térmico en 58/80 mm, impresión en hoja, edición/cancelación auditada y aislamiento por propietario para Distribuidores.
+- La limpieza selectiva incorpora la categoría Cotizaciones sin modificar las categorías preservadas.
+- Verificación focalizada: typecheck, ESLint, build web, distribución, cierres, mermas, cortesías/cotizaciones en emulador, reportes, ganancias por producto, compras por cliente, limpieza selectiva, offline, créditos/gastos y documentos Android.
+- Android: `versionCode 43`, `versionName 1.4.23`; se conserva `applicationId com.pachax.flow` y la firma oficial.

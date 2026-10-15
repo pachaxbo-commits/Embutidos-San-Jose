@@ -36,6 +36,7 @@ import type {
   DistRoute,
   DistSale,
   DistSaleLine,
+  DistQuote,
   DistStockMovement,
   DistLot, DistTransfer, DistClaim, DistCreditStatus, DistCreditOverride, DistAdjustmentRequest,
   PaymentKind,
@@ -74,6 +75,7 @@ export const DIST_COLLECTIONS = {
   expenses: 'distExpenses',
   closures: 'distClosures',
   adjustmentRequests: 'distAdjustmentRequests',
+  quotes: 'distQuotes',
 } as const
 
 const SCHEMA_VERSION = 1
@@ -503,6 +505,26 @@ export function subscribeSales(
   )
 }
 
+export function subscribeQuotes(isAdmin: boolean, onData: (rows: DistQuote[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistQuote>(context => {
+    const ref = collectionRef(context, DIST_COLLECTIONS.quotes)
+    return isAdmin ? ref : query(ref, where('sellerUid', '==', context.uid))
+  }, onData, onError)
+}
+
+export async function createQuote(payload: Record<string, unknown>) {
+  const id = newOperationId('quote')
+  return submitOperation<DistQuote>('quoteCreate', payload, id)
+}
+
+export async function updateQuote(quoteId: string, payload: Record<string, unknown>) {
+  return submitOperation<DistQuote>('quoteUpdate', { quoteId, ...payload }, newOperationId('quote-edit'))
+}
+
+export async function cancelQuote(quoteId: string, reason: string) {
+  return submitOperation<DistQuote>('quoteCancel', { quoteId, reason }, newOperationId('quote-cancel'))
+}
+
 export async function correctSale(input: { saleId: string; reason: string; lines: DistSaleLine[]; paymentKind: PaymentKind; cashAmount: number; qrAmount: number; creditAmount: number }): Promise<void> {
   await submitOperation('editSale', input, newOperationId('sale-correction'))
 }
@@ -788,6 +810,8 @@ export async function correctDispatch(input: CorrectDispatchInput): Promise<stri
 // ---------------------------------------------------------------------------
 
 export interface RegisterSaleInput {
+  saleKind?: 'sale' | 'courtesy'
+  courtesyReason?: string
   operationId: string
   sourceLocation: SourceLocation
   routeId: string
