@@ -6,22 +6,26 @@ export interface ReturnBreakdown {
   waste: number
   shortage: number
   overage: number
+  wasteValid: boolean
 }
 
 /** Calcula la rendición física sin confundir producto vendible, merma y faltante. */
-export function calculateReturnBreakdown(expected: number, apt: number, waste: number): ReturnBreakdown {
+export function calculateReturnBreakdown(expected: number, received: number, waste: number): ReturnBreakdown {
   const expectedQty = round2(expected)
-  const aptQty = round2(apt)
+  const receivedQty = round2(received)
   const wasteQty = round2(waste)
-  const valid = [expectedQty, aptQty, wasteQty].every(Number.isFinite)
-    && expectedQty >= 0 && aptQty >= 0 && wasteQty >= 0
+  const valid = [expectedQty, receivedQty, wasteQty].every(Number.isFinite)
+    && expectedQty >= 0 && receivedQty >= 0 && wasteQty >= 0
   if (!valid) throw new Error('Las cantidades de retorno deben ser válidas y no negativas.')
-  const normalApt = Math.min(aptQty, Math.max(0, round2(expectedQty - wasteQty)))
+  const recognizedReceived = Math.min(receivedQty, expectedQty)
+  const wasteValid = wasteQty <= recognizedReceived + 0.001
+  const aptQty = round2(Math.max(0, recognizedReceived - wasteQty))
   return {
     apt: aptQty,
     waste: wasteQty,
-    shortage: round2(Math.max(0, expectedQty - aptQty - wasteQty)),
-    overage: round2(Math.max(0, aptQty - normalApt)),
+    shortage: round2(Math.max(0, expectedQty - receivedQty)),
+    overage: round2(Math.max(0, receivedQty - expectedQty)),
+    wasteValid,
   }
 }
 

@@ -459,6 +459,9 @@ console.log('=== Iniciando pruebas unitarias: Reporte de Ganancias por Producto 
   ok(report.operationalTotals.lossCost === 30, 'Caso 9: Mermas = 30 Bs')
   // Ganancia operativa = 200 - 40 - 30 = 130 Bs
   ok(report.operationalTotals.operatingProfit === 130, 'Caso 9: Ganancia Operativa = 130 Bs')
+  const reopenedLoss = { ...movements[0], id: 'mov-loss-reopened', lossCost: 12, reversedAt: '2026-10-08T10:00:00Z' }
+  const reportAfterReopen = computeProductProfitReport(sales, [], expenses, [...movements, reopenedLoss], ['2026-10-07'])
+  ok(reportAfterReopen.operationalTotals.lossCost === 30, 'Caso 9: reapertura excluye la pérdida revertida y no duplica mermas')
 }
 
 // -------------------------------------------------------------

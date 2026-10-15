@@ -487,6 +487,7 @@ export function computeProductProfitReport(
   // 6. Resultado Operativo Estimado (compatibilidad idéntica a Resumen)
   const spent = round2(expenses.reduce((n, e) => n + e.amount, 0))
   const losses = movements
+    .filter((m) => !m.reversedAt)
     .filter((m) => dayKeys.length === 0 || dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
     .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
     .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'courtesy' || m.type === 'dispatch_waste' || (m.type === 'adjustment' && m.centralDelta < 0))

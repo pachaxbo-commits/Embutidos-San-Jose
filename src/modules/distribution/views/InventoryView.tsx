@@ -433,6 +433,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                   </strong>
                 </div>
                 <p className="mt-2 text-[11px] font-bold text-slate-700">{MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'}</p>
+                {movement.reversedAt && <p className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Revertido por reapertura el {new Date(movement.reversedAt).toLocaleString('es-BO')}{movement.reversalReason ? ` · ${movement.reversalReason}` : ''}</p>}
                 <p className="mt-1 break-words text-[10px] text-slate-500">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}</p>
                 <p className="mt-1 break-words text-[10px] text-slate-500">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Usuario'} · {visiblePersonName(movement.responsibleName)}</p>
                 {movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}

@@ -440,7 +440,7 @@ export function printClosureTicket(closure: DistClosure): Promise<string> {
         quantity: row.sold,
         unitLabel: row.unitType === 'kg' ? 'kg vendidos' : 'vendidos',
         lineTotal: 0,
-        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Apto ${row.actualReturn}`, `Merma ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
+        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado ${row.declaredReturn ?? closure.declaredReturns?.[row.productId] ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Apto ${row.actualReturn}`, `Merma ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
       })),
       closure.status === 'closed'
         ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared ?? 0).toFixed(2)}`
@@ -463,7 +463,7 @@ export async function generateClosurePdf(closure: DistClosure) {
     import('jspdf-autotable'),
   ])
 
-  const doc = new jsPDF({ orientation: 'portrait', format: 'letter' })
+  const doc = new jsPDF({ orientation: 'landscape', format: 'letter' })
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageHeight = doc.internal.pageSize.getHeight()
 
@@ -521,13 +521,15 @@ export async function generateClosurePdf(closure: DistClosure) {
 
     autoTable(doc, {
       startY: y + 3,
-      head: [['Producto', 'Cargado', 'Vendido', 'Cortesía', 'Debía volver', 'Apto', 'Merma', 'Faltante', 'Sobrante', 'Unidad']],
+      head: [['Producto', 'Despachado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físico', 'Retorno apto', 'Merma', 'Faltante', 'Sobrante', 'Unidad']],
       body: closure.products.map((row) => [
         row.productName,
         row.unitType === 'kg' ? row.totalLoaded.toFixed(2) : String(row.totalLoaded),
         row.unitType === 'kg' ? row.sold.toFixed(2) : String(row.sold),
         row.unitType === 'kg' ? (row.courtesy || 0).toFixed(2) : String(row.courtesy || 0),
         row.unitType === 'kg' ? row.expectedReturn.toFixed(2) : String(row.expectedReturn),
+        (() => { const value = row.declaredReturn ?? closure.declaredReturns?.[row.productId]; return value === undefined ? 'Sin registro' : row.unitType === 'kg' ? Number(value).toFixed(2) : String(value) })(),
+        (() => { const value = row.physicalReturn ?? row.actualReturn + (row.returnWaste || 0); const formatted = row.unitType === 'kg' ? Number(value).toFixed(2) : String(value); return row.physicalReturn === undefined ? `${formatted} (aprox.)` : formatted })(),
         row.unitType === 'kg' ? row.actualReturn.toFixed(2) : String(row.actualReturn),
         row.unitType === 'kg' ? (row.returnWaste || 0).toFixed(2) : String(row.returnWaste || 0),
         row.unitType === 'kg' ? (row.shortage ?? 0).toFixed(2) : String(row.shortage ?? 0),
@@ -538,16 +540,18 @@ export async function generateClosurePdf(closure: DistClosure) {
       headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
       bodyStyles: { fontSize: 7.5, cellPadding: 2 },
       columnStyles: {
-        0: { cellWidth: 34, fontStyle: 'bold' },
+        0: { cellWidth: 39, fontStyle: 'bold' },
         1: { cellWidth: 16, halign: 'right' },
         2: { cellWidth: 16, halign: 'right' },
-        3: { cellWidth: 16, halign: 'right' },
-        4: { cellWidth: 18, halign: 'right' },
-        5: { cellWidth: 16, halign: 'right', fontStyle: 'bold' },
-        6: { cellWidth: 16, halign: 'right' },
-        7: { cellWidth: 16, halign: 'right' },
-        8: { cellWidth: 16, halign: 'right' },
-        9: { cellWidth: 14, halign: 'center' },
+        3: { cellWidth: 15, halign: 'right' },
+        4: { cellWidth: 17, halign: 'right' },
+        5: { cellWidth: 22, halign: 'right' },
+        6: { cellWidth: 18, halign: 'right' },
+        7: { cellWidth: 17, halign: 'right', fontStyle: 'bold' },
+        8: { cellWidth: 14, halign: 'right' },
+        9: { cellWidth: 14, halign: 'right' },
+        10: { cellWidth: 14, halign: 'right' },
+        11: { cellWidth: 16, halign: 'center' },
       },
       margin: { left: 14, right: 14 },
     })
