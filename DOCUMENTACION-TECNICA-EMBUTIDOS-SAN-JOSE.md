@@ -283,4 +283,4 @@ Estado al cerrar esta limpieza:
 - La recepción de almacén separa retorno normal, merma recuperable y producto no apto. Total recibido suma las tres cantidades una vez; solo el exceso vendible va a cuarentena, y una pérdida sin origen trazable queda auditada sin fabricar stock ni costo.
 - En móvil, los campos principales de cantidad son de ancho completo, aceptan coma/punto decimal en kg y el botón para copiar la cantidad declarada queda debajo del campo.
 - La auditoría de producción se ejecutó en solo lectura y encontró recepciones anteriores marcadas como pérdida con motivo de retorno normal/común. Las operaciones están confirmadas y son trazables por lote; la eventual corrección debe ser explícita mediante reapertura auditada y nueva recepción, nunca por ajuste manual ni migración silenciosa. No se modificó producción.
-- Android previsto: `versionCode 48`, `versionName 1.4.28`; aplicación `com.pachax.flow`, firma oficial.
+- Android publicado: `versionCode 48`, `versionName 1.4.28`; aplicación `com.pachax.flow`, firma oficial. APK y OTA verificados contra manifiesto remoto.
