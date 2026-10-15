@@ -6,6 +6,7 @@ import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { toDayKey, round2 } from '../domain/engine'
+import { buildProvisionalCollectionSnapshot } from '../domain/provisionalCollection'
 import { adjustReceivable, newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride, voidReceivable } from '../data/distributionRepository'
 import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
 import {
@@ -326,9 +327,13 @@ export function CreditsView({ session, data }: DistributionViewProps) {
     setIsSubmitting(true)
     setError(null)
     try {
-      const oldestDebt = collectCustomer.allReceivables
-        .filter((item) => item.balance > 0)
-        .sort((a, b) => (a.sourceDate || a.createdAt).localeCompare(b.sourceDate || b.createdAt))[0]
+      const customer = data.customers.find((item) => item.id === collectCustomer.customerId)
+      const provisionalSnapshot = buildProvisionalCollectionSnapshot(
+        collectCustomer.allReceivables,
+        value,
+        customer?.customerCode || customer?.identityNumber || collectCustomer.customerCode || collectCustomer.identityNumber,
+      )
+      const oldestDebt = collectCustomer.allReceivables.find((item) => item.id === provisionalSnapshot.receivableId)
 
       const registered = await registerCollection({
         operationId: newOperationId('col'),
@@ -341,8 +346,9 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         qrAmount: qr,
         collectedByUid: session.uid,
         collectedByName: session.userName,
-        routeId: session.routeId || oldestDebt?.routeId,
+        routeId: session.routeId || oldestDebt?.routeId || '',
         note,
+        provisionalSnapshot,
       })
       setConfirmingCollection(false)
       setCollectCustomer(null)
@@ -994,18 +1000,16 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                 <Share2 size={16} /> Compartir
               </SecondaryButton>
             </div>
-            {session.role === 'admin' && (
-              <SecondaryButton
-                full
-                onClick={() =>
-                  void printLargeCollectionReceipt(lastCollection, receiptContext).catch((error) =>
-                    setReceiptFeedback((error as Error).message),
-                  )
-                }
-              >
-                <Printer size={16} /> Imprimir en hoja normal
-              </SecondaryButton>
-            )}
+            <SecondaryButton
+              full
+              onClick={() =>
+                void printLargeCollectionReceipt(lastCollection, receiptContext).catch((error) =>
+                  setReceiptFeedback((error as Error).message),
+                )
+              }
+            >
+              <Printer size={16} /> Imprimir hoja / PDF
+            </SecondaryButton>
             {receiptFeedback && <p className="text-center text-xs font-bold text-slate-600">{receiptFeedback}</p>}
           </div>
         )}

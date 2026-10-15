@@ -303,7 +303,9 @@ export async function printCollectionReceipt(collection: DistCollection, context
 }
 
 async function buildCollectionReceiptImage(collection: DistCollection, context: ReceiptContext): Promise<File> {
-  const allocations = collection.allocations || []
+  const allocations = collection.allocations?.length
+    ? collection.allocations
+    : [{ receivableId: collection.receivableId || '', amount: collection.amount }]
   const height = 650 + allocations.length * 54
   const canvas = document.createElement('canvas'); canvas.width = 720; canvas.height = height
   const ctx = canvas.getContext('2d'); if (!ctx) throw new Error('Este dispositivo no puede crear la imagen del comprobante.')

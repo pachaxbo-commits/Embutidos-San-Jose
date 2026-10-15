@@ -1,6 +1,7 @@
 import type { PendingOperation } from './operationQueue'
 import { submitOperation } from './operationQueue'
 import { normalizeCI } from '../domain/customerIdentity'
+import type { ProvisionalCollectionSnapshot } from '../domain/provisionalCollection'
 import {
   collection,
   runTransaction,
@@ -861,6 +862,7 @@ export interface RegisterCollectionInput {
   collectedByName: string
   routeId: string
   note?: string
+  provisionalSnapshot?: ProvisionalCollectionSnapshot
 }
 
 export async function registerOpeningBalance(input: { customerId: string; amount: number; sourceDate: string; note: string; routeId?: string }): Promise<DistReceivable> {
@@ -914,6 +916,8 @@ export async function registerCollection(input: RegisterCollectionInput): Promis
     cashAmount: input.cashAmount,
     qrAmount: input.qrAmount,
     note: input.note || '',
+    ...input.provisionalSnapshot,
+    pendingConfirmation: true,
   } as DistCollection
   return submitOperation<DistCollection>('collection', input, input.operationId, provisional)
 }

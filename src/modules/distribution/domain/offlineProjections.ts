@@ -10,8 +10,9 @@ export function pendingSalesFromOperations(operations: PendingOperation[], sales
 export function pendingCollectionsFromOperations(operations: PendingOperation[], collections: DistCollection[]): DistCollection[] {
   return operations.filter(o => o.status === 'queued' && o.type === 'collection' && !collections.some(c => c.id === o.id))
     .map(o => {
-      const p = o.payload as unknown as { receivable?: DistReceivable; receivableId?: string; customerId?: string; customerName?: string; amount: number; method: 'cash' | 'qr' | 'mixed'; cashAmount?: number; qrAmount?: number; routeId: string; collectedByName: string }
-      return { ...p, id: o.id, operationId: o.id, receivableId: p.receivable?.id || p.receivableId || '', customerId: p.receivable?.customerId || p.customerId || '', customerName: p.receivable?.customerName || p.customerName || '', collectedByUid: o.createdBy, createdAt: o.createdAt, dayKey: toDayKey(o.createdAt), pendingConfirmation: true } as unknown as DistCollection
+      const p = o.payload as unknown as { receivable?: DistReceivable; receivableId?: string; customerId?: string; customerName?: string; amount: number; method: 'cash' | 'qr' | 'mixed'; cashAmount?: number; qrAmount?: number; routeId: string; collectedByName: string; provisionalSnapshot?: Partial<DistCollection> }
+      const snapshot = p.provisionalSnapshot || {}
+      return { ...p, ...snapshot, id: o.id, operationId: o.id, receivableId: snapshot.receivableId || p.receivable?.id || p.receivableId || '', customerId: p.receivable?.customerId || p.customerId || '', customerName: p.receivable?.customerName || p.customerName || '', collectedByUid: o.createdBy, createdAt: o.createdAt, dayKey: toDayKey(o.createdAt), pendingConfirmation: true } as unknown as DistCollection
     })
 }
 
@@ -22,7 +23,12 @@ export function pendingExpensesFromOperations(operations: PendingOperation[], ex
 
 export function projectReceivables(receivables: DistReceivable[], pendingCollections: DistCollection[]): DistReceivable[] {
   return receivables.map(r => {
-    const pending = pendingCollections.filter(c => c.receivableId === r.id).reduce((n, c) => n + c.amount, 0)
+    const pending = pendingCollections.reduce((total, collection) => {
+      const allocationTotal = collection.allocations?.length
+        ? collection.allocations.filter(allocation => allocation.receivableId === r.id).reduce((sum, allocation) => sum + allocation.amount, 0)
+        : collection.receivableId === r.id ? collection.amount : 0
+      return total + allocationTotal
+    }, 0)
     return { ...r, balance: Math.max(0, Math.round((r.balance - pending) * 100) / 100), pendingConfirmation: pending > 0 }
   })
 }

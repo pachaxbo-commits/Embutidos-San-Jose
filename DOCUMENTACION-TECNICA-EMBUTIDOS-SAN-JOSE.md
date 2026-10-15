@@ -264,3 +264,11 @@ Estado al cerrar esta limpieza:
 - En Android, compartir la imagen utiliza el selector nativo de Capacitor (incluye WhatsApp) y la imagen descargada se guarda en Documentos de la aplicación; en web se mantienen Web Share y descarga del navegador.
 - Se conserva la imagen temporal en caché durante el selector y se limpia posteriormente. Prueba focalizada del payload de compartir y mismo paquete/firma oficial.
 - Android: `versionCode 45`, `versionName 1.4.25`.
+
+## Comprobantes de cobro provisional 1.4.26 (15 de octubre de 2026)
+
+- El comprobante inmediato de un cobro usa un snapshot local completo: CI/código, saldo antes y después, allocations FIFO y líneas de la primera deuda, sin esperar confirmación remota. El servidor conserva la autoridad financiera.
+- Las asignaciones de cobros pendientes se proyectan por cada deuda FIFO, evitando que un cobro que atraviesa varias cuentas muestre un saldo provisional agregado incorrecto. Al rechazo de servidor se mantiene el rollback por salida de la cola pendiente.
+- En el historial se distinguen `Imprimir ticket` (impresora térmica) e `Imprimir hoja / PDF` (diálogo normal/nativo). Ambas opciones están disponibles para Administración y para el Distribuidor dentro de sus datos permitidos.
+- Se mantiene el mensaje de saldo histórico no disponible únicamente para documentos que realmente carecen de esos saldos.
+- Android: `versionCode 46`, `versionName 1.4.26`; misma firma oficial y `applicationId com.pachax.flow`.

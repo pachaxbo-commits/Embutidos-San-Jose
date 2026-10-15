@@ -36,6 +36,16 @@ const pendingCollections = pendingCollectionsFromOperations([op('c60', 'collecti
 check(projectReceivables([receivable], pendingCollections)[0].balance === 0, 'cobros offline acumulados reducen cartera provisional hasta cero sin duplicar')
 check(pendingCollectionsFromOperations([op('cr', 'collection', 'rejected', collectionPayload)], []).length === 0, 'cobro rechazado deja de descontar la cartera y revierte su proyección')
 
+const debtA = { id: 'debt-a', balance: 30, customerId: 'c1' } as DistReceivable
+const debtB = { id: 'debt-b', balance: 100, customerId: 'c1' } as DistReceivable
+const fifoQueued = pendingCollectionsFromOperations([op('fifo50', 'collection', 'queued', {
+  customerId: 'c1', amount: 50, routeId: 'hugo',
+  provisionalSnapshot: { receivableId: 'debt-a', allocations: [{ receivableId: 'debt-a', amount: 30 }, { receivableId: 'debt-b', amount: 20 }], portfolioBalanceBefore: 130, portfolioBalanceAfter: 80 },
+})], [])
+const projectedFifoDebts = projectReceivables([debtA, debtB], fifoQueued)
+check(projectedFifoDebts[0].balance === 0 && projectedFifoDebts[1].balance === 80, 'cobro offline FIFO descuenta cada deuda según sus allocations')
+check(projectedFifoDebts.reduce((sum, debt) => sum + debt.balance, 0) === 80, 'la cartera provisional multi-deuda conserva el saldo agregado correcto')
+
 const queuedExpense = op('e1', 'expense', 'queued', { amount: 12, concept: 'prueba' })
 check(pendingExpensesFromOperations([queuedExpense], [] as DistExpense[])[0].pendingConfirmation === true, 'gasto queued aparece como pendiente local')
 check(pendingExpensesFromOperations([op('er', 'expense', 'rejected', { amount: 12 })], [] as DistExpense[]).length === 0, 'gasto rechazado desaparece de la proyección local')
