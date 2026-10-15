@@ -229,7 +229,7 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
           unitType: row.unitType,
           dispatched: row.totalLoaded,
           sold: row.sold,
-          returned: row.actualReturn,
+          returned: round2(row.actualReturn + Math.min(row.returnMerma || 0, Math.max(0, row.expectedReturn - row.actualReturn))),
           variance: row.variance,
           reconciled: isReconciled,
         })

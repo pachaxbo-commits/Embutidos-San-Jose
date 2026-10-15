@@ -2059,37 +2059,60 @@ async function closure(o, p) {
       const previousProduct = previous.products?.find((row) => row.productId === pid);
       const actual = Number.isFinite(Number(returnRow?.actualReturn)) ? round(Number(returnRow.actualReturn)) : Number.NaN;
       const waste = Number.isFinite(Number(returnRow?.returnWaste || 0)) ? round(Number(returnRow.returnWaste || 0)) : Number.NaN;
+      const hasRecoverableMerma = Object.prototype.hasOwnProperty.call(returnRow || {}, "returnMerma");
+      const recoverableMerma = hasRecoverableMerma && Number.isFinite(Number(returnRow?.returnMerma))
+        ? round(Number(returnRow.returnMerma))
+        : hasRecoverableMerma ? Number.NaN : 0;
       const wasteReason = String(returnRow?.returnWasteReason || "").trim();
-      // physicalReturn es el peso total recibido. Clientes antiguos solo
-      // enviaban actualReturn (apto), por eso se reconstruye sumando la merma.
-      const received = Number.isFinite(Number(returnRow?.physicalReturn))
-        ? round(Number(returnRow.physicalReturn))
-        : round(actual + (Number.isFinite(waste) ? waste : 0));
+      // Operaciones nuevas envían tres componentes independientes. En las
+      // antiguas returnWaste sigue significando pérdida/no vendible.
+      const received = hasRecoverableMerma
+        ? round(actual + recoverableMerma + (Number.isFinite(waste) ? waste : 0))
+        : Number.isFinite(Number(returnRow?.physicalReturn))
+          ? round(Number(returnRow.physicalReturn))
+          : round(actual + (Number.isFinite(waste) ? waste : 0));
       check(
         Number.isFinite(actual) && actual >= 0 && Number.isFinite(received) && received >= 0,
         "Completa las cantidades recibidas físicamente.",
       );
-      check(Number.isFinite(waste) && waste >= 0 && (e.p.unitType === "kg" || Number.isInteger(waste)),
-        "La merma debe respetar la unidad del producto.");
-      check(waste === 0 || wasteReason.length > 0, "Indica el motivo de la merma al retorno.");
+      check(Number.isFinite(waste) && waste >= 0 && Number.isFinite(recoverableMerma) && recoverableMerma >= 0,
+        "Las cantidades de merma deben ser válidas y no negativas.");
+      check(e.p.unitType === "kg" || [actual, recoverableMerma, waste, received].every(Number.isInteger),
+        "Paquetes y unidades requieren cantidades enteras.");
+      check(waste === 0 || wasteReason.length > 0, "Indica por qué el producto no puede volver al stock vendible.");
+      if (hasRecoverableMerma && Number.isFinite(Number(returnRow?.physicalReturn))) {
+        check(round(Number(returnRow.physicalReturn)) === received,
+          "El total recibido no coincide con el retorno normal, la merma y el producto no apto.");
+      }
+      const legacySemantics = !hasRecoverableMerma;
       const recognizedReceived = round(Math.min(received, expected));
-      const normalApt = round(Math.max(0, recognizedReceived - waste));
+      if (legacySemantics) {
+        check(waste <= recognizedReceived + 0.001,
+          "La merma no puede superar lo recibido ni lo que debía retornar.");
+      }
+      const normalApt = legacySemantics
+        ? round(Math.max(0, recognizedReceived - waste))
+        : round(Math.min(actual, expected));
+      const recoverableFromRoute = legacySemantics
+        ? 0
+        : round(Math.min(recoverableMerma, Math.max(0, expected - normalApt)));
+      const wasteFromRoute = round(Math.min(waste, Math.max(0, expected - normalApt - recoverableFromRoute)));
       const overage = round(Math.max(0, received - expected));
       const shortage = round(Math.max(0, expected - received));
-      check(e.p.unitType === "kg" || Number.isInteger(received), "Paquetes y unidades requieren cantidades enteras.");
-      check(waste <= recognizedReceived + 0.001, "La merma no puede superar lo recibido ni lo que debía retornar.");
-      // Solo el retorno reconocido y la merma pueden consumir asignaciones que
-      // existen en el stock de la ruta. El sobrante físico no tiene una
-      // asignación de origen verificable: se recibe aparte, siempre en cuarentena.
-      const accountedRouteQuantity = round(normalApt + waste);
+      // Solo se mueven desde ruta cantidades con saldo y lote comprobables.
+      // En el modelo nuevo, normal y merma recuperable se conservan como stock;
+      // lo no apto se descuenta como pérdida, nunca vuelve al almacén vendible.
+      const accountedRouteQuantity = legacySemantics
+        ? round(normalApt + waste)
+        : round(normalApt + recoverableFromRoute + wasteFromRoute);
       const receivedParts = accountedRouteQuantity > 0
         ? await o.take(pid, route, accountedRouteQuantity, { allowExpired: true })
         : [];
-      const [returnParts, wasteParts] = splitAllocationsByAmounts(
+      const [returnParts, recoverableMermaParts, wasteParts] = splitAllocationsByAmounts(
         receivedParts,
-        [normalApt, waste],
+        [normalApt, recoverableFromRoute, wasteFromRoute],
       );
-      for (const a of returnParts) {
+      for (const a of [...returnParts, ...recoverableMermaParts]) {
         const lot = e.lots.find((x) => x.id === a.lotId);
         check(lot, "No se encontró el lote del producto retornado.");
         lot.quantities[warehouse] = round((lot.quantities[warehouse] || 0) + a.quantity);
@@ -2098,18 +2121,37 @@ async function closure(o, p) {
         o.move(e, warehouse, normalApt);
         o.ledger(pid, normalApt, route, warehouse, "return", { allocations: returnParts, dispatchId: d.id });
       }
+      if (recoverableFromRoute > 0) {
+        o.move(e, warehouse, recoverableFromRoute);
+        o.ledger(pid, recoverableFromRoute, route, warehouse, "return_merma", {
+          allocations: recoverableMermaParts,
+          dispatchId: d.id,
+          note: "Merma operativa recuperable; vuelve al stock vendible en sus lotes originales.",
+        });
+      }
       if (waste > 0) {
-        const knownCost = wasteParts.every((a) => a.productionCost !== null);
+        const knownCost = wasteFromRoute === waste && wasteParts.every((a) => a.productionCost !== null);
         const lossCost = knownCost
           ? round(wasteParts.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
           : null;
-        o.ledger(pid, waste, route, null, "return_waste", {
-          allocations: wasteParts,
-          lotCodes: [...new Set(wasteParts.map((a) => a.lotCode).filter(Boolean))],
-          lossCost,
-          reason: wasteReason,
-          dispatchId: d.id,
-        });
+        if (wasteFromRoute > 0) {
+          o.ledger(pid, wasteFromRoute, route, null, "return_waste", {
+            allocations: wasteParts,
+            lotCodes: [...new Set(wasteParts.map((a) => a.lotCode).filter(Boolean))],
+            lossCost: knownCost ? lossCost : null,
+            reason: wasteReason,
+            dispatchId: d.id,
+          });
+        }
+        if (wasteFromRoute < waste) {
+          o.ledger(pid, round(waste - wasteFromRoute), null, null, "return_waste_unassigned", {
+            allocations: [],
+            lossCost: null,
+            reason: wasteReason,
+            dispatchId: d.id,
+            note: "Producto no apto recibido por encima del saldo trazable en la ruta; costo y origen requieren revisión.",
+          });
+        }
       }
       if (shortage > 0) {
         const loss = await o.take(pid, route, shortage, { allowExpired: true });
@@ -2120,7 +2162,8 @@ async function closure(o, p) {
           dispatchId: d.id,
         });
       }
-      if (overage > 0) {
+      const sellableOverage = legacySemantics ? overage : round(Math.max(0, actual + recoverableMerma - expected));
+      if (sellableOverage > 0) {
         const lotId = `${o.id}__surplus_${pid}`;
         e.lots.push({
           id: lotId,
@@ -2133,14 +2176,14 @@ async function closure(o, p) {
           expiresOn: "",
           productionCost: null,
           quarantined: true,
-          quantities: { [warehouse]: overage },
+          quantities: { [warehouse]: sellableOverage },
           createdAt: o.now,
           createdBy: o.actor,
         });
-        o.move(e, warehouse, overage);
+        o.move(e, warehouse, sellableOverage);
         // El sobrante no procede de stock asignado a la ruta: es una
         // recepción física sin origen verificable y queda en cuarentena.
-        o.ledger(pid, overage, null, warehouse, "overage", {
+        o.ledger(pid, sellableOverage, null, warehouse, "overage", {
           lotId,
           allocations: [],
           dispatchId: d.id,
@@ -2176,12 +2219,13 @@ async function closure(o, p) {
         expectedReturn: expected,
         ...(Number.isFinite(Number(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturn)) ? { declaredReturn: round(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturn) } : {}),
         physicalReturn: received,
-        actualReturn: normalApt,
+        actualReturn: legacySemantics ? normalApt : actual,
+        ...(hasRecoverableMerma ? { returnMerma: recoverableMerma } : {}),
         returnWaste: waste,
         returnWasteReason: wasteReason,
         shortage,
         overage,
-        lossCost: wasteParts.every((a) => a.productionCost !== null)
+        lossCost: wasteFromRoute === waste && wasteParts.every((a) => a.productionCost !== null)
           ? round(wasteParts.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
           : null,
         variance: round(overage - shortage),
@@ -2495,7 +2539,7 @@ handlers.reopen = async (o, p) => {
     const movementsById = new Map();
     for (const operation of closureOperations) {
       for (const movement of await o.query("distStockMovements", "refId", operation.id)) {
-        if (["return", "return_waste", "shortage", "overage"].includes(movement.type)) movementsById.set(movement.id, movement);
+        if (["return", "return_merma", "return_waste", "return_waste_unassigned", "shortage", "overage"].includes(movement.type)) movementsById.set(movement.id, movement);
       }
     }
     const movements = [...movementsById.values()].filter((movement) => !reversed.has(movement.id));
@@ -2505,7 +2549,7 @@ handlers.reopen = async (o, p) => {
     for (const movement of [...movements].reverse()) {
       const e = await o.loadStock(movement.productId, route);
       await o.loadStock(movement.productId, warehouse);
-      if (movement.type === "return") {
+      if (movement.type === "return" || movement.type === "return_merma") {
         const allocations = movement.allocations || [];
         check(allocations.length > 0, "No se puede reabrir: faltan lotes del retorno confirmado.");
         for (const part of allocations) {
@@ -2516,6 +2560,9 @@ handlers.reopen = async (o, p) => {
         }
         o.move(e, warehouse, -movement.quantity);
         o.move(e, route, movement.quantity);
+      } else if (movement.type === "return_waste_unassigned") {
+        // Pérdida recibida sin lote/saldo de origen trazable: se revierte su
+        // registro de auditoría, pero no se inventa stock de ruta al reabrir.
       } else if (movement.type === "return_waste" || movement.type === "shortage") {
         const allocations = movement.allocations || [];
         check(allocations.length > 0, "No se puede reabrir: faltan asignaciones de lote para la merma o faltante.");

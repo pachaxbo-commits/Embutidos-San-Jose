@@ -490,7 +490,7 @@ export function computeProductProfitReport(
     .filter((m) => !m.reversedAt)
     .filter((m) => dayKeys.length === 0 || dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
     .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
-    .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'courtesy' || m.type === 'dispatch_waste' || (m.type === 'adjustment' && m.centralDelta < 0))
+    .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'return_waste_unassigned' || m.type === 'courtesy' || m.type === 'dispatch_waste' || (m.type === 'adjustment' && m.centralDelta < 0))
   const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
   const lossCostsKnown = losses.every((movement) => typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost))
 

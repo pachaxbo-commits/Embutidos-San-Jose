@@ -424,7 +424,7 @@ export function reportSheets(
     .filter((m) => !m.reversedAt)
     .filter(
       (m) =>
-        m.type === "shortage" || m.type === "return_waste" || m.type === "courtesy" ||
+        m.type === "shortage" || m.type === "return_waste" || m.type === "return_waste_unassigned" || m.type === "courtesy" ||
         (m.type === "adjustment" && m.centralDelta < 0),
     );
   const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0));
@@ -786,14 +786,14 @@ export function reportSheets(
     {
       id: 'returnReconciliation',
       name: 'Detalle de retorno',
-      headers: ['Fecha', 'Ruta', 'Producto', 'Unidad', 'Cargado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físicamente (aprox. en históricos)', 'Retorno apto', 'Merma', 'Costo merma (Bs)', 'Motivo merma', 'Faltante', 'Sobrante en cuarentena'],
+      headers: ['Fecha', 'Ruta', 'Producto', 'Unidad', 'Cargado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físicamente (aprox. en históricos)', 'Retorno normal', 'Merma recuperable', 'Producto no apto / pérdida', 'Costo pérdida (Bs)', 'Motivo de pérdida', 'Faltante', 'Sobrante'],
       rows: (() => {
         const closures = data.closures.filter(inScope).filter(c => !seller || c.distributorUid === seller)
         const products = closures.flatMap(c => c.products.map(p => ({ closure: c, product: p })))
         const sum = (pick: (p: typeof products[number]['product']) => number) => round2(products.reduce((n, row) => n + pick(row.product), 0))
-        const rows = products.map(({closure:c,product:p}) => [reportDateTime(c.createdAt), reportRecordName(c.routeName, 'Ruta registrada'), reportRecordName(p.productName, 'Producto registrado'), reportUnitLabel(p.unitType), p.totalLoaded, p.sold, p.courtesy || 0, p.expectedReturn, p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? null, p.physicalReturn ?? p.actualReturn + (p.returnWaste || 0), p.actualReturn, p.returnWaste || 0, p.lossCost ?? null, p.returnWasteReason || '', p.shortage ?? Math.max(0, p.expectedReturn - p.actualReturn - (p.returnWaste || 0)), p.overage || 0] as Cell[])
+        const rows = products.map(({closure:c,product:p}) => [reportDateTime(c.createdAt), reportRecordName(c.routeName, 'Ruta registrada'), reportRecordName(p.productName, 'Producto registrado'), reportUnitLabel(p.unitType), p.totalLoaded, p.sold, p.courtesy || 0, p.expectedReturn, p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? null, p.physicalReturn ?? p.actualReturn + (p.returnMerma || 0) + (p.returnWaste || 0), p.actualReturn, p.returnMerma || 0, p.returnWaste || 0, p.lossCost ?? null, p.returnWasteReason || '', p.shortage ?? Math.max(0, p.expectedReturn - p.actualReturn - (p.returnMerma || 0) - (p.returnWaste || 0)), p.overage || 0] as Cell[])
         const costKnown = products.every(({product:p}) => (p.returnWaste || 0) === 0 || typeof p.lossCost === 'number')
-        return [...rows, ['TOTAL', '', '', '', sum(p=>p.totalLoaded), sum(p=>p.sold), sum(p=>p.courtesy||0), sum(p=>p.expectedReturn), round2(products.reduce((n, { closure:c, product:p }) => n + Number(p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? 0), 0)), round2(products.reduce((n, { product:p }) => n + Number(p.physicalReturn ?? p.actualReturn + (p.returnWaste || 0)), 0)), sum(p=>p.actualReturn), sum(p=>p.returnWaste||0), costKnown ? sum(p=>p.lossCost||0) : null, '', sum(p=>p.shortage ?? Math.max(0,p.expectedReturn-p.actualReturn-(p.returnWaste||0))), sum(p=>p.overage||0)]]
+        return [...rows, ['TOTAL', '', '', '', sum(p=>p.totalLoaded), sum(p=>p.sold), sum(p=>p.courtesy||0), sum(p=>p.expectedReturn), round2(products.reduce((n, { closure:c, product:p }) => n + Number(p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? 0), 0)), round2(products.reduce((n, { product:p }) => n + Number(p.physicalReturn ?? p.actualReturn + (p.returnMerma || 0) + (p.returnWaste || 0)), 0)), sum(p=>p.actualReturn), sum(p=>p.returnMerma||0), sum(p=>p.returnWaste||0), costKnown ? sum(p=>p.lossCost||0) : null, '', sum(p=>p.shortage ?? Math.max(0,p.expectedReturn-p.actualReturn-(p.returnMerma||0)-(p.returnWaste||0))), sum(p=>p.overage||0)]]
       })(),
     },
     (() => {

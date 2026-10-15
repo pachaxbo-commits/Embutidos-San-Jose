@@ -11,7 +11,7 @@ import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
 import { printClosureTicket, printClosureSheet, shareClosurePdf } from '../data/distributionDocumentPrintService'
 import { getProductPresentation } from '../domain/productPresentation'
-import { calculateReturnBreakdown, validateReturnQuantity } from '../domain/returnReconciliation'
+import { calculatePhysicalReturnBreakdown, calculateReturnBreakdown, parseReturnQuantityInput, validateReturnQuantity } from '../domain/returnReconciliation'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   draft: 'Devolución declarada; espera confirmación de almacén',
@@ -19,6 +19,12 @@ const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   closed: 'Cierre finalizado',
   reopened: 'Cierre reabierto',
 }
+
+const parseDraftQuantities = (drafts: Record<string, string>) =>
+  Object.fromEntries(Object.entries(drafts).map(([id, value]) => [
+    id,
+    value.trim() === '' ? 0 : parseReturnQuantityInput(value) ?? 0,
+  ]))
 
 /**
  * Arqueo de ruta: conciliacion fisica por producto y cuadre de dinero.
@@ -36,6 +42,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
   const [selectedDispatchId, setSelectedDispatchId] = useState('')
   const [returnDrafts, setReturnDrafts] = useState<Record<string, Record<string, string>>>({})
+  const [recoverableMermaDrafts, setRecoverableMermaDrafts] = useState<Record<string, Record<string, string>>>({})
+  const [nonSellableSectionsOpen, setNonSellableSectionsOpen] = useState<Record<string, boolean>>({})
   const [wasteDrafts, setWasteDrafts] = useState<Record<string, Record<string, string>>>({})
   const [wasteReasonDrafts, setWasteReasonDrafts] = useState<Record<string, Record<string, string>>>({})
   const [cashDrafts, setCashDrafts] = useState<Record<string, string>>({})
@@ -78,17 +86,20 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         ...existingProductsById.keys(),
       ])].map(id => {
         const row = existingProductsById.get(id)
-        const physical = row?.physicalReturn ?? existingClosure?.declaredReturns?.[id] ?? (row ? round2(row.actualReturn + (row.returnWaste || 0)) : undefined)
-        return [id, physical === undefined ? '' : String(physical)]
+        const normalReturn = row?.actualReturn ?? existingClosure?.declaredReturns?.[id]
+        return [id, normalReturn === undefined ? '' : String(normalReturn)]
       }))
+  const savedRecoverableMermas = Object.fromEntries((existingClosure?.products || []).map(row => [row.productId, String(row.returnMerma || 0)]))
   const savedWastes = Object.fromEntries((existingClosure?.products || []).map(row => [row.productId, String(row.returnWaste || 0)]))
   const savedWasteReasons = Object.fromEntries((existingClosure?.products || []).map(row => [row.productId, row.returnWasteReason || '']))
   const returns = returnDrafts[dispatchKey] ?? savedReturns
+  const recoverableMermas = recoverableMermaDrafts[dispatchKey] ?? savedRecoverableMermas
   const wastes = wasteDrafts[dispatchKey] ?? savedWastes
   const wasteReasons = wasteReasonDrafts[dispatchKey] ?? savedWasteReasons
   const declaredCash = cashDrafts[dispatchKey] ?? (existingClosure?.physicalCashDeclared != null ? String(existingClosure.physicalCashDeclared) : '')
   const setDeclaredCash = (value: string) => setCashDrafts(current => ({ ...current, [dispatchKey]: value }))
   const setReturns = (updater: (current: Record<string, string>) => Record<string, string>) => setReturnDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedReturns) }))
+  const setRecoverableMermas = (updater: (current: Record<string, string>) => Record<string, string>) => setRecoverableMermaDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedRecoverableMermas) }))
   const setWastes = (updater: (current: Record<string, string>) => Record<string, string>) => setWasteDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedWastes) }))
   const setWasteReasons = (updater: (current: Record<string, string>) => Record<string, string>) => setWasteReasonDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedWasteReasons) }))
 
@@ -116,26 +127,26 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   /** La declaración y la recepción son independientes; cada rol completa su propio dato. */
   const isDeclared = (productId: string) => {
     const value = returns[productId]
-    return value !== undefined && value !== '' && !Number.isNaN(Number(value))
+    return value !== undefined && value !== '' && parseReturnQuantityInput(value) !== null
   }
 
-  const parsedReturns = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const [productId, value] of Object.entries(returns)) map[productId] = round2(Number(value) || 0)
-    return map
-  }, [returns])
-
-  const parsedWastes = useMemo(() => Object.fromEntries(Object.entries(wastes).map(([id, value]) => [id, round2(Number(value) || 0)])), [wastes])
+  const parsedReturns = useMemo(() => parseDraftQuantities(returns), [returns])
+  const parsedRecoverableMermas = useMemo(() => parseDraftQuantities(recoverableMermas), [recoverableMermas])
+  const parsedWastes = useMemo(() => parseDraftQuantities(wastes), [wastes])
   const productRows = buildReconciliation(dispatch, routeSales, parsedReturns).map(row => {
     const returnWaste = parsedWastes[row.productId] || 0
-    const breakdown = calculateReturnBreakdown(row.expectedReturn, row.actualReturn, returnWaste)
+    const returnMerma = parsedRecoverableMermas[row.productId] || 0
+    const breakdown = isDistributor
+      ? calculateReturnBreakdown(row.expectedReturn, row.actualReturn, 0)
+      : calculatePhysicalReturnBreakdown(row.expectedReturn, row.actualReturn, returnMerma, returnWaste)
     const saved = existingProductsById.get(row.productId)
     const declaredReturn = existingClosure?.declaredReturns?.[row.productId] ?? saved?.declaredReturn
     return {
       ...row,
       declaredReturn,
-      physicalReturn: isDistributor ? undefined : row.actualReturn,
-      actualReturn: isDistributor ? row.actualReturn : breakdown.apt,
+      physicalReturn: isDistributor ? undefined : round2(row.actualReturn + returnMerma + returnWaste),
+      actualReturn: row.actualReturn,
+      returnMerma,
       returnWaste,
       returnWasteReason: wasteReasons[row.productId] || '',
       shortage: breakdown.shortage,
@@ -329,8 +340,18 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       return
     }
     if (status === 'warehouse_done') {
+      const incompleteQuantity = productRows.find(row =>
+        [returns[row.productId] ?? '', recoverableMermas[row.productId] ?? '0', wastes[row.productId] ?? '0']
+          .some(value => value.trim() !== '' && parseReturnQuantityInput(value) === null))
+      if (incompleteQuantity) {
+        setError(`${incompleteQuantity.productName}: completa la cantidad decimal antes de confirmar.`)
+        isSubmittingRef.current = false
+        setIsSubmitting(false)
+        return
+      }
       const invalidQuantity = productRows.find(row =>
         !validateReturnQuantity(row.unitType, parsedReturns[row.productId] || 0)
+        || !validateReturnQuantity(row.unitType, parsedRecoverableMermas[row.productId] || 0)
         || !validateReturnQuantity(row.unitType, parsedWastes[row.productId] || 0))
       if (invalidQuantity) {
         setError(`${invalidQuantity.productName}: paquetes y unidades requieren cantidades enteras; los kilogramos admiten decimales.`)
@@ -340,14 +361,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       }
       const missingReason = productRows.find(row => (parsedWastes[row.productId] || 0) > 0 && !wasteReasons[row.productId]?.trim())
       if (missingReason) {
-        setError(`Indica el motivo de merma para ${missingReason.productName}.`)
-        isSubmittingRef.current = false
-        setIsSubmitting(false)
-        return
-      }
-      const excessWaste = productRows.find(row => !calculateReturnBreakdown(row.expectedReturn, parsedReturns[row.productId] || 0, parsedWastes[row.productId] || 0).wasteValid)
-      if (excessWaste) {
-        setError(`La merma de ${excessWaste.productName} no puede superar lo recibido ni lo que debía retornar.`)
+        setError(`Indica por qué ${missingReason.productName} no puede volver al stock vendible.`)
         isSubmittingRef.current = false
         setIsSubmitting(false)
         return
@@ -473,8 +487,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             {expanded && <div className="grid gap-3 border-t border-slate-100 p-3">
               <div className="grid gap-2 md:grid-cols-2">{closure.products.length === 0 ? <p className="text-xs text-slate-500">Almacén todavía no confirmó las cantidades.</p> : closure.products.map(row => {
                 const declared = row.declaredReturn ?? closure.declaredReturns?.[row.productId]
-                const physical = row.physicalReturn ?? row.actualReturn + (row.returnWaste || 0)
-                return <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Despachado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Cortesía</dt><dd className="text-xs font-black">{formatQty(row.courtesy || 0, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía retornar</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Declarado por distribuidor</dt><dd className="text-xs font-black">{declared === undefined ? 'Sin registro' : formatQty(Number(declared), row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Recibido físicamente</dt><dd className="text-xs font-black">{formatQty(physical, row.unitType)}{row.physicalReturn === undefined ? ' · aprox.' : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Retorno apto</dt><dd className="text-xs font-black text-emerald-700">{formatQty(row.actualReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Merma</dt><dd className="text-xs font-black text-rose-700">{formatQty(row.returnWaste || 0, row.unitType)}{row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Faltante</dt><dd className="text-xs font-black">{formatQty(row.shortage ?? Math.max(0, row.expectedReturn - row.actualReturn - (row.returnWaste || 0)), row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Sobrante en cuarentena</dt><dd className="text-xs font-black">{formatQty(row.overage || 0, row.unitType)}</dd></div></dl></div>
+                const physical = row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)
+                return <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Despachado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Cortesía</dt><dd className="text-xs font-black">{formatQty(row.courtesy || 0, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía retornar</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Declarado por distribuidor</dt><dd className="text-xs font-black">{declared === undefined ? 'Sin registro' : formatQty(Number(declared), row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Recibido físicamente</dt><dd className="text-xs font-black">{formatQty(physical, row.unitType)}{row.physicalReturn === undefined ? ' · aprox.' : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Retorno normal</dt><dd className="text-xs font-black text-emerald-700">{formatQty(row.actualReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Merma recuperable</dt><dd className="text-xs font-black text-emerald-700">{formatQty(row.returnMerma || 0, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Producto no apto / pérdida</dt><dd className="text-xs font-black text-rose-700">{formatQty(row.returnWaste || 0, row.unitType)}{row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Costo de pérdida</dt><dd className="text-xs font-black">{row.lossCost == null && (row.returnWaste || 0) > 0 ? 'No disponible' : formatBs(row.lossCost || 0)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Faltante</dt><dd className="text-xs font-black">{row.shortage ?? Math.max(0, row.expectedReturn - physical)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Sobrante</dt><dd className="text-xs font-black">{formatQty(row.overage || 0, row.unitType)}</dd></div></dl></div>
               })}</div>
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared ?? 0)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
@@ -800,9 +814,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               const product = data.products.find(p => p.id === row.productId)
               const presentation = product ? getProductPresentation(product) : ''
               const declared = existingClosure?.declaredReturns?.[row.productId] ?? existingProductsById.get(row.productId)?.declaredReturn
-              const received = Number(returns[row.productId]) || 0
-              const enteredWaste = Number(wastes[row.productId]) || 0
-              const breakdown = calculateReturnBreakdown(row.expectedReturn, received, enteredWaste)
+              const received = parseReturnQuantityInput(returns[row.productId] || '') ?? 0
+              const enteredRecoverableMerma = parseReturnQuantityInput(recoverableMermas[row.productId] || '0') ?? 0
+              const enteredWaste = parseReturnQuantityInput(wastes[row.productId] || '0') ?? 0
+              const breakdown = calculatePhysicalReturnBreakdown(row.expectedReturn, received, enteredRecoverableMerma, enteredWaste)
               return (
                 <article key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs hover:border-slate-300 transition-colors">
                   <div className="flex items-start justify-between gap-3">
@@ -823,9 +838,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
                   {isDistributor ? <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
                     <h4 className="text-xs font-black uppercase tracking-wide text-blue-900">Declaración del distribuidor</h4>
-                    <div className="mt-2 grid grid-cols-[1fr_auto] items-end gap-2">
+                    <div className="mt-2 grid gap-2">
                       <Field label="Cantidad que devuelves">
-                        <NumberInput value={returns[row.productId] ?? ''} min={0} step={row.unitType === 'kg' ? 0.01 : 1} disabled={returnsAlreadyApplied || Boolean(existingClosure?.returnDeclaredAt)} placeholder="Escribe la cantidad" onChange={event => setReturns(current => ({ ...current, [row.productId]: event.target.value }))} />
+                        <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} value={returns[row.productId] ?? ''} disabled={returnsAlreadyApplied || Boolean(existingClosure?.returnDeclaredAt)} placeholder="Escribe la cantidad" onChange={event => setReturns(current => ({ ...current, [row.productId]: event.target.value }))} />
                       </Field>
                       <div className="flex gap-1 pb-0.5">
                         <button type="button" disabled={Boolean(existingClosure?.returnDeclaredAt)} onClick={() => setReturns(current => ({ ...current, [row.productId]: '0' }))} className="min-h-10 rounded-lg border border-blue-200 bg-white px-3 text-xs font-bold text-blue-900 disabled:opacity-40">0</button>
@@ -835,29 +850,38 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                   </div> : <div className="mt-3 rounded-xl border border-slate-200 p-3">
                     <h4 className="text-xs font-black uppercase tracking-wide text-slate-800">Recepción de Almacén</h4>
                     <p className="mt-1 text-xs text-slate-600">Declarado por distribuidor: <strong>{declared === undefined ? 'Sin registro' : formatQty(Number(declared), row.unitType)}</strong></p>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <Field label="Recibido físicamente">
-                          <div className="grid grid-cols-[1fr_auto] gap-2">
-                            <NumberInput value={returns[row.productId] ?? ''} min={0} step={row.unitType === 'kg' ? 0.01 : 1} disabled={returnsAlreadyApplied} placeholder="Cantidad pesada" onChange={event => setReturns(current => ({ ...current, [row.productId]: event.target.value }))} />
-                            <SecondaryButton disabled={returnsAlreadyApplied || declared === undefined} onClick={() => declared !== undefined && setReturns(current => ({ ...current, [row.productId]: String(declared) }))}>Usar cantidad declarada</SecondaryButton>
-                          </div>
+                    <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
+                      <div className="min-w-0">
+                        <Field label="Retorno normal">
+                          <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} value={returns[row.productId] ?? ''} disabled={returnsAlreadyApplied} placeholder="Cantidad pesada" onChange={event => setReturns(current => ({ ...current, [row.productId]: event.target.value }))} />
                         </Field>
+                        {declared !== undefined && <div className="mt-2"><SecondaryButton full disabled={returnsAlreadyApplied} onClick={() => setReturns(current => ({ ...current, [row.productId]: String(declared) }))}>Usar cantidad declarada</SecondaryButton></div>}
                       </div>
-                      <Field label="Merma dentro del retorno" hint="Parte de lo recibido que no vuelve al stock vendible.">
-                        <NumberInput value={wastes[row.productId] ?? '0'} min={0} step={row.unitType === 'kg' ? 0.01 : 1} disabled={returnsAlreadyApplied} placeholder="0" onChange={event => setWastes(current => ({ ...current, [row.productId]: event.target.value }))} />
+                      <Field label="Merma de retorno" hint="Esta cantidad también vuelve al stock vendible.">
+                        <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} value={recoverableMermas[row.productId] ?? '0'} disabled={returnsAlreadyApplied} placeholder="0" onChange={event => setRecoverableMermas(current => ({ ...current, [row.productId]: event.target.value }))} />
                       </Field>
-                      {enteredWaste > 0 && <Field label="Motivo de merma" required>
-                        <TextInput value={wasteReasons[row.productId] || ''} disabled={returnsAlreadyApplied} placeholder="Describe el motivo" onChange={event => setWasteReasons(current => ({ ...current, [row.productId]: event.target.value }))} />
-                      </Field>}
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-emerald-50 p-3 sm:grid-cols-4">
-                      <div><p className="text-[10px] font-semibold text-slate-600">Vuelve a stock</p><p className="text-sm font-black text-emerald-800">{formatQty(breakdown.apt, row.unitType)}</p></div>
-                      <div><p className="text-[10px] font-semibold text-slate-600">Merma</p><p className="text-sm font-black text-rose-700">{formatQty(enteredWaste, row.unitType)}</p></div>
+                    <details className="mt-3 rounded-xl border border-rose-200 bg-rose-50/60 p-3" open={nonSellableSectionsOpen[row.productId] ?? enteredWaste > 0} onToggle={event => setNonSellableSectionsOpen(current => ({ ...current, [row.productId]: event.currentTarget.open }))}>
+                      <summary className="cursor-pointer text-xs font-extrabold text-rose-900">Producto no apto / pérdida (opcional)</summary>
+                      <p className="mt-1 text-xs leading-relaxed text-slate-600">Solo si realmente no puede volver al stock vendible.</p>
+                      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                        <Field label="Cantidad no apta">
+                          <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} value={wastes[row.productId] ?? '0'} disabled={returnsAlreadyApplied} placeholder="0" onChange={event => setWastes(current => ({ ...current, [row.productId]: event.target.value }))} />
+                        </Field>
+                        {enteredWaste > 0 && <Field label="Motivo" required>
+                          <TextInput value={wasteReasons[row.productId] || ''} disabled={returnsAlreadyApplied} placeholder="Describe el motivo" onChange={event => setWasteReasons(current => ({ ...current, [row.productId]: event.target.value }))} />
+                        </Field>}
+                      </div>
+                    </details>
+                    <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-emerald-50 p-3 sm:grid-cols-3">
+                      <div><p className="text-[10px] font-semibold text-slate-600">Total recibido</p><p className="text-sm font-black text-slate-900">{formatQty(breakdown.totalReceived, row.unitType)}</p></div>
+                      <div><p className="text-[10px] font-semibold text-slate-600">Vuelve a stock</p><p className="text-sm font-black text-emerald-800">{formatQty(breakdown.sellableFromDispatch, row.unitType)}</p></div>
+                      <div><p className="text-[10px] font-semibold text-slate-600">Merma registrada</p><p className="text-sm font-black text-emerald-800">{formatQty(enteredRecoverableMerma, row.unitType)}</p></div>
+                      <div><p className="text-[10px] font-semibold text-slate-600">Producto no apto</p><p className="text-sm font-black text-rose-700">{formatQty(enteredWaste, row.unitType)}</p></div>
                       <div><p className="text-[10px] font-semibold text-slate-600">Faltante</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.shortage, row.unitType)}</p></div>
-                      <div><p className="text-[10px] font-semibold text-slate-600">Sobrante en cuarentena</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.overage, row.unitType)}</p></div>
+                      <div><p className="text-[10px] font-semibold text-slate-600">Sobrante</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.overage, row.unitType)}</p></div>
+                      {breakdown.sellableOverage > 0 && <div className="col-span-2 sm:col-span-3"><p className="text-[10px] font-semibold text-slate-600">Excedente vendible en cuarentena</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.sellableOverage, row.unitType)}</p></div>}
                     </div>
-                    {!breakdown.wasteValid && <p className="mt-2 text-xs font-bold text-rose-700">La merma no puede superar lo recibido ni lo que debía retornar.</p>}
                   </div>}
                 </article>
               )

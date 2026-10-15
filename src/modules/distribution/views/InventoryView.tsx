@@ -22,7 +22,8 @@ const MOVEMENT_LABELS: Record<string, string> = {
   dispatch_addition: 'Aumento de despacho', dispatch_correction: 'Corrección de despacho',
   sale: 'Venta', adjustment: 'Disminución por ajuste', return: 'Devolución recibida',
   shortage: 'Faltante', overage: 'Sobrante', exchange: 'Cambio de producto',
-  return_waste: 'Merma al recibir retorno', courtesy: 'Salida por cortesía',
+  return_merma: 'Merma recuperable al retorno', return_waste: 'Producto no apto al recibir retorno',
+  return_waste_unassigned: 'Pérdida sin lote de origen identificado', courtesy: 'Salida por cortesía',
   customer_return: 'Devolución del cliente',
 }
 

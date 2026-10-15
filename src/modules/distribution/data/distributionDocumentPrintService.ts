@@ -440,7 +440,7 @@ export function printClosureTicket(closure: DistClosure): Promise<string> {
         quantity: row.sold,
         unitLabel: row.unitType === 'kg' ? 'kg vendidos' : 'vendidos',
         lineTotal: 0,
-        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado ${row.declaredReturn ?? closure.declaredReturns?.[row.productId] ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Apto ${row.actualReturn}`, `Merma ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
+        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado ${row.declaredReturn ?? closure.declaredReturns?.[row.productId] ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Retorno normal ${row.actualReturn}`, `Merma recuperable ${row.returnMerma || 0}`, `No apto/pérdida ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
       })),
       closure.status === 'closed'
         ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared ?? 0).toFixed(2)}`
@@ -521,7 +521,7 @@ export async function generateClosurePdf(closure: DistClosure) {
 
     autoTable(doc, {
       startY: y + 3,
-      head: [['Producto', 'Despachado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físico', 'Retorno apto', 'Merma', 'Faltante', 'Sobrante', 'Unidad']],
+      head: [['Producto', 'Despachado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físico', 'Retorno normal', 'Merma recuperable', 'No apto / pérdida', 'Faltante', 'Sobrante', 'Unidad']],
       body: closure.products.map((row) => [
         row.productName,
         row.unitType === 'kg' ? row.totalLoaded.toFixed(2) : String(row.totalLoaded),
@@ -529,8 +529,9 @@ export async function generateClosurePdf(closure: DistClosure) {
         row.unitType === 'kg' ? (row.courtesy || 0).toFixed(2) : String(row.courtesy || 0),
         row.unitType === 'kg' ? row.expectedReturn.toFixed(2) : String(row.expectedReturn),
         (() => { const value = row.declaredReturn ?? closure.declaredReturns?.[row.productId]; return value === undefined ? 'Sin registro' : row.unitType === 'kg' ? Number(value).toFixed(2) : String(value) })(),
-        (() => { const value = row.physicalReturn ?? row.actualReturn + (row.returnWaste || 0); const formatted = row.unitType === 'kg' ? Number(value).toFixed(2) : String(value); return row.physicalReturn === undefined ? `${formatted} (aprox.)` : formatted })(),
+        (() => { const value = row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0); const formatted = row.unitType === 'kg' ? Number(value).toFixed(2) : String(value); return row.physicalReturn === undefined ? `${formatted} (aprox.)` : formatted })(),
         row.unitType === 'kg' ? row.actualReturn.toFixed(2) : String(row.actualReturn),
+        row.unitType === 'kg' ? (row.returnMerma || 0).toFixed(2) : String(row.returnMerma || 0),
         row.unitType === 'kg' ? (row.returnWaste || 0).toFixed(2) : String(row.returnWaste || 0),
         row.unitType === 'kg' ? (row.shortage ?? 0).toFixed(2) : String(row.shortage ?? 0),
         row.unitType === 'kg' ? (row.overage || 0).toFixed(2) : String(row.overage || 0),
@@ -551,7 +552,8 @@ export async function generateClosurePdf(closure: DistClosure) {
         8: { cellWidth: 14, halign: 'right' },
         9: { cellWidth: 14, halign: 'right' },
         10: { cellWidth: 14, halign: 'right' },
-        11: { cellWidth: 16, halign: 'center' },
+        11: { cellWidth: 14, halign: 'right' },
+        12: { cellWidth: 16, halign: 'center' },
       },
       margin: { left: 14, right: 14 },
     })

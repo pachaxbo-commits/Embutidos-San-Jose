@@ -1,4 +1,4 @@
-import { calculateReturnBreakdown, validateReturnQuantity } from '../returnReconciliation.ts'
+import { calculatePhysicalReturnBreakdown, calculateReturnBreakdown, parseReturnQuantityInput, validateReturnQuantity } from '../returnReconciliation.ts'
 
 const assert = (condition: unknown, message: string) => {
   if (!condition) throw new Error(`FAIL: ${message}`)
@@ -20,4 +20,17 @@ assert(!invalidWaste.wasteValid, 'merma mayor a la recepción física queda inv�
 assert(!validateReturnQuantity('package', 1.5), 'paquetes rechazan fracciones')
 assert(validateReturnQuantity('kg', 1.5), 'kilogramos admiten decimales')
 assert(!validateReturnQuantity('kg', -1), 'ninguna unidad permite retorno negativo')
-console.log('Suite de rendición de retorno: 9 comprobaciones.')
+const exact2 = calculatePhysicalReturnBreakdown(2, 1.84, 0.16, 0)
+assert(exact2.totalReceived === 2 && exact2.sellableFromDispatch === 2 && exact2.shortage === 0 && exact2.overage === 0, '1,84 normal + 0,16 de merma vuelve exactamente 2 kg al stock')
+const exact6 = calculatePhysicalReturnBreakdown(6, 5.54, 0.46, 0)
+assert(exact6.sellableFromDispatch === 6 && exact6.shortage === 0, '5,54 normal + 0,46 de merma recuperable devuelve 6 kg')
+const exact9 = calculatePhysicalReturnBreakdown(9, 8.56, 0.44, 0)
+assert(exact9.sellableFromDispatch === 9 && exact9.shortage === 0, '8,56 normal + 0,44 de merma recuperable devuelve 9 kg')
+const short = calculatePhysicalReturnBreakdown(2, 1.8, 0.1, 0)
+assert(short.totalReceived === 1.9 && short.shortage === 0.1, 'retorno total de 1,9 kg deja faltante de 0,1 kg')
+const withNonSellable = calculatePhysicalReturnBreakdown(2, 1.84, 0.16, 0.1)
+assert(withNonSellable.totalReceived === 2.1 && withNonSellable.sellableReturn === 2 && withNonSellable.overage === 0.1 && withNonSellable.sellableOverage === 0, 'producto no apto se suma una vez al total físico, pero nunca al stock vendible')
+assert(parseReturnQuantityInput('1.84') === 1.84, 'campo acepta decimal con punto')
+assert(parseReturnQuantityInput('1,84') === 1.84, 'campo normaliza decimal con coma')
+assert(parseReturnQuantityInput('1,') === null, 'decimal incompleto se conserva para seguir escribiendo y se valida al confirmar')
+console.log('Suite de rendición de retorno: 17 comprobaciones.')

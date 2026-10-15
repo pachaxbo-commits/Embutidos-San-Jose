@@ -450,6 +450,23 @@ console.log('=== Iniciando pruebas unitarias: Reporte de Ganancias por Producto 
       routeId: 'route-1',
       restaurantId: 'sanjose',
     },
+    {
+      id: 'mov-recoverable-return',
+      type: 'return_merma',
+      productId: 'prod-chorizo',
+      productName: 'Chorizo Parrillero',
+      unitType: 'kg',
+      quantity: 0.46,
+      centralDelta: 0.46,
+      routeDelta: -0.46,
+      branchId: 'central',
+      createdBy: 'admin',
+      schemaVersion: 1,
+      dayKey: '2026-10-07',
+      createdAt: '2026-10-07T18:05:00Z',
+      routeId: 'route-1',
+      restaurantId: 'sanjose',
+    },
   ]
 
   const report = computeProductProfitReport(sales, [], expenses, movements, ['2026-10-07'])
@@ -457,11 +474,15 @@ console.log('=== Iniciando pruebas unitarias: Reporte de Ganancias por Producto 
   ok(report.totals.profitBs === 200, 'Caso 9: Ganancia bruta de productos = 200 Bs')
   ok(report.operationalTotals.spent === 40, 'Caso 9: Gastos de ruta = 40 Bs')
   ok(report.operationalTotals.lossCost === 30, 'Caso 9: Mermas = 30 Bs')
+  ok(report.operationalTotals.isAvailable && report.operationalTotals.lossCost === 30, 'Caso 9: merma recuperable devuelta al stock no se resta como pérdida')
   // Ganancia operativa = 200 - 40 - 30 = 130 Bs
   ok(report.operationalTotals.operatingProfit === 130, 'Caso 9: Ganancia Operativa = 130 Bs')
   const reopenedLoss = { ...movements[0], id: 'mov-loss-reopened', lossCost: 12, reversedAt: '2026-10-08T10:00:00Z' }
   const reportAfterReopen = computeProductProfitReport(sales, [], expenses, [...movements, reopenedLoss], ['2026-10-07'])
   ok(reportAfterReopen.operationalTotals.lossCost === 30, 'Caso 9: reapertura excluye la pérdida revertida y no duplica mermas')
+  const unassignedLoss = { ...movements[0], id: 'mov-unassigned-loss', type: 'return_waste_unassigned' as const, lossCost: null }
+  const reportWithUnknownLoss = computeProductProfitReport(sales, [], expenses, [...movements, unassignedLoss], ['2026-10-07'])
+  ok(!reportWithUnknownLoss.operationalTotals.isAvailable, 'Caso 9: pérdida sin lote identificable no inventa un costo ni un resultado operativo')
 }
 
 // -------------------------------------------------------------
