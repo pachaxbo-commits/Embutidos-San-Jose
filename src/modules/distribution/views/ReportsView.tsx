@@ -263,6 +263,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     const spent = round2(expenses.reduce((n, e) => n + e.amount, 0))
 
     const losses = data.movements
+      .filter((m) => !m.reversedAt)
       .filter((m) => session.dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
       .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
       .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'courtesy' || (m.type === 'adjustment' && m.centralDelta < 0))

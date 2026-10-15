@@ -70,9 +70,17 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const dispatchDay = dispatch?.dayKey || ''
   const dispatchRoute = dispatch?.routeId || ''
   const dispatchCreated = dispatch?.createdAt || ''
-  const savedReturns = existingClosure?.products?.length
-    ? Object.fromEntries(existingClosure.products.map(row => [row.productId, String(row.actualReturn)]))
-    : Object.fromEntries(Object.entries(existingClosure?.declaredReturns || {}).map(([id, q]) => [id, String(q)]))
+  const existingProductsById = new Map((existingClosure?.products || []).map(row => [row.productId, row]))
+  const savedReturns = isDistributor
+    ? Object.fromEntries(Object.entries(existingClosure?.declaredReturns || {}).map(([id, q]) => [id, String(q)]))
+    : Object.fromEntries([...new Set([
+        ...Object.keys(existingClosure?.declaredReturns || {}),
+        ...existingProductsById.keys(),
+      ])].map(id => {
+        const row = existingProductsById.get(id)
+        const physical = row?.physicalReturn ?? existingClosure?.declaredReturns?.[id] ?? (row ? round2(row.actualReturn + (row.returnWaste || 0)) : undefined)
+        return [id, physical === undefined ? '' : String(physical)]
+      }))
   const savedWastes = Object.fromEntries((existingClosure?.products || []).map(row => [row.productId, String(row.returnWaste || 0)]))
   const savedWasteReasons = Object.fromEntries((existingClosure?.products || []).map(row => [row.productId, row.returnWasteReason || '']))
   const returns = returnDrafts[dispatchKey] ?? savedReturns
@@ -105,7 +113,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     return () => stop.forEach(fn => fn())
   }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid])
 
-  /** Un producto solo se evalua cuando almacen escribio la cantidad retornada */
+  /** La declaración y la recepción son independientes; cada rol completa su propio dato. */
   const isDeclared = (productId: string) => {
     const value = returns[productId]
     return value !== undefined && value !== '' && !Number.isNaN(Number(value))
@@ -121,7 +129,19 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const productRows = buildReconciliation(dispatch, routeSales, parsedReturns).map(row => {
     const returnWaste = parsedWastes[row.productId] || 0
     const breakdown = calculateReturnBreakdown(row.expectedReturn, row.actualReturn, returnWaste)
-    return { ...row, returnWaste, returnWasteReason: wasteReasons[row.productId] || '', shortage: breakdown.shortage, overage: breakdown.overage, variance: round2(breakdown.overage - breakdown.shortage) }
+    const saved = existingProductsById.get(row.productId)
+    const declaredReturn = existingClosure?.declaredReturns?.[row.productId] ?? saved?.declaredReturn
+    return {
+      ...row,
+      declaredReturn,
+      physicalReturn: isDistributor ? undefined : row.actualReturn,
+      actualReturn: isDistributor ? row.actualReturn : breakdown.apt,
+      returnWaste,
+      returnWasteReason: wasteReasons[row.productId] || '',
+      shortage: breakdown.shortage,
+      overage: breakdown.overage,
+      variance: round2(breakdown.overage - breakdown.shortage),
+    }
   })
 
   const moneySummary = computeMoneySummary(routeSales, routeCollections, routeExpenses)
@@ -325,9 +345,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         setIsSubmitting(false)
         return
       }
-      const excessWaste = productRows.find(row => (parsedWastes[row.productId] || 0) > row.expectedReturn)
+      const excessWaste = productRows.find(row => !calculateReturnBreakdown(row.expectedReturn, parsedReturns[row.productId] || 0, parsedWastes[row.productId] || 0).wasteValid)
       if (excessWaste) {
-        setError(`La merma de ${excessWaste.productName} no puede superar lo que debía retornar.`)
+        setError(`La merma de ${excessWaste.productName} no puede superar lo recibido ni lo que debía retornar.`)
         isSubmittingRef.current = false
         setIsSubmitting(false)
         return
@@ -451,7 +471,11 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
             </button>
             {expanded && <div className="grid gap-3 border-t border-slate-100 p-3">
-              <div className="grid gap-2 md:grid-cols-2">{closure.products.length === 0 ? <p className="text-xs text-slate-500">Almacén todavía no confirmó las cantidades.</p> : closure.products.map(row => <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Despachado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Cortesía</dt><dd className="text-xs font-black">{formatQty(row.courtesy || 0, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía retornar</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Retorno apto</dt><dd className="text-xs font-black text-emerald-700">{formatQty(row.actualReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Merma</dt><dd className="text-xs font-black text-rose-700">{formatQty(row.returnWaste || 0, row.unitType)}{row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Faltante</dt><dd className="text-xs font-black">{formatQty(row.shortage ?? Math.max(0, row.expectedReturn - row.actualReturn - (row.returnWaste || 0)), row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Sobrante en cuarentena</dt><dd className="text-xs font-black">{formatQty(row.overage || 0, row.unitType)}</dd></div></dl></div>)}</div>
+              <div className="grid gap-2 md:grid-cols-2">{closure.products.length === 0 ? <p className="text-xs text-slate-500">Almacén todavía no confirmó las cantidades.</p> : closure.products.map(row => {
+                const declared = row.declaredReturn ?? closure.declaredReturns?.[row.productId]
+                const physical = row.physicalReturn ?? row.actualReturn + (row.returnWaste || 0)
+                return <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Despachado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Cortesía</dt><dd className="text-xs font-black">{formatQty(row.courtesy || 0, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía retornar</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Declarado por distribuidor</dt><dd className="text-xs font-black">{declared === undefined ? 'Sin registro' : formatQty(Number(declared), row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Recibido físicamente</dt><dd className="text-xs font-black">{formatQty(physical, row.unitType)}{row.physicalReturn === undefined ? ' · aprox.' : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Retorno apto</dt><dd className="text-xs font-black text-emerald-700">{formatQty(row.actualReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Merma</dt><dd className="text-xs font-black text-rose-700">{formatQty(row.returnWaste || 0, row.unitType)}{row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Faltante</dt><dd className="text-xs font-black">{formatQty(row.shortage ?? Math.max(0, row.expectedReturn - row.actualReturn - (row.returnWaste || 0)), row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Sobrante en cuarentena</dt><dd className="text-xs font-black">{formatQty(row.overage || 0, row.unitType)}</dd></div></dl></div>
+              })}</div>
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Egresos en efectivo" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared ?? 0)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
               {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => { setReopenTarget(closure); setReopenReason(''); }}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
@@ -771,104 +795,71 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">{isDistributor ? 'Para cerrar tu ruta, primero declara cuánto producto devuelves. Almacén debe contar y confirmar físicamente esa devolución; después se habilita el cierre final del efectivo.' : 'El distribuidor declara las cantidades. Almacén confirma la recepción física y después se habilita el cierre final. Confirmar y cerrar requieren conexión.'}</p>
         <SectionCard title="Productos devueltos">
           <div className="relative mb-3"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={productSearch} onChange={event => setProductSearch(event.target.value)} placeholder="Buscar producto sin perder cantidades..." className="pl-9" /></div>
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             {productRows.filter(row => row.productName.toLowerCase().includes(productSearch.trim().toLowerCase())).map((row) => {
               const product = data.products.find(p => p.id === row.productId)
               const presentation = product ? getProductPresentation(product) : ''
+              const declared = existingClosure?.declaredReturns?.[row.productId] ?? existingProductsById.get(row.productId)?.declaredReturn
+              const received = Number(returns[row.productId]) || 0
+              const enteredWaste = Number(wastes[row.productId]) || 0
+              const breakdown = calculateReturnBreakdown(row.expectedReturn, received, enteredWaste)
               return (
-                <div key={row.productId} className="w-full min-w-0 rounded-xl border border-slate-200 bg-white p-2.5 shadow-xs hover:border-slate-300 transition-colors">
-                  {/* Fila 1: Nombre + Detalle + Estado/Diferencia badge */}
-                  <div className="flex items-start justify-between gap-2">
+                <article key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs hover:border-slate-300 transition-colors">
+                  <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-1.5">
-                        <span className="line-clamp-2 text-xs font-black leading-snug text-slate-900">{row.productName}</span>
-                        {presentation && (
-                          <span className="line-clamp-1 text-[10px] font-semibold text-slate-500">({presentation})</span>
-                        )}
+                      <h3 className="break-words text-sm font-black leading-snug text-slate-900">{row.productName}</h3>
+                      {presentation && <p className="mt-0.5 text-xs font-semibold text-slate-500">{presentation}</p>}
+                    </div>
+                    {isDeclared(row.productId) ? <VarianceBadge variance={row.variance} unitType={row.unitType} /> : <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">SIN DECLARAR</span>}
+                  </div>
+
+                  <dl className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-slate-50 p-3 sm:grid-cols-3">
+                    <div><dt className="text-[10px] font-semibold text-slate-500">Despachado</dt><dd className="text-sm font-bold">{formatQty(row.totalLoaded, row.unitType)}</dd></div>
+                    <div><dt className="text-[10px] font-semibold text-slate-500">Vendido</dt><dd className="text-sm font-bold">{formatQty(row.sold, row.unitType)}</dd></div>
+                    <div><dt className="text-[10px] font-semibold text-slate-500">Cortesía</dt><dd className="text-sm font-bold">{formatQty(row.courtesy || 0, row.unitType)}</dd></div>
+                    <div><dt className="text-[10px] font-semibold text-slate-500">Aumentos</dt><dd className="text-sm font-bold">{formatQty(row.additions, row.unitType)}</dd></div>
+                    <div><dt className="text-[10px] font-semibold text-slate-500">Debía retornar</dt><dd className="text-sm font-black text-indigo-700">{formatQty(row.expectedReturn, row.unitType)}</dd></div>
+                  </dl>
+
+                  {isDistributor ? <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
+                    <h4 className="text-xs font-black uppercase tracking-wide text-blue-900">Declaración del distribuidor</h4>
+                    <div className="mt-2 grid grid-cols-[1fr_auto] items-end gap-2">
+                      <Field label="Cantidad que devuelves">
+                        <NumberInput value={returns[row.productId] ?? ''} min={0} step={row.unitType === 'kg' ? 0.01 : 1} disabled={returnsAlreadyApplied || Boolean(existingClosure?.returnDeclaredAt)} placeholder="Escribe la cantidad" onChange={event => setReturns(current => ({ ...current, [row.productId]: event.target.value }))} />
+                      </Field>
+                      <div className="flex gap-1 pb-0.5">
+                        <button type="button" disabled={Boolean(existingClosure?.returnDeclaredAt)} onClick={() => setReturns(current => ({ ...current, [row.productId]: '0' }))} className="min-h-10 rounded-lg border border-blue-200 bg-white px-3 text-xs font-bold text-blue-900 disabled:opacity-40">0</button>
+                        <button type="button" disabled={Boolean(existingClosure?.returnDeclaredAt)} onClick={() => setReturns(current => ({ ...current, [row.productId]: String(row.expectedReturn) }))} className="min-h-10 rounded-lg border border-blue-200 bg-white px-3 text-xs font-bold text-blue-900 disabled:opacity-40">Todo</button>
                       </div>
                     </div>
-                    <div className="shrink-0">
-                      {isDeclared(row.productId) ? (
-                        <VarianceBadge variance={row.variance} unitType={row.unitType} />
-                      ) : (
-                        <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[9px] font-black text-slate-500">
-                          SIN DECLARAR
-                        </span>
-                      )}
+                  </div> : <div className="mt-3 rounded-xl border border-slate-200 p-3">
+                    <h4 className="text-xs font-black uppercase tracking-wide text-slate-800">Recepción de Almacén</h4>
+                    <p className="mt-1 text-xs text-slate-600">Declarado por distribuidor: <strong>{declared === undefined ? 'Sin registro' : formatQty(Number(declared), row.unitType)}</strong></p>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <Field label="Recibido físicamente">
+                          <div className="grid grid-cols-[1fr_auto] gap-2">
+                            <NumberInput value={returns[row.productId] ?? ''} min={0} step={row.unitType === 'kg' ? 0.01 : 1} disabled={returnsAlreadyApplied} placeholder="Cantidad pesada" onChange={event => setReturns(current => ({ ...current, [row.productId]: event.target.value }))} />
+                            <SecondaryButton disabled={returnsAlreadyApplied || declared === undefined} onClick={() => declared !== undefined && setReturns(current => ({ ...current, [row.productId]: String(declared) }))}>Usar cantidad declarada</SecondaryButton>
+                          </div>
+                        </Field>
+                      </div>
+                      <Field label="Merma dentro del retorno" hint="Parte de lo recibido que no vuelve al stock vendible.">
+                        <NumberInput value={wastes[row.productId] ?? '0'} min={0} step={row.unitType === 'kg' ? 0.01 : 1} disabled={returnsAlreadyApplied} placeholder="0" onChange={event => setWastes(current => ({ ...current, [row.productId]: event.target.value }))} />
+                      </Field>
+                      {enteredWaste > 0 && <Field label="Motivo de merma" required>
+                        <TextInput value={wasteReasons[row.productId] || ''} disabled={returnsAlreadyApplied} placeholder="Describe el motivo" onChange={event => setWasteReasons(current => ({ ...current, [row.productId]: event.target.value }))} />
+                      </Field>}
                     </div>
-                  </div>
-
-                  {/* Resumen adaptable: unidades físicas y cortesías separadas. */}
-                  <div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-600 sm:grid-cols-3">
-                    <div>
-                      <span className="text-[9px] text-slate-400">Despachado: </span>
-                      <span className="font-bold tabular-nums text-slate-700">{formatQty(row.totalLoaded, row.unitType)}</span>
+                    <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-emerald-50 p-3 sm:grid-cols-4">
+                      <div><p className="text-[10px] font-semibold text-slate-600">Vuelve a stock</p><p className="text-sm font-black text-emerald-800">{formatQty(breakdown.apt, row.unitType)}</p></div>
+                      <div><p className="text-[10px] font-semibold text-slate-600">Merma</p><p className="text-sm font-black text-rose-700">{formatQty(enteredWaste, row.unitType)}</p></div>
+                      <div><p className="text-[10px] font-semibold text-slate-600">Faltante</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.shortage, row.unitType)}</p></div>
+                      <div><p className="text-[10px] font-semibold text-slate-600">Sobrante en cuarentena</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.overage, row.unitType)}</p></div>
                     </div>
-                    <div>
-                      <span className="text-[9px] text-slate-400">Aumentos: </span>
-                      <span className="font-bold tabular-nums text-slate-700">{formatQty(row.additions, row.unitType)}</span>
-                    </div>
-                    <div>
-                      <span className="text-[9px] text-slate-400">Vendido: </span>
-                      <span className="font-bold tabular-nums text-slate-700">{formatQty(row.sold, row.unitType)}</span>
-                    </div>
-                    <div>
-                      <span className="text-[9px] text-slate-400">Cortesía: </span>
-                      <span className="font-bold tabular-nums text-fuchsia-700">{formatQty(row.courtesy || 0, row.unitType)}</span>
-                    </div>
-                    <div>
-                      <span className="text-[9px] text-slate-400 font-semibold">Debía retornar: </span>
-                      <span className="font-black tabular-nums text-indigo-700">{formatQty(row.expectedReturn, row.unitType)}</span>
-                    </div>
-                  </div>
-
-                  {/* Fila 3: Input de devolución con botones rápidos [0] [Todo (W)] */}
-                  <div className="mt-2 flex items-center justify-between gap-1.5 pt-1.5 border-t border-slate-100">
-                    <div className="flex items-center gap-1 shrink-0">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mr-0.5">{isDistributor ? 'Declaras:' : 'Retorno apto:'}</span>
-                      <button
-                        type="button"
-                        disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
-                        onClick={() => setReturns((current) => ({ ...current, [row.productId]: '0' }))}
-                        className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 active:scale-95 disabled:opacity-40 transition-colors"
-                        title="Declarar retorno 0"
-                      >
-                        0
-                      </button>
-                      <button
-                        type="button"
-                        disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
-                        onClick={() => setReturns((current) => ({ ...current, [row.productId]: String(row.expectedReturn) }))}
-                        className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 active:scale-95 disabled:opacity-40 transition-colors"
-                        title={`Declarar retorno esperado (${row.expectedReturn})`}
-                      >
-                        Todo ({row.expectedReturn})
-                      </button>
-                    </div>
-                    <div className="w-24 sm:w-28 shrink-0">
-                      <NumberInput
-                        value={returns[row.productId] ?? ''}
-                        min={0}
-                        step={row.unitType === 'kg' ? 0.01 : 1}
-                        disabled={(!canRegisterReturn && !isDistributor) || returnsAlreadyApplied}
-                        placeholder="0"
-                        className="!min-h-[34px] py-1 px-2.5 text-right font-black text-xs"
-                        onChange={(event) =>
-                          setReturns((current) => ({ ...current, [row.productId]: event.target.value }))
-                        }
-                      />
-                    </div>
-                  </div>
-                  {!isDistributor && <div className="mt-2 grid gap-2 border-t border-slate-100 pt-2 sm:grid-cols-2">
-                    <Field label="Merma al retorno" hint="No vuelve al stock vendible.">
-                      <NumberInput value={wastes[row.productId] ?? '0'} min={0} step={row.unitType === 'kg' ? 0.01 : 1} disabled={returnsAlreadyApplied} placeholder="0" className="font-bold" onChange={event => setWastes(current => ({ ...current, [row.productId]: event.target.value }))} />
-                    </Field>
-                    {(Number(wastes[row.productId]) || 0) > 0 && <Field label="Motivo de merma" required hint="Ej.: deterioro, rotura, manipulación, temperatura u Otro: explica.">
-                      <TextInput value={wasteReasons[row.productId] || ''} disabled={returnsAlreadyApplied} placeholder="Describe el motivo; si es otro, explica aquí" onChange={event => setWasteReasons(current => ({ ...current, [row.productId]: event.target.value }))} />
-                    </Field>}
-                    <p className="text-[10px] font-semibold text-slate-600 sm:col-span-2">Faltante: {formatQty(Math.max(0, row.expectedReturn - (Number(returns[row.productId]) || 0) - (Number(wastes[row.productId]) || 0)), row.unitType)} · Sobrante en cuarentena: {formatQty(Math.max(0, (Number(returns[row.productId]) || 0) - Math.max(0, row.expectedReturn - (Number(wastes[row.productId]) || 0))), row.unitType)}</p>
+                    {!breakdown.wasteValid && <p className="mt-2 text-xs font-bold text-rose-700">La merma no puede superar lo recibido ni lo que debía retornar.</p>}
                   </div>}
-                </div>
+                </article>
               )
             })}
           </div>

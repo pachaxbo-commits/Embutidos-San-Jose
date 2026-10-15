@@ -2132,21 +2132,28 @@ async function closure(o, p) {
       await o.loadStock(pid, warehouse);
       const expected = e.balances.get(route).quantity;
       const returnRow = requested.products?.find((r) => r.productId === pid);
+      const previousProduct = previous.products?.find((row) => row.productId === pid);
       const actual = Number.isFinite(Number(returnRow?.actualReturn)) ? round(Number(returnRow.actualReturn)) : Number.NaN;
       const waste = Number.isFinite(Number(returnRow?.returnWaste || 0)) ? round(Number(returnRow.returnWaste || 0)) : Number.NaN;
       const wasteReason = String(returnRow?.returnWasteReason || "").trim();
+      // physicalReturn es el peso total recibido. Clientes antiguos solo
+      // enviaban actualReturn (apto), por eso se reconstruye sumando la merma.
+      const received = Number.isFinite(Number(returnRow?.physicalReturn))
+        ? round(Number(returnRow.physicalReturn))
+        : round(actual + (Number.isFinite(waste) ? waste : 0));
       check(
-        Number.isFinite(actual) && actual >= 0,
-        "Completa las cantidades de retorno.",
+        Number.isFinite(actual) && actual >= 0 && Number.isFinite(received) && received >= 0,
+        "Completa las cantidades recibidas físicamente.",
       );
       check(Number.isFinite(waste) && waste >= 0 && (e.p.unitType === "kg" || Number.isInteger(waste)),
         "La merma debe respetar la unidad del producto.");
       check(waste === 0 || wasteReason.length > 0, "Indica el motivo de la merma al retorno.");
-      const normalApt = round(Math.min(actual, Math.max(0, round(expected - waste))));
-      const overage = round(actual - normalApt);
-      const shortage = round(Math.max(0, expected - actual - waste));
-      check(e.p.unitType === "kg" || Number.isInteger(actual), "Paquetes y unidades requieren cantidades enteras.");
-      check(waste <= expected + 0.001, "La merma no puede superar la cantidad que debía retornar.");
+      const recognizedReceived = round(Math.min(received, expected));
+      const normalApt = round(Math.max(0, recognizedReceived - waste));
+      const overage = round(Math.max(0, received - expected));
+      const shortage = round(Math.max(0, expected - received));
+      check(e.p.unitType === "kg" || Number.isInteger(received), "Paquetes y unidades requieren cantidades enteras.");
+      check(waste <= recognizedReceived + 0.001, "La merma no puede superar lo recibido ni lo que debía retornar.");
       // Solo el retorno reconocido y la merma pueden consumir asignaciones que
       // existen en el stock de la ruta. El sobrante físico no tiene una
       // asignación de origen verificable: se recibe aparte, siempre en cuarentena.
@@ -2165,7 +2172,7 @@ async function closure(o, p) {
       }
       if (normalApt > 0) {
         o.move(e, warehouse, normalApt);
-        o.ledger(pid, normalApt, route, warehouse, "return", { allocations: returnParts });
+        o.ledger(pid, normalApt, route, warehouse, "return", { allocations: returnParts, dispatchId: d.id });
       }
       if (waste > 0) {
         const knownCost = wasteParts.every((a) => a.productionCost !== null);
@@ -2207,7 +2214,9 @@ async function closure(o, p) {
           createdBy: o.actor,
         });
         o.move(e, warehouse, overage);
-        o.ledger(pid, overage, route, warehouse, "overage", {
+        // El sobrante no procede de stock asignado a la ruta: es una
+        // recepción física sin origen verificable y queda en cuarentena.
+        o.ledger(pid, overage, null, warehouse, "overage", {
           lotId,
           allocations: [],
           dispatchId: d.id,
@@ -2241,7 +2250,9 @@ async function closure(o, p) {
           .filter((l) => l.productId === pid)
           .reduce((sum, line) => sum + line.quantity, 0)),
         expectedReturn: expected,
-        actualReturn: actual,
+        ...(Number.isFinite(Number(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturn)) ? { declaredReturn: round(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturn) } : {}),
+        physicalReturn: received,
+        actualReturn: normalApt,
         returnWaste: waste,
         returnWasteReason: wasteReason,
         shortage,
@@ -2544,6 +2555,7 @@ handlers.reopen = async (o, p) => {
   const c = await o.read("distClosures", p.closureId);
   check(c?.status === "closed", "Solo se puede reabrir un cierre finalizado.");
   const d = c.dispatchId ? await o.read("distDispatches", c.dispatchId) : null;
+  let reversedMovementIds = [];
   if (d) {
     check(d.status === "closed", "El despacho no está cerrado.");
     const others = await o.query("distDispatches", "routeId", c.routeId);
@@ -2551,10 +2563,78 @@ handlers.reopen = async (o, p) => {
       !others.some((x) => x.id !== d.id && x.status === "open"),
       "La ruta tiene otro despacho abierto.",
     );
+    const route = location("route", d.routeId);
+    const warehouse = location("warehouse", d.warehouseId || "central");
+    const reversed = new Set(c.reversedStockMovementIds || []);
+    const closureOperations = (await o.query("distOperations", "payload.closure.dispatchId", d.id))
+      .filter((operation) => operation.type === "closure" && operation.payload?.mode === "warehouse" && operation.status === "confirmed");
+    const movementsById = new Map();
+    for (const operation of closureOperations) {
+      for (const movement of await o.query("distStockMovements", "refId", operation.id)) {
+        if (["return", "return_waste", "shortage", "overage"].includes(movement.type)) movementsById.set(movement.id, movement);
+      }
+    }
+    const movements = [...movementsById.values()].filter((movement) => !reversed.has(movement.id));
+    // Reapertura revierte exactamente la recepción anterior por sus lotes
+    // originales. Si el producto ya no está disponible en almacén/cuarentena,
+    // la transacción falla y no permite una segunda aplicación duplicada.
+    for (const movement of [...movements].reverse()) {
+      const e = await o.loadStock(movement.productId, route);
+      await o.loadStock(movement.productId, warehouse);
+      if (movement.type === "return") {
+        const allocations = movement.allocations || [];
+        check(allocations.length > 0, "No se puede reabrir: faltan lotes del retorno confirmado.");
+        for (const part of allocations) {
+          const lot = e.lots.find((item) => item.id === part.lotId);
+          check(lot && round(lot.quantities?.[warehouse] || 0) >= part.quantity, "No se puede reabrir: el lote retornado ya no está disponible en almacén.");
+          lot.quantities[warehouse] = round(lot.quantities[warehouse] - part.quantity);
+          lot.quantities[route] = round((lot.quantities[route] || 0) + part.quantity);
+        }
+        o.move(e, warehouse, -movement.quantity);
+        o.move(e, route, movement.quantity);
+      } else if (movement.type === "return_waste" || movement.type === "shortage") {
+        const allocations = movement.allocations || [];
+        check(allocations.length > 0, "No se puede reabrir: faltan asignaciones de lote para la merma o faltante.");
+        for (const part of allocations) {
+          const lot = e.lots.find((item) => item.id === part.lotId);
+          check(lot, "No se puede reabrir: falta un lote original de la ruta.");
+          lot.quantities[route] = round((lot.quantities[route] || 0) + part.quantity);
+        }
+        o.move(e, route, movement.quantity);
+      } else {
+        const lot = e.lots.find((item) => item.id === movement.lotId && item.quarantined);
+        check(lot && round(lot.quantities?.[warehouse] || 0) >= movement.quantity, "No se puede reabrir: el sobrante en cuarentena ya no está disponible.");
+        lot.quantities[warehouse] = round(lot.quantities[warehouse] - movement.quantity);
+        o.move(e, warehouse, -movement.quantity);
+      }
+      o.put("distStockMovements", movement.id, {
+        ...movement,
+        reversedAt: o.now,
+        reversedBy: o.actor,
+        reversalOperationId: o.id,
+        reversalReason: p.reason.trim(),
+      });
+      reversed.add(movement.id);
+    }
+    reversedMovementIds = movements.map((movement) => movement.id);
+  }
+  const reopenHistory = [...(c.reopenHistory || [])];
+  if (c.warehouseClosedBy) {
+    reopenHistory.push({
+      reopenedAt: o.now,
+      reason: p.reason.trim(),
+      warehouseClosedBy: c.warehouseClosedBy,
+      warehouseClosedAt: c.warehouseClosedAt || "",
+      products: c.products || [],
+    });
   }
   o.put("distClosures", c.id, {
     ...c,
     status: "reopened",
+    warehouseClosedBy: "",
+    warehouseReopenedAt: o.now,
+    reopenHistory,
+    reversedStockMovementIds: [...new Set([...(c.reversedStockMovementIds || []), ...reversedMovementIds])],
     reopenedBy: o.actor,
     reopenedByName: o.member.displayName || o.actor,
     reopenedAt: o.now,

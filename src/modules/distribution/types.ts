@@ -128,7 +128,7 @@ export interface DistAdjustmentRequest extends DistBaseDoc {
   reviewedAt?: string
 }
 
-/** Ledger auditable e inmutable. El id es el operationId (idempotencia). */
+/** Ledger auditable; las reaperturas agregan metadata de reversión sin borrar el movimiento. */
 export interface DistStockMovement extends DistBaseDoc {
   responsibleName?: string
   responsibleRole?: 'admin' | 'warehouse' | 'distributor'
@@ -149,6 +149,10 @@ export interface DistStockMovement extends DistBaseDoc {
   refType?: 'dispatch' | 'sale' | 'closure' | 'manual'
   refId?: string
   note?: string
+  reversedAt?: string
+  reversedBy?: string
+  reversalOperationId?: string
+  reversalReason?: string
 }
 
 export interface DistDispatchLine {
@@ -470,6 +474,11 @@ export interface DistClosureProductRow {
   sold: number
   courtesy?: number
   expectedReturn: number
+  /** Cantidad total declarada por el distribuidor; no es necesariamente producto apto. */
+  declaredReturn?: number
+  /** Cantidad total pesada y recibida físicamente por Almacén, incluye la merma. */
+  physicalReturn?: number
+  /** Cantidad apta que vuelve al stock vendible. */
   actualReturn: number
   returnWaste?: number
   returnWasteReason?: string
@@ -515,6 +524,14 @@ export interface DistClosure extends DistBaseDoc {
   reopenedByName?: string
   reopenedAt?: string
   reopenReason?: string
+  reopenHistory?: Array<{
+    reopenedAt: string
+    reason: string
+    warehouseClosedBy: string
+    warehouseClosedAt: string
+    products: DistClosureProductRow[]
+  }>
+  reversedStockMovementIds?: string[]
   /** La revisión reconoce la diferencia sin modificar el cierre ni el stock. */
   varianceReviewedBy?: string
   varianceReviewedAt?: string
