@@ -258,3 +258,9 @@ Estado al cerrar esta limpieza:
 - El botón de cancelar se sustituyó por eliminación lógica auditada en backend (`deleted`, autor, hora e historial). Administración puede eliminar cualquiera; Distribuidores solo las propias. No altera ventas, caja, créditos ni inventario.
 - La APK actual publicada continúa siendo el único archivo APK real del sitio Hosting. Rutas históricas consultadas respondieron con el HTML de la aplicación (500 bytes), no con APK; Hosting reporta el canal `live`. No se eliminan archivos ni releases históricos. El archivo local `output/android/` es un archivo de resguardo independiente y puede contener APK antiguas.
 - Pruebas focalizadas añadidas para filtros de historial, eliminación lógica/permisos y documentos de cotización; versionado Android 1.4.24 / code 44, misma firma oficial y `applicationId com.pachax.flow`.
+
+## Compartir cotizaciones Android 1.4.25 (15 de octubre de 2026)
+
+- En Android, compartir la imagen utiliza el selector nativo de Capacitor (incluye WhatsApp) y la imagen descargada se guarda en Documentos de la aplicación; en web se mantienen Web Share y descarga del navegador.
+- Se conserva la imagen temporal en caché durante el selector y se limpia posteriormente. Prueba focalizada del payload de compartir y mismo paquete/firma oficial.
+- Android: `versionCode 45`, `versionName 1.4.25`.

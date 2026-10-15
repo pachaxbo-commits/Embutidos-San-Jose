@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, Copy, Download, FileText, Pencil, Plus, Printer, Search, Share2, Trash2, X } from 'lucide-react'
+import { Capacitor } from '@capacitor/core'
+import { Directory, Filesystem } from '@capacitor/filesystem'
+import { Share } from '@capacitor/share'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -8,6 +11,7 @@ import { round2, toDayKey } from '../domain/engine'
 import { printQuoteTicket } from '../data/distributionDocumentPrintService'
 import { filterQuotes } from '../domain/quoteHistory'
 import { getQuoteDocumentText } from '../domain/quoteDocumentText'
+import { buildQuoteSharePayload } from '../domain/quoteSharePayload'
 import type { DistQuote, DistQuoteLine } from '../types'
 import type { DistributionViewProps } from './DistributionApp'
 import { RangePicker } from './RangePicker'
@@ -15,6 +19,12 @@ import { PrimaryButton, SecondaryButton, SectionCard, formatBs, formatQty } from
 
 const dayAfter = (days: number) => { const d = new Date(); d.setDate(d.getDate() + days); return toDayKey(d) }
 const esc = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
+const fileToBase64 = (file: Blob) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(String(reader.result || '').split(',', 2)[1] || '')
+  reader.onerror = () => reject(reader.error || new Error('No se pudo preparar la imagen de la cotización.'))
+  reader.readAsDataURL(file)
+})
 type DraftLine = DistQuoteLine & { key: string }
 type Step = 'products' | 'client' | 'review' | 'success'
 
@@ -30,6 +40,7 @@ export function QuotesView({ session, data }: DistributionViewProps) {
   const [createdQuote, setCreatedQuote] = useState<DistQuote | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [customerMode, setCustomerMode] = useState<'registered' | 'quick'>('registered')
   const [customerSearch, setCustomerSearch] = useState('')
   const [customerId, setCustomerId] = useState('')
@@ -70,7 +81,7 @@ export function QuotesView({ session, data }: DistributionViewProps) {
     setCustomerSearch(''); setProspectName(quote?.customerId ? '' : quote?.customerName || ''); setProspectPhone(quote?.customerPhone || '')
     setValidUntil(duplicate ? dayAfter(7) : quote?.validUntil || dayAfter(7)); setNote(quote?.note || '')
     setLines(quote?.lines.map((line, i) => ({ ...line, key: `${line.productId}-${i}-${newOperationId('line')}` })) || [])
-    setProductQuery(''); setSelectedProductId(''); setQty('1'); setPrice('0'); setError(''); setStep('products')
+    setProductQuery(''); setSelectedProductId(''); setQty('1'); setPrice('0'); setError(''); setNotice(''); setStep('products')
   }
   const duplicateQuote = (quote: DistQuote) => reset(quote, true)
   const addProduct = () => {
@@ -132,13 +143,40 @@ export function QuotesView({ session, data }: DistributionViewProps) {
     return { blob, file }
   }
   const downloadImage = async (quote: DistQuote) => {
-    const image = await buildQuoteImage(quote); if (!image) return
-    const url = URL.createObjectURL(image.blob); const a=document.createElement('a'); a.href=url; a.download=image.file.name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000)
+    setError(''); setNotice('')
+    try {
+      const image = await buildQuoteImage(quote); if (!image) throw new Error('No se pudo generar la imagen.')
+      if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
+        await Filesystem.writeFile({ path: `cotizaciones/${image.file.name}`, data: await fileToBase64(image.blob), directory: Directory.Documents, recursive: true })
+        setNotice('Imagen guardada en Documentos de la aplicación.')
+        return
+      }
+      const url = URL.createObjectURL(image.blob); const a=document.createElement('a'); a.href=url; a.download=image.file.name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000)
+      setNotice('Imagen descargada.')
+    } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo guardar la imagen.') }
   }
   const shareImage = async (quote: DistQuote) => {
-    const image = await buildQuoteImage(quote); if (!image) return
-    if (navigator.share && navigator.canShare?.({files:[image.file]})) await navigator.share({files:[image.file], title:quote.quoteNumber})
-    else await downloadImage(quote)
+    setError(''); setNotice('')
+    try {
+      const image = await buildQuoteImage(quote); if (!image) throw new Error('No se pudo generar la imagen.')
+      if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
+        const path = `shared/cotizacion-${quote.id}-${Date.now()}.png`
+        await Filesystem.writeFile({ path, data: await fileToBase64(image.blob), directory: Directory.Cache, recursive: true })
+        try {
+          await Share.share(buildQuoteSharePayload(quote, (await Filesystem.getUri({ path, directory: Directory.Cache })).uri))
+          setNotice('Elige WhatsApp u otra aplicación para enviar la cotización.')
+        } finally {
+          window.setTimeout(() => { void Filesystem.deleteFile({ path, directory: Directory.Cache }).catch(() => undefined) }, 120_000)
+        }
+        return
+      }
+      const nav = navigator as Navigator & { share?: (data: { title?: string; files?: File[] }) => Promise<void>; canShare?: (data: { files: File[] }) => boolean }
+      if (nav.share && (!nav.canShare || nav.canShare({ files: [image.file] }))) await nav.share({ files: [image.file], title: quote.quoteNumber })
+      else await downloadImage(quote)
+    } catch (e) {
+      if (/cancel|dismiss/i.test(e instanceof Error ? e.message : '')) return
+      setError(e instanceof Error ? e.message : 'No se pudo abrir las opciones para compartir.')
+    }
   }
   const printThermal = async (quote: DistQuote) => { try { setError(await printQuoteTicket(quote)) } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo imprimir la cotización.') } }
   const confirmDelete = async () => { if (!deleteTarget) return; setDeleting(true); setError(''); try { await deleteQuote(deleteTarget.id); setDeleteTarget(null) } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo eliminar la cotización.') } finally { setDeleting(false) } }
@@ -148,6 +186,7 @@ export function QuotesView({ session, data }: DistributionViewProps) {
   if (step) return <Screen title={stepTitle} subtitle={step === 'success' ? 'La cotización está lista para compartir.' : 'Productos → Cliente → Finalizar'}>
     {step !== 'success' && <div className="mb-3 flex flex-wrap gap-2"><span className={`rounded-full px-3 py-2 text-sm font-bold ${step === 'products' ? 'bg-[var(--primary)] text-white' : 'bg-slate-100'}`}>Productos</span><span className={`rounded-full px-3 py-2 text-sm font-bold ${step === 'client' ? 'bg-[var(--primary)] text-white' : 'bg-slate-100'}`}>Cliente</span><span className={`rounded-full px-3 py-2 text-sm font-bold ${step === 'review' ? 'bg-[var(--primary)] text-white' : 'bg-slate-100'}`}>Finalizar</span></div>}
     {error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-700">{error}</p>}
+    {notice && <p role="status" className="mb-3 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{notice}</p>}
     {step === 'products' && <div className="grid gap-3 lg:grid-cols-[1.2fr_.8fr]">
       <SectionCard title="Elegir productos"><div className="mb-3 flex gap-2"><Search className="mt-3 text-slate-400" size={18}/><TextInput value={productQuery} onChange={e=>setProductQuery(e.target.value)} placeholder="Buscar producto" /></div><div className="grid max-h-[42vh] gap-2 overflow-y-auto sm:grid-cols-2">{products.map(p=><button key={p.id} onClick={()=>{setSelectedProductId(p.id);setPrice(String(p.referencePrice))}} className={`rounded-xl border-2 p-3 text-left ${selectedProductId===p.id?'border-emerald-500 bg-emerald-50':'border-slate-200 bg-white'}`}><span className="block font-bold">{p.name}</span><span className="text-sm text-slate-500">{formatBs(p.referencePrice)} / {p.unitType==='kg'?'kg':'unidad'}</span></button>)}</div><div className="mt-3 grid gap-2 sm:grid-cols-[1fr_.6fr_.8fr_auto]"><Field label="Producto seleccionado"><TextInput readOnly value={data.products.find(p=>p.id===selectedProductId)?.name || ''} placeholder="Elige un producto" /></Field><Field label="Cantidad"><NumberInput value={qty} onChange={e=>setQty(e.target.value)} min="0.01" step={data.products.find(p=>p.id===selectedProductId)?.unitType==='kg'?'0.01':'1'}/></Field><Field label="Precio unitario (Bs)"><NumberInput value={price} onChange={e=>setPrice(e.target.value)} min="0" step="0.01"/></Field><div className="self-end"><PrimaryButton disabled={!selectedProductId} onClick={addProduct}><Plus size={16}/> Agregar</PrimaryButton></div></div></SectionCard>
       <SectionCard title={`Carrito de cotización (${lines.length})`}>{!lines.length?<p className="text-sm text-slate-500">Selecciona productos para preparar la cotización.</p>:<div className="grid gap-2">{lines.map(line=><div key={line.key} className="rounded-xl border-2 border-slate-200 p-3"><div className="flex items-start justify-between gap-2"><b>{line.productNameSnapshot}</b><button aria-label="Quitar producto" className="text-rose-700" onClick={()=>setLines(xs=>xs.filter(x=>x.key!==line.key))}><Trash2 size={18}/></button></div><div className="mt-2 grid grid-cols-2 gap-2"><Field label="Cantidad"><NumberInput min="0.01" step={line.unitType==='kg'?'0.01':'1'} value={String(line.quantity)} onChange={e=>changeLine(line.key,'quantity',e.target.value)}/></Field><Field label="Precio unitario"><NumberInput min="0" step="0.01" value={String(line.unitPrice)} onChange={e=>changeLine(line.key,'unitPrice',e.target.value)}/></Field></div><p className="mt-2 text-right font-bold">Subtotal: {formatBs(round2(line.quantity*line.unitPrice))}</p></div>)}</div>}<p className="mt-3 text-right text-xl font-black">Total cotizado: {formatBs(total)}</p><div className="mt-3 flex justify-end"><PrimaryButton disabled={!lines.length} onClick={goClient}>Continuar <ArrowRight size={16}/></PrimaryButton></div></SectionCard>
@@ -161,6 +200,7 @@ export function QuotesView({ session, data }: DistributionViewProps) {
   return <Screen title="Cotizaciones" subtitle="Prepara y comparte propuestas para tus clientes.">
     <SectionCard title="Buscar cotizaciones" action={<PrimaryButton onClick={()=>reset()}><Plus size={16}/> Nueva cotización</PrimaryButton>}><div className="grid gap-3"><div className="flex gap-2"><Search className="mt-3 text-slate-400" size={18}/><TextInput value={queryText} onChange={e=>setQueryText(e.target.value)} placeholder="Número, cliente o producto"/></div><div className="grid gap-3 lg:grid-cols-3"><div className="lg:col-span-3"><RangePicker key={rangePickerKey} dayKeys={dateRange} onChange={setDateRange}/></div><Field label="Cliente registrado"><select className="min-h-12 w-full rounded-xl border-2 border-slate-300 bg-white px-3" value={filterCustomer} onChange={e=>setFilterCustomer(e.target.value)}><option value="">Todos los clientes</option>{customersWithQuotes.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>{session.role==='admin'&&<Field label="Creado por"><select className="min-h-12 w-full rounded-xl border-2 border-slate-300 bg-white px-3" value={filterSeller} onChange={e=>setFilterSeller(e.target.value)}><option value="">Todos los usuarios</option>{creators.map(([uid,name])=><option key={uid} value={uid}>{name}</option>)}</select></Field>}<div className="self-end"><SecondaryButton onClick={clearFilters}><X size={16}/> Limpiar filtros</SecondaryButton></div></div></div></SectionCard>
     {error&&<p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-700">{error}</p>}
+    {notice&&<p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{notice}</p>}
     <SectionCard title={`Cotizaciones registradas (${visible.length})`}>{!visible.length?<EmptyBlock title="No hay cotizaciones para mostrar" description="Prueba otros filtros o crea una propuesta nueva."/>:<div className="grid gap-3">{visible.map(q=>{const status=q.status==='cancelada'?'Cancelada':q.validUntil<toDayKey(new Date())?'Vencida':'Vigente'; const canManage=session.role==='admin'||q.sellerUid===session.uid;return <article key={q.id} className="rounded-2xl border-2 border-slate-200 bg-white p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-black text-slate-900">{q.quoteNumber} · {q.customerName}</p><p className="text-xs text-slate-500">{new Date(q.createdAt).toLocaleDateString('es-BO')} · válida hasta {new Date(`${q.validUntil}T12:00:00`).toLocaleDateString('es-BO')}{session.role==='admin'?` · ${q.sellerName}`:''}</p></div><strong className="text-lg text-[var(--primary)]">{formatBs(q.total)}</strong></div><div className="mt-2"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold">{status}</span></div><div className="mt-2 grid gap-1 text-xs text-slate-600">{q.lines.map((line,i)=><p key={i}>{formatQty(line.quantity,line.unitType)} · {line.productNameSnapshot} × {formatBs(line.unitPrice)} = {formatBs(line.subtotal)}</p>)}</div>{q.note&&<p className="mt-2 text-xs text-slate-600">Observación: {q.note}</p>}<div className="mt-3 flex flex-wrap gap-2"><SecondaryButton onClick={()=>void downloadImage(q)}><Download size={15}/> Descargar imagen</SecondaryButton><SecondaryButton onClick={()=>void shareImage(q)}><Share2 size={15}/> Compartir</SecondaryButton><SecondaryButton onClick={()=>void printThermal(q)}><Printer size={15}/> Imprimir ticket</SecondaryButton><SecondaryButton onClick={()=>{const w=window.open('', '_blank'); if(w){w.document.write(quoteHtml(q));w.document.close();w.focus();setTimeout(()=>w.print(),500)}}}><Printer size={15}/> Imprimir hoja / PDF</SecondaryButton><SecondaryButton onClick={()=>duplicateQuote(q)}><Copy size={15}/> Duplicar</SecondaryButton>{canManage&&status==='Vigente'&&<SecondaryButton onClick={()=>reset(q)}><Pencil size={15}/> Editar</SecondaryButton>}{canManage&&<SecondaryButton onClick={()=>setDeleteTarget(q)}><Trash2 size={15}/> Eliminar</SecondaryButton>}</div></article>})}</div>}</SectionCard>
     <Modal isOpen={!!deleteTarget} onClose={()=>!deleting&&setDeleteTarget(null)} title="Eliminar cotización">{deleteTarget&&<div className="grid gap-3"><div className="rounded-xl border-2 border-slate-200 bg-slate-50 p-3"><b>{deleteTarget.quoteNumber}</b><p>{deleteTarget.customerName}</p><p className="font-bold">{formatBs(deleteTarget.total)}</p></div><p>¿Deseas eliminar esta cotización? Dejará de aparecer en el historial.</p><div className="flex justify-end gap-2"><SecondaryButton disabled={deleting} onClick={()=>setDeleteTarget(null)}>Volver</SecondaryButton><PrimaryButton disabled={deleting} onClick={()=>void confirmDelete()}><Trash2 size={16}/>{deleting?'Eliminando…':'Eliminar'}</PrimaryButton></div></div>}</Modal>
   </Screen>

@@ -22,6 +22,7 @@
     "test:quote-print": "node --experimental-strip-types src/modules/distribution/domain/__tests__/quotePrintPayload.test.ts",
     "test:quote-history": "node --experimental-strip-types src/modules/distribution/domain/__tests__/quoteHistory.test.ts",
     "test:quote-document-text": "node --experimental-strip-types src/modules/distribution/domain/__tests__/quoteDocumentText.test.ts",
+    "test:quote-share": "node --experimental-strip-types src/modules/distribution/domain/__tests__/quoteSharePayload.test.ts",
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "test:report-selection": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportSelection.test.ts",
     "test:customer-purchases": "node --experimental-strip-types src/modules/distribution/domain/__tests__/customerPurchases.test.ts",
