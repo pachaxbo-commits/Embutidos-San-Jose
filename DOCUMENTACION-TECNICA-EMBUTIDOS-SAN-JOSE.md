@@ -249,3 +249,12 @@ Estado al cerrar esta limpieza:
 - La limpieza selectiva incorpora la categoría Cotizaciones sin modificar las categorías preservadas.
 - Verificación focalizada: typecheck, ESLint, build web, distribución, cierres, mermas, cortesías/cotizaciones en emulador, reportes, ganancias por producto, compras por cliente, limpieza selectiva, offline, créditos/gastos y documentos Android.
 - Android: `versionCode 43`, `versionName 1.4.23`; se conserva `applicationId com.pachax.flow` y la firma oficial.
+
+## Cotizaciones: flujo y eliminación auditada 1.4.24 (15 de octubre de 2026)
+
+- La creación y edición se organizan en tres pasos: productos y carrito, selección de cliente (registrado o nombre/teléfono rápido) y revisión antes de guardar. Los productos activos pueden cotizarse sin depender de su existencia en stock.
+- Tras guardar, se muestra el resumen con acciones principales para compartir imagen, descargar PNG e imprimir ticket térmico; queda disponible también la hoja imprimible. Los documentos muestran cliente, teléfono opcional, vigencia, productos, precios/subtotales, total referencial y observación, sin vendedor/ruta ni advertencias repetitivas.
+- El historial permite combinar búsqueda, rango de fechas, cliente formal y creador (este último para Administración). Distribuidores siguen limitados a sus propias cotizaciones.
+- El botón de cancelar se sustituyó por eliminación lógica auditada en backend (`deleted`, autor, hora e historial). Administración puede eliminar cualquiera; Distribuidores solo las propias. No altera ventas, caja, créditos ni inventario.
+- La APK actual publicada continúa siendo el único archivo APK real del sitio Hosting. Rutas históricas consultadas respondieron con el HTML de la aplicación (500 bytes), no con APK; Hosting reporta el canal `live`. No se eliminan archivos ni releases históricos. El archivo local `output/android/` es un archivo de resguardo independiente y puede contener APK antiguas.
+- Pruebas focalizadas añadidas para filtros de historial, eliminación lógica/permisos y documentos de cotización; versionado Android 1.4.24 / code 44, misma firma oficial y `applicationId com.pachax.flow`.

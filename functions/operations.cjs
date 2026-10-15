@@ -1735,7 +1735,7 @@ handlers.quoteCreate = async (o, p) => {
 };
 handlers.quoteUpdate = async (o, p) => {
   const quote = await o.read("distQuotes", safeId(p.quoteId));
-  check(quote && (o.member.role === "admin" || quote.sellerUid === o.actor), "No tienes permiso para modificar esta cotización.");
+  check(quote && quote.deleted !== true && (o.member.role === "admin" || quote.sellerUid === o.actor), "No tienes permiso para modificar esta cotización.");
   check(quoteStatus(quote) === "vigente", "Solo se pueden modificar cotizaciones vigentes.");
   check(validDate(p.validUntil) && p.validUntil >= o.today, "La fecha de vigencia no puede estar en el pasado.");
   const { lines, total } = quoteFields(p);
@@ -1763,6 +1763,21 @@ handlers.quoteCancel = async (o, p) => {
   const cancelled = { ...quote, status: "cancelada", cancelledAt: o.now, cancelledBy: o.actor, cancelledByName: o.member.displayName || o.actor, cancelReason, history: [...(quote.history || []).slice(-9), { at: o.now, by: o.actor, action: "cancelada", reason: cancelReason }] };
   o.put("distQuotes", quote.id, cancelled);
   return cancelled;
+};
+handlers.quoteDelete = async (o, p) => {
+  const quote = await o.read("distQuotes", safeId(p.quoteId));
+  check(quote && quote.deleted !== true, "La cotización ya fue eliminada o no existe.");
+  check(o.member.role === "admin" || (o.member.role === "distributor" && quote.sellerUid === o.actor), "No tienes permiso para eliminar esta cotización.");
+  const deleted = {
+    ...quote,
+    deleted: true,
+    deletedAt: o.now,
+    deletedBy: o.actor,
+    deletedByName: o.member.displayName || o.actor,
+    history: [...(quote.history || []).slice(-9), { at: o.now, by: o.actor, action: "eliminada", quoteNumber: quote.quoteNumber, customerName: quote.customerName, total: quote.total }],
+  };
+  o.put("distQuotes", quote.id, deleted);
+  return deleted;
 };
 async function processCommand(db, ref) {
   return db.runTransaction(async (tx) => {

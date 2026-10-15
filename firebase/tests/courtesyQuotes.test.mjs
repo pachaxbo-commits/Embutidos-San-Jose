@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { initializeTestEnvironment, assertFails } from '@firebase/rules-unit-testing'
+import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import { doc, setDoc, getDoc } from 'firebase/firestore'
 
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
@@ -88,11 +88,24 @@ try {
   pass(update.result.total === 54 && update.result.revision === 2 && update.result.history.length === 1, 'edición guarda nuevo total e historial de versiones')
   const cancel = await run(seller, 'quoteCancel', { quoteId: quote.id, reason: 'Cliente desistió' })
   pass(cancel.result.status === 'cancelada' && cancel.result.cancelReason === 'Cliente desistió', 'cancelación requiere y conserva el motivo')
+  const deniedDelete = await run(other, 'quoteDelete', { quoteId: quote.id }, `${prefix}-other-delete`, 'rejected')
+  pass(deniedDelete.error.includes('permiso'), 'otro distribuidor no puede eliminar una cotización ajena')
+  const deleted = await run(seller, 'quoteDelete', { quoteId: quote.id })
+  pass(deleted.result.deleted === true && deleted.result.deletedBy === seller && deleted.result.history.at(-1).action === 'eliminada', 'eliminación lógica queda auditada y mantiene la cotización histórica')
+  const deleteAgain = await run(seller, 'quoteDelete', { quoteId: quote.id }, `${prefix}-delete-again`, 'rejected')
+  pass(deleteAgain.error.includes('eliminada'), 'no permite eliminar dos veces el mismo documento')
+  const quoteForAdmin = (await run(seller, 'quoteCreate', quoteInput)).result
+  const adminDeleted = await run(admin, 'quoteDelete', { quoteId: quoteForAdmin.id })
+  pass(adminDeleted.result.deleted === true && adminDeleted.result.deletedBy === admin, 'administración puede eliminar cotización de cualquier creador')
+  pass((await read('distBalances', `route__${route}__${product}`)).quantity === balAfter && !(await root.collection('distSales').doc(quote.id).get()).exists && !(await root.collection('distReceivables').doc(quote.id).get()).exists, 'eliminar cotización no afecta stock, ventas ni cartera')
 
   await assertFails(setDoc(doc(sellerDb, 'restaurants', 'sanjose', 'distQuotes', `${prefix}-forged`), { id: `${prefix}-forged`, sellerUid: seller }))
+  await assertSucceeds(setDoc(doc(sellerDb, 'restaurants', 'sanjose', 'distOperations', `${prefix}-quote-delete-rule`), { id: `${prefix}-quote-delete-rule`, restaurantId: 'sanjose', createdBy: seller, createdAt: new Date().toISOString(), type: 'quoteDelete', payload: { quoteId: quote.id }, status: 'queued' }))
+  const warehouseDb = env.authenticatedContext(warehouse).firestore()
+  await assertFails(setDoc(doc(warehouseDb, 'restaurants', 'sanjose', 'distOperations', `${prefix}-warehouse-quote-delete`), { id: `${prefix}-warehouse-quote-delete`, restaurantId: 'sanjose', createdBy: warehouse, createdAt: new Date().toISOString(), type: 'quoteDelete', payload: { quoteId: quote.id }, status: 'queued' }))
   const otherDb = env.authenticatedContext(other).firestore()
   await assertFails(getDoc(doc(otherDb, 'restaurants', 'sanjose', 'distQuotes', quote.id)))
-  pass(true, 'Rules prohíben escrituras directas y lectura de cotización ajena')
+  pass(true, 'Rules autorizan solicitudes de eliminación para distribuidores, bloquean otros roles y escrituras directas')
   console.log(`${checks} comprobaciones de cortesías y cotizaciones aprobadas`)
 } finally {
   await env.cleanup()

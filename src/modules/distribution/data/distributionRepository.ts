@@ -521,8 +521,8 @@ export async function updateQuote(quoteId: string, payload: Record<string, unkno
   return submitOperation<DistQuote>('quoteUpdate', { quoteId, ...payload }, newOperationId('quote-edit'))
 }
 
-export async function cancelQuote(quoteId: string, reason: string) {
-  return submitOperation<DistQuote>('quoteCancel', { quoteId, reason }, newOperationId('quote-cancel'))
+export async function deleteQuote(quoteId: string) {
+  return submitOperation<DistQuote>('quoteDelete', { quoteId }, newOperationId('quote-delete'))
 }
 
 export async function correctSale(input: { saleId: string; reason: string; lines: DistSaleLine[]; paymentKind: PaymentKind; cashAmount: number; qrAmount: number; creditAmount: number }): Promise<void> {

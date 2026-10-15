@@ -14,6 +14,7 @@ const assert = (condition: boolean, message: string) => { if (!condition) throw 
 assert(payload.documentTitle === 'COTIZACIÓN' && payload.totalLabel === 'TOTAL REFERENCIAL', 'el documento y total se identifican como cotización referencial')
 assert(payload.grandTotal === 100 && payload.items[0].quantity === 2.5 && payload.items[0].lineTotal === 100, 'incluye cantidad, precio y subtotal sin alterar el cálculo')
 assert(payload.createdIso === quote.createdAt && payload.customerName === quote.customerName, 'conserva fecha y datos de cliente del documento')
+assert(payload.customerPhone === quote.customerPhone && Boolean(payload.footerMessage?.includes('Precios sujetos a confirmación')), 'muestra teléfono y nota útil de vigencia comercial')
 assert(payload.paymentMethod === undefined && payload.paymentDetails === undefined, 'no presenta forma de pago en la cotización')
-assert(payload.customMessage?.includes('NO ES UNA VENTA') === true && payload.customMessage?.includes('NO RESERVA EXISTENCIAS') === true, 'aclara que la cotización no vende ni reserva stock')
+assert(payload.customMessage === undefined && (payload.headerDetails || []).every(line => !line.includes('ATENDIDO POR') && !line.includes('RUTA:')), 'omite vendedor, ruta y advertencias innecesarias')
 assert(payload.items[0].unitLabel === 'kg' && payload.items[0].basePrice === 40, 'mantiene unidad y precio unitario para el motor de impresión configurado')

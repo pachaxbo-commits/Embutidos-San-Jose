@@ -329,6 +329,11 @@ export interface DistQuote extends DistBaseDoc {
   note?: string
   cancelledAt?: string
   cancelledBy?: string
+  deleted?: boolean
+  deletedAt?: string
+  deletedBy?: string
+  deletedByName?: string
+  history?: Array<Record<string, unknown>>
   updatedAt?: string
 }
 
