@@ -3,6 +3,7 @@ import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
 import { matchesRoute, round2, toDayKey } from "../domain/engine";
+import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio } from "../domain/creditRoutes";
 import {
   aggregateCustomerPurchases,
   type CustomerPurchasesAggregation,
@@ -387,8 +388,13 @@ export function reportSheets(
         !s.pendingConfirmation &&
         (!seller || s.sellerUid === seller),
     ),
-    credits = data.receivables.filter(
-      (r) => inScope(r) && (!seller || r.distributorUid === seller),
+    credits = computeAsOfReceivablesPortfolio({
+      receivables: data.receivables,
+      collections: data.collections.filter((collection) => !collection.pendingConfirmation),
+      adjustments: data.receivableAdjustments,
+      cutoffDayKey: days.slice().sort().at(-1),
+    }).filter(
+      (r) => !r.voided && inScope(r) && (!seller || r.distributorUid === seller),
     ),
     collections = data.collections.filter(
       (r) =>
@@ -663,7 +669,7 @@ export function reportSheets(
         "Fecha",
         "Cliente",
         "CI",
-        "Productos",
+        "Detalle del crédito por producto",
         "Original (Bs)",
         "Pagado (Bs)",
         "Compensado por devolución (Bs)",
@@ -675,14 +681,19 @@ export function reportSheets(
         reportDateTime(r.createdAt),
         r.customerName,
         r.customerCode || "",
-        r.saleLines
-          ?.map((l) => `${l.productNameSnapshot} (${reportQuantity(l.quantity, l.unitType)})`)
-          .join("; ") || "",
+        (() => {
+          const saleLines = r.saleLines?.length ? r.saleLines : data.sales.find((sale) => sale.id === r.saleId)?.effectiveSnapshot?.lines || data.sales.find((sale) => sale.id === r.saleId)?.lines || [];
+          if (!saleLines.length) return "";
+          const amounts = r.adjustedSaleLines?.length
+            ? r.adjustedSaleLines.map((line) => line.creditAmount)
+            : allocateCreditBySubtotal(saleLines, r.originalAmount);
+          return saleLines.map((line, index) => `${line.productNameSnapshot} (${reportQuantity(line.quantity, line.unitType)}): ${new Intl.NumberFormat("es-BO", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amounts[index] || 0)} Bs`).join("; ");
+        })(),
         r.originalAmount,
         r.paidAmount,
         r.creditedAmount || 0,
         r.balance,
-        r.balance <= 0 ? "Pagado" : r.paidAmount > 0 ? "Parcial" : "Pendiente",
+        r.voided ? "Anulada" : r.balance <= 0 ? "Pagado" : r.paidAmount > 0 ? "Parcial" : "Pendiente",
         ] as Cell[]),
         ["TOTAL", "", "", "", round2(credits.reduce((n, r) => n + r.originalAmount, 0)), round2(credits.reduce((n, r) => n + r.paidAmount, 0)), round2(credits.reduce((n, r) => n + (r.creditedAmount || 0), 0)), round2(credits.reduce((n, r) => n + r.balance, 0)), ""],
       ],

@@ -13,6 +13,7 @@ import {
   subscribeOpenDispatches,
   subscribeProducts,
   subscribeReceivables,
+  subscribeReceivableAdjustments,
   subscribeRoutes,
   subscribeSales,
   subscribeSupportSettings,
@@ -33,6 +34,7 @@ import type {
   DistExpense,
   DistProduct,
   DistReceivable,
+  DistReceivableAdjustment,
   DistRoute,
   DistSale,
 } from '../types'
@@ -63,6 +65,7 @@ export interface DistributionScope {
    * mostraria un error que no le corresponde.
    */
   canReadFinance: boolean
+  canManageCredits?: boolean
 }
 
 export function useSyncStatus() {
@@ -95,6 +98,7 @@ export interface DistributionData {
   collections: DistCollection[]
   expenses: DistExpense[]
   receivables: DistReceivable[]
+  receivableAdjustments: DistReceivableAdjustment[]
   closures: DistClosure[]
   isLoading: boolean
   error: string | null
@@ -121,12 +125,13 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [collections, setCollections] = useState<DistCollection[]>([])
   const [expenses, setExpenses] = useState<DistExpense[]>([])
   const [receivables, setReceivables] = useState<DistReceivable[]>([])
+  const [receivableAdjustments, setReceivableAdjustments] = useState<DistReceivableAdjustment[]>([])
   const [closures, setClosures] = useState<DistClosure[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loadedCount, setLoadedCount] = useState(0)
 
   const dayKeysSignature = scope.dayKeys.join(',')
-  const { routeId, distributorUid, enabled, canReadFinance } = scope
+  const { routeId, distributorUid, enabled, canReadFinance, canManageCredits = false } = scope
 
   const markLoaded = useRef(new Set<string>())
   const onLoaded = useCallback((key: string) => {
@@ -145,6 +150,10 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     const unsubscribers = [
       subscribeLots(setLots, onError), subscribeOperations(setOperations, onError), subscribeCreditStatus(setCreditStatus, onError), subscribeCreditOverrides(setCreditOverrides, onError),
       subscribeSupportSettings(setSupportSettings, onError),
+      ...(canManageCredits ? [subscribeReceivableAdjustments((rows) => {
+        setReceivableAdjustments(rows)
+        onLoaded('receivableAdjustments')
+      }, onError)] : []),
       ...(routeId === null ? [subscribeMovements(setMovements, onError), subscribeTransfers(setTransfers, onError)] : []),
       ...(canReadFinance ? [subscribeClaims(routeId, setClaims, onError)] : []),
       subscribeWarehouses(setWarehouses, onError),
@@ -168,7 +177,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
       }, onError),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
-  }, [enabled, scope.restaurantId, canReadFinance, routeId, onError, onLoaded])
+  }, [enabled, scope.restaurantId, canReadFinance, canManageCredits, routeId, onError, onLoaded])
 
   // Los despachos son privados por distribuidor. La cartera es global para que
   // cualquier vendedor detecte una deuda pendiente antes de vender.
@@ -242,8 +251,9 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     collections: [...collections, ...pendingCollections],
     expenses: [...expenses, ...pendingExpenses],
     receivables: visibleReceivables,
+    receivableAdjustments,
     closures,
-    isLoading: enabled && loadedCount < 4,
+    isLoading: enabled && loadedCount < (canManageCredits ? 5 : 4),
     error,
   }
 }

@@ -6,17 +6,18 @@ import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { toDayKey, round2 } from '../domain/engine'
-import { newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride } from '../data/distributionRepository'
+import { adjustReceivable, newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride, voidReceivable } from '../data/distributionRepository'
 import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
 import {
   computeCreditPortfolioByRoute,
+  allocateCreditBySubtotal,
   getRouteDisplayName,
   type CustomerCreditRouteView,
 } from '../domain/creditRoutes'
 import { CreditProducts } from './CreditProducts'
 import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
-import type { DistCollection } from '../types'
+import type { DistCollection, DistReceivable, DistReceivableLineAdjustment, DistSaleLine } from '../types'
 import { printCollectionReceipt, printLargeCollectionReceipt, shareCollectionReceipt } from '../data/distributionReceiptService'
 
 /**
@@ -53,6 +54,17 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [paidOpen, setPaidOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
+  const [editingReceivable, setEditingReceivable] = useState<DistReceivable | null>(null)
+  const [editAmount, setEditAmount] = useState('')
+  const [editDate, setEditDate] = useState('')
+  const [editNote, setEditNote] = useState('')
+  const [editReason, setEditReason] = useState('')
+  const [editCreditLines, setEditCreditLines] = useState<DistReceivableLineAdjustment[]>([])
+  const [editOriginalCreditLines, setEditOriginalCreditLines] = useState<DistReceivableLineAdjustment[]>([])
+  const [voidingReceivable, setVoidingReceivable] = useState<DistReceivable | null>(null)
+  const [voidReason, setVoidReason] = useState('')
+  const [voidPhrase, setVoidPhrase] = useState('')
+  const [voidConfirmationStep, setVoidConfirmationStep] = useState<1 | 2>(1)
 
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false)
   const [customerPickerSearch, setCustomerPickerSearch] = useState('')
@@ -79,6 +91,104 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   }, [data.customers, customerPickerSearch])
 
   const salesById = useMemo(() => new Map(data.sales.map((s) => [s.id, s])), [data.sales])
+
+  const creditLineDetails = (receivable: DistReceivable): DistReceivableLineAdjustment[] => {
+    if (receivable.adjustedSaleLines?.length) return receivable.adjustedSaleLines
+    const linkedSale = salesById.get(receivable.saleId || '')
+    const lines = receivable.saleLines?.length ? receivable.saleLines : linkedSale?.effectiveSnapshot?.lines || linkedSale?.lines || []
+    const allocation = allocateCreditBySubtotal(lines, receivable.originalAmount)
+    return lines.map((line, index) => ({
+      productId: line.productId,
+      productNameSnapshot: line.productNameSnapshot,
+      presentationSnapshot: line.presentationSnapshot,
+      quantity: line.quantity,
+      unitType: line.unitType,
+      creditAmount: allocation[index] || 0,
+    }))
+  }
+
+  const beginReceivableEdit = (receivable: DistReceivable) => {
+    setError(null)
+    setEditingReceivable(receivable)
+    setEditAmount(String(receivable.originalAmount))
+    setEditDate(receivable.sourceDate || toDayKey(new Date(receivable.createdAt)))
+    setEditNote(receivable.note || '')
+    setEditReason('')
+    const lines: DistSaleLine[] = receivable.saleLines?.length
+      ? receivable.saleLines
+      : (salesById.get(receivable.saleId || '')?.effectiveSnapshot?.lines || salesById.get(receivable.saleId || '')?.lines || [])
+    const allocation = receivable.adjustedSaleLines?.length
+      ? receivable.adjustedSaleLines.map((line) => Number(line.creditAmount) || 0)
+      : allocateCreditBySubtotal(lines, receivable.originalAmount)
+    setEditCreditLines(lines.map((line, index) => ({
+      productId: line.productId,
+      productNameSnapshot: line.productNameSnapshot,
+      presentationSnapshot: line.presentationSnapshot,
+      quantity: line.quantity,
+      unitType: line.unitType,
+      creditAmount: allocation[index] || 0,
+    })))
+    setEditOriginalCreditLines(lines.map((line, index) => ({
+      productId: line.productId,
+      productNameSnapshot: line.productNameSnapshot,
+      presentationSnapshot: line.presentationSnapshot,
+      quantity: line.quantity,
+      unitType: line.unitType,
+      creditAmount: allocation[index] || 0,
+    })))
+  }
+
+  const submitReceivableEdit = async () => {
+    if (!editingReceivable) return
+    const value = round2(Number(editAmount))
+    const totalLines = round2(editCreditLines.reduce((sum, line) => sum + Number(line.creditAmount || 0), 0))
+    if (!editReason.trim() || !Number.isFinite(value) || value <= 0 || value < Number(editingReceivable.paidAmount)) {
+      setError('Indica un motivo y un monto mayor a cero que no sea menor a lo ya cobrado.')
+      return
+    }
+    if (editingReceivable.sourceType !== 'opening_balance' && editCreditLines.length && totalLines !== value) {
+      setError('La suma asignada a los productos debe coincidir exactamente con el nuevo monto de la deuda.')
+      return
+    }
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await adjustReceivable({
+        receivableId: editingReceivable.id,
+        originalAmount: value,
+        reason: editReason.trim(),
+        ...(editingReceivable.sourceType === 'opening_balance' ? { sourceDate: editDate, note: editNote.trim() } : {}),
+        adjustedSaleLines: editingReceivable.sourceType === 'opening_balance' ? [] : editCreditLines.map(({ productId, creditAmount }) => ({ productId, creditAmount: round2(Number(creditAmount)) })),
+      })
+      setEditingReceivable(null)
+      setSelected(null)
+      setToast('Deuda actualizada. La venta y el inventario no fueron modificados.')
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const submitReceivableVoid = async () => {
+    if (!voidingReceivable) return
+    if (!voidReason.trim() || voidPhrase !== 'ELIMINAR DEUDA') {
+      setError('Escribe el motivo y la frase exacta ELIMINAR DEUDA.')
+      return
+    }
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await voidReceivable({ receivableId: voidingReceivable.id, reason: voidReason.trim(), confirmationText: voidPhrase })
+      setVoidingReceivable(null)
+      setSelected(null)
+      setToast('Deuda anulada y guardada en el historial. La venta y el inventario no fueron modificados.')
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
   const { customerCredits, totalOutstanding, totalCustomersWithBalance, availableRoutes } = useMemo(() => {
     return computeCreditPortfolioByRoute({
@@ -633,9 +743,10 @@ export function CreditsView({ session, data }: DistributionViewProps) {
               {selected.allReceivables
                 .slice()
                 .sort((a, b) => (b.sourceDate || b.createdAt).localeCompare(a.sourceDate || a.createdAt))
-                .filter((r) => r.balance > 0 || paidOpen)
+                .filter((r) => r.balance > 0 || paidOpen || r.voided === true)
                 .map((receivable) => {
                   const isVoid = Boolean(
+                    receivable.voided || receivable.status === 'VOID' ||
                     (receivable as unknown as Record<string, unknown>).voidedAt ||
                       (receivable as unknown as Record<string, unknown>).voidReason ||
                       (receivable as unknown as Record<string, unknown>).isVoid ||
@@ -672,6 +783,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                           {!isOpening && (
                             <CreditProducts
                               lines={receivable.saleLines}
+                              creditLines={creditLineDetails(receivable)}
                               saleId={receivable.saleId}
                               isVoid={isVoid}
                             />
@@ -691,6 +803,36 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                           </span>
                         </div>
                       </div>
+                      {session.can('dist.credit.adjust') && !isVoid && (
+                        <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-2">
+                          <SecondaryButton onClick={() => beginReceivableEdit(receivable)}>Editar deuda</SecondaryButton>
+                          {Number(receivable.paidAmount) === 0 ? (
+                            <button
+                              type="button"
+                              className="min-h-[38px] rounded-xl border border-rose-200 px-3 text-xs font-extrabold text-rose-700"
+                              onClick={() => { setVoidingReceivable(receivable); setVoidReason(''); setVoidPhrase(''); setVoidConfirmationStep(1); setError(null) }}
+                            >Eliminar deuda</button>
+                          ) : (
+                            <span className="self-center text-[10px] font-semibold text-slate-500">No se puede anular: ya tiene pagos aplicados.</span>
+                          )}
+                        </div>
+                      )}
+                      {isVoid && receivable.voidReason && <p className="mt-2 text-[11px] font-semibold text-rose-700">Motivo de anulación: {receivable.voidReason}</p>}
+                      {session.can('dist.credit.adjust') && data.receivableAdjustments.some((adjustment) => adjustment.receivableId === receivable.id) && (
+                        <details className="mt-2 border-t border-slate-100 pt-2 text-[11px]">
+                          <summary className="cursor-pointer font-extrabold text-slate-600">Historial de cambios de esta deuda</summary>
+                          <div className="mt-2 grid gap-2">
+                            {data.receivableAdjustments.filter((adjustment) => adjustment.receivableId === receivable.id).sort((a, b) => b.effectiveAt.localeCompare(a.effectiveAt)).map((adjustment) => (
+                              <div key={adjustment.id} className="rounded-lg bg-slate-50 p-2 text-slate-700">
+                                <p className="font-bold">{adjustment.action === 'void' ? 'Deuda anulada' : 'Deuda editada'} · {new Date(adjustment.effectiveAt).toLocaleString('es-BO')} · {adjustment.actorName || 'Administración'}</p>
+                                <p>{formatBs(adjustment.previous.originalAmount)} → {formatBs(adjustment.next.originalAmount)} · Saldo {formatBs(adjustment.previous.balance)} → {formatBs(adjustment.next.balance)}</p>
+                                {adjustment.action === 'edit' && adjustment.next.adjustedSaleLines?.length > 0 && <p>{adjustment.next.adjustedSaleLines.map((line, index) => `${line.productNameSnapshot}: ${formatBs(adjustment.previous.adjustedSaleLines?.[index]?.creditAmount || 0)} → ${formatBs(line.creditAmount)}`).join(' · ')}</p>}
+                                <p className="italic">Motivo: {adjustment.reason}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
                     </div>
                   )
                 })}
@@ -757,6 +899,63 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(editingReceivable)}
+        onClose={() => setEditingReceivable(null)}
+        title="Editar deuda"
+        subtitle={editingReceivable?.customerName}
+        size="lg"
+        footer={<PrimaryButton full disabled={isSubmitting} onClick={() => void submitReceivableEdit()}>Guardar cambios</PrimaryButton>}
+      >
+        {editingReceivable && <div className="grid gap-3">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+            Solo se modifica la deuda. La venta, sus productos, precios, stock y cierres permanecen intactos.
+          </div>
+          {editingReceivable.sourceType === 'opening_balance' ? <>
+            <Field label="Monto de la deuda (Bs)" required><NumberInput min={editingReceivable.paidAmount} step="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} /></Field>
+            <Field label="Fecha de origen" required><TextInput type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} /></Field>
+            <Field label="Descripción" required><TextArea value={editNote} onChange={(e) => setEditNote(e.target.value)} /></Field>
+          </> : <>
+            <p className="text-xs font-bold text-slate-700">Productos y cantidades de la venta (solo lectura). Distribuye el monto de crédito entre los productos:</p>
+            {!editCreditLines.length ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Esta deuda histórica no tiene detalle de productos recuperable. Se podrá ajustar el monto total sin inventar líneas.</div> : editCreditLines.map((line, index) => <div key={line.productId} className="grid gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-[1fr_150px] sm:items-center">
+              <div><p className="text-sm font-extrabold text-slate-900">{line.productNameSnapshot}</p><p className="text-xs text-slate-500">{line.quantity} {line.unitType}{line.presentationSnapshot ? ` · ${line.presentationSnapshot}` : ''} · Crédito actual: {formatBs(editOriginalCreditLines[index]?.creditAmount || 0)}</p></div>
+              <Field label="Crédito asignado (Bs)" required><NumberInput min={0} step="0.01" value={String(line.creditAmount)} onChange={(e) => { const nextLines = editCreditLines.map((item, i) => i === index ? { ...item, creditAmount: Number(e.target.value) } : item); setEditCreditLines(nextLines); setEditAmount(String(round2(nextLines.reduce((sum, item) => sum + Number(item.creditAmount || 0), 0)))) }} /></Field>
+            </div>)}
+            <p className="text-xs font-black text-slate-800">Total asignado: {formatBs(round2(editCreditLines.reduce((sum, line) => sum + Number(line.creditAmount || 0), 0)))} · Pagado: {formatBs(editingReceivable.paidAmount)} · Saldo nuevo: {formatBs(Math.max(0, round2(Number(editAmount) - editingReceivable.paidAmount)))}</p>
+            <Field label="Monto total nuevo (Bs)" required><NumberInput min={editingReceivable.paidAmount} step="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} /></Field>
+          </>}
+          <Field label="Motivo del cambio" required><TextArea value={editReason} onChange={(e) => setEditReason(e.target.value)} placeholder="Explica por qué se corrige esta deuda" /></Field>
+          {error && <p role="alert" className="text-xs font-bold text-rose-700">{error}</p>}
+        </div>}
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(voidingReceivable)}
+        onClose={() => { setVoidingReceivable(null); setVoidConfirmationStep(1) }}
+        title={voidConfirmationStep === 1 ? 'Revisar anulación de deuda' : 'Confirmar eliminación'}
+        subtitle={voidingReceivable ? `${voidingReceivable.customerName} · ${formatBs(voidingReceivable.balance)}` : ''}
+        footer={voidConfirmationStep === 1
+          ? <PrimaryButton full disabled={isSubmitting || !voidReason.trim() || Number(voidingReceivable?.paidAmount) > 0} onClick={() => setVoidConfirmationStep(2)}>Continuar a segunda confirmación</PrimaryButton>
+          : <PrimaryButton full disabled={isSubmitting || voidPhrase !== 'ELIMINAR DEUDA'} onClick={() => void submitReceivableVoid()}>Confirmar eliminación</PrimaryButton>}
+      >
+        {voidingReceivable && <div className="grid gap-3">
+          {voidConfirmationStep === 1 ? <>
+          <div className="rounded-xl border-2 border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Esta acción retirará la deuda de la cartera activa. La venta original y el inventario NO se borran ni se modifican.</div>
+          <div className="rounded-xl border border-slate-200 p-3 text-xs text-slate-700">
+            <p><b>Origen:</b> {voidingReceivable.sourceType === 'opening_balance' ? 'Saldo anterior' : 'Venta a crédito'}</p>
+            <p><b>Monto original:</b> {formatBs(voidingReceivable.originalAmount)} · <b>Pagado:</b> {formatBs(voidingReceivable.paidAmount)} · <b>Saldo:</b> {formatBs(voidingReceivable.balance)}</p>
+            {voidingReceivable.saleLines?.length ? <p className="mt-1"><b>Productos:</b> {voidingReceivable.saleLines.map((line) => `${line.productNameSnapshot} (${line.quantity} ${line.unitType})`).join(', ')}</p> : null}
+          </div>
+          {Number(voidingReceivable.paidAmount) > 0 && <p className="text-xs font-bold text-rose-700">No puede anularse porque ya tiene pagos aplicados.</p>}
+          <Field label="Motivo obligatorio" required><TextArea value={voidReason} onChange={(e) => setVoidReason(e.target.value)} /></Field>
+          </> : <>
+          <div className="rounded-xl border-2 border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Última confirmación: se anulará la deuda de {voidingReceivable.customerName} por {formatBs(voidingReceivable.balance)}. La venta y el stock permanecerán sin cambios. Motivo: {voidReason}</div>
+          <Field label="Escribe exactamente: ELIMINAR DEUDA" required><TextInput value={voidPhrase} onChange={(e) => setVoidPhrase(e.target.value)} /></Field>
+          </>}
+          {error && <p role="alert" className="text-xs font-bold text-rose-700">{error}</p>}
+        </div>}
       </Modal>
 
       <Modal

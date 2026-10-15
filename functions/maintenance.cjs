@@ -10,7 +10,7 @@ const MAX_REAUTH_AGE_SECONDS = 5 * 60
 // vuelve a resolverlas y congela el alcance exacto antes de permitir el borrado.
 const CLEANUP_GROUPS = {
   customers: { label: 'Clientes', collections: ['distCustomers', 'distCustomerIdentities'], dependencies: ['sales', 'credits', 'claims', 'qr'] },
-  credits: { label: 'Créditos y cobros', collections: ['distReceivables', 'distCollections', 'distCreditStatus', 'distCreditOverrides'], dependencies: ['qr'] },
+  credits: { label: 'Créditos y cobros', collections: ['distReceivables', 'distCollections', 'distCreditStatus', 'distCreditOverrides', 'distReceivableAdjustments'], dependencies: ['qr'] },
   sales: { label: 'Ventas', collections: ['distSales', 'distSaleCorrections'], dependencies: ['credits', 'claims', 'qr'] },
   expenses: { label: 'Gastos', collections: ['distExpenses'], dependencies: [] },
   inventory: { label: 'Inventario operativo y lotes', collections: ['distBalances', 'distStockMovements', 'distLots', 'distLotHistory', 'distAdjustmentRequests'], dependencies: ['dispatches', 'sales'] },

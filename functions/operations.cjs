@@ -1239,6 +1239,195 @@ async function openingBalance(o, p) {
   o.put("distReceivables", o.id, row);
   return row;
 }
+function receivableSnapshot(r) {
+  return {
+    originalAmount: round(Number(r.originalAmount) || 0),
+    paidAmount: round(Number(r.paidAmount) || 0),
+    balance: round(Number(r.balance) || 0),
+    status: r.status || "OPEN",
+    sourceDate: r.sourceDate || "",
+    note: r.note || "",
+    saleLines: r.saleLines || [],
+    adjustedSaleLines: r.adjustedSaleLines || [],
+    voided: r.voided === true,
+    voidedAt: r.voidedAt || "",
+    voidReason: r.voidReason || "",
+  };
+}
+function allocateReceivableCredit(lines, amount) {
+  if (!lines.length) return [];
+  const targetCents = Math.round(round(amount) * 100);
+  const weights = lines.map(line => Math.max(0, Math.round((Number(line.subtotal) || 0) * 100)));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (targetCents <= 0 || totalWeight <= 0) return lines.map(line => ({
+    productId: line.productId,
+    productNameSnapshot: line.productNameSnapshot,
+    presentationSnapshot: line.presentationSnapshot || '',
+    quantity: line.quantity,
+    unitType: line.unitType,
+    creditAmount: 0,
+  }));
+  const exact = weights.map(weight => targetCents * weight / totalWeight);
+  const cents = exact.map(Math.floor);
+  const remainder = targetCents - cents.reduce((sum, value) => sum + value, 0);
+  const order = exact.map((value, index) => ({ index, fraction: value - cents[index] }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let index = 0; index < remainder; index += 1) cents[order[index].index] += 1;
+  return lines.map((line, index) => ({
+    productId: line.productId,
+    productNameSnapshot: line.productNameSnapshot,
+    presentationSnapshot: line.presentationSnapshot || '',
+    quantity: line.quantity,
+    unitType: line.unitType,
+    creditAmount: cents[index] / 100,
+  }));
+}
+async function editReceivable(o, p) {
+  o.admin();
+  const id = safeId(p.receivableId);
+  const receivable = await o.read("distReceivables", id);
+  check(receivable, "No existe la deuda indicada.");
+  check(receivable.voided !== true, "Una deuda anulada no se puede editar.");
+  check(p.reason?.trim(), "El motivo de edición es obligatorio.");
+  const nextAmount = Number(p.originalAmount);
+  check(Number.isFinite(nextAmount) && nextAmount > 0, "Indica un monto original mayor a cero.");
+  const paidAmount = round(Number(receivable.paidAmount) || 0);
+  check(nextAmount >= paidAmount, "El nuevo monto no puede ser menor que lo ya cobrado.");
+
+  let saleLines = receivable.saleLines || [];
+  if (receivable.sourceType !== "opening_balance" && saleLines.length === 0 && receivable.saleId) {
+    const sale = await o.read("distSales", receivable.saleId);
+    saleLines = sale?.effectiveSnapshot?.lines || sale?.lines || [];
+  }
+  let adjustedSaleLines = [];
+  let sourceDate = receivable.sourceDate || "";
+  let note = receivable.note || "";
+  if (receivable.sourceType === "opening_balance") {
+    check(!Array.isArray(p.adjustedSaleLines) || p.adjustedSaleLines.length === 0, "Un saldo anterior no puede incluir productos inventados.");
+    check(validDate(p.sourceDate), "Indica una fecha válida para la deuda.");
+    check(p.note?.trim(), "Describe el origen de la deuda.");
+    sourceDate = p.sourceDate;
+    note = p.note.trim();
+  } else {
+    check(Array.isArray(saleLines), "El detalle original de la venta no es válido.");
+    if (saleLines.length > 0) {
+      check(Array.isArray(p.adjustedSaleLines) && p.adjustedSaleLines.length === saleLines.length, "Indica el nuevo importe de cada producto.");
+      adjustedSaleLines = p.adjustedSaleLines.map((line, index) => {
+        const originalLine = saleLines[index];
+        const creditAmount = Number(line?.creditAmount);
+        check(line?.productId === originalLine.productId, "No se pueden cambiar ni reordenar los productos de la venta.");
+        check(Number.isFinite(creditAmount) && creditAmount >= 0, "El importe de crédito por producto debe ser válido y no negativo.");
+        return {
+          productId: originalLine.productId,
+          productNameSnapshot: originalLine.productNameSnapshot,
+          presentationSnapshot: originalLine.presentationSnapshot || "",
+          quantity: originalLine.quantity,
+          unitType: originalLine.unitType,
+          creditAmount: round(creditAmount),
+        };
+      });
+      const sum = round(adjustedSaleLines.reduce((total, line) => total + line.creditAmount, 0));
+      check(sum === round(nextAmount), "La suma de los importes por producto debe coincidir exactamente con la nueva deuda.");
+    } else {
+      check(!Array.isArray(p.adjustedSaleLines) || p.adjustedSaleLines.length === 0, "No se pueden inventar productos para esta deuda histórica.");
+    }
+  }
+
+  const previousAdjustedSaleLines = receivable.sourceType === "opening_balance"
+    ? []
+    : receivable.adjustedSaleLines?.length
+      ? receivable.adjustedSaleLines
+      : allocateReceivableCredit(saleLines, receivable.originalAmount);
+  const previous = receivableSnapshot({ ...receivable, saleLines, adjustedSaleLines: previousAdjustedSaleLines });
+  const balance = round(nextAmount - paidAmount);
+  const status = balance === 0 ? "PAID" : paidAmount > 0 ? "PARTIAL" : "OPEN";
+  const next = {
+    ...receivable,
+    saleLines,
+    ...(receivable.sourceType === "opening_balance" ? {} : { adjustedSaleLines }),
+    originalAmount: round(nextAmount),
+    paidAmount,
+    balance,
+    status,
+    ...(receivable.sourceType === "opening_balance" ? { sourceDate, note } : {}),
+    originalSnapshot: receivable.originalSnapshot || previous,
+    lastAdjustmentId: o.id,
+    lastAdjustedAt: o.now,
+    lastAdjustedBy: o.actor,
+    lastAdjustmentReason: p.reason.trim(),
+  };
+  o.put("distReceivables", id, next);
+  o.put("distReceivableAdjustments", o.id, {
+    id: o.id,
+    ...o.base(),
+    action: "edit",
+    receivableId: id,
+    customerId: receivable.customerId,
+    customerName: receivable.customerName || "",
+    actorName: o.member.displayName || o.actor,
+    reason: p.reason.trim(),
+    effectiveAt: o.now,
+    effectiveDayKey: dayKey(new Date(o.now)),
+    previous,
+    next: receivableSnapshot(next),
+  });
+  return next;
+}
+async function voidReceivable(o, p) {
+  o.admin();
+  const id = safeId(p.receivableId);
+  const receivable = await o.read("distReceivables", id);
+  check(receivable, "No existe la deuda indicada.");
+  check(receivable.voided !== true, "La deuda ya está anulada.");
+  check(p.confirmationText === "ELIMINAR DEUDA", "La confirmación no coincide.");
+  check(p.reason?.trim(), "El motivo de anulación es obligatorio.");
+  check(round(Number(receivable.paidAmount) || 0) === 0, "Esta deuda ya tiene cobros registrados. No puede eliminarse sin revisar esos movimientos.");
+
+  const customerCollections = await o.query("distCollections", "customerId", receivable.customerId);
+  const hasAppliedCollection = customerCollections.some((collection) => {
+    if (Array.isArray(collection.allocations))
+      return collection.allocations.some((allocation) => allocation.receivableId === id && Number(allocation.amount) > 0);
+    if (collection.receivableId === id) return Number(collection.amount) > 0;
+    // Cobros antiguos sin detalle de asignación podrían haber amortizado esta deuda por FIFO.
+    return !collection.receivableId && (!collection.createdAt || collection.createdAt >= receivable.createdAt);
+  });
+  check(!hasAppliedCollection, "Hay cobros que podrían corresponder a esta deuda. No puede anularse sin revisar esos movimientos.");
+
+  const previous = receivableSnapshot(receivable);
+  const next = {
+    ...receivable,
+    voided: true,
+    voidedAt: o.now,
+    voidedBy: o.actor,
+    voidedByName: o.member.displayName || o.actor,
+    voidReason: p.reason.trim(),
+    voidedPreviousBalance: round(Number(receivable.balance) || 0),
+    voidedSnapshot: previous,
+    originalSnapshot: receivable.originalSnapshot || previous,
+    balance: 0,
+    status: "VOID",
+    lastAdjustmentId: o.id,
+    lastAdjustedAt: o.now,
+    lastAdjustedBy: o.actor,
+    lastAdjustmentReason: p.reason.trim(),
+  };
+  o.put("distReceivables", id, next);
+  o.put("distReceivableAdjustments", o.id, {
+    id: o.id,
+    ...o.base(),
+    action: "void",
+    receivableId: id,
+    customerId: receivable.customerId,
+    customerName: receivable.customerName || "",
+    actorName: o.member.displayName || o.actor,
+    reason: p.reason.trim(),
+    effectiveAt: o.now,
+    effectiveDayKey: dayKey(new Date(o.now)),
+    previous,
+    next: receivableSnapshot(next),
+  });
+  return next;
+}
 async function creditOverride(o, p) {
   o.admin();
   const customer = await o.read("distCustomers", p.customerId);
@@ -1443,6 +1632,8 @@ const handlers = {
   sale,
   collection,
   openingBalance,
+  editReceivable,
+  voidReceivable,
   creditOverride,
   changeProductUnit,
   warehouseShift,

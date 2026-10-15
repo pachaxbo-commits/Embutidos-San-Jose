@@ -194,6 +194,7 @@ service cloud.firestore {
         && request.resource.data.payload is map
         && ((request.resource.data.type in ['sale','collection','expense','creditStatus'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type in ['openingBalance','creditOverride','changeProductUnit'] && distAdmin(restaurantId))
+          || (request.resource.data.type in ['editReceivable','voidReceivable'] && distAdmin(restaurantId))
           || (request.resource.data.type in ['editSale','voidSale'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type == 'warehouseShift' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','correctDispatch','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
@@ -259,6 +260,11 @@ service cloud.firestore {
 
     match /restaurants/{restaurantId}/distReceivables/{receivableId} {
       allow read: if distAdmin(restaurantId) || distDistributor(restaurantId);
+      allow create, update, delete: if false;
+    }
+
+    match /restaurants/{restaurantId}/distReceivableAdjustments/{adjustmentId} {
+      allow read: if distAdmin(restaurantId);
       allow create, update, delete: if false;
     }
 

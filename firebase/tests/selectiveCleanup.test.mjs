@@ -40,6 +40,7 @@ try {
   // B: créditos/cobros desaparecen sin borrar cliente, venta ni QR de venta.
   await set('distSales', 'sale-b', { customerId: 'juan' })
   await set('distReceivables', 'sale-b', { saleId: 'sale-b', customerId: 'juan' })
+  await set('distReceivableAdjustments', 'adjustment-b', { receivableId: 'sale-b', customerId: 'juan' })
   await set('distCollections', 'collection-b', { customerId: 'juan', allocations: [{ receivableId: 'sale-b', amount: 10 }] })
   await set('distCreditStatus', 'juan', { customerId: 'juan' })
   await set('distCreditOverrides', 'juan', { customerId: 'juan' })
@@ -50,7 +51,7 @@ try {
   await execute(creditsOnly)
   pass(await exists('distCustomers', 'juan') && await exists('distSales', 'sale-b'), 'B: cliente y venta permanecen')
   const rebuiltStatus = (await root.collection('distCreditStatus').doc('juan').get()).data()
-  pass(!await exists('distReceivables', 'sale-b') && !await exists('distCollections', 'collection-b') && rebuiltStatus?.oldestPendingAt === null, 'B: crédito/cobro se eliminan y estado derivado se recalcula limpio')
+  pass(!await exists('distReceivables', 'sale-b') && !await exists('distReceivableAdjustments', 'adjustment-b') && !await exists('distCollections', 'collection-b') && rebuiltStatus?.oldestPendingAt === null, 'B: crédito/cobro y sus auditorías se eliminan; estado derivado queda limpio')
   pass(await exists('distQrVerifications', 'sale_sale-b') && !await exists('distQrVerifications', 'collection_collection-b'), 'B: QR de venta se conserva y QR de cobro se elimina')
 
   // C: Clientes resuelve dependencias reales, pero conserva venta sin cliente.

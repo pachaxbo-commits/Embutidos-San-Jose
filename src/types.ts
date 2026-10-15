@@ -13,6 +13,7 @@ export type Permission =
   | 'dist.sale.fromCentral'
   | 'dist.credit.view'
   | 'dist.credit.viewAll'
+  | 'dist.credit.adjust'
   | 'dist.collection.create'
   | 'dist.customer.manage'
   | 'dist.expense.create'

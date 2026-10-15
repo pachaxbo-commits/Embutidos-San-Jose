@@ -154,6 +154,7 @@ export function DistributionApp({
     restaurantId,
     warehouseId: role === 'warehouse' ? warehouseId : undefined,
     canReadFinance,
+    canManageCredits: can('dist.credit.adjust'),
   })
 
   useBackButtonBridge(() => {

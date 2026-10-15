@@ -34,6 +34,7 @@
     "test:offline-firestore": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/offlineLocalWrite.test.mjs\"",
     "test:oct10-audit": "node --experimental-strip-types src/modules/distribution/domain/__tests__/oct10Reconciliation.test.ts",
     "test:asof-credits": "node --experimental-strip-types src/modules/distribution/domain/__tests__/asOfCreditsAndReconciliation.test.ts",
+    "test:receivable-adjustments": "firebase emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/receivableAdjustments.test.mjs\"",
     "test:audit-fixes-1420": "node --experimental-strip-types src/modules/distribution/domain/__tests__/auditFixes1420.test.ts",
     "test:updater": "node --experimental-strip-types src/features/android-updater/__tests__/updateManifest.test.ts",
     "test:android-documents": "node scripts/test-android-document-flows.mjs",

@@ -1,5 +1,5 @@
 import { matchesRoute, round2, toDayKey } from './engine.ts'
-import type { DistCollection, DistCustomer, DistReceivable, DistRoute, DistSale, DistSaleLine } from '../types.ts'
+import type { DistCollection, DistCustomer, DistReceivable, DistReceivableAdjustment, DistReceivableSnapshot, DistRoute, DistSale, DistSaleLine } from '../types.ts'
 
 export interface CustomerRouteDebt {
   routeId: string
@@ -34,6 +34,22 @@ export interface CreditPortfolioResult {
   totalOutstanding: number
   totalCustomersWithBalance: number
   availableRoutes: RouteOption[]
+}
+
+/** Reparte un crédito inicial entre productos según su subtotal, cerrando exactamente a centavos. */
+export function allocateCreditBySubtotal<T extends { subtotal: number }>(lines: T[], creditAmount: number): number[] {
+  const targetCents = Math.round((Number(creditAmount) || 0) * 100)
+  if (!lines.length || targetCents <= 0) return lines.map(() => 0)
+  const weights = lines.map((line) => Math.max(0, Number(line.subtotal) || 0))
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+  if (totalWeight <= 0) return lines.map(() => 0)
+  const exact = weights.map((weight) => (targetCents * weight) / totalWeight)
+  const allocated = exact.map(Math.floor)
+  const remaining = targetCents - allocated.reduce((sum, cents) => sum + cents, 0)
+  const order = exact.map((value, index) => ({ index, remainder: value - allocated[index] }))
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index)
+  for (let i = 0; i < remaining; i += 1) allocated[order[i % order.length].index] += 1
+  return allocated.map((cents) => cents / 100)
 }
 
 /**
@@ -349,13 +365,48 @@ export function computeCreditPortfolioByRoute({
 export function computeAsOfReceivablesPortfolio({
   receivables,
   collections,
+  adjustments = [],
   cutoffDayKey,
 }: {
   receivables: DistReceivable[]
   collections: DistCollection[]
+  adjustments?: DistReceivableAdjustment[]
   cutoffDayKey?: string
 }): DistReceivable[] {
   if (!cutoffDayKey) return receivables
+
+  const adjustmentsByReceivable = new Map<string, DistReceivableAdjustment[]>()
+  for (const adjustment of adjustments) {
+    const list = adjustmentsByReceivable.get(adjustment.receivableId) || []
+    list.push(adjustment)
+    adjustmentsByReceivable.set(adjustment.receivableId, list)
+  }
+  const stateAtCutoff = (receivable: DistReceivable): DistReceivableSnapshot => {
+    const events = (adjustmentsByReceivable.get(receivable.id) || [])
+      .slice()
+      .sort((a, b) => a.effectiveAt.localeCompare(b.effectiveAt))
+    if (events.length === 0) return {
+      originalAmount: Number(receivable.originalAmount) || 0,
+      paidAmount: Number(receivable.paidAmount) || 0,
+      balance: Number(receivable.balance) || 0,
+      status: receivable.status || 'OPEN',
+      sourceDate: receivable.sourceDate || '',
+      note: receivable.note || '',
+      saleLines: receivable.saleLines || [],
+      adjustedSaleLines: receivable.adjustedSaleLines || [],
+      voided: receivable.voided === true,
+      voidedAt: receivable.voidedAt || '',
+      voidReason: receivable.voidReason || '',
+    }
+
+    let state: DistReceivableSnapshot = events[0].previous
+    for (const event of events) {
+      const effectiveDay = event.effectiveDayKey || toDayKey(event.effectiveAt)
+      if (effectiveDay > cutoffDayKey) break
+      state = event.next
+    }
+    return state
+  }
 
   // 1. Filtrar cobranzas realizadas en o antes de cutoffDayKey
   const validCollections = collections.filter((c) => {
@@ -395,28 +446,37 @@ export function computeAsOfReceivablesPortfolio({
       return day <= cutoffDayKey
     })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((r) => ({ receivable: r, state: stateAtCutoff(r) }))
 
   // 4. Si hay cobros no asignados por cliente, aplicarlos FIFO a sus créditos hasta esa fecha
   const remainingUnallocated = new Map(unallocatedByCustomer)
 
-  return eligibleReceivables.map((r) => {
+  return eligibleReceivables.map(({ receivable: r, state }) => {
+    if (state.voided) return {
+      ...r,
+      ...state,
+      balance: 0,
+      status: 'VOID' as const,
+      voided: true,
+    }
     let paid = paidByReceivable.get(r.id) || 0
 
     // Si aún tiene saldo y el cliente tiene pagos sin asignar
     const unallocated = remainingUnallocated.get(r.customerId) || 0
-    if (unallocated > 0 && paid < r.originalAmount) {
-      const needed = round2(r.originalAmount - paid)
+    if (unallocated > 0 && paid < state.originalAmount) {
+      const needed = round2(state.originalAmount - paid)
       const toApply = Math.min(needed, unallocated)
       paid = round2(paid + toApply)
       remainingUnallocated.set(r.customerId, round2(unallocated - toApply))
     }
 
-    const asOfPaid = round2(Math.min(r.originalAmount, paid))
-    const asOfBalance = round2(Math.max(0, r.originalAmount - asOfPaid))
+    const asOfPaid = round2(Math.min(state.originalAmount, paid))
+    const asOfBalance = round2(Math.max(0, state.originalAmount - asOfPaid))
     const asOfStatus = asOfBalance === 0 ? 'PAID' : (asOfPaid > 0 ? 'PARTIAL' : 'OPEN')
 
     return {
       ...r,
+      ...state,
       paidAmount: asOfPaid,
       balance: asOfBalance,
       status: asOfStatus,

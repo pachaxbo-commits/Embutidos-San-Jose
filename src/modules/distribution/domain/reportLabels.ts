@@ -24,6 +24,7 @@ const CREDIT_LABELS: Record<ReceivableStatus, string> = {
   OPEN: 'Pendiente',
   PARTIAL: 'Pago parcial',
   PAID: 'Pagado',
+  VOID: 'Anulada',
 }
 
 const MOVEMENT_LABELS: Record<string, string> = {

@@ -228,3 +228,13 @@ Estado al cerrar esta limpieza:
 - El historial del 10/10 ya no está en las colecciones activas porque el 14/10 se ejecutó una limpieza selectiva; permanece dentro del respaldo de mantenimiento usado para la auditoría. No se modificaron datos de producción.
 - Pruebas focalizadas: cola/proyecciones offline, escritura local y reconexión en Firestore Emulator, conciliación del 10/10, pruebas de distribución, cierres, cobros, créditos/gastos, reportes y actualizador.
 - Android: `versionCode 41`, `versionName 1.4.21`; misma firma oficial y `applicationId com.pachax.flow`.
+
+## Trabajo local pendiente de revisión: ajustes auditados de cartera (15 de octubre de 2026)
+
+- En la rama `codex/receivable-adjustment-audit` se implementa edición y anulación blanda de cuentas por cobrar, solo para Administración. No está integrado a `main`, desplegado ni distribuido.
+- Las ediciones conservan pagos, impiden reducir la deuda por debajo de lo cobrado y guardan valores anteriores/nuevos, motivo, responsable, hora y detalle por producto en `distReceivableAdjustments`.
+- En créditos de venta sin distribución histórica por producto, la distribución inicial se calcula proporcionalmente al subtotal con ajuste determinista de centavos. Esta distribución es informativa de deuda, no altera precios, ventas ni stock.
+- Anular deuda exige motivo y doble confirmación con la frase `ELIMINAR DEUDA`; solo procede si no tiene pagos aplicados. La venta, caja, cierres y stock quedan intactos; la deuda permanece consultable como anulada.
+- Los reportes reconstruyen cartera al corte con los eventos de ajuste. La colección de auditoría se agrega a la limpieza protegida de la categoría Créditos.
+- Pruebas de emulador: 15 casos focalizados de ajustes, 20 verificaciones As-Of y 15 de limpieza selectiva. Typecheck, ESLint focalizado y builds web/Android en directorios de verificación aislados pasan. El build web estándar no pudo limpiar `dist/favicon.png` porque Windows reportó acceso denegado al archivo existente.
+- Próximo paso antes de publicar: revisión, volver a ejecutar pruebas de Rules bajo emulador configurado, confirmar si corresponde incrementar versión, compilar APK release firmada y desplegar únicamente la Function de operaciones y Rules si se aprueba.

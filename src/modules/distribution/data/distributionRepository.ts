@@ -32,6 +32,7 @@ import type {
   DistExpense,
   DistProduct,
   DistReceivable,
+  DistReceivableAdjustment,
   DistRoute,
   DistSale,
   DistSaleLine,
@@ -68,6 +69,7 @@ export const DIST_COLLECTIONS = {
   dispatches: 'distDispatches',
   sales: 'distSales',
   receivables: 'distReceivables',
+  receivableAdjustments: 'distReceivableAdjustments',
   collections: 'distCollections',
   expenses: 'distExpenses',
   closures: 'distClosures',
@@ -547,6 +549,18 @@ export function subscribeReceivables(
   )
 }
 
+/** Historial inmutable de ajustes de cartera: solo Administración lo consulta. */
+export function subscribeReceivableAdjustments(
+  onData: (rows: DistReceivableAdjustment[]) => void,
+  onError?: (error: Error) => void,
+) {
+  return subscribeQuery<DistReceivableAdjustment>(
+    (context) => collectionRef(context, DIST_COLLECTIONS.receivableAdjustments),
+    (rows) => onData(rows.sort((a, b) => b.effectiveAt.localeCompare(a.effectiveAt))),
+    onError,
+  )
+}
+
 export function subscribeClosures(
   dayKeys: string[],
   routeId: string | null,
@@ -827,6 +841,25 @@ export interface RegisterCollectionInput {
 
 export async function registerOpeningBalance(input: { customerId: string; amount: number; sourceDate: string; note: string; routeId?: string }): Promise<DistReceivable> {
   return submitOperation<DistReceivable>('openingBalance', input, newOperationId('opening-balance'))
+}
+
+export async function adjustReceivable(input: {
+  receivableId: string
+  originalAmount: number
+  reason: string
+  sourceDate?: string
+  note?: string
+  adjustedSaleLines?: Array<{ productId: string; creditAmount: number }>
+}): Promise<DistReceivable> {
+  return submitOperation<DistReceivable>('editReceivable', input, newOperationId('receivable-adjustment'))
+}
+
+export async function voidReceivable(input: {
+  receivableId: string
+  reason: string
+  confirmationText: string
+}): Promise<DistReceivable> {
+  return submitOperation<DistReceivable>('voidReceivable', input, newOperationId('receivable-void'))
 }
 
 export async function setCreditOverride(input: { customerId: string; days?: number; reason?: string; revoke?: boolean }): Promise<void> {

@@ -1,28 +1,31 @@
 import { useEffect, useState } from 'react'
 import { doc, getDoc } from 'firebase/firestore'
 import { getFirebaseContext } from '../../../lib/firebase'
-import type { DistSaleLine } from '../types'
+import type { DistReceivableLineAdjustment, DistSaleLine } from '../types'
 import { formatBs, formatQty } from './shared'
 
 export function CreditProducts({
   lines,
   saleId,
+  creditLines,
   isVoid = false,
 }: {
   lines?: DistSaleLine[]
   saleId?: string
+  creditLines?: DistReceivableLineAdjustment[]
   isVoid?: boolean
 }) {
-  const [historical, setHistorical] = useState<DistSaleLine[] | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [historical, setHistorical] = useState<{ saleId: string; lines: DistSaleLine[] } | null>(null)
 
   useEffect(() => {
     let cancelled = false
     if (!lines?.length && saleId) {
-      setLoading(true)
       void (async () => {
         const ctx = await getFirebaseContext()
-        if (!ctx) return
+        if (!ctx) {
+          if (!cancelled) setHistorical({ saleId, lines: [] })
+          return
+        }
         const snap = await getDoc(doc(ctx.db, 'restaurants', ctx.restaurantId, 'distSales', saleId))
         if (!cancelled) {
           const data = snap.data()
@@ -31,25 +34,20 @@ export function CreditProducts({
             data?.effectiveSnapshot?.lines && data.effectiveSnapshot.lines.length > 0
               ? data.effectiveSnapshot.lines
               : data?.lines || []
-          setHistorical(effectiveLines)
-          setLoading(false)
+          setHistorical({ saleId, lines: effectiveLines })
         }
       })().catch(() => {
-        if (!cancelled) {
-          setHistorical([])
-          setLoading(false)
-        }
+        if (!cancelled) setHistorical({ saleId, lines: [] })
       })
-    } else {
-      setHistorical(null)
-      setLoading(false)
     }
     return () => {
       cancelled = true
     }
   }, [saleId, lines])
 
-  const detail = lines?.length ? lines : (historical ?? [])
+  const cachedDetail = historical && historical.saleId === saleId ? historical.lines : []
+  const detail = lines?.length ? lines : cachedDetail
+  const loading = !lines?.length && Boolean(saleId) && historical?.saleId !== saleId
   const hasNoDetail = !detail.length && !loading
 
   return (
@@ -83,6 +81,7 @@ export function CreditProducts({
                 </p>
                 <p className="text-[11px] font-semibold text-slate-600">
                   {formatQty(line.quantity, line.unitType)} × {formatBs(line.actualUnitPrice)} = {formatBs(line.subtotal)}
+                  {creditLines?.[index] && <span className="block text-amber-800">Importe de deuda asignado: {formatBs(creditLines[index].creditAmount)}</span>}
                 </p>
               </div>
               <span className="shrink-0 font-extrabold tabular-nums text-slate-900">
@@ -91,7 +90,9 @@ export function CreditProducts({
             </div>
           ))}
           <p className="mt-2 text-[10px] font-medium text-slate-400">
-            Los abonos reducen el saldo total de la deuda; no se asignan a un producto específico.
+            {creditLines?.length
+              ? 'El importe de deuda por producto es una distribución administrativa; no cambia cantidades, precios ni la venta original.'
+              : 'Los abonos reducen el saldo total de la deuda; no se asignan a un producto específico.'}
           </p>
         </div>
       ) : hasNoDetail ? (

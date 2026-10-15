@@ -292,9 +292,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     return computeAsOfReceivablesPortfolio({
       receivables: data.receivables,
       collections: data.collections,
+      adjustments: data.receivableAdjustments,
       cutoffDayKey,
     })
-  }, [data.receivables, data.collections, cutoffDayKey])
+  }, [data.receivables, data.collections, data.receivableAdjustments, cutoffDayKey])
 
   const salesMap = useMemo(() => new Map(data.sales.map((s) => [s.id, s])), [data.sales])
 
@@ -1367,6 +1368,9 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         {/* 4. SECCIÓN: CRÉDITOS                                     */}
         {/* ========================================================= */}
         {mainCategory === 'creditos' && (
+          data.isLoading ? (
+            <EmptyBlock title="Cargando el historial de créditos" description="Espera un momento para ver la cartera al corte correcto." />
+          ) : (
           <div className="grid gap-3">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               <KpiCard
@@ -1522,6 +1526,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
               </div>
             )}
           </div>
+          )
         )}
 
         {/* ========================================================= */}

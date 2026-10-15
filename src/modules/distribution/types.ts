@@ -296,7 +296,16 @@ export interface DistSaleCorrection extends DistBaseDoc {
   correctedByName: string
 }
 
-export type ReceivableStatus = 'OPEN' | 'PARTIAL' | 'PAID'
+export type ReceivableStatus = 'OPEN' | 'PARTIAL' | 'PAID' | 'VOID'
+
+export interface DistReceivableLineAdjustment {
+  productId: string
+  productNameSnapshot: string
+  presentationSnapshot?: string
+  quantity: number
+  unitType: UnitType
+  creditAmount: number
+}
 
 export interface DistReceivable extends DistBaseDoc {
   creditedAmount?: number
@@ -305,6 +314,19 @@ export interface DistReceivable extends DistBaseDoc {
   saleId?: string
   sourceType?: 'sale' | 'opening_balance'
   sourceDate?: string
+  adjustedSaleLines?: DistReceivableLineAdjustment[]
+  voided?: boolean
+  voidedAt?: string
+  voidedBy?: string
+  voidedByName?: string
+  voidReason?: string
+  voidedPreviousBalance?: number
+  voidedSnapshot?: Record<string, unknown>
+  lastAdjustmentId?: string
+  lastAdjustedAt?: string
+  lastAdjustedBy?: string
+  lastAdjustmentReason?: string
+  originalSnapshot?: Record<string, unknown>
   customerId: string
   customerName: string
   routeId: string
@@ -315,6 +337,33 @@ export interface DistReceivable extends DistBaseDoc {
   balance: number
   status: ReceivableStatus
   note?: string
+}
+
+export interface DistReceivableSnapshot {
+  originalAmount: number
+  paidAmount: number
+  balance: number
+  status: ReceivableStatus
+  sourceDate: string
+  note: string
+  saleLines: DistSaleLine[]
+  adjustedSaleLines: DistReceivableLineAdjustment[]
+  voided: boolean
+  voidedAt: string
+  voidReason: string
+}
+
+export interface DistReceivableAdjustment extends DistBaseDoc {
+  action: 'edit' | 'void'
+  receivableId: string
+  customerId: string
+  customerName: string
+  actorName?: string
+  reason: string
+  effectiveAt: string
+  effectiveDayKey: string
+  previous: DistReceivableSnapshot
+  next: DistReceivableSnapshot
 }
 
 export interface DistCollection extends DistBaseDoc {
