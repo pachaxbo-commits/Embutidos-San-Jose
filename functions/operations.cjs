@@ -2021,7 +2021,15 @@ async function classifyExpense(o, p) {
   check(p.affectsOperatingResult === undefined || p.affectsOperatingResult === (economicType === "operating_expense"), "El tipo de salida y su tratamiento económico no coinciden.");
   check(economicType === "production_input" ? p.group === "production_input" : p.group !== "production_input", "El grupo debe corresponder al tipo de salida.");
   const affectsOperatingResult = economicType === "operating_expense";
-  const previous = { group: expense.group || "other", categoryId: expense.categoryId || "", categoryName: expense.categoryName || "Por clasificar", economicType: expense.economicType, affectsOperatingResult: expense.affectsOperatingResult };
+  const previous = {
+    group: expense.group || "other",
+    categoryId: expense.categoryId || "",
+    categoryName: expense.categoryName || "Por clasificar",
+    // Older expenses predate these fields. Firestore rejects `undefined` even
+    // when it appears inside the operation result, so record absence explicitly.
+    economicType: expense.economicType ?? null,
+    affectsOperatingResult: expense.affectsOperatingResult ?? null,
+  };
   const next = { group: p.group, categoryId, categoryName: category?.name || defaultName, economicType, affectsOperatingResult };
   const history = [...(expense.classificationHistory || []), { at: o.now, by: o.actor, byName: o.member.displayName || o.actor, previous, next }].slice(-20);
   const updated = { ...expense, ...next, classificationHistory: history, updatedAt: o.now, updatedBy: o.actor };

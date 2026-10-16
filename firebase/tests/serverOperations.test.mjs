@@ -67,6 +67,14 @@ try {
  const classifiedExpense=await command(admin,'classifyExpense',{expenseId:oldExpense.id,group:'production_input',categoryId:'production_input-1',economicType:'production_input'})
  ok(classifiedExpense.result.categoryName==='Carne'&&classifiedExpense.result.classificationHistory.length===1,'clasificar egreso histórico conserva categoría e historial')
  ok(classifiedExpense.result.economicType==='production_input'&&classifiedExpense.result.affectsOperatingResult===false&&classifiedExpense.result.classificationHistory[0].next.economicType==='production_input','materia prima queda separada del resultado y auditada con tipo semántico')
+ const legacyClassifyId=`${prefix}-legacy-classify-expense`
+ const legacyClassify={id:legacyClassifyId,restaurantId:'sanjose',concept:'Carne histórica QA',amount:858,dayKey:'2026-10-15',routeId:'route-norte',routeName:'Zona Norte',registeredByUid:seller,registeredByName:'QA vendedor',paymentMethod:'cash',createdAt:new Date().toISOString()}
+ await root.collection('distExpenses').doc(legacyClassifyId).set(legacyClassify)
+ const exactLegacyClassify=await command(admin,'classifyExpense',{expenseId:legacyClassifyId,group:'production_input',categoryId:'production_input-1',economicType:'production_input'})
+ const exactLegacyDoc=await read('distExpenses',legacyClassifyId),exactLegacyPrevious=exactLegacyDoc.classificationHistory[0].previous
+ ok(exactLegacyClassify.status==='confirmed'&&exactLegacyClassify.result.economicType==='production_input'&&exactLegacyClassify.result.group==='production_input'&&exactLegacyClassify.result.categoryName==='Carne'&&exactLegacyClassify.result.affectsOperatingResult===false,'egreso histórico sin clasificación completa termina confirmed como materia prima Carne')
+ ok(exactLegacyPrevious.economicType===null&&exactLegacyPrevious.affectsOperatingResult===null&&exactLegacyDoc.classificationHistory[0].next.economicType==='production_input','historial conserva previous y next sin valores undefined')
+ ok(['amount','dayKey','routeId','routeName','registeredByUid','registeredByName','paymentMethod'].every(key=>exactLegacyDoc[key]===legacyClassify[key]),'clasificar egreso histórico preserva monto, fecha, origen, responsable y forma de pago')
  const reclassifiedExpense=await command(admin,'classifyExpense',{expenseId:oldExpense.id,group:'indirect',categoryId:'indirect-1',economicType:'operating_expense'})
  ok(reclassifiedExpense.result.classificationHistory.length===2&&reclassifiedExpense.result.classificationHistory[1].previous.economicType==='production_input'&&reclassifiedExpense.result.classificationHistory[1].next.economicType==='operating_expense'&&reclassifiedExpense.result.affectsOperatingResult===true,'cambiar el tipo económico queda en historial y deriva el indicador interno')
  const categoryOnly=await command(admin,'classifyExpense',{expenseId:oldExpense.id,group:'indirect',categoryId:'indirect-2',economicType:'operating_expense'})

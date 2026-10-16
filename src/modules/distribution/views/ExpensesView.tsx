@@ -85,8 +85,9 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
   const persistCategory = (id: string, targetGroup: ExpenseGroup, name: string, active: boolean, order: number) => saveExpenseCategory({ categoryId: id, group: targetGroup, name, active, order })
   const classify = async () => {
     if (!classifyTarget || !classifyCategory) return
-    setBusy(true); setError('')
+    setError('')
     if (!classifyEconomicType) { setError('Selecciona el tipo de salida.'); return }
+    setBusy(true)
     const selectedGroup = classifyEconomicType === 'production_input' ? 'production_input' : classifyGroup === 'production_input' ? 'other' : classifyGroup
     try { await classifyExpense({ expenseId: classifyTarget.id, group: selectedGroup, categoryId: classifyCategory, economicType: classifyEconomicType }); setFeedback('La clasificación y revisión se guardaron con su historial.'); setClassifyTarget(null) }
     catch (failure) { setError((failure as Error).message) }
