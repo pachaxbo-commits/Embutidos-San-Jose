@@ -15,7 +15,7 @@ export interface OperatingResult {
   grossSales: number; adjustments: number; netSales: number; costOfSales: number | null; grossMargin: number | null
   expenseTotals: Record<ExpenseGroup, number>; losses: number | null; courtesyCost: number | null
   operatingResult: number | null; costsKnown: boolean; report: ProductProfitReport; details: OperatingResultDetail[]
-  expenses: OperatingResultExpenseRow[]
+  expenses: OperatingResultExpenseRow[]; salesByOrigin: Array<{ origin: string; amount: number }>
 }
 
 const ZERO: Record<ExpenseGroup, number> = { administration: 0, indirect: 0, equipment: 0, other: 0, production_additional: 0 }
@@ -41,6 +41,12 @@ export function computeOperatingResult(
   const report = computeProductProfitReport(scopedSales, scopedClaims, scopedExpenses, scopedMovements, dayKeys, routeFilter)
   const commercialSales = scopedSales.filter((sale) => sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy')
   const grossSales = round2(commercialSales.reduce((sum, sale) => sum + (sale.effectiveSnapshot?.total ?? sale.total), 0))
+  const salesByOriginMap = new Map<string, number>()
+  for (const sale of commercialSales) {
+    const origin = displayOrigin(sale.routeId, sale.routeName)
+    salesByOriginMap.set(origin, round2((salesByOriginMap.get(origin) || 0) + (sale.effectiveSnapshot?.total ?? sale.total)))
+  }
+  const salesByOrigin = [...salesByOriginMap.entries()].map(([origin, amount]) => ({ origin, amount }))
   const adjustments = round2(scopedClaims.reduce((sum, claim) => sum + claim.revenueDelta, 0))
   const netSales = round2(report.totals.salesBs)
   const costOfSales = report.totals.costBs
@@ -80,7 +86,9 @@ export function computeOperatingResult(
     : null
   const expenseRowsFor = (group?: ExpenseGroup) => expenseRows.filter((expense) => !group || expense.group === group).map((expense) => ({
     fecha: expense.dayKey, categoría: expense.category, concepto: expense.concept, origen: expense.origin,
-    responsable: expense.responsible, monto: expense.amount,
+    responsable: expense.responsible,
+    'forma de pago': expense.paymentMethod === 'cash' ? 'Efectivo' : expense.paymentMethod === 'transfer' ? 'QR / transferencia' : 'Otro',
+    monto: expense.amount,
   }))
   const saleRows = report.allLineDetails.filter((line) => !line.isClaimRelated).map((line) => ({
     fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, cliente: line.customerName,
@@ -110,7 +118,12 @@ export function computeOperatingResult(
     ...(['administration', 'indirect', 'equipment', 'production_additional', 'other'] as ExpenseGroup[]).map((group) => ({ key: group, label: group === 'administration' ? 'Gastos de administración' : group === 'indirect' ? 'Gastos indirectos' : group === 'equipment' ? 'Gastos de equipamiento' : group === 'production_additional' ? 'Producción adicional' : 'Otros / por clasificar', amount: expenseTotals[group], rows: expenseRowsFor(group) })),
     { key: 'losses', label: 'Mermas y pérdidas', amount: lossCost, rows: movementRows, explanation: lossCostsKnown ? undefined : 'Hay movimientos sin costo histórico; no se estima una cifra incompleta.' },
     { key: 'courtesies', label: 'Costo de cortesías', amount: courtesyCost, rows: courtesyRows },
-    { key: 'result', label: 'Resultado operativo estimado', amount: operatingResult, rows: [] },
+    { key: 'result', label: 'Resultado operativo estimado', amount: operatingResult, rows: [
+      { concepto: 'Margen bruto', monto: grossMargin ?? 'No disponible por costo histórico faltante' },
+      { concepto: 'Egresos operativos', monto: round2(Object.values(expenseTotals).reduce((sum, amount) => sum + amount, 0)) },
+      { concepto: 'Pérdidas / mermas', monto: lossCost ?? 'No disponible por costo histórico faltante' },
+      { concepto: 'Costo de cortesías', monto: courtesyCost ?? 'No disponible por costo histórico faltante' },
+    ] },
   ]
-  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows }
+  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin }
 }

@@ -8,11 +8,40 @@ import { exportExcel, exportPdf, type ReportSheet } from '../data/reportExports'
 import { RangePicker, describeRange } from './RangePicker'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { formatBs, SecondaryButton } from './shared'
+import { round2 } from '../domain/engine'
 import { computeOperatingResult, type OperatingResultDetail } from '../domain/operatingResult'
 import { EXPENSE_GROUPS } from '../domain/expenseCategories'
 import type { DistributionViewProps } from './DistributionApp'
 
 type ViewMode = 'easy' | 'classic'
+
+type ClassicRow = { label: string; amount: number | null; detailKey?: OperatingResultDetail['key']; kind: 'heading' | 'line' | 'subtotal' | 'total' }
+
+function classicRowsForResult(result: ReturnType<typeof computeOperatingResult>): ClassicRow[] {
+  const rows: ClassicRow[] = [{ label: 'INGRESOS', amount: null, kind: 'heading' }]
+  rows.push(...result.salesByOrigin.map(({ origin, amount }) => ({ label: `Ventas · ${origin}`, amount, detailKey: 'grossSales' as const, kind: 'line' as const })))
+  rows.push({ label: 'Cambios / devoluciones', amount: result.adjustments, detailKey: 'adjustments', kind: 'line' })
+  rows.push({ label: 'VENTAS NETAS', amount: result.netSales, detailKey: 'netSales', kind: 'total' })
+  rows.push(
+    { label: 'COSTO DE LO VENDIDO', amount: result.costOfSales, detailKey: 'costOfSales', kind: 'line' },
+    { label: 'MARGEN BRUTO', amount: result.grossMargin, detailKey: 'grossMargin', kind: 'total' },
+  )
+  for (const group of EXPENSE_GROUPS) {
+    const expenses = result.expenses.filter((expense) => expense.group === group.id)
+    if (!expenses.length) continue
+    rows.push({ label: group.label.toLocaleUpperCase('es'), amount: null, kind: 'heading' })
+    const categoryTotals = new Map<string, number>()
+    for (const expense of expenses) categoryTotals.set(expense.category, (categoryTotals.get(expense.category) || 0) + expense.amount)
+    for (const [category, amount] of categoryTotals) rows.push({ label: category, amount: round2(amount), detailKey: group.id, kind: 'line' })
+    rows.push({ label: `Subtotal ${group.label}`, amount: result.expenseTotals[group.id], detailKey: group.id, kind: 'subtotal' })
+  }
+  rows.push(
+    { label: 'PÉRDIDAS / MERMAS', amount: result.losses, detailKey: 'losses', kind: 'line' },
+    { label: 'CORTESÍAS', amount: result.courtesyCost, detailKey: 'courtesies', kind: 'line' },
+    { label: 'RESULTADO OPERATIVO ESTIMADO', amount: result.operatingResult, detailKey: 'result', kind: 'total' },
+  )
+  return rows
+}
 
 function sheetForResult(result: ReturnType<typeof computeOperatingResult>, period: string, mode: ViewMode): ReportSheet {
   const sections: Array<[string, number | null]> = [
@@ -34,22 +63,36 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
   const classicRows: (string | number | null)[][] = [
     ['EMBUTIDOS SAN JOSÉ', 'RESULTADO DEL NEGOCIO', '', '', ''],
     ['Período', period, 'Fecha de emisión', new Date().toLocaleString('es-BO'), ''],
-    ...sections.map(([label, value]) => [label, '', '', '', value === null ? 'No disponible: falta costo histórico' : value]),
+    ['INGRESOS', '', '', '', ''],
+    ...result.salesByOrigin.map(({ origin, amount }) => ['Ventas', origin, '', '', amount]),
+    ['Cambios / devoluciones', '', '', '', result.adjustments],
+    ['VENTAS NETAS', '', '', '', result.netSales],
+    ['COSTO DE LO VENDIDO', '', '', '', result.costOfSales === null ? 'No disponible: falta costo histórico' : result.costOfSales],
+    ['MARGEN BRUTO', '', '', '', result.grossMargin === null ? 'No disponible: falta costo histórico' : result.grossMargin],
     ['DETALLE DE EGRESOS', '', '', '', ''],
     ['Grupo', 'Categoría', 'Concepto', 'Origen / Responsable', 'Monto (Bs)'],
     ...EXPENSE_GROUPS.flatMap((group) => {
       const items = result.expenses.filter((expense) => expense.group === group.id)
-      return items.length ? [[group.label, '', '', '', ''], ...items.map((item) => ['', item.category, item.concept, `${item.origin} / ${item.responsible}`, item.amount]), ['', `Subtotal ${group.label}`, '', '', result.expenseTotals[group.id]]] : []
+      if (!items.length) return []
+      const categories = new Map<string, number>()
+      for (const item of items) categories.set(item.category, (categories.get(item.category) || 0) + item.amount)
+      return [[group.label, '', '', '', ''], ...[...categories.entries()].map(([category, amount]) => ['', category, '', '', round2(amount)]), ...items.map((item) => ['', item.category, item.concept, `${item.origin} / ${item.responsible}`, item.amount]), ['', `Subtotal ${group.label}`, '', '', result.expenseTotals[group.id]]]
     }),
+    ['PÉRDIDAS / MERMAS', '', '', '', result.losses === null ? 'No disponible: falta costo histórico' : result.losses],
+    ['CORTESÍAS', '', '', '', result.courtesyCost === null ? 'No disponible: falta costo histórico' : result.courtesyCost],
+    ['RESULTADO OPERATIVO ESTIMADO', '', '', '', result.operatingResult === null ? 'No disponible: falta costo histórico' : result.operatingResult],
     ['Nota', 'Estimación operativa; no es contabilidad formal.', '', '', ''],
   ]
   return { name: 'Resultado del negocio', headers: ['Grupo', 'Categoría', 'Concepto', 'Origen / Responsable', 'Monto (Bs)'], rows: classicRows }
 }
 
-function htmlForResult(result: ReturnType<typeof computeOperatingResult>, period: string) {
+function htmlForResult(result: ReturnType<typeof computeOperatingResult>, period: string, mode: ViewMode) {
+  const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
   const amount = (value: number | null) => value === null ? 'No disponible: falta costo histórico' : formatBs(value)
-  const rows = result.details.filter((item) => item.key !== 'netSales' && item.key !== 'result').map((item) => `<tr><td>${item.label}</td><td>${amount(item.amount)}</td></tr>`).join('')
-  return `<!doctype html><html lang="es"><meta charset="utf-8"><title>Resultado del negocio</title><style>body{font:15px Arial;color:#172033;margin:36px}header{border-top:10px solid #bd1024;padding-top:22px}.brand{display:flex;align-items:center;gap:16px}header img{width:74px;height:auto}h1{margin:0}h2{color:#bd1024}.hero{background:#f9f3f1;padding:18px;margin:24px 0;font-size:28px;font-weight:bold}table{width:100%;border-collapse:collapse}td{padding:10px;border-bottom:1px solid #dce1e8}td:last-child{text-align:right;font-weight:bold}.note{color:#566174;font-size:12px;margin-top:22px}</style><header><div class="brand"><img src="/brand/san-jose-logo.png" alt="San José"><div><h1>EMBUTIDOS SAN JOSÉ</h1><h2>RESULTADO DEL NEGOCIO</h2></div></div><p>Período: ${period} · Emitido: ${new Date().toLocaleString('es-BO')}</p></header><div class="hero">Resultado operativo estimado: ${amount(result.operatingResult)}</div><p>Ventas netas − costo de lo vendido − egresos − pérdidas − costo de cortesías</p><table>${rows}</table><p class="note">Cálculo según operaciones, costos, egresos y pérdidas registrados. Es una estimación operativa, no contabilidad formal.</p></html>`
+  const rows = mode === 'easy'
+    ? result.details.filter((item) => item.key !== 'netSales' && item.key !== 'result').map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>${escapeHtml(amount(item.amount))}</td></tr>`).join('')
+    : classicRowsForResult(result).map((row) => `<tr class="${row.kind}"><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.amount === null ? '' : amount(row.amount))}</td></tr>`).join('')
+  return `<!doctype html><html lang="es"><meta charset="utf-8"><title>Resultado del negocio</title><style>body{font:15px Arial;color:#172033;margin:36px}header{border-top:10px solid #bd1024;padding-top:22px}.brand{display:flex;align-items:center;gap:16px}header img{width:74px;height:auto}h1{margin:0}h2{color:#bd1024}.hero{background:#f9f3f1;padding:18px;margin:24px 0;font-size:28px;font-weight:bold}table{width:100%;border-collapse:collapse}td{padding:10px;border-bottom:1px solid #dce1e8}td:last-child{text-align:right;font-weight:bold}tr.heading{font-weight:bold;background:#e8edf3}tr.subtotal{font-weight:bold}tr.total{font-weight:bold;background:#fff0f1;color:#bd1024}.note{color:#566174;font-size:12px;margin-top:22px}@media print{body{margin:12mm}}</style><header><div class="brand"><img src="/brand/san-jose-logo.png" alt="San José"><div><h1>EMBUTIDOS SAN JOSÉ</h1><h2>RESULTADO DEL NEGOCIO</h2></div></div><p>Período: ${escapeHtml(period)} · Emitido: ${escapeHtml(new Date().toLocaleString('es-BO'))}</p></header><div class="hero">Resultado operativo estimado: ${escapeHtml(amount(result.operatingResult))}</div><p>Ventas netas − costo de lo vendido − egresos − pérdidas − costo de cortesías</p><table>${rows}</table><p class="note">Cálculo según operaciones, costos, egresos y pérdidas registrados. Es una estimación operativa, no contabilidad formal.</p></html>`
 }
 
 async function renderSummaryPng(result: ReturnType<typeof computeOperatingResult>, period: string): Promise<Blob> {
@@ -114,7 +157,7 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
     } catch (error) { setFeedback((error as Error).message || 'No se pudo preparar el documento.') }
   }
   const print = async () => {
-    try { await printHtmlDocument(htmlForResult(result, period), 'Resultado del negocio'); setFeedback('Documento listo para imprimir.') }
+    try { await printHtmlDocument(htmlForResult(result, period, mode), 'Resultado del negocio'); setFeedback('Documento listo para imprimir.') }
     catch (error) { setFeedback((error as Error).message) }
   }
   const openDetail = (key: OperatingResultDetail['key']) => {
@@ -160,8 +203,7 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
       </section> : <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 p-4"><p className="text-xs font-bold text-slate-500">EMBUTIDOS SAN JOSÉ · {period}</p><h2 className="text-xl font-black">Resultado del negocio</h2></div>
         <div className="overflow-x-auto"><table className="w-full min-w-[520px] border-collapse text-sm"><thead className="bg-slate-100 text-left text-xs uppercase text-slate-600"><tr><th className="p-3">Concepto</th><th className="p-3 text-right">Monto (Bs)</th></tr></thead><tbody>
-          {result.details.filter((entry) => entry.key !== 'result').map((entry) => <tr key={entry.key} className="border-t border-slate-100"><td className="p-3">{entry.label}{entry.key === 'grossSales' ? ' · ingresos' : ''}</td><td className="p-3 text-right font-bold">{amount(entry.amount)}</td></tr>)}
-          <tr className="border-t-2 border-[var(--primary)] bg-rose-50 text-base font-black"><td className="p-3">RESULTADO OPERATIVO ESTIMADO</td><td className="p-3 text-right text-[var(--primary)]">{amount(result.operatingResult)}</td></tr>
+          {classicRowsForResult(result).map((row, index) => <tr key={`${row.label}-${index}`} className={`border-t border-slate-100 ${row.kind === 'heading' ? 'bg-slate-100 font-black' : row.kind === 'subtotal' ? 'bg-slate-50 font-extrabold' : row.kind === 'total' ? 'bg-rose-50 text-base font-black' : ''}`}><td className="p-3">{row.detailKey ? <button type="button" className="w-full text-left underline decoration-dotted underline-offset-2" onClick={() => openDetail(row.detailKey!)}>{row.label}</button> : row.label}</td><td className={`p-3 text-right font-bold ${row.kind === 'total' ? 'text-[var(--primary)]' : ''}`}>{amount(row.amount)}</td></tr>)}
         </tbody></table></div>
         <p className="p-4 text-xs text-slate-500">Solo aparecen categorías con movimientos en este período. El costo de producción vendido ya está incluido en el costo histórico de las ventas.</p>
       </section>}
