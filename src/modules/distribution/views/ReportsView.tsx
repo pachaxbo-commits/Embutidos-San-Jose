@@ -266,7 +266,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       .filter((m) => !m.reversedAt)
       .filter((m) => session.dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
       .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
-      .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'courtesy' || (m.type === 'adjustment' && m.centralDelta < 0))
+      .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'return_waste_unassigned' || m.type === 'courtesy' || (m.type === 'adjustment' && m.centralDelta < 0))
     const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
     const operatingProfit =
       costKnown && !sellerFilter ? round2(revenue - cost - spent - lossCost) : null

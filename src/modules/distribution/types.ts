@@ -23,10 +23,12 @@ export type StockMovementType =
   | 'sale' // venta (descuenta ruta o central)
   | 'sale_correction'
   | 'return' // retorno fisico de ruta a central
+  | 'return_merma' // merma operativa recuperable que también vuelve a stock vendible
   | 'adjustment' // ajuste manual de almacen
   | 'dispatch_correction' // correccion auditada de despacho o aumento
   | 'dispatch_waste' // merma descontada al despachar productos al peso
   | 'return_waste' // merma confirmada por almacén al recibir una ruta
+  | 'return_waste_unassigned' // pérdida recibida sin lote de origen trazable
   | 'courtesy' // producto entregado gratuitamente
   | 'shortage' // faltante detectado en conciliacion
   | 'overage' // sobrante detectado en conciliacion
@@ -478,8 +480,11 @@ export interface DistClosureProductRow {
   declaredReturn?: number
   /** Cantidad total pesada y recibida físicamente por Almacén, incluye la merma. */
   physicalReturn?: number
-  /** Cantidad apta que vuelve al stock vendible. */
+  /** Retorno normal que vuelve al stock vendible. */
   actualReturn: number
+  /** Merma recuperable al retorno, distinta de la pérdida histórica; ausente en cierres anteriores. */
+  returnMerma?: number
+  /** Producto no apto/pérdida. En cierres históricos mantiene el significado de la merma usada entonces. */
   returnWaste?: number
   returnWasteReason?: string
   shortage?: number
@@ -524,9 +529,11 @@ export interface DistClosure extends DistBaseDoc {
   reopenedByName?: string
   reopenedAt?: string
   reopenReason?: string
+  preserveFinancialSnapshot?: boolean
   reopenHistory?: Array<{
     reopenedAt: string
     reason: string
+    preserveFinancialSnapshot?: boolean
     warehouseClosedBy: string
     warehouseClosedAt: string
     products: DistClosureProductRow[]

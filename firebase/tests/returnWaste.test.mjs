@@ -97,6 +97,71 @@ try {
   pass((await read('distBalances', `${routeLoc}__${overProduct}`)).quantity === 0 && (await read('distBalances', `central__${overProduct}`)).quantity === 6 && quarantineLot?.quantities.central === 0.46, 'solo 5,54 kg vendibles y 0,46 kg en cuarentena llegan al almacén; ruta queda en cero')
   pass(overageMovement?.routeDelta === 0 && overageMovement.centralDelta === 0.46, 'sobrante sin lote de ruta verificable no inventa una salida en la ruta')
 
+  const mermaProduct = `${prefix}-recoverable-product`, mermaDispatch = `${prefix}-recoverable-dispatch`, mermaLotA = `${prefix}-recoverable-lot-a`, mermaLotB = `${prefix}-recoverable-lot-b`, mermaRoute = `${prefix}-recoverable-route`, mermaRouteLoc = `route__${mermaRoute}`
+  await root.collection('distRoutes').doc(mermaRoute).set({ id: mermaRoute, restaurantId: 'sanjose', name: 'Ruta merma QA', active: true })
+  await root.collection('distProducts').doc(mermaProduct).set({ id: mermaProduct, restaurantId: 'sanjose', name: 'Producto merma recuperable QA', unitType: 'kg', active: true })
+  await root.collection('distBalances').doc(`${mermaRouteLoc}__${mermaProduct}`).set({ id: `${mermaRouteLoc}__${mermaProduct}`, restaurantId: 'sanjose', locationKind: 'route', routeId: mermaRoute, productId: mermaProduct, quantity: 6 })
+  await root.collection('distBalances').doc(`central__${mermaProduct}`).set({ id: `central__${mermaProduct}`, restaurantId: 'sanjose', locationKind: 'central', productId: mermaProduct, quantity: 0 })
+  for (const [lotId, lotCode, quantity] of [[mermaLotA, 'LOTE-REC-A', 2], [mermaLotB, 'LOTE-REC-B', 4]]) {
+    await root.collection('distLots').doc(lotId).set({ id: lotId, restaurantId: 'sanjose', productId: mermaProduct, productName: 'Producto merma recuperable QA', unitType: 'kg', lotCode, expiresOn: '2099-01-01', productionCost: 8, quantities: { [mermaRouteLoc]: quantity, central: 0 } })
+  }
+  await root.collection('distDispatches').doc(mermaDispatch).set({ id: mermaDispatch, restaurantId: 'sanjose', status: 'open', routeId: mermaRoute, routeName: 'Ruta QA', distributorUid: seller, distributorName: 'Vendedor QA', warehouseId: 'central', lines: [{ productId: mermaProduct, productName: 'Producto merma recuperable QA', unitType: 'kg', quantity: 6, allocations: [{ lotId: mermaLotA, lotCode: 'LOTE-REC-A', quantity: 2, productionCost: 8 }, { lotId: mermaLotB, lotCode: 'LOTE-REC-B', quantity: 4, productionCost: 8 }] }], additions: [] })
+  const mermaClosureId = `closure_${mermaDispatch}`
+  await root.collection('distClosures').doc(mermaClosureId).set({ id: mermaClosureId, restaurantId: 'sanjose', dispatchId: mermaDispatch, routeId: mermaRoute, routeName: 'Ruta QA', distributorUid: seller, distributorName: 'Vendedor QA', status: 'draft', declaredReturns: { [mermaProduct]: 6 }, returnDeclaredAt: new Date().toISOString(), products: [] })
+  const recoverableOperation = await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: mermaDispatch, products: [{ productId: mermaProduct, actualReturn: 5.54, returnMerma: 0.46, returnWaste: 0, physicalReturn: 6 }] } })
+  const recoverableClosure = await read('distClosures', mermaClosureId)
+  const recoverableRow = recoverableClosure.products[0]
+  pass(recoverableRow.actualReturn === 5.54 && recoverableRow.returnMerma === 0.46 && recoverableRow.returnWaste === 0 && recoverableRow.physicalReturn === 6, 'cierre nuevo distingue retorno normal, merma recuperable y producto no apto sin duplicar cantidades')
+  pass((await read('distBalances', `${mermaRouteLoc}__${mermaProduct}`)).quantity === 0 && (await read('distBalances', `central__${mermaProduct}`)).quantity === 6, '5,54 kg normales + 0,46 kg de merma recuperable vuelven en total como 6 kg vendibles')
+  lot = await read('distLots', mermaLotA)
+  lotB = await read('distLots', mermaLotB)
+  pass(lot.quantities.central === 2 && lotB.quantities.central === 4 && lot.quantities[mermaRouteLoc] === 0 && lotB.quantities[mermaRouteLoc] === 0, 'retorno normal y merma recuperable regresan a los lotes originales respetando sus asignaciones')
+  const mermaMovements = (await root.collection('distStockMovements').where('refId', '==', recoverableOperation.id).get()).docs.map((doc) => doc.data())
+  pass(mermaMovements.some((movement) => movement.type === 'return_merma' && movement.quantity === 0.46 && movement.allocations[0].lotCode === 'LOTE-REC-B') && !mermaMovements.some((movement) => movement.type === 'return_waste'), 'merma recuperable queda auditada como retorno de lote, no como pérdida')
+  await run(admin, 'closure', { mode: 'money', closure: { dispatchId: mermaDispatch, status: 'closed', physicalCashDeclared: 0 } })
+  await run(admin, 'reopen', { closureId: mermaClosureId, reason: 'Verificar devolución auditada de merma recuperable' })
+  pass((await read('distBalances', `${mermaRouteLoc}__${mermaProduct}`)).quantity === 6 && (await read('distBalances', `central__${mermaProduct}`)).quantity === 0, 'reabrir cierre revierte retorno normal y merma recuperable a los lotes de la ruta una sola vez')
+
+  const nonSellableOperation = await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: mermaDispatch, products: [{ productId: mermaProduct, actualReturn: 5.54, returnMerma: 0, returnWaste: 0.46, physicalReturn: 6, returnWasteReason: 'Producto deteriorado' }] } })
+  const nonSellableMovements = (await root.collection('distStockMovements').where('refId', '==', nonSellableOperation.id).get()).docs.map((doc) => doc.data())
+  const nonSellableMovement = nonSellableMovements.find((movement) => movement.type === 'return_waste')
+  pass((await read('distBalances', `central__${mermaProduct}`)).quantity === 5.54 && nonSellableMovement?.quantity === 0.46 && nonSellableMovement.lossCost === 3.68, 'producto realmente no apto no vuelve a stock y conserva la pérdida por costo histórico')
+
+  await run(admin, 'closure', { mode: 'money', closure: { dispatchId: mermaDispatch, status: 'closed', physicalCashDeclared: 0 } })
+  await run(admin, 'reopen', { closureId: mermaClosureId, reason: 'Preparar prueba de sobrante no apto sin origen trazable' })
+  const excessNonSellableOperation = await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: mermaDispatch, products: [{ productId: mermaProduct, actualReturn: 5.54, returnMerma: 0.46, returnWaste: 0.1, physicalReturn: 6.1, returnWasteReason: 'Producto deteriorado' }] } })
+  const excessClosure = await read('distClosures', mermaClosureId)
+  const excessRow = excessClosure.products[0]
+  const excessMovements = (await root.collection('distStockMovements').where('refId', '==', excessNonSellableOperation.id).get()).docs.map((doc) => doc.data())
+  pass(excessRow.physicalReturn === 6.1 && excessRow.overage === 0.1 && excessRow.returnWaste === 0.1, 'caso E conserva el exceso físico no apto sin convertirlo en sobrante vendible')
+  pass((await read('distBalances', `central__${mermaProduct}`)).quantity === 6 && excessMovements.some((movement) => movement.type === 'return_waste_unassigned' && movement.quantity === 0.1 && movement.lossCost === null) && !excessMovements.some((movement) => movement.type === 'overage'), 'producto no apto sin saldo trazable no crea stock ni costo histórico inventados')
+  await run(admin, 'closure', { mode: 'money', closure: { dispatchId: mermaDispatch, status: 'closed', physicalCashDeclared: 0 } })
+  await run(admin, 'reopen', { closureId: mermaClosureId, reason: 'Verificar reversión de pérdida no trazable' })
+  pass((await read('distBalances', `${mermaRouteLoc}__${mermaProduct}`)).quantity === 6 && (await read('distBalances', `central__${mermaProduct}`)).quantity === 0, 'reabrir revierte el exceso no apto como auditoría sin duplicar stock de ruta')
+
+  await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: mermaDispatch, products: [{ productId: mermaProduct, actualReturn: 5.54, returnMerma: 0.46, returnWaste: 0, physicalReturn: 6 }] } })
+  await run(admin, 'closure', { mode: 'money', closure: { dispatchId: mermaDispatch, status: 'closed', physicalCashDeclared: 0 } })
+  await root.collection('distClosures').doc(mermaClosureId).update({
+    cashSales: 12, qrSales: 5, creditGenerated: 7, cashCollections: 3,
+    qrCollections: 2, cashExpenses: 1, claimCash: 4,
+    expectedCash: 18, physicalCashDeclared: 16, cashDifference: -2,
+  })
+  await run(admin, 'reopen', { closureId: mermaClosureId, reason: 'Corregir solo la recepción; conservar caja histórica', preserveFinancialSnapshot: true })
+  await root.collection('distSales').doc(`${prefix}-post-closure-sale`).set({
+    id: `${prefix}-post-closure-sale`, restaurantId: 'sanjose', dispatchId: mermaDispatch,
+    routeId: mermaRoute, createdAt: new Date().toISOString(), saleKind: 'sale',
+    cashAmount: 150, qrAmount: 25, creditAmount: 40, lines: [],
+  })
+  await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: mermaDispatch, products: [{ productId: mermaProduct, actualReturn: 5.54, returnMerma: 0.46, returnWaste: 0, physicalReturn: 6 }] } })
+  await run(admin, 'closure', { mode: 'money', closure: { dispatchId: mermaDispatch, status: 'closed', physicalCashDeclared: 16 } })
+  const preservedClosure = await read('distClosures', mermaClosureId)
+  pass(preservedClosure.status === 'closed' && preservedClosure.cashSales === 12 && preservedClosure.qrSales === 5 && preservedClosure.creditGenerated === 7 && preservedClosure.cashCollections === 3 && preservedClosure.qrCollections === 2 && preservedClosure.cashExpenses === 1 && preservedClosure.claimCash === 4 && preservedClosure.expectedCash === 18 && preservedClosure.physicalCashDeclared === 16 && preservedClosure.cashDifference === -2, 'reabrir y cerrar para corregir inventario conserva exactamente el snapshot monetario histórico aunque cambien ventas posteriores')
+  await run(admin, 'reopen', { closureId: mermaClosureId, reason: 'Reabrir para corregir caja; recalcular importes' })
+  await run(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: mermaDispatch, products: [{ productId: mermaProduct, actualReturn: 5.54, returnMerma: 0.46, returnWaste: 0, physicalReturn: 6 }] } })
+  await run(admin, 'closure', { mode: 'money', closure: { dispatchId: mermaDispatch, status: 'closed', physicalCashDeclared: 16 } })
+  const recalculatedClosure = await read('distClosures', mermaClosureId)
+  pass(recalculatedClosure.cashSales === 150 && recalculatedClosure.qrSales === 25 && recalculatedClosure.creditGenerated === 40 && recalculatedClosure.expectedCash === 150 && recalculatedClosure.cashDifference === -134, 'reapertura financiera sin alcance de solo inventario conserva el recálculo monetario habitual')
+
   console.log(`${checks} comprobaciones de retorno/merma aprobadas`)
 } finally {
   await app.delete()

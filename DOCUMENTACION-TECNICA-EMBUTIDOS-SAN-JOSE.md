@@ -129,7 +129,7 @@ Reglas de continuidad:
 - Soporte no ve ventas ni información comercial. Su limpieza conserva usuarios, productos, almacenes y configuración, y requiere doble confirmación.
 - Mantener PDF y Excel en español, sin estados internos ni identificadores largos.
 - Mantener compatibilidad de impresión Bluetooth genérica y por red.
-- En el retorno de ruta, separar retorno apto, merma justificada y faltante no explicado. Kilogramos admiten decimales y paquetes/unidades requieren enteros; la merma exige motivo y nunca vuelve al stock vendible.
+- En el retorno de ruta, separar retorno normal, merma recuperable, producto realmente no apto/pérdida y faltante. La merma recuperable vuelve al stock vendible conservando los lotes originales; solo el producto no apto/pérdida no vuelve al stock, requiere motivo y puede reconocer costo histórico. Kilogramos admiten decimales y paquetes/unidades requieren enteros.
 - Tras cualquier cambio funcional, compilar web y Android, probar permisos con el emulador y verificar la web publicada.
 - Cuando un cambio requiera actualizar la aplicación Android instalada, avisar explícitamente al usuario y dejar la nueva APK compatible con la firma anterior en el Escritorio real del equipo, verificando identificador, firma y `versionCode` antes de entregarla.
 
@@ -243,7 +243,11 @@ Estado al cerrar esta limpieza:
 
 ## Merma al retorno, cortesías y cotizaciones 1.4.23 (15 de octubre de 2026)
 
-- Al recibir el retorno de ruta, Almacén/Administración separa cantidad apta, merma con motivo y faltante. El retorno apto recupera las asignaciones/lotes originales; la merma queda en un movimiento `return_waste`, conserva costo histórico y no reingresa al inventario vendible. El sobrante continúa en cuarentena.
+- La semántica histórica de `returnWaste` permanece sin cambios: es producto no apto/pérdida, no reingresa al stock vendible y puede reconocer costo histórico. No reinterpretar documentos anteriores.
+- El flujo nuevo distingue `actualReturn` (retorno normal), `returnMerma` (merma operativa recuperable, vuelve al stock vendible) y `returnWaste` (producto no apto/pérdida). `actualReturn + returnMerma` se asigna a las allocations/lotes existentes de la ruta y no genera pérdida financiera. Una pérdida recibida sin cantidad/lote de origen trazable se registra como `return_waste_unassigned`, sin alterar balances ni inventar costo.
+- El resumen físico contabiliza cada componente una sola vez: total recibido = retorno normal + merma recuperable + producto no apto. Solo el retorno normal y la merma recuperable generan stock vendible; los excesos no aptos no se ponen en cuarentena como inventario vendible.
+- Los inputs de recepción en kg admiten punto o coma decimal; durante la escritura se permiten valores decimales parciales, y la validación final ocurre al guardar. Los campos principales son de ancho completo y el botón para usar lo declarado va debajo del input.
+- La reapertura auditada revierte `return` y `return_merma` a los lotes originales. `return_waste_unassigned` revierte únicamente la auditoría (no crea inventario de ruta).
 - Las cortesías se registran en el flujo de ventas con motivo y movimiento `courtesy`. Consumen existencias/lotes, pero sus importes de efectivo, QR, crédito e ingresos son cero; se excluyen de ventas y compras por cliente y se muestran en sus propios indicadores. El costo histórico se informa una vez como pérdida/salida no comercial.
 - Se agregó Cotizaciones para Administración y Distribuidores: generan número legible, pueden incluir prospectos y precios editables, tienen vigencia/estados y no reservan stock ni crean venta o deuda. Incluye imagen PNG para descarga/compartir, ticket térmico en 58/80 mm, impresión en hoja, edición/cancelación auditada y aislamiento por propietario para Distribuidores.
 - La limpieza selectiva incorpora la categoría Cotizaciones sin modificar las categorías preservadas.
@@ -272,3 +276,20 @@ Estado al cerrar esta limpieza:
 - En el historial se distinguen `Imprimir ticket` (impresora térmica) e `Imprimir hoja / PDF` (diálogo normal/nativo). Ambas opciones están disponibles para Administración y para el Distribuidor dentro de sus datos permitidos.
 - Se mantiene el mensaje de saldo histórico no disponible únicamente para documentos que realmente carecen de esos saldos.
 - Android: `versionCode 46`, `versionName 1.4.26`; misma firma oficial y `applicationId com.pachax.flow`.
+
+## Semántica de merma de retorno 1.4.28 (15 de octubre de 2026)
+
+- Se conserva la distinción histórica: `returnWaste` es pérdida/no apto y no vuelve al inventario; el nuevo `returnMerma` es recuperable y vuelve a stock vendible, conservando las allocations de lote originales. No se migran ni reinterpretan cierres anteriores.
+- La recepción de almacén separa retorno normal, merma recuperable y producto no apto. Total recibido suma las tres cantidades una vez; solo el exceso vendible va a cuarentena, y una pérdida sin origen trazable queda auditada sin fabricar stock ni costo.
+- En móvil, los campos principales de cantidad son de ancho completo, aceptan coma/punto decimal en kg y el botón para copiar la cantidad declarada queda debajo del campo.
+- La auditoría de producción se ejecutó en solo lectura y encontró recepciones anteriores marcadas como pérdida con motivo de retorno normal/común. Las operaciones están confirmadas y son trazables por lote; la eventual corrección debe ser explícita mediante reapertura auditada y nueva recepción, nunca por ajuste manual ni migración silenciosa. No se modificó producción.
+- Android publicado: `versionCode 48`, `versionName 1.4.28`; aplicación `com.pachax.flow`, firma oficial. APK y OTA verificados contra manifiesto remoto.
+
+## Recepción de retornos en panel amplio 1.4.29 (15 de octubre de 2026)
+
+- La lista de productos de Almacén presenta un resumen por producto y abre una recepción amplia para registrar retorno normal, merma recuperable y producto no apto. El resumen calcula total físico, stock vendible, pérdida, faltante y sobrante antes de guardar.
+- La recepción usa campos de ancho completo, acepta punto o coma decimal para kg y permite guardar cada producto como revisado. No se permite confirmar el retorno de almacén hasta revisar todos los productos del despacho.
+- Una reapertura puede marcarse explícitamente como "Corregir solo inventario". Ese alcance queda auditado y mantiene el snapshot monetario anterior al volver a cerrar; las reaperturas financieras normales conservan el recálculo de caja habitual.
+- Auditoría histórica de solo lectura: en Luciano se encontraron 0,90 kg de Viena, 0,44 kg de chorizo precocido y 0,46 kg de chorizo crudo registrados como pérdida bajo la semántica anterior; en Ricardo, 0,72 kg de Viena y 0,20 kg de chorizo precocido. Se conservan esos cierres, balances, lotes y pérdidas sin cambio automático ni reinterpretación.
+- Hugo se observó con cierre cerrado y sin declaración de retorno registrada. No se reconstruyen cantidades ni se reabre ese cierre.
+- Android: `versionCode 49`, `versionName 1.4.29`; aplicación `com.pachax.flow`, firma oficial.
