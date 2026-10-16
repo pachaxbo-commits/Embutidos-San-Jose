@@ -118,6 +118,7 @@ export function computeProductProfitReport(
 
   // 1. Procesar líneas de ventas efectivas (respetando correcciones auditadas)
   for (const sale of sales) {
+    if (sale.voidedAt || sale.pendingConfirmation) continue
     const effectiveSale = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
     if (effectiveSale.saleKind === 'courtesy') continue
     const isCorrected = Boolean(

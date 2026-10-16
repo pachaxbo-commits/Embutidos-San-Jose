@@ -555,7 +555,7 @@ export function subscribeExpenses(
   onError?: (error: Error) => void,
   distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistExpense>(DIST_COLLECTIONS.expenses, dayKeys, routeId, rows => onData(rows.filter(expense => !expense.voided)), onError, distributorUid ? { field: 'registeredByUid', uid: distributorUid } : undefined)
+  return subscribeDayScoped<DistExpense>(DIST_COLLECTIONS.expenses, dayKeys, routeId, onData, onError, distributorUid ? { field: 'registeredByUid', uid: distributorUid } : undefined)
 }
 
 export function subscribeExpenseCategories(onData: (rows: DistExpenseCategory[]) => void, onError?: (error: Error) => void) {
@@ -942,6 +942,7 @@ export interface RegisterExpenseInput {
   categoryId?: string
   categoryName?: string
   paymentMethod?: 'cash' | 'transfer' | 'other'
+  affectsOperatingResult?: boolean
   dayKey?: string
   routeId: string
   routeName: string
@@ -969,7 +970,7 @@ export async function saveExpenseCategory(input: { categoryId: string; group: Ex
   return submitOperation<DistExpenseCategory>('saveExpenseCategory', input, newOperationId('expense-category'))
 }
 
-export async function classifyExpense(input: { expenseId: string; group: ExpenseGroup; categoryId: string }) {
+export async function classifyExpense(input: { expenseId: string; group: ExpenseGroup; categoryId: string; affectsOperatingResult: boolean }) {
   return submitOperation<DistExpense>('classifyExpense', input, newOperationId('expense-classification'))
 }
 

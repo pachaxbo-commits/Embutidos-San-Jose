@@ -16,6 +16,7 @@ export interface OperatingResult {
   expenseTotals: Record<ExpenseGroup, number>; losses: number | null; courtesyCost: number | null
   operatingResult: number | null; costsKnown: boolean; report: ProductProfitReport; details: OperatingResultDetail[]
   expenses: OperatingResultExpenseRow[]; salesByOrigin: Array<{ origin: string; amount: number }>
+  pendingClassificationCount: number; pendingEconomicDecisionCount: number
 }
 
 const ZERO: Record<ExpenseGroup, number> = { administration: 0, indirect: 0, equipment: 0, other: 0, production_additional: 0 }
@@ -25,10 +26,13 @@ export function computeOperatingResult(
 ): OperatingResult {
   const inScope = (dayKey: string, routeId?: string) =>
     (dayKeys.length === 0 || dayKeys.includes(dayKey)) && (!routeFilter || matchesRoute(routeId || '', routeFilter))
-  const scopedSales = sales.filter((sale) => inScope(sale.dayKey || toDayKey(sale.createdAt), sale.routeId))
+  const scopedSales = sales.filter((sale) => !sale.voidedAt && !sale.pendingConfirmation && inScope(sale.dayKey || toDayKey(sale.createdAt), sale.routeId))
   const scopedClaims = claims.filter((claim) => inScope(claim.dayKey || toDayKey(claim.createdAt), claim.routeId))
-  const scopedExpenses = expenses.filter((expense) => !expense.voided && expense.affectsOperatingResult !== false && inScope(expense.dayKey || toDayKey(expense.createdAt), expense.routeId))
-  const scopedMovements = movements.filter((movement) => inScope(movement.dayKey || toDayKey(movement.createdAt), movement.routeId))
+  const allScopedActiveExpenses = expenses.filter((expense) => !expense.voided && inScope(expense.dayKey || toDayKey(expense.createdAt), expense.routeId))
+  const scopedExpenses = allScopedActiveExpenses.filter((expense) => expense.affectsOperatingResult !== false)
+  const pendingClassificationCount = allScopedActiveExpenses.filter((expense) => !expense.group || !expense.categoryId).length
+  const pendingEconomicDecisionCount = allScopedActiveExpenses.filter((expense) => typeof expense.affectsOperatingResult !== 'boolean').length
+  const scopedMovements = movements.filter((movement) => !movement.reversedAt && inScope(movement.dayKey || toDayKey(movement.createdAt), movement.routeId))
   const routeNames = new Map(routes.map((route) => [route.id, route.name]))
   for (const sale of scopedSales) {
     if (sale.routeName && !sale.routeName.startsWith('route-')) routeNames.set(sale.routeId, sale.routeName)
@@ -125,5 +129,5 @@ export function computeOperatingResult(
       { concepto: 'Costo de cortesías', monto: courtesyCost ?? 'No disponible por costo histórico faltante' },
     ] },
   ]
-  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin }
+  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin, pendingClassificationCount, pendingEconomicDecisionCount }
 }

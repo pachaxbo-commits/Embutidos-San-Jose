@@ -1911,6 +1911,8 @@ async function expense(o, p) {
   const groups = ["administration", "indirect", "equipment", "other", "production_additional"];
   const paymentMethods = ["cash", "transfer", "other"];
   check(!p.group || groups.includes(p.group), "El grupo del egreso no es válido.");
+  check(p.affectsOperatingResult === undefined || typeof p.affectsOperatingResult === "boolean", "La decisión de costo del egreso no es válida.");
+  check(o.member.role === "admin" || p.affectsOperatingResult !== false, "Solo Administración puede decidir si el egreso ya está incluido en el costo de los productos.");
   check(!p.paymentMethod || paymentMethods.includes(p.paymentMethod), "La forma de pago no es válida.");
   check(!p.dayKey || validDate(p.dayKey), "La fecha del egreso no es válida.");
   const defaults = {
@@ -2006,8 +2008,9 @@ async function classifyExpense(o, p) {
   const index = Number(String(categoryId).split("-").at(-1)) - 1;
   const defaultName = String(categoryId).startsWith(`${p.group}-`) ? defaults[p.group]?.[index] : undefined;
   check(category ? category.active && category.group === p.group : Boolean(defaultName), "La categoría ya no está activa.");
-  const previous = { group: expense.group || "other", categoryId: expense.categoryId || "", categoryName: expense.categoryName || "Por clasificar" };
-  const next = { group: p.group, categoryId, categoryName: category?.name || defaultName };
+  check(typeof p.affectsOperatingResult === "boolean", "Indica si el egreso ya está incluido en el costo de los productos.");
+  const previous = { group: expense.group || "other", categoryId: expense.categoryId || "", categoryName: expense.categoryName || "Por clasificar", affectsOperatingResult: expense.affectsOperatingResult };
+  const next = { group: p.group, categoryId, categoryName: category?.name || defaultName, affectsOperatingResult: p.affectsOperatingResult };
   const history = [...(expense.classificationHistory || []), { at: o.now, by: o.actor, byName: o.member.displayName || o.actor, previous, next }].slice(-20);
   const updated = { ...expense, ...next, classificationHistory: history, updatedAt: o.now, updatedBy: o.actor };
   o.put("distExpenses", expense.id, updated);
