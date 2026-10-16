@@ -43,9 +43,11 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [selectedDispatchId, setSelectedDispatchId] = useState('')
   const [returnDrafts, setReturnDrafts] = useState<Record<string, Record<string, string>>>({})
   const [recoverableMermaDrafts, setRecoverableMermaDrafts] = useState<Record<string, Record<string, string>>>({})
-  const [nonSellableSectionsOpen, setNonSellableSectionsOpen] = useState<Record<string, boolean>>({})
   const [wasteDrafts, setWasteDrafts] = useState<Record<string, Record<string, string>>>({})
   const [wasteReasonDrafts, setWasteReasonDrafts] = useState<Record<string, Record<string, string>>>({})
+  const [receiptReviewedByDispatch, setReceiptReviewedByDispatch] = useState<Record<string, string[]>>({})
+  const [receiptModalProductId, setReceiptModalProductId] = useState<string | null>(null)
+  const [receiptModalDraft, setReceiptModalDraft] = useState({ normal: '', merma: '0', waste: '0', reason: '' })
   const [cashDrafts, setCashDrafts] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -58,6 +60,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [confirmingClosure, setConfirmingClosure] = useState(false)
   const [reopenTarget, setReopenTarget] = useState<DistClosure | null>(null)
   const [reopenReason, setReopenReason] = useState('')
+  const [reopenPreserveFinancialSnapshot, setReopenPreserveFinancialSnapshot] = useState(false)
   const [isReopening, setIsReopening] = useState(false)
   const todayKey = toDayKey(new Date())
   const [adminDayKey, setAdminDayKey] = useState(todayKey)
@@ -99,9 +102,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const declaredCash = cashDrafts[dispatchKey] ?? (existingClosure?.physicalCashDeclared != null ? String(existingClosure.physicalCashDeclared) : '')
   const setDeclaredCash = (value: string) => setCashDrafts(current => ({ ...current, [dispatchKey]: value }))
   const setReturns = (updater: (current: Record<string, string>) => Record<string, string>) => setReturnDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedReturns) }))
-  const setRecoverableMermas = (updater: (current: Record<string, string>) => Record<string, string>) => setRecoverableMermaDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedRecoverableMermas) }))
-  const setWastes = (updater: (current: Record<string, string>) => Record<string, string>) => setWasteDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedWastes) }))
-  const setWasteReasons = (updater: (current: Record<string, string>) => Record<string, string>) => setWasteReasonDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedWasteReasons) }))
+  const reviewedReceiptIds = new Set(receiptReviewedByDispatch[dispatchKey] || [])
 
   const [routeSales, setRouteSales] = useState<DistSale[]>([])
   const [routeCollections, setRouteCollections] = useState<DistCollection[]>([])
@@ -154,10 +155,64 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       variance: round2(breakdown.overage - breakdown.shortage),
     }
   })
+  const receiptModalRow = productRows.find(row => row.productId === receiptModalProductId) ?? null
+  const receiptModalNormal = parseReturnQuantityInput(receiptModalDraft.normal) ?? 0
+  const receiptModalMerma = parseReturnQuantityInput(receiptModalDraft.merma) ?? 0
+  const receiptModalWaste = parseReturnQuantityInput(receiptModalDraft.waste) ?? 0
+  const receiptModalBreakdown = receiptModalRow
+    ? calculatePhysicalReturnBreakdown(receiptModalRow.expectedReturn, receiptModalNormal, receiptModalMerma, receiptModalWaste)
+    : null
+
+  const openReceiptEditor = (productId: string) => {
+    setReceiptModalProductId(productId)
+    setReceiptModalDraft({
+      normal: returns[productId] ?? '',
+      merma: recoverableMermas[productId] ?? '0',
+      waste: wastes[productId] ?? '0',
+      reason: wasteReasons[productId] ?? '',
+    })
+  }
+
+  const saveReceiptEditor = () => {
+    if (!receiptModalRow) return
+    const quantities = [receiptModalDraft.normal, receiptModalDraft.merma, receiptModalDraft.waste]
+    if (quantities.some(value => value.trim() === '' || parseReturnQuantityInput(value) === null)) {
+      setError('Completa las cantidades antes de guardar la recepción.')
+      return
+    }
+    if (![receiptModalNormal, receiptModalMerma, receiptModalWaste].every(value => validateReturnQuantity(receiptModalRow.unitType, value))) {
+      setError('Los kilogramos admiten decimales; paquetes y unidades requieren cantidades enteras.')
+      return
+    }
+    if (receiptModalWaste > 0 && !receiptModalDraft.reason.trim()) {
+      setError('Indica por qué el producto no puede volver al stock vendible.')
+      return
+    }
+    const pid = receiptModalRow.productId
+    setReturnDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? returns), [pid]: receiptModalDraft.normal } }))
+    setRecoverableMermaDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? recoverableMermas), [pid]: receiptModalDraft.merma } }))
+    setWasteDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wastes), [pid]: receiptModalDraft.waste } }))
+    setWasteReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wasteReasons), [pid]: receiptModalDraft.reason.trim() } }))
+    setReceiptReviewedByDispatch(current => ({ ...current, [dispatchKey]: [...new Set([...(current[dispatchKey] || []), pid])] }))
+    setError(null)
+    setReceiptModalProductId(null)
+  }
 
   const moneySummary = computeMoneySummary(routeSales, routeCollections, routeExpenses)
   const claimCash = data.claims.filter(c => c.routeId === dispatchRoute && c.createdAt >= dispatchCreated).reduce((n,c)=>n+c.cashIn-c.cashOut,0)
-  const money = { ...moneySummary, expectedCash:round2(moneySummary.expectedCash+claimCash) }
+  const calculatedMoney = { ...moneySummary, expectedCash:round2(moneySummary.expectedCash+claimCash) }
+  const preservingHistoricalMoney = Boolean(existingClosure?.preserveFinancialSnapshot && ['reopened', 'warehouse_done'].includes(existingClosure.status))
+  const money = preservingHistoricalMoney
+    ? {
+        cashSales: existingClosure?.cashSales || 0,
+        qrSales: existingClosure?.qrSales || 0,
+        creditGenerated: existingClosure?.creditGenerated || 0,
+        cashCollections: existingClosure?.cashCollections || 0,
+        qrCollections: existingClosure?.qrCollections || 0,
+        cashExpenses: existingClosure?.cashExpenses || 0,
+        expectedCash: existingClosure?.expectedCash || 0,
+      }
+    : calculatedMoney
 
   const declaredValue = round2(Number(declaredCash) || 0)
   // Mientras no se declare el efectivo fisico no hay diferencia que reportar:
@@ -324,6 +379,13 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }
 
     if (status === 'warehouse_done') {
+      const unreviewedCount = productRows.filter(row => !reviewedReceiptIds.has(row.productId)).length
+      if (unreviewedCount > 0) {
+        setError(`Revisa la recepción de todos los productos. Faltan ${unreviewedCount}.`)
+        isSubmittingRef.current = false
+        setIsSubmitting(false)
+        return
+      }
       const sinDeclarar = productRows.filter((row) => !isDeclared(row.productId))
       if (sinDeclarar.length > 0) {
         setError(`Falta declarar el retorno de: ${sinDeclarar.map((row) => row.productName).join(', ')}.`)
@@ -492,7 +554,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               })}</div>
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Gastos" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared ?? 0)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
-              {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => { setReopenTarget(closure); setReopenReason(''); }}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
+              {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => { setReopenTarget(closure); setReopenReason(''); setReopenPreserveFinancialSnapshot(false); }}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
               <div className="grid grid-cols-3 gap-2">
                 <SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton>
                 <SecondaryButton onClick={() => void printClosureSheet(closure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de cierre</SecondaryButton>
@@ -562,7 +624,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                 <SecondaryButton onClick={() => void printClosureTicket(existingAdminClosure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton>
                 <SecondaryButton onClick={() => void printClosureSheet(existingAdminClosure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de arqueo</SecondaryButton>
                 <SecondaryButton onClick={() => void shareClosurePdf(existingAdminClosure).catch(pdfError => setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
-                <SecondaryButton onClick={() => { setReopenTarget(existingAdminClosure); setReopenReason(''); }}><Unlock size={15} /> Reabrir arqueo</SecondaryButton>
+                <SecondaryButton onClick={() => { setReopenTarget(existingAdminClosure); setReopenReason(''); setReopenPreserveFinancialSnapshot(false); }}><Unlock size={15} /> Reabrir arqueo</SecondaryButton>
               </div>
             </div>
           ) : (
@@ -611,12 +673,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const reopenModal = (
     <Modal
       isOpen={Boolean(reopenTarget)}
-      onClose={() => { if (!isReopening) setReopenTarget(null) }}
+      onClose={() => { if (!isReopening) { setReopenTarget(null); setReopenPreserveFinancialSnapshot(false); } }}
       title="Reabrir cierre"
       subtitle={reopenTarget ? `${reopenTarget.routeName} · ${reopenTarget.distributorName}` : ''}
       footer={
         <div className="grid grid-cols-2 gap-2 w-full">
-          <SecondaryButton disabled={isReopening} onClick={() => setReopenTarget(null)}>
+          <SecondaryButton disabled={isReopening} onClick={() => { setReopenTarget(null); setReopenPreserveFinancialSnapshot(false); }}>
             Cancelar
           </SecondaryButton>
           <PrimaryButton
@@ -626,9 +688,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               setIsReopening(true)
               setError(null)
               try {
-                await reopenClosure(reopenTarget, reopenReason.trim())
+                await reopenClosure(reopenTarget, reopenReason.trim(), reopenPreserveFinancialSnapshot)
                 setReopenTarget(null)
                 setReopenReason('')
+                setReopenPreserveFinancialSnapshot(false)
               } catch (e) {
                 setError((e as Error).message)
               } finally {
@@ -653,6 +716,15 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             autoFocus
           />
         </Field>
+        {reopenTarget?.closureType !== 'admin' && <label className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm leading-relaxed text-blue-950">
+          <input
+            type="checkbox"
+            checked={reopenPreserveFinancialSnapshot}
+            onChange={event => setReopenPreserveFinancialSnapshot(event.target.checked)}
+            className="mt-0.5 h-5 w-5 shrink-0 accent-blue-700"
+          />
+          <span><strong>Corregir solo inventario.</strong> Conservar exactamente los importes de caja de este cierre, sin recalcularlos.</span>
+        </label>}
       </div>
     </Modal>
   )
@@ -808,8 +880,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
         <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">{isDistributor ? 'Para cerrar tu ruta, primero declara cuánto producto devuelves. Almacén debe contar y confirmar físicamente esa devolución; después se habilita el cierre final del efectivo.' : 'El distribuidor declara las cantidades. Almacén confirma la recepción física y después se habilita el cierre final. Confirmar y cerrar requieren conexión.'}</p>
         <SectionCard title="Productos devueltos">
+          {!isDistributor && <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm font-bold text-indigo-900" role="status">{reviewedReceiptIds.size} de {productRows.length} productos revisados</div>}
           <div className="relative mb-3"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={productSearch} onChange={event => setProductSearch(event.target.value)} placeholder="Buscar producto sin perder cantidades..." className="pl-9" /></div>
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {productRows.filter(row => row.productName.toLowerCase().includes(productSearch.trim().toLowerCase())).map((row) => {
               const product = data.products.find(p => p.id === row.productId)
               const presentation = product ? getProductPresentation(product) : ''
@@ -818,6 +891,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               const enteredRecoverableMerma = parseReturnQuantityInput(recoverableMermas[row.productId] || '0') ?? 0
               const enteredWaste = parseReturnQuantityInput(wastes[row.productId] || '0') ?? 0
               const breakdown = calculatePhysicalReturnBreakdown(row.expectedReturn, received, enteredRecoverableMerma, enteredWaste)
+              const reviewed = reviewedReceiptIds.has(row.productId)
               return (
                 <article key={row.productId} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs hover:border-slate-300 transition-colors">
                   <div className="flex items-start justify-between gap-3">
@@ -847,41 +921,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                         <button type="button" disabled={Boolean(existingClosure?.returnDeclaredAt)} onClick={() => setReturns(current => ({ ...current, [row.productId]: String(row.expectedReturn) }))} className="min-h-10 rounded-lg border border-blue-200 bg-white px-3 text-xs font-bold text-blue-900 disabled:opacity-40">Todo</button>
                       </div>
                     </div>
-                  </div> : <div className="mt-3 rounded-xl border border-slate-200 p-3">
-                    <h4 className="text-xs font-black uppercase tracking-wide text-slate-800">Recepción de Almacén</h4>
-                    <p className="mt-1 text-xs text-slate-600">Declarado por distribuidor: <strong>{declared === undefined ? 'Sin registro' : formatQty(Number(declared), row.unitType)}</strong></p>
-                    <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
-                      <div className="min-w-0">
-                        <Field label="Retorno normal">
-                          <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} value={returns[row.productId] ?? ''} disabled={returnsAlreadyApplied} placeholder="Cantidad pesada" onChange={event => setReturns(current => ({ ...current, [row.productId]: event.target.value }))} />
-                        </Field>
-                        {declared !== undefined && <div className="mt-2"><SecondaryButton full disabled={returnsAlreadyApplied} onClick={() => setReturns(current => ({ ...current, [row.productId]: String(declared) }))}>Usar cantidad declarada</SecondaryButton></div>}
-                      </div>
-                      <Field label="Merma de retorno" hint="Esta cantidad también vuelve al stock vendible.">
-                        <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} value={recoverableMermas[row.productId] ?? '0'} disabled={returnsAlreadyApplied} placeholder="0" onChange={event => setRecoverableMermas(current => ({ ...current, [row.productId]: event.target.value }))} />
-                      </Field>
+                  </div> : <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div><p className="text-xs font-bold text-slate-600">Debía retornar</p><p className="text-lg font-black text-indigo-800">{formatQty(row.expectedReturn, row.unitType)}</p></div>
+                      <div className="flex flex-wrap items-center gap-2">{reviewed ? <><span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-black text-emerald-800">REVISADO</span><VarianceBadge variance={row.variance} unitType={row.unitType} /></> : <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black text-amber-900">PENDIENTE DE RECIBIR</span>}</div>
                     </div>
-                    <details className="mt-3 rounded-xl border border-rose-200 bg-rose-50/60 p-3" open={nonSellableSectionsOpen[row.productId] ?? enteredWaste > 0} onToggle={event => setNonSellableSectionsOpen(current => ({ ...current, [row.productId]: event.currentTarget.open }))}>
-                      <summary className="cursor-pointer text-xs font-extrabold text-rose-900">Producto no apto / pérdida (opcional)</summary>
-                      <p className="mt-1 text-xs leading-relaxed text-slate-600">Solo si realmente no puede volver al stock vendible.</p>
-                      <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                        <Field label="Cantidad no apta">
-                          <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} value={wastes[row.productId] ?? '0'} disabled={returnsAlreadyApplied} placeholder="0" onChange={event => setWastes(current => ({ ...current, [row.productId]: event.target.value }))} />
-                        </Field>
-                        {enteredWaste > 0 && <Field label="Motivo" required>
-                          <TextInput value={wasteReasons[row.productId] || ''} disabled={returnsAlreadyApplied} placeholder="Describe el motivo" onChange={event => setWasteReasons(current => ({ ...current, [row.productId]: event.target.value }))} />
-                        </Field>}
-                      </div>
-                    </details>
-                    <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-emerald-50 p-3 sm:grid-cols-3">
-                      <div><p className="text-[10px] font-semibold text-slate-600">Total recibido</p><p className="text-sm font-black text-slate-900">{formatQty(breakdown.totalReceived, row.unitType)}</p></div>
-                      <div><p className="text-[10px] font-semibold text-slate-600">Vuelve a stock</p><p className="text-sm font-black text-emerald-800">{formatQty(breakdown.sellableFromDispatch, row.unitType)}</p></div>
-                      <div><p className="text-[10px] font-semibold text-slate-600">Merma registrada</p><p className="text-sm font-black text-emerald-800">{formatQty(enteredRecoverableMerma, row.unitType)}</p></div>
-                      <div><p className="text-[10px] font-semibold text-slate-600">Producto no apto</p><p className="text-sm font-black text-rose-700">{formatQty(enteredWaste, row.unitType)}</p></div>
-                      <div><p className="text-[10px] font-semibold text-slate-600">Faltante</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.shortage, row.unitType)}</p></div>
-                      <div><p className="text-[10px] font-semibold text-slate-600">Sobrante</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.overage, row.unitType)}</p></div>
-                      {breakdown.sellableOverage > 0 && <div className="col-span-2 sm:col-span-3"><p className="text-[10px] font-semibold text-slate-600">Excedente vendible en cuarentena</p><p className="text-sm font-black text-amber-800">{formatQty(breakdown.sellableOverage, row.unitType)}</p></div>}
-                    </div>
+                    <p className="mt-2 text-xs text-slate-600">Declarado por distribuidor: <strong>{declared === undefined ? 'Sin registro' : formatQty(Number(declared), row.unitType)}</strong></p>
+                    {reviewed && <p className="mt-1 text-xs text-slate-700">Recibido {formatQty(breakdown.totalReceived, row.unitType)} · vuelve al stock {formatQty(breakdown.sellableFromDispatch, row.unitType)}{enteredWaste > 0 ? ` · no apto ${formatQty(enteredWaste, row.unitType)}` : ''}</p>}
+                    <div className="mt-3"><PrimaryButton full disabled={returnsAlreadyApplied} onClick={() => openReceiptEditor(row.productId)}>{reviewed ? 'Editar recepción' : 'Registrar recepción'}</PrimaryButton></div>
                   </div>}
                 </article>
               )
@@ -920,11 +967,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                 min={0}
                 step={1}
                 placeholder={isDistributor ? 'Escribe 0 si no devuelves efectivo' : 'Escribe 0 si no hay efectivo'}
-                disabled={(!canCloseMoney && !isDistributor) || (isDistributor && Boolean(existingClosure?.returnDeclaredAt))}
+                disabled={(!canCloseMoney && !isDistributor) || (isDistributor && Boolean(existingClosure?.returnDeclaredAt)) || preservingHistoricalMoney}
                 onChange={(event) => setDeclaredCash(event.target.value)}
               />
             </Field>
           </div>
+          {preservingHistoricalMoney && <p className="mt-2 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs font-semibold leading-relaxed text-blue-900">Este cierre se reabrió para corregir la recepción del producto. Los importes de caja anteriores se conservarán sin recalcularlos.</p>}
 
           <div className="mt-3 grid grid-cols-2 gap-2">
             <KpiCard label="QR confirmado" value={formatBs(data.supportSettings.requireQrVerification ? data.qrVerifications.filter(v => (v.sourceType === 'sale' ? routeSales.some(s => s.id === v.sourceId) : routeCollections.some(c => c.id === v.sourceId))).reduce((sum, v) => sum + v.amount, 0) : money.qrSales + money.qrCollections)} tone="positive" />
@@ -959,7 +1007,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           {canRegisterReturn && (
             <SecondaryButton
               full
-              disabled={isSubmitting || !loaded || returnsAlreadyApplied}
+              disabled={isSubmitting || !loaded || returnsAlreadyApplied || (!isDistributor && reviewedReceiptIds.size !== productRows.length)}
               onClick={() => void submit('warehouse_done')}
             >
               <PackageCheck size={16} />
@@ -984,7 +1032,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               Estado del cierre: {existingClosure ? CLOSURE_STATUS[existingClosure.status] || 'Pendiente' : 'Devolución pendiente de declarar'}
             </p>
             {existingClosure?.status === 'closed' && session.can('dist.reports.view') && (
-              <SecondaryButton onClick={() => { setReopenTarget(existingClosure); setReopenReason(''); }}>
+              <SecondaryButton onClick={() => { setReopenTarget(existingClosure); setReopenReason(''); setReopenPreserveFinancialSnapshot(false); }}>
                 <Unlock size={15} /> Reabrir (administracion)
               </SecondaryButton>
             )}
@@ -1074,6 +1122,56 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
       {reopenModal}
       {adminClosureModal}
+      <Modal
+        isOpen={Boolean(receiptModalRow)}
+        onClose={() => setReceiptModalProductId(null)}
+        title="Registrar recepción"
+        subtitle={receiptModalRow?.productName}
+        size="lg"
+        footer={(
+          <div className="grid w-full grid-cols-2 gap-2">
+            <SecondaryButton onClick={() => setReceiptModalProductId(null)}>Cancelar</SecondaryButton>
+            <PrimaryButton onClick={saveReceiptEditor}>Guardar recepción</PrimaryButton>
+          </div>
+        )}
+      >
+        {receiptModalRow && receiptModalBreakdown && (
+          <div className="grid min-w-0 gap-4">
+            <div className="grid grid-cols-2 gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+              <div><p className="text-xs font-bold text-indigo-800">Debía retornar</p><p className="mt-1 text-xl font-black text-indigo-950">{formatQty(receiptModalRow.expectedReturn, receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-bold text-indigo-800">Declarado por distribuidor</p><p className="mt-1 break-words text-xl font-black text-indigo-950">{receiptModalRow.declaredReturn === undefined ? 'Sin registro' : formatQty(Number(receiptModalRow.declaredReturn), receiptModalRow.unitType)}</p></div>
+            </div>
+
+            <div className="grid min-w-0 gap-4">
+              <div>
+                <Field label="Retorno normal" hint="Producto que vuelve normalmente al stock.">
+                  <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.normal} placeholder="Cantidad recibida" onChange={event => setReceiptModalDraft(current => ({ ...current, normal: event.target.value }))} />
+                </Field>
+                {receiptModalRow.declaredReturn !== undefined && <div className="mt-2"><SecondaryButton full onClick={() => setReceiptModalDraft(current => ({ ...current, normal: String(receiptModalRow.declaredReturn) }))}>Usar cantidad declarada</SecondaryButton></div>}
+              </div>
+              <Field label="Merma de retorno" hint="También vuelve al stock; se registra aparte para control.">
+                <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.merma} placeholder="0" onChange={event => setReceiptModalDraft(current => ({ ...current, merma: event.target.value }))} />
+              </Field>
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                <Field label="Producto no apto / pérdida" hint="Solo si realmente no puede volver a venderse.">
+                  <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.waste} placeholder="0" onChange={event => setReceiptModalDraft(current => ({ ...current, waste: event.target.value }))} />
+                </Field>
+                {receiptModalWaste > 0 && <div className="mt-3"><Field label="Motivo" required><TextInput value={receiptModalDraft.reason} placeholder="Describe por qué no se puede vender" onChange={event => setReceiptModalDraft(current => ({ ...current, reason: event.target.value }))} /></Field></div>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 sm:grid-cols-3">
+              <div><p className="text-xs font-semibold text-slate-600">Total recibido</p><p className="text-lg font-black text-slate-900">{formatQty(receiptModalBreakdown.totalReceived, receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-semibold text-slate-600">Vuelve al stock</p><p className="text-lg font-black text-emerald-800">{formatQty(receiptModalBreakdown.sellableFromDispatch, receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-semibold text-slate-600">Merma registrada</p><p className="text-lg font-black text-emerald-800">{formatQty(receiptModalMerma, receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-semibold text-slate-600">Producto perdido</p><p className="text-lg font-black text-rose-700">{formatQty(receiptModalWaste, receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-semibold text-slate-600">Faltante</p><p className="text-lg font-black text-amber-800">{formatQty(receiptModalBreakdown.shortage, receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-semibold text-slate-600">Sobrante</p><p className="text-lg font-black text-amber-800">{formatQty(receiptModalBreakdown.overage, receiptModalRow.unitType)}</p></div>
+            </div>
+            {receiptModalBreakdown.sellableOverage > 0 && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">El excedente vendible quedará separado hasta revisar su origen.</p>}
+          </div>
+        )}
+      </Modal>
       {/* Modal Dedicado de Confirmación de Cierre Final de Ruta */}
       <Modal
         isOpen={confirmingClosure && Boolean(dispatch)}

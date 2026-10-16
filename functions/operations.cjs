@@ -2283,19 +2283,41 @@ async function closure(o, p) {
       requested.physicalCashDeclared >= 0,
     "Efectivo declarado inválido.",
   );
+  // Una reapertura puede ser exclusivamente para corregir inventario físico.
+  // En ese caso, la caja cerrada es un snapshot histórico: no debe cambiar si
+  // ventas, cobros o gastos fueron ajustados con posterioridad.
+  const preserveHistoricalMoney = previous.preserveFinancialSnapshot === true &&
+    ["reopened", "warehouse_done"].includes(previous.status) &&
+    Number.isFinite(Number(previous.physicalCashDeclared));
+  const moneySnapshot = preserveHistoricalMoney
+    ? Object.fromEntries(Object.entries({
+        cashSales: previous.cashSales,
+        qrSales: previous.qrSales,
+        creditGenerated: previous.creditGenerated,
+        cashCollections: previous.cashCollections,
+        qrCollections: previous.qrCollections,
+        cashExpenses: previous.cashExpenses,
+        claimCash: previous.claimCash,
+        expectedCash: previous.expectedCash,
+        physicalCashDeclared: previous.physicalCashDeclared,
+        cashDifference: previous.cashDifference,
+      }).filter(([, value]) => value !== undefined))
+    : {
+        cashSales,
+        qrSales: sum(commercialSales, "qrAmount"),
+        creditGenerated: sum(commercialSales, "creditAmount"),
+        cashCollections,
+        qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
+        cashExpenses,
+        claimCash,
+        expectedCash,
+        physicalCashDeclared: requested.physicalCashDeclared,
+        cashDifference: round(requested.physicalCashDeclared - expectedCash),
+      };
   const c = {
     ...previous,
     status: "closed",
-    cashSales,
-    qrSales: sum(commercialSales, "qrAmount"),
-    creditGenerated: sum(commercialSales, "creditAmount"),
-    cashCollections,
-    qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
-    cashExpenses,
-    claimCash,
-    expectedCash,
-    physicalCashDeclared: requested.physicalCashDeclared,
-    cashDifference: round(requested.physicalCashDeclared - expectedCash),
+    ...moneySnapshot,
     closedBy: o.actor,
     closedAt: o.now,
   };
@@ -2590,10 +2612,12 @@ handlers.reopen = async (o, p) => {
     reversedMovementIds = movements.map((movement) => movement.id);
   }
   const reopenHistory = [...(c.reopenHistory || [])];
+  const preserveFinancialSnapshot = p.preserveFinancialSnapshot === true;
   if (c.warehouseClosedBy) {
     reopenHistory.push({
       reopenedAt: o.now,
       reason: p.reason.trim(),
+      preserveFinancialSnapshot,
       warehouseClosedBy: c.warehouseClosedBy,
       warehouseClosedAt: c.warehouseClosedAt || "",
       products: c.products || [],
@@ -2610,6 +2634,7 @@ handlers.reopen = async (o, p) => {
     reopenedByName: o.member.displayName || o.actor,
     reopenedAt: o.now,
     reopenReason: p.reason.trim(),
+    preserveFinancialSnapshot,
   });
   if (d) {
     o.put("distDispatches", d.id, {

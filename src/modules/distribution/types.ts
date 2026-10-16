@@ -513,9 +513,11 @@ export interface DistClosure extends DistBaseDoc {
   reopenedByName?: string
   reopenedAt?: string
   reopenReason?: string
+  preserveFinancialSnapshot?: boolean
   reopenHistory?: Array<{
     reopenedAt: string
     reason: string
+    preserveFinancialSnapshot?: boolean
     warehouseClosedBy: string
     warehouseClosedAt: string
     products: DistClosureProductRow[]

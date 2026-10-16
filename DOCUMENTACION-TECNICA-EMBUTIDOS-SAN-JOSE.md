@@ -284,3 +284,12 @@ Estado al cerrar esta limpieza:
 - En móvil, los campos principales de cantidad son de ancho completo, aceptan coma/punto decimal en kg y el botón para copiar la cantidad declarada queda debajo del campo.
 - La auditoría de producción se ejecutó en solo lectura y encontró recepciones anteriores marcadas como pérdida con motivo de retorno normal/común. Las operaciones están confirmadas y son trazables por lote; la eventual corrección debe ser explícita mediante reapertura auditada y nueva recepción, nunca por ajuste manual ni migración silenciosa. No se modificó producción.
 - Android publicado: `versionCode 48`, `versionName 1.4.28`; aplicación `com.pachax.flow`, firma oficial. APK y OTA verificados contra manifiesto remoto.
+
+## Recepción de retornos en panel amplio 1.4.29 (15 de octubre de 2026)
+
+- La lista de productos de Almacén presenta un resumen por producto y abre una recepción amplia para registrar retorno normal, merma recuperable y producto no apto. El resumen calcula total físico, stock vendible, pérdida, faltante y sobrante antes de guardar.
+- La recepción usa campos de ancho completo, acepta punto o coma decimal para kg y permite guardar cada producto como revisado. No se permite confirmar el retorno de almacén hasta revisar todos los productos del despacho.
+- Una reapertura puede marcarse explícitamente como "Corregir solo inventario". Ese alcance queda auditado y mantiene el snapshot monetario anterior al volver a cerrar; las reaperturas financieras normales conservan el recálculo de caja habitual.
+- Auditoría histórica de solo lectura: en Luciano se encontraron 0,90 kg de Viena, 0,44 kg de chorizo precocido y 0,46 kg de chorizo crudo registrados como pérdida bajo la semántica anterior; en Ricardo, 0,72 kg de Viena y 0,20 kg de chorizo precocido. Se conservan esos cierres, balances, lotes y pérdidas sin cambio automático ni reinterpretación.
+- Hugo se observó con cierre cerrado y sin declaración de retorno registrada. No se reconstruyen cantidades ni se reabre ese cierre.
+- Android: `versionCode 49`, `versionName 1.4.29`; aplicación `com.pachax.flow`, firma oficial.
