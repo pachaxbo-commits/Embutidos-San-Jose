@@ -19,6 +19,8 @@ function looksLikePrinter(device: BluetoothPairedDevice): boolean {
 
 export function DistributionPrinterModal({ restaurantId, onClose }: { restaurantId: string; onClose: () => void }) {
   const previous = getActiveReceiptPrinter()
+  const [savedProfile, setSavedProfile] = useState<PrinterProfile | null>(previous)
+  const [isEditing, setIsEditing] = useState(!previous)
   const [connection, setConnection] = useState<'bluetooth_spp' | 'network_tcp'>(previous?.connectionType === 'network_tcp' ? 'network_tcp' : 'bluetooth_spp')
   const [address, setAddress] = useState(previous?.macAddress || '')
   const [ip, setIp] = useState(previous?.ipAddress || '')
@@ -30,7 +32,7 @@ export function DistributionPrinterModal({ restaurantId, onClose }: { restaurant
   const busy = status === 'searching' || status === 'testing'
 
   const selectedDevice = devices.find(device => device.address === address)
-  const printerName = selectedDevice?.name || previous?.name || 'Impresora de recibos'
+  const printerName = selectedDevice?.name || (previous?.connectionType === connection ? previous.name : connection === 'network_tcp' ? 'Impresora de red' : 'Impresora de recibos')
   const detectedLanguage = commandLanguage === 'auto' ? detectPrinterLanguage(printerName) : commandLanguage
   const isValid = connection === 'bluetooth_spp' ? /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(address.trim()) : isValidIpOrHost(ip)
 
@@ -77,9 +79,12 @@ export function DistributionPrinterModal({ restaurantId, onClose }: { restaurant
 
   const save = () => {
     try {
-      savePrinterProfile(profile())
+      const nextProfile = profile()
+      savePrinterProfile(nextProfile)
+      setSavedProfile(nextProfile)
+      setIsEditing(false)
       setStatus('selected')
-      setFeedback('Impresora guardada en este dispositivo.')
+      setFeedback('Impresora vinculada correctamente.')
     } catch (error) {
       setStatus('error')
       setFeedback((error as Error).message)
@@ -132,7 +137,40 @@ export function DistributionPrinterModal({ restaurantId, onClose }: { restaurant
     }
   }
 
-  return <Modal isOpen onClose={onClose} title="Configurar impresora" subtitle="Una configuración por teléfono o tablet" footer={<div className="grid grid-cols-2 gap-2"><SecondaryButton full disabled={busy || !isValid} onClick={() => void test()}><Printer size={16} /> Probar</SecondaryButton><PrimaryButton full disabled={busy || !isValid} onClick={save}>Guardar</PrimaryButton></div>}>
+  if (savedProfile && !isEditing) {
+    const detectedSavedLanguage = detectPrinterLanguage(savedProfile.name)
+    const savedLanguage = savedProfile.commandLanguage === 'auto' || !savedProfile.commandLanguage
+      ? `Automático · ${detectedSavedLanguage === 'tspl' ? 'TSPL' : 'ESC/POS'}`
+      : savedProfile.commandLanguage === 'tspl' ? 'TSPL' : 'ESC/POS'
+    const isNetwork = savedProfile.connectionType === 'network_tcp' || savedProfile.connectionType === 'lan_tcp'
+    const connectionLabel = isNetwork ? 'Red local' : 'Bluetooth'
+    const savedAddress = isNetwork
+      ? `IP: ${savedProfile.ipAddress || 'No disponible'}${savedProfile.port ? ` · Puerto ${savedProfile.port}` : ''}`
+      : savedProfile.macAddress || 'Dirección no disponible'
+
+    return <Modal isOpen onClose={onClose} title="Impresora" subtitle="Configuración de este teléfono o tablet" size="md" footer={<div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full disabled={busy} onClick={() => { setIsEditing(true); setStatus('selected'); setFeedback('La impresora guardada seguirá activa hasta que guardes otra.') }}><Printer size={16} /> Cambiar impresora</SecondaryButton><PrimaryButton full disabled={busy} onClick={() => void test()}>{status === 'testing' ? <Loader2 size={16} className="animate-spin" /> : <Printer size={16} />} {status === 'testing' ? 'Probando impresión…' : 'Probar impresión'}</PrimaryButton></div>}>
+      <div className="grid gap-4">
+        <div className={`flex items-start gap-3 rounded-2xl border p-4 ${status === 'error' ? 'border-rose-200 bg-rose-50 text-rose-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
+          <CheckCircle2 size={22} className="mt-0.5 shrink-0" />
+          <div className="min-w-0"><p className="text-sm font-black">{status === 'success' ? 'IMPRESORA LISTA' : 'IMPRESORA VINCULADA CORRECTAMENTE'}</p><p role="status" className="mt-1 text-xs leading-relaxed">{status === 'success' ? 'La prueba se envió correctamente. Comprueba que el ticket salió completo.' : status === 'error' ? 'La impresora guardada permanece activa.' : 'Esta impresora está guardada y lista para usarse.'}</p></div>
+        </div>
+        <div className="rounded-2xl border-2 border-slate-200 bg-white p-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--primary-soft)] text-[var(--primary)]">{isNetwork ? <Wifi size={21} /> : <Bluetooth size={21} />}</span>
+            <div className="min-w-0 flex-1"><h3 className="break-words text-base font-extrabold text-slate-900">{savedProfile.name || 'Impresora de recibos'}</h3><p className="mt-0.5 text-xs font-semibold text-slate-600">{connectionLabel}</p><p className="mt-1 break-all text-[11px] text-slate-500">{savedAddress}</p></div>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3">
+            <div className="min-w-0 rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Papel</p><p className="mt-1 text-sm font-extrabold text-slate-900">{savedProfile.paperWidth === '58mm' ? '58 mm' : '80 mm'}</p></div>
+            <div className="min-w-0 rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Lenguaje</p><p className="mt-1 break-words text-sm font-extrabold text-slate-900">{savedLanguage}</p></div>
+          </div>
+        </div>
+        {status === 'testing' && <p role="status" className="flex items-center gap-2 rounded-xl bg-sky-50 p-3 text-xs font-semibold text-sky-800"><Loader2 size={16} className="animate-spin" /> Probando impresión…</p>}
+        {status === 'error' && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold leading-relaxed text-rose-800">No se pudo completar la prueba: {feedback} La impresora guardada se conserva.</p>}
+      </div>
+    </Modal>
+  }
+
+  return <Modal isOpen onClose={onClose} title="Configurar impresora" subtitle="Una configuración por teléfono o tablet" footer={<PrimaryButton full disabled={busy || !isValid} onClick={save}>Guardar</PrimaryButton>}>
     <div className="grid gap-4">
       <div className="grid grid-cols-2 gap-2">
         <button type="button" onClick={() => { setConnection('bluetooth_spp'); setStatus(address ? 'selected' : 'idle') }} className={`flex min-h-[72px] flex-col items-center justify-center gap-1 rounded-2xl border text-xs font-extrabold ${connection === 'bluetooth_spp' ? 'border-[var(--primary)] bg-[var(--primary-soft)] text-[var(--primary)]' : 'border-slate-200 text-slate-600'}`}><Bluetooth size={22} /> Bluetooth</button>
@@ -144,7 +182,7 @@ export function DistributionPrinterModal({ restaurantId, onClose }: { restaurant
         {devices.length > 0 && <p className="px-1 text-[10px] font-semibold text-slate-500">Android muestra todos los equipos vinculados. Las posibles impresoras aparecen primero.</p>}
         {devices.map(device => {
           const selected = address === device.address
-          return <button key={device.address} type="button" onClick={() => { setAddress(device.address); setStatus('selected'); setFeedback(`${device.name} seleccionada. Realiza una prueba antes de guardar.`) }} className={`flex min-h-[58px] items-center gap-3 rounded-2xl border p-3 text-left ${selected ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${selected ? 'bg-[var(--primary)] text-white' : 'bg-slate-100 text-slate-500'}`}><Bluetooth size={17} /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-1.5"><strong className="text-sm leading-snug text-slate-900">{device.name}</strong>{looksLikePrinter(device) && <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[8px] font-black text-emerald-700">POSIBLE IMPRESORA</span>}</span><span className="block text-[10px] font-medium text-slate-500">{device.address}</span></span>{selected && <Check size={17} className="shrink-0 text-[var(--primary)]" />}</button>
+          return <button key={device.address} type="button" onClick={() => { setAddress(device.address); setStatus('selected'); setFeedback(`${device.name} seleccionada. Guarda para utilizar esta impresora.`) }} className={`flex min-h-[58px] items-center gap-3 rounded-2xl border p-3 text-left ${selected ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${selected ? 'bg-[var(--primary)] text-white' : 'bg-slate-100 text-slate-500'}`}><Bluetooth size={17} /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-1.5"><strong className="text-sm leading-snug text-slate-900">{device.name}</strong>{looksLikePrinter(device) && <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[8px] font-black text-emerald-700">POSIBLE IMPRESORA</span>}</span><span className="block text-[10px] font-medium text-slate-500">{device.address}</span></span>{selected && <Check size={17} className="shrink-0 text-[var(--primary)]" />}</button>
         })}
         {address && devices.length === 0 && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs font-bold text-slate-800">Impresora guardada</p><p className="mt-0.5 text-[10px] text-slate-500">{address}</p></div>}
       </div> : <Field label="Dirección IP"><TextInput value={ip} onChange={event => { setIp(event.target.value); setStatus('idle') }} placeholder="192.168.1.150" inputMode="decimal" /></Field>}
