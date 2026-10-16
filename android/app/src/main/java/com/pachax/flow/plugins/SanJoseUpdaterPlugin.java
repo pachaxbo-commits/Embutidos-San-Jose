@@ -130,6 +130,7 @@ public class SanJoseUpdaterPlugin extends Plugin {
                     connection.setReadTimeout(30_000);
                     connection.setInstanceFollowRedirects(false);
                     connection.setRequestProperty("Accept", "application/vnd.android.package-archive");
+                    connection.setRequestProperty("Accept-Encoding", "identity");
                     connection.connect();
                     int status = connection.getResponseCode();
                     if (status >= 300 && status < 400) {
