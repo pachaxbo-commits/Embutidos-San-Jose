@@ -487,7 +487,9 @@ export function computeProductProfitReport(
   }
 
   // 6. Resultado Operativo Estimado (compatibilidad idéntica a Resumen)
-  const spent = round2(expenses.reduce((n, e) => n + e.amount, 0))
+  const spent = round2(expenses
+    .filter((expense) => !expense.voided && expense.economicType !== 'production_input' && expense.affectsOperatingResult !== false)
+    .reduce((n, expense) => n + expense.amount, 0))
   const losses = movements
     .filter((m) => !m.reversedAt)
     .filter((m) => dayKeys.length === 0 || dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))

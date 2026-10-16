@@ -33,6 +33,7 @@ import type {
   DistExpense,
   DistExpenseCategory,
   ExpenseGroup,
+  ExpenseEconomicType,
   DistProduct,
   DistReceivable,
   DistReceivableAdjustment,
@@ -942,6 +943,7 @@ export interface RegisterExpenseInput {
   categoryId?: string
   categoryName?: string
   paymentMethod?: 'cash' | 'transfer' | 'other'
+  economicType?: ExpenseEconomicType
   affectsOperatingResult?: boolean
   dayKey?: string
   routeId: string
@@ -970,7 +972,7 @@ export async function saveExpenseCategory(input: { categoryId: string; group: Ex
   return submitOperation<DistExpenseCategory>('saveExpenseCategory', input, newOperationId('expense-category'))
 }
 
-export async function classifyExpense(input: { expenseId: string; group: ExpenseGroup; categoryId: string; affectsOperatingResult: boolean }) {
+export async function classifyExpense(input: { expenseId: string; group: ExpenseGroup; categoryId: string; economicType: ExpenseEconomicType }) {
   return submitOperation<DistExpense>('classifyExpense', input, newOperationId('expense-classification'))
 }
 

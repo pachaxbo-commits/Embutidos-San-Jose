@@ -26,7 +26,7 @@ function classicRowsForResult(result: ReturnType<typeof computeOperatingResult>)
     { label: 'COSTO DE LO VENDIDO', amount: result.costOfSales, detailKey: 'costOfSales', kind: 'line' },
     { label: 'MARGEN BRUTO', amount: result.grossMargin, detailKey: 'grossMargin', kind: 'total' },
   )
-  for (const group of EXPENSE_GROUPS) {
+  for (const group of EXPENSE_GROUPS.filter((entry) => entry.id !== 'production_input')) {
     const expenses = result.expenses.filter((expense) => expense.group === group.id)
     if (!expenses.length) continue
     rows.push({ label: group.label.toLocaleUpperCase('es'), amount: null, kind: 'heading' })
@@ -36,6 +36,7 @@ function classicRowsForResult(result: ReturnType<typeof computeOperatingResult>)
     rows.push({ label: `Subtotal ${group.label}`, amount: result.expenseTotals[group.id], detailKey: group.id, kind: 'subtotal' })
   }
   rows.push(
+    { label: 'Compras de materia prima (informativo; no se resta otra vez)', amount: result.productionInputTotal, detailKey: 'production_input', kind: 'line' },
     { label: 'PÉRDIDAS / MERMAS', amount: result.losses, detailKey: 'losses', kind: 'line' },
     { label: 'CORTESÍAS', amount: result.courtesyCost, detailKey: 'courtesies', kind: 'line' },
     { label: 'RESULTADO OPERATIVO ESTIMADO', amount: result.operatingResult, detailKey: 'result', kind: 'total' },
@@ -47,7 +48,8 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
   const sections: Array<[string, number | null]> = [
     ['Ventas brutas', result.grossSales], ['Cambios y devoluciones', result.adjustments],
     ['Ventas netas', result.netSales], ['Costo de lo vendido', result.costOfSales], ['Margen bruto', result.grossMargin],
-    ...EXPENSE_GROUPS.map((group) => [group.label, result.expenseTotals[group.id]] as [string, number | null]),
+    ...EXPENSE_GROUPS.filter((group) => group.id !== 'production_input').map((group) => [group.label, result.expenseTotals[group.id]] as [string, number | null]),
+    ['Compras de materia prima (informativo)', result.productionInputTotal],
     ['Mermas y pérdidas', result.losses], ['Costo de cortesías', result.courtesyCost],
     ['Resultado operativo estimado', result.operatingResult],
   ]
@@ -58,7 +60,8 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
       ...(result.pendingEconomicDecisionCount > 0 ? [['Egresos con decisión pendiente', result.pendingEconomicDecisionCount] as [string, number]] : []),
       ...sections.filter(([label]) => label !== 'Resultado operativo estimado').map(([label, value]) => [label, value === null ? 'No disponible: falta costo histórico' : value]),
       ['RESULTADO OPERATIVO ESTIMADO', result.operatingResult === null ? 'No disponible: falta costo histórico' : result.operatingResult],
-      ['Fórmula', 'Ventas netas - costo de lo vendido - egresos - pérdidas - cortesías'],
+      ['Nota sobre materia prima', 'Salida de dinero no descontada nuevamente porque su costo se reconoce en los productos.'],
+      ['Fórmula', 'Ventas netas - costo de lo vendido - egresos operativos - pérdidas - cortesías'],
       ['Nota', 'Estimación operativa; no es contabilidad formal.'],
     ],
   }
@@ -76,12 +79,15 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
     ['DETALLE DE EGRESOS', '', '', '', ''],
     ['Grupo', 'Categoría', 'Concepto', 'Origen / Responsable', 'Monto (Bs)'],
     ...EXPENSE_GROUPS.flatMap((group) => {
+      if (group.id === 'production_input') return []
       const items = result.expenses.filter((expense) => expense.group === group.id)
       if (!items.length) return []
       const categories = new Map<string, number>()
       for (const item of items) categories.set(item.category, (categories.get(item.category) || 0) + item.amount)
       return [[group.label, '', '', '', ''], ...[...categories.entries()].map(([category, amount]) => ['', category, '', '', round2(amount)]), ...items.map((item) => ['', item.category, item.concept, `${item.origin} / ${item.responsible}`, item.amount]), ['', `Subtotal ${group.label}`, '', '', result.expenseTotals[group.id]]]
     }),
+    ['COMPRAS DE MATERIA PRIMA (INFORMATIVO)', '', '', '', result.productionInputTotal],
+    ['Nota', 'Salida de dinero no descontada nuevamente porque su costo se reconoce en los productos.', '', '', ''],
     ['PÉRDIDAS / MERMAS', '', '', '', result.losses === null ? 'No disponible: falta costo histórico' : result.losses],
     ['CORTESÍAS', '', '', '', result.courtesyCost === null ? 'No disponible: falta costo histórico' : result.courtesyCost],
     ['RESULTADO OPERATIVO ESTIMADO', '', '', '', result.operatingResult === null ? 'No disponible: falta costo histórico' : result.operatingResult],
@@ -103,7 +109,7 @@ function htmlForResult(result: ReturnType<typeof computeOperatingResult>, period
 
 async function renderSummaryPng(result: ReturnType<typeof computeOperatingResult>, period: string): Promise<Blob> {
   const canvas = document.createElement('canvas')
-  const rows: Array<[string, number | null]> = [['Ventas brutas', result.grossSales], ['Cambios y devoluciones', result.adjustments], ['Ventas netas', result.netSales], ['Costo de lo vendido', result.costOfSales], ['Margen bruto', result.grossMargin], ...EXPENSE_GROUPS.map((g) => [g.label, result.expenseTotals[g.id]] as [string, number]), ['Mermas y pérdidas', result.losses], ['Costo de cortesías', result.courtesyCost]]
+  const rows: Array<[string, number | null]> = [['Ventas brutas', result.grossSales], ['Cambios y devoluciones', result.adjustments], ['Ventas netas', result.netSales], ['Costo de lo vendido', result.costOfSales], ['Margen bruto', result.grossMargin], ...EXPENSE_GROUPS.filter((g) => g.id !== 'production_input').map((g) => [g.label, result.expenseTotals[g.id]] as [string, number]), ['Compras de materia prima (informativo)', result.productionInputTotal], ['Mermas y pérdidas', result.losses], ['Costo de cortesías', result.courtesyCost]]
   canvas.width = 1100; canvas.height = 435 + rows.length * 38 + 70
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Este dispositivo no pudo crear la imagen.')
@@ -191,19 +197,21 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
       {feedback && <p role="status" className="text-xs font-semibold text-slate-600">{feedback}</p>}
       <div className={`rounded-xl border p-3 text-xs font-bold ${resultStatus === 'Pendiente de revisar' ? 'border-amber-200 bg-amber-50 text-amber-900' : resultStatus === 'Incompleto' ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>Estado: {resultStatus}</div>
       {result.pendingClassificationCount > 0 && <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">Hay {result.pendingClassificationCount} egreso{result.pendingClassificationCount === 1 ? '' : 's'} pendiente{result.pendingClassificationCount === 1 ? '' : 's'} de clasificar. Siguen incluidos según la decisión de cada egreso; los que no tienen grupo aparecen bajo “Otros egresos operativos”.</p>}
-      {result.pendingEconomicDecisionCount > 0 && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Hay {result.pendingEconomicDecisionCount} egreso{result.pendingEconomicDecisionCount === 1 ? '' : 's'} histórico{result.pendingEconomicDecisionCount === 1 ? '' : 's'} sin revisar si ya está incluido en el costo del producto. La cifra se muestra como provisional hasta revisar ese dato.</p>}
+      {result.pendingEconomicDecisionCount > 0 && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Hay {result.pendingEconomicDecisionCount} egreso{result.pendingEconomicDecisionCount === 1 ? '' : 's'} histórico{result.pendingEconomicDecisionCount === 1 ? '' : 's'} cuyo tipo de salida todavía no fue confirmado. La cifra se muestra como provisional hasta revisarlos.</p>}
 
       {mode === 'easy' ? <section className="rounded-3xl border border-slate-200 bg-white p-4 sm:p-6">
         <p className="text-xs font-extrabold uppercase tracking-wide text-slate-500">Resultado operativo del período · {period}</p>
         <p className={`mt-2 break-words text-3xl font-black sm:text-4xl ${result.operatingResult === null ? 'text-amber-700' : result.pendingEconomicDecisionCount > 0 ? 'text-amber-800' : 'text-[var(--primary)]'}`}>{amount(result.operatingResult)}</p>
-        <p className="mt-2 text-xs text-slate-500">Ventas netas − costo de lo vendido − egresos − pérdidas − cortesías</p>
+        <p className="mt-2 text-xs text-slate-500">Ventas netas − costo de lo vendido − egresos operativos − pérdidas − cortesías</p>
         <div className="mt-5">
           {amountButton('Ventas brutas', result.grossSales, 'grossSales')}
           {amountButton('Cambios y devoluciones', result.adjustments, 'adjustments', 'text-amber-700')}
           {amountButton('Ventas netas', result.netSales, 'netSales', 'text-[var(--primary)]')}
           {amountButton('Costo de lo vendido', result.costOfSales, 'costOfSales')}
           {amountButton('Margen bruto', result.grossMargin, 'grossMargin', 'text-emerald-700')}
-          {EXPENSE_GROUPS.map((group) => <Fragment key={group.id}>{amountButton(group.label, result.expenseTotals[group.id], group.id)}</Fragment>)}
+          {EXPENSE_GROUPS.filter((group) => group.id !== 'production_input').map((group) => <Fragment key={group.id}>{amountButton(group.label, result.expenseTotals[group.id], group.id)}</Fragment>)}
+          {amountButton('Compras de materia prima', result.productionInputTotal, 'production_input', 'text-emerald-800')}
+          <p className="-mt-2 rounded-xl bg-emerald-50 p-3 text-xs text-emerald-900">Salida de dinero no descontada nuevamente porque su costo se reconoce en los productos.</p>
           {amountButton('Mermas y pérdidas', result.losses, 'losses', 'text-amber-800')}
           {amountButton('Costo de cortesías', result.courtesyCost, 'courtesies')}
           {amountButton('Resultado operativo estimado', result.operatingResult, 'result', 'text-[var(--primary)]')}

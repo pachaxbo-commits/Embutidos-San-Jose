@@ -92,11 +92,34 @@ equal(reversedResult.losses, 0, 'movimiento de pérdida revertido no cuenta como
 equal(reversedResult.details.find((entry) => entry.key === 'losses')?.rows.length, 0, 'movimiento revertido se conserva fuera del detalle activo')
 const expectedCashWithIncludedExpense = computeMoneySummary([], [], [includedExpense])
 equal(expectedCashWithIncludedExpense.cashExpenses, 30, 'aunque esté incluido en costo, el gasto efectivo sigue reduciendo caja')
+const productionInputCash = expense({ id: 'raw-cash', amount: 858, economicType: 'production_input', affectsOperatingResult: false, group: 'production_input', categoryId: 'production_input-1' })
+const productionInputQr = expense({ id: 'raw-qr', amount: 756, paymentMethod: 'transfer', economicType: 'production_input', affectsOperatingResult: false, group: 'production_input', categoryId: 'production_input-1' })
+equal(computeMoneySummary([], [], [productionInputCash]).cashExpenses, 858, 'materia prima en efectivo sí reduce el efectivo esperado')
+equal(computeMoneySummary([], [], [productionInputQr]).cashExpenses, 0, 'materia prima pagada por QR no reduce efectivo físico')
+const productionInputResult = computeOperatingResult([], [], [productionInputCash, productionInputQr], [], ['2026-10-10'])
+equal(productionInputResult.operatingResult, 0, 'materia prima no se descuenta como gasto operativo')
+equal(productionInputResult.productionInputTotal, 1614, 'compras de materia prima se muestran en total informativo separado')
+equal(productionInputResult.details.find((entry) => entry.key === 'production_input')?.rows.length, 2, 'detalle informativo abre las compras de materia prima')
+const realDayResult = computeOperatingResult(
+  [sale({ id: 'day-sales', operationId: 'day-sales', total: 9310, cashAmount: 9310, creditAmount: 0, lines: [{ productId: 'p1', productNameSnapshot: 'Viena', unitType: 'kg', quantity: 1, actualUnitPrice: 9310, subtotal: 9310, costTotal: 7048.76 }] })],
+  [],
+  [expense({ id: 'operating-331', amount: 331 }), productionInputCash, productionInputQr],
+  [movement({ id: 'loss-356', lossCost: 356.22 })],
+  ['2026-10-10'],
+)
+equal(realDayResult.grossMargin, 2261.24, 'reconciliación histórica: margen bruto 2.261,24')
+equal(realDayResult.expenseTotals.administration, 331, 'reconciliación histórica: solo gasto operativo restante')
+equal(realDayResult.productionInputTotal, 1614, 'reconciliación histórica: materia prima separada')
+equal(realDayResult.operatingResult, 1574.02, 'reconciliación histórica no descuenta materia prima doblemente')
+equal(Math.round((2261.24 - 331 - (356.22 - 93.5)) * 100) / 100, 1667.52, 'comparación analítica excluye solo las pérdidas históricas conocidas')
 const expectedCashWithVoidedExpense = computeMoneySummary([], [], [voidedExpense])
 equal(expectedCashWithVoidedExpense.cashExpenses, 0, 'egreso anulado no reduce efectivo esperado')
 const cogsAndIncludedExpense = computeOperatingResult([sale()], [], [includedExpense], [], ['2026-10-10'])
 equal(cogsAndIncludedExpense.costOfSales, 60, 'COGS mantiene su costo histórico')
 equal(cogsAndIncludedExpense.operatingResult, 40, 'el costo incluido no se vuelve a descontar del margen')
+const cogsAndRawMaterial = computeOperatingResult([sale()], [], [productionInputCash], [], ['2026-10-10'])
+equal(cogsAndRawMaterial.costOfSales, 60, 'la compra de materia prima no recalcula ni duplica el costo histórico vendido')
+equal(cogsAndRawMaterial.operatingResult, 40, 'COGS más compra materia prima no descuenta el mismo costo dos veces')
 const regroupedExpenseResult = computeOperatingResult([], [], [{ ...expense(), group: 'equipment', affectsOperatingResult: true }], [], ['2026-10-10'])
 equal(regroupedExpenseResult.operatingResult, -10, 'cambiar la categoría/grupo no altera el total mientras la decisión económica no cambie')
 equal(regroupedExpenseResult.expenseTotals.equipment, 10, 'la categoría solo organiza el egreso en su grupo')

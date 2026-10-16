@@ -5,7 +5,8 @@ export const EXPENSE_GROUPS: { id: ExpenseGroup; label: string }[] = [
   { id: 'indirect', label: 'Gastos indirectos' },
   { id: 'equipment', label: 'Gastos de equipamiento' },
   { id: 'other', label: 'Otros egresos operativos' },
-  { id: 'production_additional', label: 'Producción — gasto adicional' },
+  { id: 'production_additional', label: 'Gasto de producción adicional' },
+  { id: 'production_input', label: 'Compras para producción' },
 ]
 
 const INITIAL: Record<ExpenseGroup, string[]> = {
@@ -14,6 +15,7 @@ const INITIAL: Record<ExpenseGroup, string[]> = {
   equipment: ['Maquinaria', 'Herramientas', 'Muebles', 'Equipos', 'Otros'],
   other: ['Otros egresos', 'Por clasificar'],
   production_additional: ['Insumo no incorporado al costo', 'Servicio de producción', 'Otro'],
+  production_input: ['Carne', 'Condimentos', 'Tripas / envolturas', 'Insumos de producción', 'Otros insumos'],
 }
 
 export const DEFAULT_EXPENSE_CATEGORIES: DistExpenseCategory[] = Object.entries(INITIAL).flatMap(([group, names], groupIndex) =>

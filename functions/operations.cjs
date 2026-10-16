@@ -1908,11 +1908,15 @@ async function expense(o, p) {
     Number.isFinite(p.amount) && p.amount > 0 && p.concept?.trim(),
     "Revisa concepto y monto.",
   );
-  const groups = ["administration", "indirect", "equipment", "other", "production_additional"];
+  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
   const paymentMethods = ["cash", "transfer", "other"];
   check(!p.group || groups.includes(p.group), "El grupo del egreso no es válido.");
-  check(p.affectsOperatingResult === undefined || typeof p.affectsOperatingResult === "boolean", "La decisión de costo del egreso no es válida.");
-  check(o.member.role === "admin" || p.affectsOperatingResult !== false, "Solo Administración puede decidir si el egreso ya está incluido en el costo de los productos.");
+  const economicType = p.economicType || (p.affectsOperatingResult === false ? "production_input" : "operating_expense");
+  check(["operating_expense", "production_input"].includes(economicType), "El tipo de salida no es válido.");
+  check(p.affectsOperatingResult === undefined || typeof p.affectsOperatingResult === "boolean", "La decisión económica del egreso no es válida.");
+  check(p.affectsOperatingResult === undefined || p.affectsOperatingResult === (economicType === "operating_expense"), "El tipo de salida y su tratamiento económico no coinciden.");
+  check(economicType === "production_input" ? p.group === "production_input" : p.group !== "production_input", "El grupo debe corresponder al tipo de salida.");
+  check(o.member.role === "admin" || economicType !== "production_input", "Solo Administración puede registrar compras para producción.");
   check(!p.paymentMethod || paymentMethods.includes(p.paymentMethod), "La forma de pago no es válida.");
   check(!p.dayKey || validDate(p.dayKey), "La fecha del egreso no es válida.");
   const defaults = {
@@ -1921,6 +1925,7 @@ async function expense(o, p) {
     equipment: ["Maquinaria", "Herramientas", "Muebles", "Equipos", "Otros"],
     other: ["Otros egresos", "Por clasificar"],
     production_additional: ["Insumo no incorporado al costo", "Servicio de producción", "Otro"],
+    production_input: ["Carne", "Condimentos", "Tripas / envolturas", "Insumos de producción", "Otros insumos"],
   };
   let category = "Por clasificar";
   if (p.group && p.categoryId) {
@@ -1942,7 +1947,8 @@ async function expense(o, p) {
     ...(p.categoryId ? { categoryId: safeId(p.categoryId) } : {}),
     categoryName: category,
     paymentMethod: p.paymentMethod || "cash",
-    affectsOperatingResult: p.affectsOperatingResult !== false,
+    economicType,
+    affectsOperatingResult: economicType === "operating_expense",
     concept: p.concept.trim(),
     amount: round(p.amount),
     routeId: p.routeId,
@@ -1973,7 +1979,7 @@ async function deleteExpense(o, p) {
 
 async function saveExpenseCategory(o, p) {
   o.admin();
-  const groups = ["administration", "indirect", "equipment", "other", "production_additional"];
+  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
   const id = safeId(p.categoryId);
   const name = String(p.name || "").trim();
   check(groups.includes(p.group), "El grupo de la categoría no es válido.");
@@ -1994,7 +2000,7 @@ async function classifyExpense(o, p) {
   o.admin();
   const expense = await o.read("distExpenses", safeId(p.expenseId));
   check(expense && !expense.voided, "El egreso ya no está activo.");
-  const groups = ["administration", "indirect", "equipment", "other", "production_additional"];
+  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
   check(groups.includes(p.group), "El grupo del egreso no es válido.");
   const categoryId = safeId(p.categoryId);
   const category = await o.read("distExpenseCategories", categoryId);
@@ -2004,13 +2010,19 @@ async function classifyExpense(o, p) {
     equipment: ["Maquinaria", "Herramientas", "Muebles", "Equipos", "Otros"],
     other: ["Otros egresos", "Por clasificar"],
     production_additional: ["Insumo no incorporado al costo", "Servicio de producción", "Otro"],
+    production_input: ["Carne", "Condimentos", "Tripas / envolturas", "Insumos de producción", "Otros insumos"],
   };
   const index = Number(String(categoryId).split("-").at(-1)) - 1;
   const defaultName = String(categoryId).startsWith(`${p.group}-`) ? defaults[p.group]?.[index] : undefined;
   check(category ? category.active && category.group === p.group : Boolean(defaultName), "La categoría ya no está activa.");
-  check(typeof p.affectsOperatingResult === "boolean", "Indica si el egreso ya está incluido en el costo de los productos.");
-  const previous = { group: expense.group || "other", categoryId: expense.categoryId || "", categoryName: expense.categoryName || "Por clasificar", affectsOperatingResult: expense.affectsOperatingResult };
-  const next = { group: p.group, categoryId, categoryName: category?.name || defaultName, affectsOperatingResult: p.affectsOperatingResult };
+  const economicType = p.economicType || (p.affectsOperatingResult === false ? "production_input" : p.affectsOperatingResult === true ? "operating_expense" : undefined);
+  check(["operating_expense", "production_input"].includes(economicType), "Selecciona el tipo de salida.");
+  check(p.affectsOperatingResult === undefined || typeof p.affectsOperatingResult === "boolean", "La decisión económica del egreso no es válida.");
+  check(p.affectsOperatingResult === undefined || p.affectsOperatingResult === (economicType === "operating_expense"), "El tipo de salida y su tratamiento económico no coinciden.");
+  check(economicType === "production_input" ? p.group === "production_input" : p.group !== "production_input", "El grupo debe corresponder al tipo de salida.");
+  const affectsOperatingResult = economicType === "operating_expense";
+  const previous = { group: expense.group || "other", categoryId: expense.categoryId || "", categoryName: expense.categoryName || "Por clasificar", economicType: expense.economicType, affectsOperatingResult: expense.affectsOperatingResult };
+  const next = { group: p.group, categoryId, categoryName: category?.name || defaultName, economicType, affectsOperatingResult };
   const history = [...(expense.classificationHistory || []), { at: o.now, by: o.actor, byName: o.member.displayName || o.actor, previous, next }].slice(-20);
   const updated = { ...expense, ...next, classificationHistory: history, updatedAt: o.now, updatedBy: o.actor };
   o.put("distExpenses", expense.id, updated);

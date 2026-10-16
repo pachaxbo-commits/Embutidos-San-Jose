@@ -708,7 +708,7 @@ console.log('=== Iniciando pruebas unitarias: Reporte de Ganancias por Producto 
       claims.reduce((n, c) => n + (c.additionalCost || 0), 0),
   )
   const resumenGrossProfit = round2(resumenRevenue - resumenCost)
-  const resumenSpent = round2(expenses.reduce((n, e) => n + e.amount, 0))
+  const resumenSpent = round2(expenses.filter((e) => !e.voided && e.economicType !== 'production_input' && e.affectsOperatingResult !== false).reduce((n, e) => n + e.amount, 0))
   const resumenLossCost = round2(movements.reduce((n, m) => n + (m.lossCost || 0), 0))
   const resumenOperatingProfit = round2(resumenGrossProfit - resumenSpent - resumenLossCost)
 
@@ -745,6 +745,20 @@ console.log('=== Iniciando pruebas unitarias: Reporte de Ganancias por Producto 
     deltaOperatingProfit < 0.001,
     `Caso 11: Reconciliación Ganancia Operativa exacta ($0.00 diff): ProfitReport=${profitReport.operationalTotals.operatingProfit} vs Resumen=${resumenOperatingProfit}`,
   )
+}
+
+// Las compras para producción siguen siendo salidas de dinero, pero no deben aparecer como gasto operativo.
+{
+  const sale = makeSale({ id: 'sale-production-cost', total: 100, lines: [{ productId: 'prod-chorizo', productNameSnapshot: 'Chorizo', unitType: 'kg', quantity: 10, actualUnitPrice: 10, subtotal: 100, costTotal: 60 }] })
+  const expenses: DistExpense[] = [
+    makeExpense({ id: 'raw-input', concept: 'Carne', amount: 1000, economicType: 'production_input', affectsOperatingResult: false }),
+    makeExpense({ id: 'operating', concept: 'Combustible', amount: 10, economicType: 'operating_expense', affectsOperatingResult: true }),
+    makeExpense({ id: 'voided', concept: 'Anulado', amount: 90, voided: true }),
+  ]
+  const report = computeProductProfitReport([sale], [], expenses)
+  ok(report.totals.costBs === 60, 'Materia prima informativa no modifica COGS histórico')
+  ok(report.operationalTotals.spent === 10, 'El resultado por producto resta egresos operativos, no materia prima ni anulados')
+  ok(report.operationalTotals.operatingProfit === 30, 'COGS más compra materia prima no duplica el costo en el resultado operativo')
 }
 
 console.log(`\n========================================`)

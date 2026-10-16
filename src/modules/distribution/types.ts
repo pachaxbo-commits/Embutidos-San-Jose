@@ -445,6 +445,7 @@ export interface DistExpense extends DistBaseDoc {
   categoryId?: string
   categoryName?: string
   paymentMethod?: 'cash' | 'transfer' | 'other'
+  economicType?: ExpenseEconomicType
   affectsOperatingResult?: boolean
   concept: string
   amount: number
@@ -455,7 +456,8 @@ export interface DistExpense extends DistBaseDoc {
   note?: string
 }
 
-export type ExpenseGroup = 'administration' | 'indirect' | 'equipment' | 'other' | 'production_additional'
+export type ExpenseEconomicType = 'operating_expense' | 'production_input'
+export type ExpenseGroup = 'administration' | 'indirect' | 'equipment' | 'other' | 'production_additional' | 'production_input'
 
 export interface DistExpenseCategory extends DistBaseDoc {
   group: ExpenseGroup
