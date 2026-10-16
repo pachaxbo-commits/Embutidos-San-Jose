@@ -42,7 +42,7 @@ export function DistributorHomeView({
   const actions: { id: ModuleId; label: string; icon: typeof ShoppingCart }[] = [
     { id: 'dist.sales', label: 'Vender', icon: ShoppingCart },
     { id: 'dist.credits', label: 'Creditos y cobros', icon: HandCoins },
-    { id: 'dist.expenses', label: 'Gastos', icon: Wallet },
+    { id: 'dist.expenses', label: 'Egresos', icon: Wallet },
     { id: 'dist.closure', label: 'Cerrar ruta', icon: ClipboardList },
   ]
 
@@ -99,7 +99,7 @@ export function DistributorHomeView({
           <div className="grid grid-cols-3 gap-2">
             <KpiCard label="Ventas" value={String(data.sales.length)} />
             <KpiCard label="Cobros" value={formatBs(money.collectionsTotal)} />
-            <KpiCard label="Gastos" value={formatBs(money.cashExpenses)} tone="danger" />
+            <KpiCard label="Egresos en efectivo" value={formatBs(money.cashExpenses)} tone="danger" />
           </div>
           <div className="mt-2 grid grid-cols-2 gap-2">
             <KpiCard label="Granel vendido" value={`${soldKg} kg`} />

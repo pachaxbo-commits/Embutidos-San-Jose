@@ -10,6 +10,7 @@ import {
   subscribeCollections,
   subscribeCustomers,
   subscribeExpenses,
+  subscribeExpenseCategories,
   subscribeOpenDispatches,
   subscribeProducts,
   subscribeReceivables,
@@ -32,6 +33,7 @@ import type {
   DistCustomer,
   DistDispatch,
   DistExpense,
+  DistExpenseCategory,
   DistProduct,
   DistReceivable,
   DistReceivableAdjustment,
@@ -39,6 +41,7 @@ import type {
   DistSale,
 } from '../types'
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from '../data/supportMaintenance'
+import { isProductionPreviewReadOnly } from '../../../lib/firebase'
 
 /**
  * Estado en vivo del modulo de distribucion.
@@ -97,6 +100,7 @@ export interface DistributionData {
   sales: DistSale[]
   collections: DistCollection[]
   expenses: DistExpense[]
+  expenseCategories: DistExpenseCategory[]
   receivables: DistReceivable[]
   receivableAdjustments: DistReceivableAdjustment[]
   closures: DistClosure[]
@@ -124,6 +128,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [sales, setSales] = useState<DistSale[]>([])
   const [collections, setCollections] = useState<DistCollection[]>([])
   const [expenses, setExpenses] = useState<DistExpense[]>([])
+  const [expenseCategories, setExpenseCategories] = useState<DistExpenseCategory[]>([])
   const [receivables, setReceivables] = useState<DistReceivable[]>([])
   const [receivableAdjustments, setReceivableAdjustments] = useState<DistReceivableAdjustment[]>([])
   const [closures, setClosures] = useState<DistClosure[]>([])
@@ -171,6 +176,10 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setCustomers(rows.sort((a, b) => a.name.localeCompare(b.name)))
         onLoaded('customers')
       }, onError),
+      ...(isProductionPreviewReadOnly() ? [((() => { setExpenseCategories([]); onLoaded('expenseCategories'); return () => {} })())] : [subscribeExpenseCategories((rows) => {
+        setExpenseCategories(rows)
+        onLoaded('expenseCategories')
+      }, onError)]),
       subscribeBalances((rows) => {
         setBalances(rows)
         onLoaded('balances')
@@ -250,6 +259,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     sales: [...sales, ...pendingSales],
     collections: [...collections, ...pendingCollections],
     expenses: [...expenses, ...pendingExpenses],
+    expenseCategories,
     receivables: visibleReceivables,
     receivableAdjustments,
     closures,

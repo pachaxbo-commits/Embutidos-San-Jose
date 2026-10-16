@@ -441,6 +441,12 @@ export interface DistExpense extends DistBaseDoc {
   voidedBy?: string
   voidedByName?: string
   operationId: string
+  group?: ExpenseGroup
+  categoryId?: string
+  categoryName?: string
+  paymentMethod?: 'cash' | 'transfer' | 'other'
+  economicType?: ExpenseEconomicType
+  affectsOperatingResult?: boolean
   concept: string
   amount: number
   routeId: string
@@ -448,6 +454,18 @@ export interface DistExpense extends DistBaseDoc {
   registeredByUid: string
   registeredByName: string
   note?: string
+}
+
+export type ExpenseEconomicType = 'operating_expense' | 'production_input'
+export type ExpenseGroup = 'administration' | 'indirect' | 'equipment' | 'other' | 'production_additional' | 'production_input'
+
+export interface DistExpenseCategory extends DistBaseDoc {
+  group: ExpenseGroup
+  name: string
+  active: boolean
+  order: number
+  updatedAt?: string
+  updatedBy?: string
 }
 
 export interface DistClosureProductRow {

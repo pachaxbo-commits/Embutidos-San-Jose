@@ -52,6 +52,18 @@ export interface FirebaseContext {
   restaurantId: string
 }
 
+export function isProductionPreviewReadOnly(projectId?: string): boolean {
+  const env = import.meta.env.VITE_VERCEL_ENV || 'development'
+  const firebaseProject = projectId || import.meta.env.VITE_FIREBASE_PROJECT_ID
+  return env === 'preview' && firebaseProject === 'pachax-flow'
+}
+
+export function assertFirebaseWritesAllowed(projectId?: string): void {
+  if (isProductionPreviewReadOnly(projectId)) {
+    throw new Error('Vista previa: los cambios están deshabilitados porque esta versión está conectada a producción.')
+  }
+}
+
 interface FirebaseRuntime {
   app: FirebaseApp
   auth: Auth
@@ -284,6 +296,7 @@ export async function createRestaurantMember(input: {
 }) {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
+  assertFirebaseWritesAllowed(context.app.options.projectId)
 
   const secondary = createSecondaryAuth('member-create')
   if (!secondary) throw new Error('Firebase no esta configurado.')

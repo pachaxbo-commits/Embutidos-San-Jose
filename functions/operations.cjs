@@ -1908,10 +1908,47 @@ async function expense(o, p) {
     Number.isFinite(p.amount) && p.amount > 0 && p.concept?.trim(),
     "Revisa concepto y monto.",
   );
+  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
+  const paymentMethods = ["cash", "transfer", "other"];
+  check(!p.group || groups.includes(p.group), "El grupo del egreso no es válido.");
+  const economicType = p.economicType || (p.affectsOperatingResult === false ? "production_input" : "operating_expense");
+  check(["operating_expense", "production_input"].includes(economicType), "El tipo de salida no es válido.");
+  check(p.affectsOperatingResult === undefined || typeof p.affectsOperatingResult === "boolean", "La decisión económica del egreso no es válida.");
+  check(p.affectsOperatingResult === undefined || p.affectsOperatingResult === (economicType === "operating_expense"), "El tipo de salida y su tratamiento económico no coinciden.");
+  check(economicType === "production_input" ? p.group === "production_input" : p.group !== "production_input", "El grupo debe corresponder al tipo de salida.");
+  check(o.member.role === "admin" || economicType !== "production_input", "Solo Administración puede registrar compras para producción.");
+  check(!p.paymentMethod || paymentMethods.includes(p.paymentMethod), "La forma de pago no es válida.");
+  check(!p.dayKey || validDate(p.dayKey), "La fecha del egreso no es válida.");
+  const defaults = {
+    administration: ["Servicios", "Limpieza", "Papelería", "Mantenimiento", "Personal", "Impuestos/tasas operativas", "Otros"],
+    indirect: ["Combustible", "Viáticos", "Transporte/Fletes", "Comunicación", "Reparaciones", "Otros"],
+    equipment: ["Maquinaria", "Herramientas", "Muebles", "Equipos", "Otros"],
+    other: ["Otros egresos", "Por clasificar"],
+    production_additional: ["Insumo no incorporado al costo", "Servicio de producción", "Otro"],
+    production_input: ["Carne", "Condimentos", "Tripas / envolturas", "Insumos de producción", "Otros insumos"],
+  };
+  let category = "Por clasificar";
+  if (p.group && p.categoryId) {
+    const saved = await o.read("distExpenseCategories", safeId(p.categoryId));
+    const defaultIndex = Number(String(p.categoryId).split("-").at(-1)) - 1;
+    const defaultName = String(p.categoryId).startsWith(`${p.group}-`) ? defaults[p.group]?.[defaultIndex] : undefined;
+    check(saved ? saved.group === p.group && saved.active : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
+    category = saved?.name || defaultName;
+  } else if (p.categoryName) {
+    category = String(p.categoryName).trim();
+  }
+  check(category.length <= 80, "La categoría es demasiado larga.");
   const e = {
     id: o.id,
     ...o.base(),
+    ...(p.dayKey ? { dayKey: p.dayKey } : {}),
     operationId: o.id,
+    ...(p.group ? { group: p.group } : {}),
+    ...(p.categoryId ? { categoryId: safeId(p.categoryId) } : {}),
+    categoryName: category,
+    paymentMethod: p.paymentMethod || "cash",
+    economicType,
+    affectsOperatingResult: economicType === "operating_expense",
     concept: p.concept.trim(),
     amount: round(p.amount),
     routeId: p.routeId,
@@ -1926,6 +1963,7 @@ async function expense(o, p) {
 
 async function deleteExpense(o, p) {
   o.admin();
+  check(String(p.reason || "").trim(), "Indica el motivo de anulación del egreso.");
   const expense = await o.read("distExpenses", p.expenseId);
   check(expense && !expense.voided, "El gasto ya no está activo.");
   o.put("distExpenses", expense.id, {
@@ -1934,8 +1972,61 @@ async function deleteExpense(o, p) {
     voidedAt: o.now,
     voidedBy: o.actor,
     voidedByName: o.member.displayName || o.actor,
+    voidReason: String(p.reason || "Anulación administrativa").trim(),
   });
   return { id: expense.id, voided: true };
+}
+
+async function saveExpenseCategory(o, p) {
+  o.admin();
+  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
+  const id = safeId(p.categoryId);
+  const name = String(p.name || "").trim();
+  check(groups.includes(p.group), "El grupo de la categoría no es válido.");
+  check(name.length > 0 && name.length <= 60, "Escribe una categoría de hasta 60 caracteres.");
+  const previous = await o.read("distExpenseCategories", id);
+  const category = {
+    id, ...o.base(), group: p.group, name,
+    active: p.active !== false,
+    order: Number.isFinite(p.order) ? Math.max(0, Math.round(p.order)) : 999,
+    ...(previous ? { createdAt: previous.createdAt, createdBy: previous.createdBy } : {}),
+    updatedAt: o.now, updatedBy: o.actor,
+  };
+  o.put("distExpenseCategories", id, category);
+  return category;
+}
+
+async function classifyExpense(o, p) {
+  o.admin();
+  const expense = await o.read("distExpenses", safeId(p.expenseId));
+  check(expense && !expense.voided, "El egreso ya no está activo.");
+  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
+  check(groups.includes(p.group), "El grupo del egreso no es válido.");
+  const categoryId = safeId(p.categoryId);
+  const category = await o.read("distExpenseCategories", categoryId);
+  const defaults = {
+    administration: ["Servicios", "Limpieza", "Papelería", "Mantenimiento", "Personal", "Impuestos/tasas operativas", "Otros"],
+    indirect: ["Combustible", "Viáticos", "Transporte/Fletes", "Comunicación", "Reparaciones", "Otros"],
+    equipment: ["Maquinaria", "Herramientas", "Muebles", "Equipos", "Otros"],
+    other: ["Otros egresos", "Por clasificar"],
+    production_additional: ["Insumo no incorporado al costo", "Servicio de producción", "Otro"],
+    production_input: ["Carne", "Condimentos", "Tripas / envolturas", "Insumos de producción", "Otros insumos"],
+  };
+  const index = Number(String(categoryId).split("-").at(-1)) - 1;
+  const defaultName = String(categoryId).startsWith(`${p.group}-`) ? defaults[p.group]?.[index] : undefined;
+  check(category ? category.active && category.group === p.group : Boolean(defaultName), "La categoría ya no está activa.");
+  const economicType = p.economicType || (p.affectsOperatingResult === false ? "production_input" : p.affectsOperatingResult === true ? "operating_expense" : undefined);
+  check(["operating_expense", "production_input"].includes(economicType), "Selecciona el tipo de salida.");
+  check(p.affectsOperatingResult === undefined || typeof p.affectsOperatingResult === "boolean", "La decisión económica del egreso no es válida.");
+  check(p.affectsOperatingResult === undefined || p.affectsOperatingResult === (economicType === "operating_expense"), "El tipo de salida y su tratamiento económico no coinciden.");
+  check(economicType === "production_input" ? p.group === "production_input" : p.group !== "production_input", "El grupo debe corresponder al tipo de salida.");
+  const affectsOperatingResult = economicType === "operating_expense";
+  const previous = { group: expense.group || "other", categoryId: expense.categoryId || "", categoryName: expense.categoryName || "Por clasificar", economicType: expense.economicType, affectsOperatingResult: expense.affectsOperatingResult };
+  const next = { group: p.group, categoryId, categoryName: category?.name || defaultName, economicType, affectsOperatingResult };
+  const history = [...(expense.classificationHistory || []), { at: o.now, by: o.actor, byName: o.member.displayName || o.actor, previous, next }].slice(-20);
+  const updated = { ...expense, ...next, classificationHistory: history, updatedAt: o.now, updatedBy: o.actor };
+  o.put("distExpenses", expense.id, updated);
+  return updated;
 }
 
 async function deleteProduct(o, p) {
@@ -1994,7 +2085,7 @@ async function closure(o, p) {
     const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
     const cashSales = sum(commercialSales, "cashAmount"),
       cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
-      cashExpenses = sum(expenses, "amount"),
+      cashExpenses = sum(expenses.filter((expense) => (expense.paymentMethod || "cash") === "cash"), "amount"),
       claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
       expectedCash = round(
         cashSales + cashCollections - cashExpenses + claimCash,
@@ -2273,7 +2364,7 @@ async function closure(o, p) {
   const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
   const cashSales = sum(commercialSales, "cashAmount"),
     cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
-    cashExpenses = sum(expenses, "amount"),
+    cashExpenses = sum(expenses.filter((expense) => (expense.paymentMethod || "cash") === "cash"), "amount"),
     claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
     expectedCash = round(
       cashSales + cashCollections - cashExpenses + claimCash,
@@ -2469,7 +2560,7 @@ async function claim(o, p) {
   o.put("distClaims", o.id, c);
   return c;
 }
-Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, deleteProduct, closure, claim });
+Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, classifyExpense, deleteProduct, closure, claim });
 async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);

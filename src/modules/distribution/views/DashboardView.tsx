@@ -32,7 +32,8 @@ const MODULE_SEARCH_TERMS: Partial<Record<ModuleId, string>> = {
   'dist.credits': 'créditos creditos deuda cartera fiado',
   'dist.collections': 'cobros abonos pagos',
   'dist.customers': 'clientes compradores',
-  'dist.expenses': 'gastos egresos',
+  'dist.expenses': 'egresos gastos',
+  'dist.operating-result': 'resultado negocio utilidad margen rentabilidad ventas costos egresos',
   'dist.closure': 'cierre caja ruta devolución devolucion',
   'dist.products': 'productos catálogo catalogo precios costos',
   'dist.reports': 'reportes informes excel pdf rentabilidad ganancias',
@@ -356,7 +357,7 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
           <KpiCard label="Paquetes / unidades" value={String(soldPackages)} hint="Al vacio y sachets" />
           <KpiCard label="Cobrado" value={formatBs(money.collectionsTotal)} tone="positive" />
           <KpiCard label="Cartera pendiente" value={formatBs(outstandingPortfolio)} tone="warning" />
-          <KpiCard label="Gastos" value={formatBs(money.cashExpenses)} tone="danger" />
+          <KpiCard label="Egresos en efectivo" value={formatBs(money.cashExpenses)} tone="danger" />
           <KpiCard label="Diferencias del periodo" value={String(pendingVariances)} tone={pendingVariances > 0 ? 'danger' : 'positive'} />
           <KpiCard label="Rutas abiertas" value={String(openRoutes)} />
           <KpiCard label="Rutas cerradas" value={String(closedRoutes)} />

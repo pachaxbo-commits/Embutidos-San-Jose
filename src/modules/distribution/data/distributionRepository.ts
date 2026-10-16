@@ -19,7 +19,7 @@ import {
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
-import { getFirebaseContext } from '../../../lib/firebase'
+import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
 import { centralBalanceId, round2, toDayKey } from '../domain/engine'
 import type {
   DistBalance,
@@ -31,6 +31,9 @@ import type {
   DistDispatch,
   DistDispatchLine,
   DistExpense,
+  DistExpenseCategory,
+  ExpenseGroup,
+  ExpenseEconomicType,
   DistProduct,
   DistReceivable,
   DistReceivableAdjustment,
@@ -74,6 +77,7 @@ export const DIST_COLLECTIONS = {
   receivableAdjustments: 'distReceivableAdjustments',
   collections: 'distCollections',
   expenses: 'distExpenses',
+  expenseCategories: 'distExpenseCategories',
   closures: 'distClosures',
   adjustmentRequests: 'distAdjustmentRequests',
   quotes: 'distQuotes',
@@ -98,7 +102,7 @@ export function subscribeQrVerifications(routeId: string | null, onData: (rows: 
 
 export async function createWarehouse(name: string) {
   if (!name.trim()) throw new Error('Ingresa el nombre del almacen.')
-  const ctx = await getContext()
+  const ctx = await getContext(true)
   const id = newOperationId('wh')
   const batch = writeBatch(ctx.db)
   batch.set(docRef(ctx, DIST_COLLECTIONS.warehouses, id), { id, name: name.trim(), active: true, restaurantId: ctx.restaurantId })
@@ -112,7 +116,7 @@ export async function transferWarehouseStock(from: string, to: string, line: Dis
 
 export async function verifyQr(sourceType: 'sale' | 'collection' | 'claim', sourceId: string, reference: string) {
   if (!reference.trim()) throw new Error('Ingresa la referencia bancaria de la verificacion.')
-  const ctx = await getContext()
+  const ctx = await getContext(true)
   await runTransaction(ctx.db, async tx => {
     const verificationRef = docRef(ctx, DIST_COLLECTIONS.qrVerifications, `${sourceType}_${sourceId}`)
     if ((await tx.get(verificationRef)).exists()) return
@@ -143,7 +147,7 @@ export async function declareRouteReturn(
   if (physicalCashDeclared !== undefined && (!Number.isFinite(physicalCashDeclared) || physicalCashDeclared < 0)) {
     throw new Error('El efectivo físico declarado debe ser mayor o igual a cero.')
   }
-  const ctx = await getContext()
+  const ctx = await getContext(true)
   const id = `closure_${dispatch.id}`
   const now = new Date().toISOString()
   const batch = writeBatch(ctx.db)
@@ -210,9 +214,10 @@ interface RepoContext {
   uid: string
 }
 
-async function getContext(): Promise<RepoContext> {
+async function getContext(forWrite = false): Promise<RepoContext> {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no esta configurado.')
+  if (forWrite) assertFirebaseWritesAllowed(context.app.options.projectId)
   if (!context.auth.currentUser) throw new Error('Inicia sesion para registrar operaciones.')
   return {
     db: context.db,
@@ -551,7 +556,11 @@ export function subscribeExpenses(
   onError?: (error: Error) => void,
   distributorUid?: string,
 ) {
-  return subscribeDayScoped<DistExpense>(DIST_COLLECTIONS.expenses, dayKeys, routeId, rows => onData(rows.filter(expense => !expense.voided)), onError, distributorUid ? { field: 'registeredByUid', uid: distributorUid } : undefined)
+  return subscribeDayScoped<DistExpense>(DIST_COLLECTIONS.expenses, dayKeys, routeId, onData, onError, distributorUid ? { field: 'registeredByUid', uid: distributorUid } : undefined)
+}
+
+export function subscribeExpenseCategories(onData: (rows: DistExpenseCategory[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistExpenseCategory>(ctx => collectionRef(ctx, DIST_COLLECTIONS.expenseCategories), onData, onError)
 }
 
 /** Cartera global. Todos los roles con acceso a creditos ven la misma deuda. */
@@ -610,7 +619,7 @@ export function subscribeClosures(
 // ---------------------------------------------------------------------------
 
 export async function saveProduct(product: Omit<DistProduct, 'restaurantId' | 'createdAt'> & { createdAt?: string }) {
-  const context = await getContext()
+  const context = await getContext(true)
   const batch = writeBatch(context.db)
   const now = new Date().toISOString()
   batch.set(
@@ -637,7 +646,7 @@ export async function openWarehouseShift(warehouseId: string, responsibleName: s
 }
 
 export async function saveRoute(route: Omit<DistRoute, 'restaurantId' | 'createdAt'> & { createdAt?: string }) {
-  const context = await getContext()
+  const context = await getContext(true)
   const batch = writeBatch(context.db)
   batch.set(
     docRef(context, DIST_COLLECTIONS.routes, route.id),
@@ -662,7 +671,7 @@ export interface CustomerInput {
 }
 
 export async function saveCustomer(input: CustomerInput): Promise<DistCustomer> {
-  const context = await getContext()
+  const context = await getContext(true)
   const now = new Date().toISOString()
   const id = input.id || newOperationId('cust')
 
@@ -930,6 +939,13 @@ export interface RegisterExpenseInput {
   operationId: string
   concept: string
   amount: number
+  group?: ExpenseGroup
+  categoryId?: string
+  categoryName?: string
+  paymentMethod?: 'cash' | 'transfer' | 'other'
+  economicType?: ExpenseEconomicType
+  affectsOperatingResult?: boolean
+  dayKey?: string
   routeId: string
   routeName: string
   registeredByUid: string
@@ -939,7 +955,8 @@ export interface RegisterExpenseInput {
 
 export async function registerExpense(input: RegisterExpenseInput): Promise<DistExpense> {
   const context = await getContext()
-  const provisional = { ...input, ...baseDocFields(context, new Date().toISOString()), id: input.operationId } as DistExpense
+  const createdAt = new Date().toISOString()
+  const provisional = { ...baseDocFields(context, createdAt), ...input, id: input.operationId, dayKey: input.dayKey || toDayKey(createdAt) } as DistExpense
   return submitOperation<DistExpense>('expense', input, input.operationId, provisional)
 }
 
@@ -947,8 +964,16 @@ export function subscribeSupportSettings(onData: (settings: SupportSettings) => 
   return subscribeQuery<SupportSettings>(ctx => collectionRef(ctx, 'supportConfig'), rows => onData({ ...DEFAULT_SUPPORT_SETTINGS, ...(rows[0] || {}) }), onError)
 }
 
-export async function deleteExpense(expenseId: string): Promise<void> {
-  await submitOperation('deleteExpense', { expenseId }, newOperationId('delete-expense'))
+export async function deleteExpense(expenseId: string, reason = ''): Promise<void> {
+  await submitOperation('deleteExpense', { expenseId, reason }, newOperationId('delete-expense'))
+}
+
+export async function saveExpenseCategory(input: { categoryId: string; group: ExpenseGroup; name: string; active: boolean; order: number }) {
+  return submitOperation<DistExpenseCategory>('saveExpenseCategory', input, newOperationId('expense-category'))
+}
+
+export async function classifyExpense(input: { expenseId: string; group: ExpenseGroup; categoryId: string; economicType: ExpenseEconomicType }) {
+  return submitOperation<DistExpense>('classifyExpense', input, newOperationId('expense-classification'))
 }
 
 export async function deleteProduct(productId: string): Promise<void> {

@@ -223,7 +223,7 @@ export function computeMoneySummary(
   let salesTotal = 0
 
   for (const sale of sales) {
-    if (sale.saleKind === 'courtesy') continue
+    if (sale.saleKind === 'courtesy' || sale.voidedAt || sale.pendingConfirmation) continue
     cashSales += Number(sale.cashAmount) || 0
     qrSales += Number(sale.qrAmount) || 0
     creditGenerated += Number(sale.creditAmount) || 0
@@ -239,7 +239,8 @@ export function computeMoneySummary(
     qrCollections += Number(qr) || 0
   }
 
-  const cashExpenses = expenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0)
+  const cashExpenses = expenses.filter((expense) => !expense.voided).reduce((sum, expense) =>
+    sum + ((expense.paymentMethod ?? 'cash') === 'cash' ? (Number(expense.amount) || 0) : 0), 0)
 
   return {
     salesTotal: round2(salesTotal),
@@ -432,6 +433,7 @@ export function computeSellerBreakdown(
   }
 
   for (const expense of expenses) {
+    if (expense.voided) continue
     const entry = ensure(expense.registeredByUid, expense.registeredByName)
     entry.expenses = round2(entry.expenses + (Number(expense.amount) || 0))
     if (expense.routeName && !entry.routeNames.includes(expense.routeName)) entry.routeNames.push(expense.routeName)

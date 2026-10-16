@@ -50,8 +50,30 @@ try {
  const deletedProduct=await command(admin,'deleteProduct',{productId:pid3})
  ok(deletedProduct.result.deleted==true&&(await read('distProducts',pid3)).deleted===true,'eliminación de producto exige stock cero y conserva marca de auditoría')
  const expense=await command(seller,'expense',{concept:'Combustible',amount:15,routeId:route,routeName:'QA ruta'})
- await command(admin,'deleteExpense',{expenseId:expense.id})
- ok((await read('distExpenses',expense.id)).voided===true,'gasto eliminado queda anulado para excluirlo de totales y reportes')
+ ok(expense.result.affectsOperatingResult===true&&expense.result.economicType==='operating_expense','egreso de distribuidor mantiene el tipo de gasto operativo por defecto')
+ const productionPurchase=await command(admin,'expense',{concept:'Carne QA',amount:100,group:'production_input',categoryId:'production_input-1',economicType:'production_input',paymentMethod:'cash',routeId:'administracion',routeName:'Administración'})
+ ok(productionPurchase.result.economicType==='production_input'&&productionPurchase.result.affectsOperatingResult===false&&productionPurchase.result.paymentMethod==='cash','materia prima no resta al resultado y conserva la salida de caja')
+ await command(seller,'expense',{concept:'Materia prima no autorizada',amount:10,group:'production_input',categoryId:'production_input-1',economicType:'production_input',routeId:route,routeName:'QA ruta'},'rejected')
+ await command(admin,'deleteExpense',{expenseId:expense.id,reason:'Duplicado de prueba'})
+ ok((await read('distExpenses',expense.id)).voided===true&&(await read('distExpenses',expense.id)).voidReason==='Duplicado de prueba','egreso anulado conserva motivo para excluirlo de totales y reportes')
+ const expenseCategoryId=`${prefix}-category`
+ const expenseCategory=await command(admin,'saveExpenseCategory',{categoryId:expenseCategoryId,group:'administration',name:'Servicios QA',active:true,order:1})
+ ok(expenseCategory.result.name==='Servicios QA'&&(await read('distExpenseCategories',expenseCategoryId)).active===true,'categorías de egreso se guardan por operación administrativa')
+ const oldExpense=await command(seller,'expense',{concept:'Egreso anterior sin categoría',amount:6,routeId:route,routeName:'QA ruta'})
+ const oldExpenseDoc=await read('distExpenses',oldExpense.id)
+ const sellerOperationsDb=env.authenticatedContext(seller).firestore()
+ await assertFails(setDoc(doc(sellerOperationsDb,'restaurants','sanjose','distOperations',`${prefix}-classify-forbidden`),{id:`${prefix}-classify-forbidden`,restaurantId:'sanjose',createdBy:seller,createdAt:new Date().toISOString(),type:'classifyExpense',payload:{expenseId:oldExpense.id,group:'administration',categoryId:expenseCategoryId,affectsOperatingResult:false},status:'queued'}));checks++
+ await command(seller,'expense',{concept:'Decisión no autorizada',amount:8,routeId:route,routeName:'QA ruta',affectsOperatingResult:false},'rejected')
+ const classifiedExpense=await command(admin,'classifyExpense',{expenseId:oldExpense.id,group:'production_input',categoryId:'production_input-1',economicType:'production_input'})
+ ok(classifiedExpense.result.categoryName==='Carne'&&classifiedExpense.result.classificationHistory.length===1,'clasificar egreso histórico conserva categoría e historial')
+ ok(classifiedExpense.result.economicType==='production_input'&&classifiedExpense.result.affectsOperatingResult===false&&classifiedExpense.result.classificationHistory[0].next.economicType==='production_input','materia prima queda separada del resultado y auditada con tipo semántico')
+ const reclassifiedExpense=await command(admin,'classifyExpense',{expenseId:oldExpense.id,group:'indirect',categoryId:'indirect-1',economicType:'operating_expense'})
+ ok(reclassifiedExpense.result.classificationHistory.length===2&&reclassifiedExpense.result.classificationHistory[1].previous.economicType==='production_input'&&reclassifiedExpense.result.classificationHistory[1].next.economicType==='operating_expense'&&reclassifiedExpense.result.affectsOperatingResult===true,'cambiar el tipo económico queda en historial y deriva el indicador interno')
+ const categoryOnly=await command(admin,'classifyExpense',{expenseId:oldExpense.id,group:'indirect',categoryId:'indirect-2',economicType:'operating_expense'})
+ ok(categoryOnly.result.economicType==='operating_expense'&&categoryOnly.result.affectsOperatingResult===true&&categoryOnly.result.categoryName==='Viáticos','cambiar solo la categoría no cambia el tipo económico')
+ ok(reclassifiedExpense.result.amount===oldExpenseDoc.amount&&reclassifiedExpense.result.paymentMethod===oldExpenseDoc.paymentMethod&&reclassifiedExpense.result.routeId===oldExpenseDoc.routeId&&reclassifiedExpense.result.dayKey===oldExpenseDoc.dayKey,'reclasificar conserva monto, pago, origen y fecha del egreso')
+ const adminExpenseClient=env.authenticatedContext(admin).firestore()
+ await assertFails(setDoc(doc(adminExpenseClient,'restaurants','sanjose','distExpenseCategories',`${prefix}-forged`),{id:`${prefix}-forged`,name:'Directa'}));checks++
  await command(admin,'transfer',{from:'central',to:wh,line:{productId:pid,quantity:13},note:''},'rejected')
  ok((await read('distBalances',`central__${pid}`)).quantity===15,'lotes vencidos no se transfieren ni alteran el saldo')
  const transfer=await command(admin,'transfer',{from:'central',to:wh,line:{productId:pid,quantity:4},note:'QA'})
@@ -75,11 +97,14 @@ try {
  const customerDebtsAfterReturn=await root.collection('distReceivables').where('customerId','==',cust).get()
  ok(customerDebtsAfterReturn.docs.reduce((sum,row)=>sum+row.data().balance,0)===7.5,'devolución reduce el saldo total restante')
  await command(admin,'claim',{kind:'return',saleId:sold.id,productId:pid,quantity:1,warehouseId:'central',reason:'Repetido',method:'cash'},'rejected');checks++
- const closeInput={closure:{dispatchId:dispatch.id,products:[{productId:pid,actualReturn:0}],physicalCashDeclared:5},mode:'warehouse'}
+ const transferExpense=await command(seller,'expense',{concept:'Pago QR combustible',amount:10,routeId:route,routeName:'QA ruta',group:'indirect',categoryId:'indirect-1',categoryName:'Combustible',paymentMethod:'transfer'})
+ const oldCashExpense=await command(seller,'expense',{concept:'Gasto histórico efectivo',amount:2,routeId:route,routeName:'QA ruta'})
+ ok(transferExpense.result.paymentMethod==='transfer'&&oldCashExpense.result.paymentMethod==='cash','nuevos egresos conservan método y los antiguos se interpretan como efectivo')
+ const closeInput={closure:{dispatchId:dispatch.id,products:[{productId:pid,actualReturn:0}],physicalCashDeclared:3},mode:'warehouse'}
  await command(warehouse,'closure',closeInput)
  ok((await read('distBalances',`warehouse__${wh}__${pid}`)).quantity===1,'conciliación registra el faltante sin devolver stock inexistente')
  const closed=await command(seller,'closure',{...closeInput,mode:'money'})
- ok(closed.result.expectedCash===5&&closed.result.cashDifference===0,'cierre calcula efectivo en servidor')
+ ok(closed.result.expectedCash===3&&closed.result.cashDifference===0,'cierre resta efectivo histórico, pero no pago QR/transferencia')
  const sellerClient=env.authenticatedContext(seller).firestore()
  await assertFails(setDoc(doc(sellerClient,'restaurants','sanjose','distOperations',`${prefix}-forbidden-review`),{id:`${prefix}-forbidden-review`,restaurantId:'sanjose',createdBy:seller,createdAt:new Date().toISOString(),type:'reviewVariance',payload:{closureId:`closure_${dispatch.id}`,reviewed:true},status:'queued'}));checks++
  await command(admin,'reviewVariance',{closureId:`closure_${dispatch.id}`,reviewed:true})
@@ -106,7 +131,7 @@ try {
 
  await assertFails(setDoc(doc(client,'restaurants','sanjose','distClosures',`closure_${dispatch.id}`),{physicalCashDeclared:999,expectedCash:999},{merge:true}));checks++
  await assertFails(setDoc(doc(client,'restaurants','sanjose','distProducts',pid),{referencePrice:1},{merge:true}));checks++
- await command(admin,'reopen',{closureId:`closure_${dispatch.id}`});ok((await read('distDispatches',dispatch.id)).status==='open','reapertura administrativa conserva el retorno recibido')
+ await command(admin,'reopen',{closureId:`closure_${dispatch.id}`,reason:'Verificación de prueba'});ok((await read('distDispatches',dispatch.id)).status==='open','reapertura administrativa conserva el retorno recibido')
  const status=await command(seller,'creditStatus',{customerId:old});ok(!!status.result.oldestPendingAt,'consulta de crédito funciona con clientes anteriores')
  const foreignDebtId=`${prefix}-foreign-debt`
  await root.collection('distReceivables').doc(foreignDebtId).set({id:foreignDebtId,restaurantId:'sanjose',customerId:cust,customerName:'Cliente de otra ruta',routeId:'otra-ruta',distributorUid:'otro-vendedor',originalAmount:12,paidAmount:0,balance:12,status:'OPEN',createdAt:new Date().toISOString(),dayKey:dayKey(new Date())})

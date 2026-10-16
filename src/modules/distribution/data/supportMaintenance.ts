@@ -1,6 +1,6 @@
 import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth'
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
-import { getFirebaseContext } from '../../../lib/firebase'
+import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
 
 export interface SupportSettings {
   companyName: string
@@ -107,6 +107,7 @@ export async function loadSupportSettings(): Promise<SupportSettings> {
 export async function saveSupportSettings(settings: SupportSettings): Promise<void> {
   const context = await getFirebaseContext()
   if (!context?.auth.currentUser) throw new Error('Inicia sesión para guardar la configuración.')
+  assertFirebaseWritesAllowed(context.app.options.projectId)
   await setDoc(doc(context.db, 'restaurants', context.restaurantId, 'supportConfig', 'main'), {
     ...settings,
     restaurantId: context.restaurantId,
