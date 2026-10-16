@@ -1,0 +1,25 @@
+{
+  "defaults": {
+    "administration": ["Servicios", "Limpieza", "Papelería", "Mantenimiento", "Personal", "Impuestos/tasas operativas", "Otros"],
+    "indirect": ["Combustible", "Viáticos", "Transporte/Fletes", "Comunicación", "Reparaciones", "Otros", "Peaje / estacionamiento", "Refrigerio / viáticos", "Mantenimiento / reparación"],
+    "equipment": ["Maquinaria", "Herramientas", "Muebles", "Equipos", "Otros", "Herramientas / equipos"],
+    "other": ["Otros egresos", "Por clasificar"],
+    "production_additional": ["Insumo no incorporado al costo", "Servicio de producción", "Otro"],
+    "production_input": ["Carne", "Condimentos", "Tripas / envolturas", "Insumos de producción", "Otros insumos"]
+  },
+  "choices": [
+    { "id": "fuel", "label": "Combustible", "group": "indirect", "categoryId": "indirect-1", "categoryName": "Combustible", "economicType": "operating_expense", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "toll_parking", "label": "Peaje / estacionamiento", "group": "indirect", "categoryId": "indirect-7", "categoryName": "Peaje / estacionamiento", "economicType": "operating_expense", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "refreshments_travel", "label": "Refrigerio / viáticos", "group": "indirect", "categoryId": "indirect-8", "categoryName": "Refrigerio / viáticos", "economicType": "operating_expense", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "maintenance_repair", "label": "Mantenimiento / reparación", "group": "indirect", "categoryId": "indirect-9", "categoryName": "Mantenimiento / reparación", "economicType": "operating_expense", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "tools_equipment", "label": "Herramientas / equipos", "group": "equipment", "categoryId": "equipment-6", "categoryName": "Herramientas / equipos", "economicType": "operating_expense", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "other_unsure", "label": "Otro / no estoy seguro", "group": "other", "categoryId": "other-2", "categoryName": "Por clasificar", "economicType": "operating_expense", "classificationStatus": "pending_review", "classificationSource": "user_pending", "requiresDetail": true }
+  ],
+  "production": [
+    { "id": "production_meat", "label": "Carne", "group": "production_input", "categoryId": "production_input-1", "categoryName": "Carne", "economicType": "production_input", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "production_seasonings", "label": "Condimentos", "group": "production_input", "categoryId": "production_input-2", "categoryName": "Condimentos", "economicType": "production_input", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "production_casings", "label": "Tripas / envolturas", "group": "production_input", "categoryId": "production_input-3", "categoryName": "Tripas / envolturas", "economicType": "production_input", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "production_supplies", "label": "Insumos de producción", "group": "production_input", "categoryId": "production_input-4", "categoryName": "Insumos de producción", "economicType": "production_input", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false },
+    { "id": "production_other", "label": "Otros insumos", "group": "production_input", "categoryId": "production_input-5", "categoryName": "Otros insumos", "economicType": "production_input", "classificationStatus": "classified", "classificationSource": "automatic", "requiresDetail": false }
+  ]
+}

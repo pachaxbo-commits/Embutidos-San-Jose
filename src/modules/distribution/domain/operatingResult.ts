@@ -2,7 +2,7 @@ import type { DistClaim, DistExpense, DistRoute, DistSale, DistStockMovement, Ex
 import { matchesRoute, round2, toDayKey } from './engine.ts'
 import { computeProductProfitReport, type ProductProfitReport } from './productProfit.ts'
 import { effectiveExpenseGroup } from './expenseCategories.ts'
-import { effectiveExpenseEconomicType } from './expenseReview.ts'
+import { effectiveExpenseEconomicType, isExpenseReviewPending } from './expenseReview.ts'
 
 export interface OperatingResultExpenseRow {
   id: string; dayKey: string; group: ExpenseGroup; category: string; concept: string
@@ -32,8 +32,8 @@ export function computeOperatingResult(
   const allScopedActiveExpenses = expenses.filter((expense) => !expense.voided && inScope(expense.dayKey || toDayKey(expense.createdAt), expense.routeId))
   const scopedExpenses = allScopedActiveExpenses.filter((expense) => effectiveExpenseEconomicType(expense) === 'operating_expense')
   const productionInputs = allScopedActiveExpenses.filter((expense) => effectiveExpenseEconomicType(expense) === 'production_input')
-  const pendingClassificationCount = allScopedActiveExpenses.filter((expense) => !expense.group || !expense.categoryId).length
-  const pendingEconomicDecisionCount = allScopedActiveExpenses.filter((expense) => !expense.economicType && typeof expense.affectsOperatingResult !== 'boolean').length
+  const pendingClassificationCount = allScopedActiveExpenses.filter(isExpenseReviewPending).length
+  const pendingEconomicDecisionCount = pendingClassificationCount
   const scopedMovements = movements.filter((movement) => !movement.reversedAt && inScope(movement.dayKey || toDayKey(movement.createdAt), movement.routeId))
   const routeNames = new Map(routes.map((route) => [route.id, route.name]))
   for (const sale of scopedSales) {

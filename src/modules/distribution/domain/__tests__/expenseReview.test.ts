@@ -5,7 +5,7 @@ const seed = { id: 'x', restaurantId: 'sanjose', branchId: 'main', createdAt: '2
 const active = { ...seed, id: 'active', group: 'indirect', categoryId: 'indirect-1', affectsOperatingResult: true } as DistExpense
 const excludedFromResult = { ...active, id: 'included', amount: 30, economicType: 'production_input', affectsOperatingResult: false, group: 'production_input', categoryId: 'production_input-1' } as DistExpense
 const voided = { ...active, id: 'voided', amount: 90, voided: true } as DistExpense
-const unclassified = { ...seed, id: 'old', group: undefined, categoryId: undefined, affectsOperatingResult: true } as DistExpense
+const unclassified = { ...seed, id: 'old', group: undefined, categoryId: undefined, affectsOperatingResult: undefined } as DistExpense
 const check = (ok: boolean, message: string) => { if (!ok) throw new Error(message); console.log(`PASS ${message}`) }
 
 const fixtures = [active, excludedFromResult, voided, unclassified]

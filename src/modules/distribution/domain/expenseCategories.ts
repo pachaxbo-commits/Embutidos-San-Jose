@@ -1,4 +1,5 @@
 import type { DistExpenseCategory, ExpenseGroup } from '../types.ts'
+import registry from '../../../../functions/expense-presets.json' with { type: 'json' }
 
 export const EXPENSE_GROUPS: { id: ExpenseGroup; label: string }[] = [
   { id: 'administration', label: 'Gastos de administración' },
@@ -9,14 +10,7 @@ export const EXPENSE_GROUPS: { id: ExpenseGroup; label: string }[] = [
   { id: 'production_input', label: 'Compras para producción' },
 ]
 
-const INITIAL: Record<ExpenseGroup, string[]> = {
-  administration: ['Servicios', 'Limpieza', 'Papelería', 'Mantenimiento', 'Personal', 'Impuestos/tasas operativas', 'Otros'],
-  indirect: ['Combustible', 'Viáticos', 'Transporte/Fletes', 'Comunicación', 'Reparaciones', 'Otros'],
-  equipment: ['Maquinaria', 'Herramientas', 'Muebles', 'Equipos', 'Otros'],
-  other: ['Otros egresos', 'Por clasificar'],
-  production_additional: ['Insumo no incorporado al costo', 'Servicio de producción', 'Otro'],
-  production_input: ['Carne', 'Condimentos', 'Tripas / envolturas', 'Insumos de producción', 'Otros insumos'],
-}
+const INITIAL = registry.defaults as Record<ExpenseGroup, string[]>
 
 export const DEFAULT_EXPENSE_CATEGORIES: DistExpenseCategory[] = Object.entries(INITIAL).flatMap(([group, names], groupIndex) =>
   names.map((name, order) => ({

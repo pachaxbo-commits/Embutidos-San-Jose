@@ -56,7 +56,7 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
   if (mode === 'easy') return {
     name: 'Resultado del negocio', headers: ['Resumen', 'Monto (Bs)'], rows: [
       ['EMBUTIDOS SAN JOSÉ · RESULTADO DEL NEGOCIO', period], ['Emitido', new Date().toLocaleString('es-BO')],
-      ['Estado del cálculo', !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Pendiente de revisar' : 'Resultado calculado'],
+      ['Estado del cálculo', !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Resultado provisional' : 'Resultado calculado'],
       ...(result.pendingEconomicDecisionCount > 0 ? [['Egresos con decisión pendiente', result.pendingEconomicDecisionCount] as [string, number]] : []),
       ...sections.filter(([label]) => label !== 'Resultado operativo estimado').map(([label, value]) => [label, value === null ? 'No disponible: falta costo histórico' : value]),
       ['RESULTADO OPERATIVO ESTIMADO', result.operatingResult === null ? 'No disponible: falta costo histórico' : result.operatingResult],
@@ -68,7 +68,7 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
   const classicRows: (string | number | null)[][] = [
     ['EMBUTIDOS SAN JOSÉ', 'RESULTADO DEL NEGOCIO', '', '', ''],
     ['Período', period, 'Fecha de emisión', new Date().toLocaleString('es-BO'), ''],
-    ['Estado del cálculo', !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Pendiente de revisar' : 'Resultado calculado', '', '', ''],
+    ['Estado del cálculo', !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Resultado provisional' : 'Resultado calculado', '', '', ''],
     ...(result.pendingEconomicDecisionCount > 0 ? [['Egresos con decisión pendiente', '', '', '', result.pendingEconomicDecisionCount]] : []),
     ['INGRESOS', '', '', '', ''],
     ...result.salesByOrigin.map(({ origin, amount }) => ['Ventas', origin, '', '', amount]),
@@ -102,8 +102,8 @@ function htmlForResult(result: ReturnType<typeof computeOperatingResult>, period
   const rows = mode === 'easy'
     ? result.details.filter((item) => item.key !== 'netSales' && item.key !== 'result').map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>${escapeHtml(amount(item.amount))}</td></tr>`).join('')
     : classicRowsForResult(result).map((row) => `<tr class="${row.kind}"><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.amount === null ? '' : amount(row.amount))}</td></tr>`).join('')
-  const status = !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Pendiente de revisar' : 'Resultado calculado'
-  const pending = result.pendingEconomicDecisionCount > 0 ? `<p class="pending">Hay ${result.pendingEconomicDecisionCount} egresos sin confirmar si ya están incluidos en el costo de productos; la cifra es provisional.</p>` : ''
+  const status = !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Resultado provisional' : 'Resultado calculado'
+  const pending = result.pendingEconomicDecisionCount > 0 ? `<p class="pending">RESULTADO PROVISIONAL: hay ${result.pendingEconomicDecisionCount} egresos pendientes de revisión.</p>` : ''
   return `<!doctype html><html lang="es"><meta charset="utf-8"><title>Resultado del negocio</title><style>body{font:15px Arial;color:#172033;margin:36px}header{border-top:10px solid #bd1024;padding-top:22px}.brand{display:flex;align-items:center;gap:16px}header img{width:74px;height:auto}h1{margin:0}h2{color:#bd1024}.hero{background:#f9f3f1;padding:18px;margin:24px 0;font-size:28px;font-weight:bold}.status{font-size:13px;color:#14532d}.pending{background:#fff7db;color:#854d0e;border:1px solid #fde68a;border-radius:8px;padding:12px;font-size:13px}table{width:100%;border-collapse:collapse}td{padding:10px;border-bottom:1px solid #dce1e8}td:last-child{text-align:right;font-weight:bold}tr.heading{font-weight:bold;background:#e8edf3}tr.subtotal{font-weight:bold}tr.total{font-weight:bold;background:#fff0f1;color:#bd1024}.note{color:#566174;font-size:12px;margin-top:22px}@media print{body{margin:12mm}}</style><header><div class="brand"><img src="/brand/san-jose-logo.png" alt="San José"><div><h1>EMBUTIDOS SAN JOSÉ</h1><h2>RESULTADO DEL NEGOCIO</h2></div></div><p>Período: ${escapeHtml(period)} · Emitido: ${escapeHtml(new Date().toLocaleString('es-BO'))}</p></header><p class="status">Estado: ${escapeHtml(status)}</p>${pending}<div class="hero">Resultado operativo estimado: ${escapeHtml(amount(result.operatingResult))}</div><p>Ventas netas − costo de lo vendido − egresos − pérdidas − costo de cortesías</p><table>${rows}</table><p class="note">Cálculo según operaciones, costos, egresos y pérdidas registrados. Es una estimación operativa, no contabilidad formal.</p></html>`
 }
 
@@ -160,7 +160,7 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
   const result = useMemo(() => computeOperatingResult(data.sales, data.claims, data.expenses, data.movements, session.dayKeys, routeFilter, data.routes), [data.sales, data.claims, data.expenses, data.movements, data.routes, session.dayKeys, routeFilter])
   const period = describeRange(session.dayKeys)
   const amount = (value: number | null) => value === null ? 'No disponible' : formatBs(value)
-  const resultStatus = !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Pendiente de revisar' : 'Resultado calculado'
+  const resultStatus = !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 ? 'Resultado provisional' : 'Resultado calculado'
   const runExport = async (kind: 'pdf' | 'excel') => {
     try {
       const sheet = sheetForResult(result, period, mode)
@@ -195,9 +195,9 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
         {mode === 'easy' ? <SecondaryButton onClick={() => void renderSummaryPng(result, period).then(shareSummaryImage).then(() => setFeedback('Imagen preparada para compartir.')).catch((error) => setFeedback((error as Error).message))}><Share2 size={15} /> Compartir imagen</SecondaryButton> : <SecondaryButton onClick={() => void runExport('pdf')}><Share2 size={15} /> Compartir PDF</SecondaryButton>}
       </div>
       {feedback && <p role="status" className="text-xs font-semibold text-slate-600">{feedback}</p>}
-      <div className={`rounded-xl border p-3 text-xs font-bold ${resultStatus === 'Pendiente de revisar' ? 'border-amber-200 bg-amber-50 text-amber-900' : resultStatus === 'Incompleto' ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>Estado: {resultStatus}</div>
-      {result.pendingClassificationCount > 0 && <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">Hay {result.pendingClassificationCount} egreso{result.pendingClassificationCount === 1 ? '' : 's'} pendiente{result.pendingClassificationCount === 1 ? '' : 's'} de clasificar. Siguen incluidos según la decisión de cada egreso; los que no tienen grupo aparecen bajo “Otros egresos operativos”.</p>}
-      {result.pendingEconomicDecisionCount > 0 && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Hay {result.pendingEconomicDecisionCount} egreso{result.pendingEconomicDecisionCount === 1 ? '' : 's'} histórico{result.pendingEconomicDecisionCount === 1 ? '' : 's'} cuyo tipo de salida todavía no fue confirmado. La cifra se muestra como provisional hasta revisarlos.</p>}
+      <div className={`rounded-xl border p-3 text-xs font-bold ${resultStatus === 'Resultado provisional' ? 'border-amber-200 bg-amber-50 text-amber-900' : resultStatus === 'Incompleto' ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>Estado: {resultStatus}</div>
+      {result.pendingClassificationCount > 0 && <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">Hay {result.pendingClassificationCount} egreso{result.pendingClassificationCount === 1 ? '' : 's'} pendiente{result.pendingClassificationCount === 1 ? '' : 's'} de revisión o clasificación. Siguen incluidos de forma conservadora dentro de los egresos operativos.</p>}
+      {result.pendingEconomicDecisionCount > 0 && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900"><strong>RESULTADO PROVISIONAL.</strong> Hay {result.pendingEconomicDecisionCount} egreso{result.pendingEconomicDecisionCount === 1 ? '' : 's'} pendiente{result.pendingEconomicDecisionCount === 1 ? '' : 's'} de revisión. Mientras se revisan, se cuentan de forma conservadora como egresos operativos.</p>}
 
       {mode === 'easy' ? <section className="rounded-3xl border border-slate-200 bg-white p-4 sm:p-6">
         <p className="text-xs font-extrabold uppercase tracking-wide text-slate-500">Resultado operativo del período · {period}</p>

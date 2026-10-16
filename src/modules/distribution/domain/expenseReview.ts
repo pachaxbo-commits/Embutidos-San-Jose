@@ -14,7 +14,7 @@ export function filterExpensesByStatus(expenses: DistExpense[], status: ExpenseS
 }
 
 export function isExpenseReviewPending(expense: DistExpense): boolean {
-  return !expense.voided && (!expense.group || !expense.categoryId || (!expense.economicType && typeof expense.affectsOperatingResult !== 'boolean'))
+  return !expense.voided && (expense.classificationStatus === 'pending_review' || (!expense.economicType && typeof expense.affectsOperatingResult !== 'boolean'))
 }
 
 export function summarizeActiveExpenses(expenses: DistExpense[]): { total: number; operatingTotal: number; productionInputTotal: number; groups: Record<ExpenseGroup, number> } {

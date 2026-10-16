@@ -447,6 +447,9 @@ export interface DistExpense extends DistBaseDoc {
   paymentMethod?: 'cash' | 'transfer' | 'other'
   economicType?: ExpenseEconomicType
   affectsOperatingResult?: boolean
+  classificationStatus?: 'classified' | 'pending_review' | 'reviewed'
+  classificationSource?: 'automatic' | 'user_pending' | 'admin_review' | 'legacy'
+  classificationHistory?: Array<Record<string, unknown>>
   concept: string
   amount: number
   routeId: string
@@ -464,6 +467,8 @@ export interface DistExpenseCategory extends DistBaseDoc {
   name: string
   active: boolean
   order: number
+  autoClassifiable?: boolean
+  distributorVisible?: boolean
   updatedAt?: string
   updatedBy?: string
 }

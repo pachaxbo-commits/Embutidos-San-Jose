@@ -937,6 +937,7 @@ export async function registerCollection(input: RegisterCollectionInput): Promis
 
 export interface RegisterExpenseInput {
   operationId: string
+  presetId?: string
   concept: string
   amount: number
   group?: ExpenseGroup
@@ -953,10 +954,10 @@ export interface RegisterExpenseInput {
   note?: string
 }
 
-export async function registerExpense(input: RegisterExpenseInput): Promise<DistExpense> {
+export async function registerExpense(input: RegisterExpenseInput, provisionalClassification: Pick<DistExpense, 'group' | 'categoryId' | 'categoryName' | 'economicType' | 'affectsOperatingResult' | 'classificationStatus' | 'classificationSource'>): Promise<DistExpense> {
   const context = await getContext()
   const createdAt = new Date().toISOString()
-  const provisional = { ...baseDocFields(context, createdAt), ...input, id: input.operationId, dayKey: input.dayKey || toDayKey(createdAt) } as DistExpense
+  const provisional = { ...baseDocFields(context, createdAt), ...input, ...provisionalClassification, id: input.operationId, dayKey: input.dayKey || toDayKey(createdAt), pendingConfirmation: true } as DistExpense
   return submitOperation<DistExpense>('expense', input, input.operationId, provisional)
 }
 
@@ -968,7 +969,7 @@ export async function deleteExpense(expenseId: string, reason = ''): Promise<voi
   await submitOperation('deleteExpense', { expenseId, reason }, newOperationId('delete-expense'))
 }
 
-export async function saveExpenseCategory(input: { categoryId: string; group: ExpenseGroup; name: string; active: boolean; order: number }) {
+export async function saveExpenseCategory(input: { categoryId: string; group: ExpenseGroup; name: string; active: boolean; order: number; autoClassifiable: boolean; distributorVisible: boolean }) {
   return submitOperation<DistExpenseCategory>('saveExpenseCategory', input, newOperationId('expense-category'))
 }
 
