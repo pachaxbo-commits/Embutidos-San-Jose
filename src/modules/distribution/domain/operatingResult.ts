@@ -62,7 +62,7 @@ export function computeOperatingResult(
     }
   })
   const losses = scopedMovements.filter((movement) =>
-    movement.type === 'shortage' || movement.type === 'return_waste' || movement.type === 'dispatch_waste' ||
+    movement.type === 'shortage' || movement.type === 'return_waste' || movement.type === 'return_waste_unassigned' || movement.type === 'dispatch_waste' ||
     (movement.type === 'adjustment' && movement.centralDelta < 0),
   )
   const lossCostsKnown = losses.every((movement) => typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost))
@@ -93,6 +93,7 @@ export function computeOperatingResult(
     intake: 'Ingreso de inventario', dispatch: 'Despacho', dispatch_addition: 'Aumento de despacho', sale: 'Venta',
     sale_correction: 'Corrección de venta', return: 'Retorno', adjustment: 'Ajuste de inventario',
     dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', return_waste: 'Merma al retorno',
+    return_merma: 'Merma recuperable al retorno', return_waste_unassigned: 'Pérdida sin lote de origen identificado',
     courtesy: 'Cortesía', shortage: 'Faltante', overage: 'Sobrante',
   }
   const movementRows = losses.map((movement) => ({ fecha: movement.dayKey || toDayKey(movement.createdAt), tipo: movementTypeLabel[movement.type],

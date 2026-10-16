@@ -30,6 +30,14 @@ equal(result.expenses.find((row) => row.paymentMethod === 'transfer')?.amount, 1
 equal(result.details.find((entry) => entry.key === 'adjustments')?.rows[0]?.origen, 'Ruta A', 'el detalle evita mostrar el ID de la ruta')
 equal(result.details.find((entry) => entry.key === 'losses')?.rows[0]?.tipo, 'Faltante', 'el detalle traduce tipos internos de movimientos')
 
+const recoverableMerma = movement({ id: 'return-merma', type: 'return_merma', lossCost: 8 })
+const returnLoss = movement({ id: 'return-loss-unassigned', type: 'return_waste_unassigned', lossCost: 3 })
+const withReturnMovements = computeOperatingResult([], [], [], [recoverableMerma, returnLoss], ['2026-10-10'])
+equal(withReturnMovements.losses, 3, 'la merma recuperable no es pérdida y sí se incluye la pérdida sin lote trazable')
+equal(withReturnMovements.details.find((entry) => entry.key === 'losses')?.rows[0]?.tipo, 'Pérdida sin lote de origen identificado', 'la pérdida sin lote tiene etiqueta comprensible')
+const unknownReturnLoss = computeOperatingResult([], [], [], [{ ...returnLoss, id: 'unknown-return-loss', lossCost: null }], ['2026-10-10'])
+equal(unknownReturnLoss.operatingResult, null, 'no se inventa el resultado si una pérdida de retorno no tiene costo histórico')
+
 const courtesy = sale({ id: 'courtesy', operationId: 'courtesy', saleKind: 'courtesy', total: 0, cashAmount: 0, creditAmount: 0, lines: [], courtesyCost: 4 })
 const withCourtesy = computeOperatingResult([sale(), courtesy], [claim()], [expense()], [movement(), movement({ id: 'c-mov', type: 'courtesy', lossCost: 4, refId: 'courtesy', refType: 'sale' })], ['2026-10-10'])
 equal(withCourtesy.grossSales, 100, 'cortesías no son ventas')
