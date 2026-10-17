@@ -1995,7 +1995,23 @@ async function expense(o, p) {
   let classificationStatus;
   let classificationSource;
   let concept;
-  if (typeof p.presetId === "string" && p.presetId.startsWith("category:")) {
+  if (typeof p.presetId === "string" && p.presetId.startsWith("admin-category:")) {
+    o.admin();
+    const id = safeId(p.presetId.slice("admin-category:".length));
+    const saved = await o.read("distExpenseCategories", id);
+    const defaultIndex = Number(String(id).split("-").at(-1)) - 1;
+    const defaultGroup = groups.find((candidate) => id.startsWith(`${candidate}-`));
+    const defaultName = defaultGroup && expenseCategoryDefaults[defaultGroup]?.[defaultIndex];
+    check(saved ? saved.active === true && groups.includes(saved.group) : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
+    group = saved?.group || defaultGroup;
+    categoryId = id;
+    category = saved?.name || defaultName;
+    check(group && category, "La categoría seleccionada no es válida.");
+    economicType = group === "production_input" ? "production_input" : "operating_expense";
+    classificationStatus = "reviewed";
+    classificationSource = "admin_review";
+    concept = category;
+  } else if (typeof p.presetId === "string" && p.presetId.startsWith("category:")) {
     const id = safeId(p.presetId.slice("category:".length));
     const saved = await o.read("distExpenseCategories", id);
     check(saved?.active && saved.autoClassifiable === true && (o.member.role === "admin" || saved.distributorVisible === true), "Esta categoría no está habilitada para el registro automático.");
@@ -2794,6 +2810,88 @@ async function updateLot(o, p) {
   return updated;
 }
 handlers.updateLot = updateLot;
+handlers.resolveQuarantine = async (o, p) => {
+  o.admin();
+  const lotId = safeId(p.lotId);
+  const lot = await o.read("distLots", lotId);
+  check(lot && lot.quarantined === true && !lot.quarantineResolvedAt, "Este lote ya no está pendiente de revisión.");
+  const product = await o.product(lot.productId);
+  check(p.location === "central" || (typeof p.location === "string" && p.location.startsWith("warehouse__")), "El almacén seleccionado no es válido.");
+  const warehouseId = p.location === "central" ? "central" : safeId(p.location.slice("warehouse__".length));
+  const loc = warehouseId === "central" ? "central" : `warehouse__${warehouseId}`;
+  if (warehouseId !== "central") {
+    const warehouse = await o.read("distWarehouses", warehouseId);
+    check(warehouse && warehouse.active !== false, "El almacén seleccionado ya no está disponible.");
+  }
+  const allLots = await o.query("distLots", "productId", product.id);
+  const balance = await o.read("distBalances", balanceId(loc, product.id));
+  const physicalQuantity = roundAt(Number(balance?.quantity || 0), quantityPrecision(product));
+  const lotQuantity = roundAt(allLots.reduce((sum, item) => sum + Number(item.quantities?.[loc] || 0), 0), quantityPrecision(product));
+  check(Math.abs(physicalQuantity - lotQuantity) < 0.5 / (10 ** quantityPrecision(product)), "El balance y los lotes no coinciden. Administración debe conciliar el inventario antes de resolver esta cuarentena.");
+  const e = await o.loadStock(product.id, loc);
+  const quantity = roundAt(Number(lot.quantities?.[loc] || 0), quantityPrecision(product));
+  check(quantity > 0, "La cuarentena ya no tiene existencia en este almacén.");
+  check(Object.entries(lot.quantities || {}).every(([key, value]) => key === loc || roundAt(Number(value || 0), quantityPrecision(product)) === 0), "La cuarentena está distribuida en más de un almacén y requiere revisión administrativa.");
+  const resolution = p.resolution;
+  const reason = String(p.reason || "").trim();
+  check(reason.length > 0 && reason.length <= 500, "Describe el motivo o evidencia de la revisión.");
+  let updatedLot = { ...lot, quantities: { ...(lot.quantities || {}) } };
+  let destinationLot = null;
+  let movementId;
+  if (resolution === "released_existing_lot") {
+    check(typeof p.destinationLotId === "string" && p.destinationLotId.length > 0, "Selecciona un lote destino trazable.");
+    const targetId = safeId(p.destinationLotId);
+    destinationLot = e.lots.find((item) => item.id === targetId);
+    check(destinationLot && destinationLot.id !== lot.id && destinationLot.productId === product.id, "El lote destino no corresponde al mismo producto.");
+    check(!destinationLot.quarantined && (!destinationLot.expiresOn || destinationLot.expiresOn >= o.today) && destinationLot.lotCode?.trim() && validDate(destinationLot.manufacturedOn) && validDate(destinationLot.expiresOn) && Number.isFinite(destinationLot.productionCost) && destinationLot.productionCost >= 0, "El lote destino debe estar vigente y tener código, fechas y costo válidos.");
+    destinationLot.quantities = { ...(destinationLot.quantities || {}), [loc]: roundAt(Number(destinationLot.quantities?.[loc] || 0) + quantity, quantityPrecision(product)) };
+    updatedLot.quantities[loc] = 0;
+    updatedLot.quarantineResolution = "released_existing_lot";
+    updatedLot.quarantineDestinationLotId = destinationLot.id;
+    updatedLot.quarantineDestinationLotCode = destinationLot.lotCode;
+    movementId = o.ledger(product.id, quantity, loc, loc, "quarantine_release", { lotId: lot.id, destinationLotId: destinationLot.id, quarantineSourceLotId: lot.id, note: reason });
+  } else if (resolution === "released_new_lot") {
+    const lotCode = String(p.newLotCode || "").trim();
+    const manufacturedOn = p.manufacturedOn;
+    const expiresOn = p.expiresOn;
+    const productionCost = p.productionCost;
+    check(lotCode.length > 0 && lotCode.length <= 80 && validDate(manufacturedOn) && validDate(expiresOn) && manufacturedOn <= o.today && expiresOn >= manufacturedOn && Number.isFinite(productionCost) && productionCost >= 0, "Completa un código, fechas válidas y costo de producción para identificar el nuevo lote.");
+    check(!e.lots.some((item) => item.id !== lot.id && item.productId === product.id && item.lotCode === lotCode && item.manufacturedOn === manufacturedOn), "Ya existe un lote con ese código y fecha de elaboración.");
+    updatedLot = { ...updatedLot, lotCode, manufacturedOn, expiresOn, productionCost: round(productionCost), quarantined: false, legacy: false };
+    updatedLot.quarantineResolution = "released_new_lot";
+    updatedLot.quarantineDestinationLotId = lot.id;
+    updatedLot.quarantineDestinationLotCode = lotCode;
+    movementId = o.ledger(product.id, quantity, loc, loc, "quarantine_release", { lotId: lot.id, destinationLotId: lot.id, quarantineSourceLotId: lot.id, note: reason });
+  } else if (resolution === "discarded") {
+    updatedLot.quantities[loc] = 0;
+    updatedLot.quarantineResolution = "discarded";
+    updatedLot.quarantineLossCost = Number.isFinite(lot.productionCost) ? round(quantity * lot.productionCost) : null;
+    o.move(e, loc, -quantity, quantityPrecision(product));
+    movementId = o.ledger(product.id, quantity, loc, null, "quarantine_discard", { lotId: lot.id, quarantineSourceLotId: lot.id, lossCost: updatedLot.quarantineLossCost, note: reason });
+  } else {
+    check(false, "Selecciona una resolución válida.");
+  }
+  updatedLot.quarantineResolvedAt = o.now;
+  updatedLot.quarantineResolvedBy = o.actor;
+  updatedLot.quarantineResolvedByName = o.member.displayName || o.actor;
+  updatedLot.quarantineResolutionReason = reason;
+  updatedLot.quarantineResolvedQuantity = quantity;
+  updatedLot.quarantineResolvedLocation = loc;
+  updatedLot.quarantineOriginalLotCode = lot.quarantineOriginalLotCode || lot.lotCode || "";
+  const cachedLot = e.lots.find((item) => item.id === lot.id);
+  if (cachedLot) Object.assign(cachedLot, updatedLot);
+  o.put("distLots", lot.id, updatedLot);
+  o.put("distLotHistory", `${o.id}__history`, {
+    id: `${o.id}__history`, ...o.base(), lotId: lot.id, productId: product.id, operationId: o.id,
+    action: "quarantine_resolution", resolution, reason, quantity, location: loc, movementId,
+    previous: { lotCode: lot.lotCode, manufacturedOn: lot.manufacturedOn, expiresOn: lot.expiresOn, productionCost: lot.productionCost, quarantined: lot.quarantined, quantity },
+    next: { lotCode: updatedLot.lotCode, manufacturedOn: updatedLot.manufacturedOn, expiresOn: updatedLot.expiresOn, productionCost: updatedLot.productionCost, quarantined: updatedLot.quarantined, quantity: updatedLot.quantities[loc] },
+    destinationLotId: destinationLot?.id || (resolution === "released_new_lot" ? lot.id : ""),
+    destinationLotCode: destinationLot?.lotCode || (resolution === "released_new_lot" ? updatedLot.lotCode : ""),
+    actor: o.actor, actorName: o.member.displayName || o.actor,
+  });
+  return { lotId, resolution, quantity, location: loc, destinationLotId: destinationLot?.id || (resolution === "released_new_lot" ? lot.id : ""), movementId };
+};
 async function refreshCreditStatus(db, root, customerId) {
   await db.runTransaction(async (tx) => {
     const rows = await tx.get(
@@ -2839,7 +2937,12 @@ handlers.reopen = async (o, p) => {
         if (["return", "return_merma", "return_waste", "return_waste_unassigned", "shortage", "overage"].includes(movement.type)) movementsById.set(movement.id, movement);
       }
     }
-    const movements = [...movementsById.values()].filter((movement) => !reversed.has(movement.id));
+    const movements = [...movementsById.values()].filter((movement) => !reversed.has(movement.id) && !movement.reversedAt);
+    for (const movement of movements) {
+      if (movement.type !== "overage" || !movement.lotId) continue;
+      const overageLot = await o.read("distLots", movement.lotId);
+      check(!overageLot?.quarantineResolvedAt, "Este cierre tiene un sobrante que ya fue revisado, liberado o descartado. Requiere revisión administrativa antes de reabrirlo.");
+    }
     // Reapertura revierte exactamente la recepción anterior por sus lotes
     // originales. Si el producto ya no está disponible en almacén/cuarentena,
     // la transacción falla y no permite una segunda aplicación duplicada.

@@ -964,6 +964,22 @@ export async function registerExpense(input: RegisterExpenseInput, provisionalCl
   return submitOperation<DistExpense>('expense', input, input.operationId, provisional)
 }
 
+export interface ResolveQuarantineInput {
+  lotId: string
+  location: string
+  resolution: 'released_existing_lot' | 'released_new_lot' | 'discarded'
+  destinationLotId?: string
+  newLotCode?: string
+  manufacturedOn?: string
+  expiresOn?: string
+  productionCost?: number
+  reason: string
+}
+
+export async function resolveQuarantine(input: ResolveQuarantineInput, operationId = newOperationId('quarantine-resolution')) {
+  return submitOperation('resolveQuarantine', input, operationId)
+}
+
 export function subscribeSupportSettings(onData: (settings: SupportSettings) => void, onError?: (error: Error) => void) {
   return subscribeQuery<SupportSettings>(ctx => collectionRef(ctx, 'supportConfig'), rows => onData({ ...DEFAULT_SUPPORT_SETTINGS, ...(rows[0] || {}) }), onError)
 }

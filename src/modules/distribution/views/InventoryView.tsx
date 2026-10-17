@@ -1,6 +1,6 @@
 import { LotsAndHistory } from './LotsAndHistory'
 import { useMemo, useRef, useState } from 'react'
-import { FileSpreadsheet, History, ListTree, PackagePlus, Printer, SlidersHorizontal } from 'lucide-react'
+import { FileSpreadsheet, History, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -18,6 +18,8 @@ import { getTodayStockIntakes } from '../domain/todayIntakes'
 import { reportUnitLabel } from '../domain/reportLabels'
 import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
 import { stockAvailability } from '../domain/stockAvailability'
+import { quarantineRows } from '../domain/quarantine'
+import { QuarantineView } from './QuarantineView'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
@@ -28,6 +30,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   return_waste_unassigned: 'Pérdida sin lote de origen identificado', courtesy: 'Salida por cortesía',
   dispatch_waste: 'Pérdida registrada al despachar',
   customer_return: 'Devolución del cliente',
+  quarantine_release: 'Liberación auditada de cuarentena', quarantine_discard: 'Descarte auditado de cuarentena',
 }
 
 /**
@@ -61,6 +64,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
   const [historyProductFilter, setHistoryProductFilter] = useState<ProductMovementFilter>('all')
   const [generalHistorySearch, setGeneralHistorySearch] = useState('')
   const [isGeneralHistoryOpen, setIsGeneralHistoryOpen] = useState(false)
+  const [isQuarantineOpen, setIsQuarantineOpen] = useState(false)
   const [historyDays, setHistoryDays] = useState<string[]>([toDayKey(new Date())])
   const [historyExporting, setHistoryExporting] = useState<'pdf' | 'excel' | null>(null)
 
@@ -128,6 +132,8 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     () => getTodayStockIntakes(data, warehouseId),
     [data, warehouseId],
   )
+  const pendingQuarantineCount = useMemo(() => quarantineRows(data.lots, data.movements, data.warehouses)
+    .filter(row => row.status === 'pending' && row.location === lotLocation).length, [data.lots, data.movements, data.warehouses, lotLocation])
   const [todayIntakesExporting, setTodayIntakesExporting] = useState(false)
   const [todayIntakesMessage, setTodayIntakesMessage] = useState<string | null>(null)
 
@@ -223,7 +229,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
             ]}
           />
         )}
-        {!isDistributor && <button type="button" onClick={() => setIsGeneralHistoryOpen(true)} className="mx-auto flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-xs font-extrabold text-slate-700 shadow-sm"><ListTree size={16} /> Historial general de inventario</button>}
+        {!isDistributor && <div className="flex flex-wrap items-center justify-center gap-2"><button type="button" onClick={() => setIsGeneralHistoryOpen(true)} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-xs font-extrabold text-slate-700 shadow-sm"><ListTree size={16} /> Historial general de inventario</button>{['admin', 'warehouse'].includes(session.role) && <button type="button" onClick={() => setIsQuarantineOpen(true)} className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 text-xs font-extrabold text-amber-950 shadow-sm"><ShieldAlert size={16} /> Productos en cuarentena{pendingQuarantineCount > 0 ? ` (${pendingQuarantineCount})` : ''}</button>}</div>}
         {session.role === 'admin' && data.adjustmentRequests.some(request => request.status === 'pending') && <SectionCard title="Solicitudes de baja pendientes"><div className="grid gap-2">{data.adjustmentRequests.filter(request => request.status === 'pending').map(request => <article key={request.id} className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-3"><p className="text-sm font-extrabold text-slate-900">{request.productName} · {formatQty(Math.abs(request.quantity), request.unitType)}</p><p className="mt-1 text-xs text-slate-600">{request.requestedByName}: {request.note}</p><div className="mt-2 grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void reviewAdjustmentRequest(request.id, false)}>Rechazar</SecondaryButton><PrimaryButton onClick={() => void reviewAdjustmentRequest(request.id, true)}>Aprobar baja</PrimaryButton></div></article>)}</div></SectionCard>}
 
         {tab === 'central' && !isDistributor && (
@@ -457,6 +463,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
           {generalMovements.length === 0 && <EmptyBlock title="Sin movimientos en este periodo" description="Prueba otro rango de fechas." />}
         </div>
       </Modal>
+      <QuarantineView session={session} data={data} isOpen={isQuarantineOpen} onClose={() => setIsQuarantineOpen(false)} defaultLocation={lotLocation} />
       <Modal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} title="Historial del producto" subtitle={historyProduct?.name} size="lg">
         <div className="grid min-w-0 gap-3">
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar historial del producto">
@@ -471,7 +478,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
               const merma = Number(movement.dispatchMerma || 0)
               const normal = Number(movement.normalQuantity ?? Math.max(0, movement.quantity - merma))
               const recoverable = movement.type === 'return_merma'
-              const loss = ['dispatch_waste', 'return_waste', 'return_waste_unassigned', 'shortage'].includes(movement.type)
+              const loss = ['dispatch_waste', 'return_waste', 'return_waste_unassigned', 'shortage', 'quarantine_discard'].includes(movement.type)
               const label = movement.type === 'return_merma' ? 'Merma recuperable · vuelve al stock vendible' : movement.type === 'return_waste' || movement.type === 'return_waste_unassigned' ? 'Producto no apto / pérdida · no vuelve al stock' : MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'
               return <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className={`break-words text-xs font-extrabold ${recoverable ? 'text-emerald-800' : loss ? 'text-rose-800' : 'text-slate-900'}`}>{label}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p></div><strong className="shrink-0 text-sm tabular-nums text-slate-900">{formatQty(movement.quantity, movement.unitType)}</strong></div>

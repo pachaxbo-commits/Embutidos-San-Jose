@@ -32,6 +32,11 @@ export type StockMovementType =
   | 'courtesy' // producto entregado gratuitamente
   | 'shortage' // faltante detectado en conciliacion
   | 'overage' // sobrante detectado en conciliacion
+  | 'quarantine_release' // lote liberado a inventario vendible con trazabilidad
+  | 'quarantine_discard' // descarte auditado desde cuarentena
+  | 'customer_return' // devolución física de cliente, inicialmente en cuarentena
+  | 'transfer' // movimiento entre almacenes
+  | 'sale_void' // reversión auditada de venta
 
 export interface DistBaseDoc {
   pendingConfirmation?: boolean
@@ -155,6 +160,10 @@ export interface DistStockMovement extends DistBaseDoc {
   refId?: string
   /** Despacho relacionado, presente en movimientos de retorno/faltante/sobrante. */
   dispatchId?: string
+  lotId?: string
+  destinationLotId?: string
+  quarantineSourceLotId?: string
+  resolution?: 'released_existing_lot' | 'released_new_lot' | 'discarded'
   note?: string
   reversedAt?: string
   reversedBy?: string
@@ -601,6 +610,11 @@ export interface DistLot {
  id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;
  quantities: Record<string, number>; quarantined?: boolean; legacy?: boolean; createdAt: string; createdBy: string;
+ quarantineResolvedAt?: string; quarantineResolvedBy?: string; quarantineResolvedByName?: string;
+ quarantineResolution?: 'released_existing_lot' | 'released_new_lot' | 'discarded';
+ quarantineResolutionReason?: string; quarantineResolvedQuantity?: number; quarantineResolvedLocation?: string;
+ quarantineOriginalLotCode?: string;
+ quarantineDestinationLotId?: string; quarantineDestinationLotCode?: string; quarantineLossCost?: number | null;
 }
 export interface DistTransfer { id: string; fromWarehouseId: string; toWarehouseId: string; line: DistDispatchLine; createdAt: string; createdBy: string; responsibleName?: string; note?: string }
 export interface DistClaim { id: string; kind: 'exchange'|'return'; saleId: string; sellerUid?: string; sellerName?: string; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName: string;quantity: number;unitType: UnitType;total: number} | null }

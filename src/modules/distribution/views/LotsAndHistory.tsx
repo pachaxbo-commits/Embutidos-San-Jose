@@ -25,6 +25,8 @@ const MOVEMENT_LABELS: Record<string, string> = {
   overage: "Sobrante",
   exchange: "Cambio de producto",
   customer_return: "Devolución de cliente",
+  quarantine_release: "Liberación auditada de cuarentena",
+  quarantine_discard: "Descarte auditado de cuarentena",
 };
 
 export function StockAlerts({ data }: Pick<DistributionViewProps, "data">) {

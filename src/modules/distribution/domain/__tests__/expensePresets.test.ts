@@ -1,6 +1,8 @@
 import { isExpenseReviewPending } from '../expenseReview.ts'
 import type { DistExpense } from '../../types.ts'
 import registry from '../../../../../functions/expense-presets.json' with { type: 'json' }
+import { adminExpensePreset, customExpensePreset } from '../expensePresets.ts'
+import { DEFAULT_EXPENSE_CATEGORIES } from '../expenseCategories.ts'
 
 const check = (ok: boolean, message: string) => { if (!ok) throw new Error(message); console.log(`PASS ${message}`) }
 
@@ -21,4 +23,9 @@ const autoExpense = { ...base, id: 'auto', operationId: 'auto', classificationSt
 const reviewedExpense = { ...base, id: 'reviewed', operationId: 'reviewed', classificationStatus: 'reviewed' as const, classificationSource: 'admin_review' as const } as DistExpense
 check(isExpenseReviewPending(pendingExpense) && !isExpenseReviewPending(autoExpense) && !isExpenseReviewPending(reviewedExpense), 'la bandeja distingue pendientes, automáticos y revisados')
 check(isExpenseReviewPending({ ...autoExpense, id: 'legacy', classificationStatus: undefined, economicType: undefined, affectsOperatingResult: undefined }), 'históricos sin decisión económica continúan pendientes')
+const cleaning = DEFAULT_EXPENSE_CATEGORIES.find(category => category.id === 'administration-2')!
+check(cleaning.name === 'Limpieza' && adminExpensePreset(cleaning)?.classificationSource === 'admin_review' && adminExpensePreset(cleaning)?.classificationStatus === 'reviewed', 'Administración puede seleccionar Limpieza activa sin autoClassifiable y queda revisada')
+check(customExpensePreset(cleaning, false) === null, 'Limpieza no se habilita automáticamente para distribuidores')
+check(adminExpensePreset({ ...cleaning, id: 'custom-production', group: 'production_input', name: 'Insumo adicional' })?.economicType === 'production_input', 'el grupo de producción conserva el tratamiento de materia prima')
+check(adminExpensePreset({ ...cleaning, active: false }) === null, 'categorías inactivas no se ofrecen a Administración')
 console.log('PASS expense presets: opciones seguras, materia prima y revisión')

@@ -114,6 +114,8 @@ export function computeOperatingResult(
     dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', return_waste: 'Merma al retorno',
     return_merma: 'Merma recuperable al retorno', return_waste_unassigned: 'Pérdida sin lote de origen identificado',
     courtesy: 'Cortesía', shortage: 'Faltante', overage: 'Sobrante',
+    quarantine_release: 'Liberación auditada de cuarentena', quarantine_discard: 'Descarte auditado de cuarentena',
+    customer_return: 'Devolución de cliente', transfer: 'Transferencia entre almacenes', sale_void: 'Anulación de venta',
   }
   const movementRows = losses.map((movement) => ({ fecha: movement.dayKey || toDayKey(movement.createdAt), tipo: movementTypeLabel[movement.type],
     producto: movement.productName || 'Producto no disponible', origen: displayOrigin(movement.routeId), monto: movement.lossCost ?? 'Costo no registrado' }))
