@@ -161,6 +161,8 @@ export function DistributionApp({
     warehouseId: role === 'warehouse' ? warehouseId : undefined,
     canReadFinance,
     canManageCredits: can('dist.credit.adjust'),
+    canManageCustomers: can('dist.customer.manage'),
+    canRegisterExpenses: can('dist.expense.create'),
   })
 
   useBackButtonBridge(() => {

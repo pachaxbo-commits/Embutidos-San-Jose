@@ -82,6 +82,7 @@ try {
   await check('correctDispatch rechaza tenant incorrecto', assertFails(setDoc(doc(admin, companyPath('distOperations', 'correct-dispatch-tenant')), { ...operation('correct-dispatch-tenant', 'admin', 'correctDispatch', { dispatchId: 'despacho', reason: 'QA' }), restaurantId: OTHER_COMPANY })))
   await check('Distribuidor no crea saldos anteriores', assertFails(setDoc(doc(seller, companyPath('distOperations', 'saldo-anterior')), operation('saldo-anterior', 'vendedor', 'openingBalance', { customerId: 'cliente', amount: 10 }))))
   await check('Distribuidor lee autorizaciones temporales', assertSucceeds(getDocs(collection(seller, `restaurants/${COMPANY}/distCreditOverrides`))))
+  await check('Almacén no puede leer autorizaciones temporales de crédito', assertFails(getDocs(collection(warehouse, `restaurants/${COMPANY}/distCreditOverrides`))))
   await check('Distribuidor consulta solo sus correcciones', assertSucceeds(getDocs(query(collection(seller, `restaurants/${COMPANY}/distSaleCorrections`), where('sellerUid', '==', 'vendedor')))))
   await check('Distribuidor no lee corrección ajena', assertFails(getDoc(doc(seller, companyPath('distSaleCorrections', 'corr-sur')))))
   await check('Distribuidor mantiene lectura del cierre mientras Almacén confirma', assertSucceeds(getDocs(query(collection(seller, `restaurants/${COMPANY}/distClosures`), where('distributorUid', '==', 'vendedor')))))

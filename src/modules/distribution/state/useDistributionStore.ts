@@ -42,6 +42,7 @@ import type {
 } from '../types'
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from '../data/supportMaintenance'
 import { isProductionPreviewReadOnly } from '../../../lib/firebase'
+import { getDistributionSubscriptionCollections } from './distributionSubscriptionPolicy'
 
 /**
  * Estado en vivo del modulo de distribucion.
@@ -69,6 +70,8 @@ export interface DistributionScope {
    */
   canReadFinance: boolean
   canManageCredits?: boolean
+  canManageCustomers?: boolean
+  canRegisterExpenses?: boolean
 }
 
 export function useSyncStatus() {
@@ -136,7 +139,23 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [loadedCount, setLoadedCount] = useState(0)
 
   const dayKeysSignature = scope.dayKeys.join(',')
-  const { routeId, distributorUid, enabled, canReadFinance, canManageCredits = false } = scope
+  const {
+    routeId,
+    distributorUid,
+    enabled,
+    canReadFinance,
+    canManageCredits = false,
+    canManageCustomers = false,
+    canRegisterExpenses = false,
+  } = scope
+  const subscriptionCollections = useMemo(() => getDistributionSubscriptionCollections({
+    enabled,
+    routeId,
+    canReadFinance,
+    canManageCredits,
+    canManageCustomers,
+    canRegisterExpenses,
+  }), [enabled, routeId, canReadFinance, canManageCredits, canManageCustomers, canRegisterExpenses])
 
   const markLoaded = useRef(new Set<string>())
   const onLoaded = useCallback((key: string) => {
@@ -153,17 +172,20 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   useEffect(() => {
     if (!enabled) return
     const unsubscribers = [
-      subscribeLots(setLots, onError), subscribeOperations(setOperations, onError), subscribeCreditStatus(setCreditStatus, onError), subscribeCreditOverrides(setCreditOverrides, onError),
+      subscribeLots(setLots, onError), subscribeOperations(setOperations, onError),
+      ...(subscriptionCollections.has('distCreditStatus') ? [subscribeCreditStatus(setCreditStatus, onError)] : [((() => { setCreditStatus([]); return () => {} })())]),
+      ...(subscriptionCollections.has('distCreditOverrides') ? [subscribeCreditOverrides(setCreditOverrides, onError)] : [((() => { setCreditOverrides([]); return () => {} })())]),
       subscribeSupportSettings(setSupportSettings, onError),
-      ...(canManageCredits ? [subscribeReceivableAdjustments((rows) => {
+      ...(subscriptionCollections.has('distReceivableAdjustments') ? [subscribeReceivableAdjustments((rows) => {
         setReceivableAdjustments(rows)
         onLoaded('receivableAdjustments')
       }, onError)] : []),
-      ...(routeId === null ? [subscribeMovements(setMovements, onError), subscribeTransfers(setTransfers, onError)] : []),
-      ...(canReadFinance ? [subscribeClaims(routeId, setClaims, onError)] : []),
+      ...(subscriptionCollections.has('distStockMovements') ? [subscribeMovements(setMovements, onError)] : []),
+      ...(subscriptionCollections.has('distTransfers') ? [subscribeTransfers(setTransfers, onError)] : []),
+      ...(subscriptionCollections.has('distClaims') ? [subscribeClaims(routeId, setClaims, onError)] : []),
       subscribeWarehouses(setWarehouses, onError),
-      ...(routeId === null ? [subscribeAdjustmentRequests(setAdjustmentRequests, onError)] : []),
-      ...(canReadFinance ? [subscribeQrVerifications(routeId, setQrVerifications, onError)] : []),
+      ...(subscriptionCollections.has('distAdjustmentRequests') ? [subscribeAdjustmentRequests(setAdjustmentRequests, onError)] : []),
+      ...(subscriptionCollections.has('distQrVerifications') ? [subscribeQrVerifications(routeId, setQrVerifications, onError)] : []),
       subscribeProducts((rows) => {
         setProducts(rows.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)))
         onLoaded('products')
@@ -172,11 +194,11 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setRoutes(rows.sort((a, b) => a.name.localeCompare(b.name)))
         onLoaded('routes')
       }, onError),
-      subscribeCustomers((rows) => {
+      ...(subscriptionCollections.has('distCustomers') ? [subscribeCustomers((rows) => {
         setCustomers(rows.sort((a, b) => a.name.localeCompare(b.name)))
         onLoaded('customers')
-      }, onError),
-      ...(isProductionPreviewReadOnly() ? [((() => { setExpenseCategories([]); onLoaded('expenseCategories'); return () => {} })())] : [subscribeExpenseCategories((rows) => {
+      }, onError)] : [((() => { setCustomers([]); onLoaded('customers'); return () => {} })())]),
+      ...(!subscriptionCollections.has('distExpenseCategories') || isProductionPreviewReadOnly() ? [((() => { setExpenseCategories([]); onLoaded('expenseCategories'); return () => {} })())] : [subscribeExpenseCategories((rows) => {
         setExpenseCategories(rows)
         onLoaded('expenseCategories')
       }, onError)]),
@@ -186,7 +208,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
       }, onError),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
-  }, [enabled, scope.restaurantId, canReadFinance, canManageCredits, routeId, onError, onLoaded])
+  }, [enabled, scope.restaurantId, subscriptionCollections, routeId, onError, onLoaded])
 
   // Los despachos son privados por distribuidor. La cartera es global para que
   // cualquier vendedor detecte una deuda pendiente antes de vender.
@@ -197,7 +219,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setOpenDispatches(rows)
         onLoaded('dispatches')
       }, onError, distributorUid),
-      ...(canReadFinance
+      ...(subscriptionCollections.has('distReceivables')
         ? [
             subscribeReceivables(null, (rows) => {
               setReceivables(rows)
@@ -207,7 +229,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         : []),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
-  }, [enabled, routeId, distributorUid, canReadFinance, onError, onLoaded])
+  }, [enabled, routeId, distributorUid, subscriptionCollections, onError, onLoaded])
 
   // Movimientos del rango consultado.
   useEffect(() => {
@@ -220,7 +242,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setSales(rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
         onLoaded('sales')
       }, onError, distributorUid),
-      ...(canReadFinance
+      ...(subscriptionCollections.has('distCollections')
         ? [
             subscribeCollections(dayKeys, routeId, (rows) => {
               setCollections(rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
@@ -238,7 +260,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
       }, onError, distributorUid),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
-  }, [enabled, routeId, distributorUid, dayKeysSignature, canReadFinance, onError, onLoaded])
+  }, [enabled, routeId, distributorUid, dayKeysSignature, subscriptionCollections, onError, onLoaded])
 
   const pendingSales = pendingSalesFromOperations(operations, sales)
   const pendingCollections = pendingCollectionsFromOperations(operations, collections)
