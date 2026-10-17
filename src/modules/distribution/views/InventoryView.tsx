@@ -17,6 +17,7 @@ import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inve
 import { getTodayStockIntakes } from '../domain/todayIntakes'
 import { reportUnitLabel } from '../domain/reportLabels'
 import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
+import { stockAvailability } from '../domain/stockAvailability'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
@@ -260,17 +261,18 @@ export function InventoryView({ session, data }: DistributionViewProps) {
             <TextInput value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto..." />
             <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2">
               {filteredProducts.map((product) => {
-                const stock = central.get(product.id) ?? 0
+                const balance = data.balances.find(item => item.id === warehouseBalanceId(warehouseId, product.id))
+                const availability = stockAvailability(balance, data.lots, lotLocation, toDayKey())
                 return (
-                  <div key={product.id} className="flex w-full min-w-0 items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3">
+                  <div key={product.id} className="flex w-full min-w-0 items-start justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3">
                     {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} className="h-14 w-14 shrink-0 rounded-xl object-cover" />}
                     <div className="min-w-0 flex-1">
                       <p className="break-words text-xs font-extrabold text-slate-900">{product.name}</p>
+                      <p className="mt-1 text-[11px] font-semibold text-slate-600">Existencia física: <strong className="text-slate-900">{formatQty(availability.physical, product.unitType)}</strong></p>
+                      <p className="text-[11px] font-semibold text-emerald-800">Disponible para venta: <strong>{formatQty(availability.available, product.unitType)}</strong></p>
+                      {availability.unavailable > 0 && <details className="mt-1 text-[11px] font-semibold text-amber-800"><summary className="cursor-pointer">No disponible: {formatQty(availability.unavailable, product.unitType)}</summary><div className="mt-1 pl-2 text-slate-600">{availability.quarantine > 0 && <p>En cuarentena: {formatQty(availability.quarantine, product.unitType)}</p>}{availability.expired > 0 && <p>Vencido: {formatQty(availability.expired, product.unitType)}</p>}{availability.other > 0 && <p>Por revisar: {formatQty(availability.other, product.unitType)}</p>}</div></details>}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <span className={`text-sm font-black tabular-nums ${stock > 0 ? 'text-slate-900' : 'text-rose-500'}`}>
-                        {formatQty(stock, product.unitType)}
-                      </span>
                       {(canIntake || canAdjust) && (
                         <>
                           {canIntake && <button

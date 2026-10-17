@@ -3,6 +3,7 @@ import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
 import { matchesRoute, round2, toDayKey } from "../domain/engine";
+import { roundStockQuantity } from "../domain/stockAvailability";
 import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio } from "../domain/creditRoutes";
 import {
   aggregateCustomerPurchases,
@@ -186,15 +187,15 @@ export function currentStockSheets(
           (item.warehouseId || "central") === warehouse.id &&
           item.productId === product.id,
       );
-      const physical = round2(Number(balance?.quantity) || 0);
-      const available = round2(
-        Number(balance?.availableQuantity ?? balance?.quantity) || 0,
+      const physical = roundStockQuantity(Number(balance?.quantity) || 0, product.unitType);
+      const available = roundStockQuantity(
+        Number(balance?.availableQuantity ?? balance?.quantity) || 0, product.unitType,
       );
-      const unavailable = round2(Math.max(0, physical - available));
+      const unavailable = roundStockQuantity(Math.max(0, physical - available), product.unitType);
       const minStock = product.minimumStock || 0;
       const status =
         available <= 0
-          ? "Sin existencia"
+          ? physical > 0 ? "Sin stock vendible" : "Sin existencia"
           : minStock > 0 && available <= minStock
             ? "Stock bajo"
             : "Disponible";
@@ -216,7 +217,7 @@ export function currentStockSheets(
     warehouses.flatMap((warehouse) => {
       const location =
         warehouse.id === "central" ? "central" : `warehouse__${warehouse.id}`;
-      const quantity = round2(Number(lot.quantities?.[location]) || 0);
+      const quantity = roundStockQuantity(Number(lot.quantities?.[location]) || 0, lot.unitType);
       if (quantity <= 0) return [];
       const expired = Boolean(lot.expiresOn && lot.expiresOn < today);
       const daysRemaining = lot.expiresOn

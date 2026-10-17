@@ -11,6 +11,7 @@ import { PrimaryButton, SecondaryButton, formatQty } from './shared'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
+import { stockAvailability } from '../domain/stockAvailability'
 
 export function WarehousesView({ session, data }: DistributionViewProps) {
   const warehouses = useMemo(() => [{ id: 'central', name: 'Almacén central' }, ...data.warehouses.filter(warehouse => warehouse.active)], [data.warehouses])
@@ -99,15 +100,21 @@ export function WarehousesView({ session, data }: DistributionViewProps) {
 
       <div className="grid gap-3 md:grid-cols-1 lg:grid-cols-2">
         {warehouses.map(warehouse => {
-          const balances = data.balances.filter(balance => balance.locationKind === 'central' && (balance.warehouseId || 'central') === warehouse.id && (balance.availableQuantity ?? balance.quantity) > 0)
+          const balances = data.balances.filter(balance => balance.locationKind === 'central' && (balance.warehouseId || 'central') === warehouse.id && balance.quantity > 0)
           const expanded = openWarehouse === warehouse.id
-          return <section key={warehouse.id} className="overflow-hidden rounded-3xl border border-slate-200 bg-white"><button type="button" onClick={() => setOpenWarehouse(expanded ? null : warehouse.id)} className="flex min-h-[60px] w-full items-center gap-3 px-4 text-left"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--primary-soft)] text-[var(--primary)]"><Boxes size={17} /></span><span className="min-w-0 flex-1"><strong className="block break-words text-sm text-slate-900">{warehouse.name}</strong><span className="text-[11px] font-semibold text-slate-500">{balances.length} productos con stock</span></span>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>
+          return <section key={warehouse.id} className="overflow-hidden rounded-3xl border border-slate-200 bg-white"><button type="button" onClick={() => setOpenWarehouse(expanded ? null : warehouse.id)} className="flex min-h-[60px] w-full items-center gap-3 px-4 text-left"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--primary-soft)] text-[var(--primary)]"><Boxes size={17} /></span><span className="min-w-0 flex-1"><strong className="block break-words text-sm text-slate-900">{warehouse.name}</strong><span className="text-[11px] font-semibold text-slate-500">{balances.length} productos con existencia física</span></span>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>
             {expanded && <div className="grid gap-1.5 border-t border-slate-100 p-3">
-              {balances.map(balance => <div key={balance.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-xl bg-slate-50 px-3 py-2">
-                <span className="text-xs font-bold leading-snug text-slate-800">{balance.productName}</span>
-                <strong className="shrink-0 text-xs tabular-nums text-slate-900">{formatQty(balance.availableQuantity ?? balance.quantity, balance.unitType)}</strong>
-              </div>)}
-              {balances.length === 0 && <div className="flex items-center gap-2 rounded-xl border border-dashed border-slate-200 p-4 text-xs font-semibold text-slate-500"><Boxes size={16} /> Sin stock disponible</div>}
+              {balances.map(balance => {
+                const location = warehouse.id === 'central' ? 'central' : `warehouse__${warehouse.id}`
+                const stock = stockAvailability(balance, data.lots, location, toDayKey())
+                return <div key={balance.id} className="min-w-0 rounded-xl bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                  <p className="break-words text-xs font-bold leading-snug text-slate-900">{balance.productName}</p>
+                  <p className="mt-1">Existencia física: <strong>{formatQty(stock.physical, balance.unitType)}</strong></p>
+                  <p className="text-emerald-800">Disponible para venta: <strong>{formatQty(stock.available, balance.unitType)}</strong></p>
+                  {stock.unavailable > 0 && <details className="mt-1 text-amber-800"><summary className="cursor-pointer">No disponible: {formatQty(stock.unavailable, balance.unitType)}</summary><div className="mt-1 pl-2 text-slate-600">{stock.quarantine > 0 && <p>En cuarentena: {formatQty(stock.quarantine, balance.unitType)}</p>}{stock.expired > 0 && <p>Vencido: {formatQty(stock.expired, balance.unitType)}</p>}{stock.other > 0 && <p>Por revisar: {formatQty(stock.other, balance.unitType)}</p>}</div></details>}
+                </div>
+              })}
+              {balances.length === 0 && <div className="flex items-center gap-2 rounded-xl border border-dashed border-slate-200 p-4 text-xs font-semibold text-slate-500"><Boxes size={16} /> Sin existencia física</div>}
             </div>}
           </section>
         })}
