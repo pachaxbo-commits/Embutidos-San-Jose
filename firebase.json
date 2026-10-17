@@ -40,6 +40,10 @@
             "value": "application/vnd.android.package-archive"
           },
           {
+            "key": "Content-Encoding",
+            "value": "identity"
+          },
+          {
             "key": "Access-Control-Allow-Origin",
             "value": "*"
           }
