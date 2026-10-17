@@ -19,6 +19,7 @@
     "test:subscription-permissions": "node --experimental-strip-types src/modules/distribution/state/__tests__/distributionSubscriptionPolicy.test.ts",
     "test:closure-regression": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureRegression.test.ts",
     "test:closure-audit": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureAudit.test.ts",
+    "test:closure-history": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureHistory.test.ts",
     "test:product-movement-history": "node --experimental-strip-types src/modules/distribution/domain/__tests__/productMovementHistory.test.ts",
     "test:distributor-differences": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributorDifferences.test.ts",
     "test:return-waste": "node --experimental-strip-types src/modules/distribution/domain/__tests__/returnReconciliation.test.ts",

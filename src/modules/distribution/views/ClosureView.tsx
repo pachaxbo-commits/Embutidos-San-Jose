@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, History, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
 import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
@@ -13,6 +13,8 @@ import { printClosureTicket, printClosureSheet, shareClosurePdf } from '../data/
 import { getProductPresentation } from '../domain/productPresentation'
 import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calculateReturnBreakdown, calculateReturnDeclarationDifference, parseReturnQuantityInput, validateReturnQuantity } from '../domain/returnReconciliation'
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
+import { closureHistoryOwnerKey, closureOperationalDayKey, filterClosureHistory, visibleClosureHistory } from '../domain/closureHistory'
+import { RangePicker, describeRange, formatDayKey, type RangePreset } from './RangePicker'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   draft: 'Devolución declarada; espera confirmación de almacén',
@@ -26,6 +28,8 @@ const parseDraftQuantities = (drafts: Record<string, string>) =>
     id,
     value.trim() === '' ? 0 : parseReturnQuantityInput(value) ?? 0,
   ]))
+
+const getClosureSortTimestamp = (closure: DistClosure) => closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt || ''
 
 /**
  * Arqueo de ruta: conciliacion fisica por producto y cuadre de dinero.
@@ -69,6 +73,13 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [adminNote, setAdminNote] = useState('')
   const [confirmingAdminClosure, setConfirmingAdminClosure] = useState(false)
   const [closureTab, setClosureTab] = useState<'routes' | 'admin'>(availableDispatches.length === 0 && session.role === 'admin' ? 'admin' : 'routes')
+  const [closureViewMode, setClosureViewMode] = useState<'current' | 'history'>('current')
+  const [historyDayKeys, setHistoryDayKeys] = useState<string[]>([todayKey])
+  const [historyPreset, setHistoryPreset] = useState<RangePreset>('today')
+  const [historyOwnerFilter, setHistoryOwnerFilter] = useState('')
+  const [historyVisibleCount, setHistoryVisibleCount] = useState(20)
+  const [isHistoryOwnerOpen, setIsHistoryOwnerOpen] = useState(false)
+  const [reopenHistoryTarget, setReopenHistoryTarget] = useState<DistClosure | null>(null)
 
   const dispatch = availableDispatches.find(item => item.id === selectedDispatchId) ?? availableDispatches[0] ?? null
 
@@ -554,46 +565,56 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }
   }
 
-  const getClosureSortTimestamp = (closure: DistClosure) =>
-    closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt || ''
-
-  const historicalClosures = data.closures
+  const accessibleHistoricalClosures = useMemo(() => data.closures
     .filter(closure => session.role !== 'distributor' || closure.distributorUid === session.uid || closure.returnDeclaredBy === session.uid)
-    .filter(closure => session.role !== 'warehouse' || (closure.warehouseId || 'central') === (session.warehouseId || 'central'))
+    .filter(closure => session.role !== 'warehouse' || (closure.warehouseId || 'central') === (session.warehouseId || 'central')),
+  [data.closures, session.role, session.uid, session.warehouseId])
+  const historyOwners = useMemo(() => [...new Map(accessibleHistoricalClosures.map(closure => [
+    closureHistoryOwnerKey(closure),
+    { value: closureHistoryOwnerKey(closure), label: `${closure.routeName || 'Ruta registrada'} · ${closure.distributorName || 'Distribuidor'}` },
+  ])).values()].sort((a, b) => a.label.localeCompare(b.label, 'es')), [accessibleHistoricalClosures])
+  const historyOwnerLabel = historyOwners.find(owner => owner.value === historyOwnerFilter)?.label || 'Todas las rutas / distribuidores'
+  const filteredHistoricalClosures = useMemo(() => filterClosureHistory(accessibleHistoricalClosures, historyDayKeys, historyOwnerFilter)
     .slice()
-    .sort((a, b) => getClosureSortTimestamp(b).localeCompare(getClosureSortTimestamp(a)))
+    .sort((a, b) => closureOperationalDayKey(b).localeCompare(closureOperationalDayKey(a)) || getClosureSortTimestamp(b).localeCompare(getClosureSortTimestamp(a))),
+  [accessibleHistoricalClosures, historyDayKeys, historyOwnerFilter])
+  const historicalClosures = visibleClosureHistory(filteredHistoricalClosures, historyVisibleCount)
 
   const closureHistory = (
     <SectionCard title="Historial de cierres">
-      {historicalClosures.length === 0 ? <p className="text-xs font-semibold text-slate-500">Todavía no hay cierres registrados.</p> : <div className="grid gap-2">
+      <div className="grid gap-3">
+        <p className="text-xs leading-relaxed text-slate-600">Busca cierres por la fecha de la jornada. Si un cierre se reabrió otro día, seguirá apareciendo en su fecha original.</p>
+        <RangePicker dayKeys={historyDayKeys} initialPreset={historyPreset} onPresetChange={setHistoryPreset} onChange={value => { setHistoryDayKeys(value); setHistoryVisibleCount(20) }} />
+        {session.role === 'admin' && <Field label="Ruta / distribuidor"><ChoiceButton label={historyOwnerLabel} placeholder="Todas las rutas / distribuidores" onClick={() => setIsHistoryOwnerOpen(true)} /></Field>}
+        <p className="text-xs font-bold text-slate-600">{describeRange(historyDayKeys)} · {historyOwnerLabel} · {filteredHistoricalClosures.length} cierres encontrados{filteredHistoricalClosures.length > 0 ? ` · mostrando ${historicalClosures.length}` : ''}</p>
+      </div>
+      {filteredHistoricalClosures.length === 0 ? <EmptyBlock title={historyDayKeys.length === 1 && historyDayKeys[0] === todayKey ? 'No hay cierres para hoy.' : 'No hay cierres para este periodo.'} description="Prueba Semana, Mes o selecciona otras fechas." /> : <div className="mt-3 grid gap-2">
         {historicalClosures.map(closure => {
           const expanded = historyOpenId === closure.id
           const hasProductDifference = closure.products.some(row => Math.abs(Number(row.variance) || 0) > 0.001)
           const closureTimestamp = closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt
           const reopenEvents = closureReopenEvents(closure)
           return <article key={closure.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            <button type="button" onClick={() => setHistoryOpenId(expanded ? null : closure.id)} className="flex min-h-[62px] w-full items-center gap-3 p-3 text-left" aria-expanded={expanded}>
-              <span className="min-w-0 flex-1"><strong className="block break-words text-sm text-slate-900">{closure.routeName || 'Ruta registrada'} · {closure.distributorName || 'Distribuidor'}</strong><span className="mt-0.5 block text-[11px] font-semibold text-slate-500">{closureTimestamp ? new Date(closureTimestamp).toLocaleString('es-BO') : 'Sin fecha registrada'}</span><span className="mt-1 block text-[10px] font-extrabold text-[var(--primary)]">{CLOSURE_STATUS[closure.status] || 'Estado pendiente'}</span></span>
-              {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-            </button>
+            <div className="grid gap-2 p-3">
+              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><strong className="break-words text-sm text-slate-900">{closure.routeName || 'Ruta registrada'} · {closure.distributorName || 'Distribuidor'}</strong>{reopenEvents.length > 0 && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-black tracking-wide text-amber-900">REABIERTO</span>}</div>
+                  <p className="mt-1 text-xs font-bold text-slate-700">Jornada: {formatDayKey(closureOperationalDayKey(closure)) || 'Sin fecha registrada'}</p>
+                  <p className="text-[11px] font-semibold text-slate-500">Cierre: {closureTimestamp ? new Date(closureTimestamp).toLocaleString('es-BO') : 'Sin fecha registrada'}</p>
+                  {reopenEvents.at(-1)?.reopenedAt && <p className="text-[11px] font-semibold text-amber-800">Reabierto: {new Date(reopenEvents.at(-1)!.reopenedAt!).toLocaleString('es-BO')}</p>}
+                  <p className="mt-1 text-[10px] font-extrabold text-[var(--primary)]">{CLOSURE_STATUS[closure.status] || 'Estado pendiente'}</p>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  {reopenEvents.length > 0 && <SecondaryButton onClick={() => setReopenHistoryTarget(closure)}><History size={15} /> Ver historial de reapertura</SecondaryButton>}
+                  <SecondaryButton onClick={() => setHistoryOpenId(expanded ? null : closure.id)} aria-expanded={expanded}>{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}{expanded ? 'Ocultar detalle' : 'Ver detalle'}</SecondaryButton>
+                </div>
+              </div>
+            </div>
             {expanded && <div className="grid gap-3 border-t border-slate-100 p-3">
               <div className="grid gap-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
                 <p><strong>Jornada / fecha operativa:</strong> {closure.dayKey || 'Sin fecha registrada'}</p>
                 {closure.warehouseClosedAt && <p><strong>Recepción de almacén:</strong> {new Date(closure.warehouseClosedAt).toLocaleString('es-BO')}</p>}
                 {closure.closedAt && <p><strong>Cierre actual:</strong> {new Date(closure.closedAt).toLocaleString('es-BO')}</p>}
               </div>
-              {reopenEvents.length > 0 && <section aria-label="Historial de reaperturas" className="grid gap-2 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
-                <h4 className="font-black uppercase tracking-wide">Historial de reaperturas</h4>
-                {reopenEvents.map((event, index) => <div key={`${event.reopenedAt || 'reapertura'}-${index}`} className="rounded-xl bg-white/80 p-2.5">
-                  {event.previousClosedAt && <p><strong>Cierre anterior:</strong> {new Date(event.previousClosedAt).toLocaleString('es-BO')}</p>}
-                  {event.previousWarehouseClosedAt && <p><strong>Recepción anterior de almacén:</strong> {new Date(event.previousWarehouseClosedAt).toLocaleString('es-BO')}</p>}
-                  {event.previousClosedByName && <p className="mt-1"><strong>Cierre anterior realizado por:</strong> {event.previousClosedByName}</p>}
-                  {event.reopenedAt && <p className="mt-1"><strong>Reabierto:</strong> {new Date(event.reopenedAt).toLocaleString('es-BO')}</p>}
-                  {(event.reopenedByName || event.reopenedBy) && <p className="mt-1"><strong>Por:</strong> {event.reopenedByName || event.reopenedBy}</p>}
-                  {event.reason && <p className="mt-1 break-words"><strong>Motivo:</strong> “{event.reason}”</p>}
-                </div>)}
-                {closure.closedAt && <p className="font-bold">Cerrado nuevamente: {new Date(closure.closedAt).toLocaleString('es-BO')}</p>}
-              </section>}
               <div className="grid gap-2 md:grid-cols-2">{closure.products.length === 0 ? <p className="text-xs text-slate-500">Almacén todavía no confirmó las cantidades.</p> : closure.products.map(row => {
                 const declaredNormal = row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId]
                 const declaredMerma = row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0
@@ -614,6 +635,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           </article>
         })}
       </div>}
+      {historicalClosures.length < filteredHistoricalClosures.length && <div className="mt-3 text-center"><SecondaryButton onClick={() => setHistoryVisibleCount(count => count + 20)}>Mostrar más ({filteredHistoricalClosures.length - historicalClosures.length} restantes)</SecondaryButton></div>}
     </SectionCard>
   )
 
@@ -716,8 +738,54 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           )}
         </div>
       </SectionCard>
-      {closureHistory}
     </div>
+  )
+
+  const closureNavigationControls = (
+    <div className="grid gap-2 pb-1">
+      {session.role === 'admin' && <Segmented
+        value={closureTab}
+        options={[
+          { value: 'routes', label: 'Cierres de ruta' },
+          { value: 'admin', label: 'Caja Administración' },
+        ]}
+        onChange={val => setClosureTab(val as 'routes' | 'admin')}
+      />}
+      <div className="flex justify-center">
+        {closureViewMode === 'current' ? <SecondaryButton onClick={() => {
+          setHistoryDayKeys([todayKey])
+          setHistoryPreset('today')
+          setHistoryVisibleCount(20)
+          setClosureViewMode('history')
+        }}><History size={16} /> Historial de cierres</SecondaryButton> : <SecondaryButton onClick={() => setClosureViewMode('current')}><ArrowLeft size={16} /> Volver al cierre actual</SecondaryButton>}
+      </div>
+    </div>
+  )
+
+  const reopenHistoryModal = (
+    <Modal
+      isOpen={Boolean(reopenHistoryTarget)}
+      onClose={() => setReopenHistoryTarget(null)}
+      title="Historial de reapertura"
+      subtitle={reopenHistoryTarget ? `${reopenHistoryTarget.routeName || 'Ruta registrada'} · ${reopenHistoryTarget.distributorName || 'Distribuidor'}` : undefined}
+      size="lg"
+    >
+      {reopenHistoryTarget && <div className="grid gap-3">
+        {closureReopenEvents(reopenHistoryTarget).map((event, index, events) => {
+          const closedAgain = events[index + 1]?.previousClosedAt || (index === events.length - 1 ? reopenHistoryTarget.closedAt : undefined)
+          return <section key={`${event.reopenedAt || 'reapertura'}-${index}`} className="grid gap-1.5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-slate-800">
+            <h3 className="font-black text-amber-950">Reapertura {index + 1}</h3>
+            {event.previousClosedAt && <p><strong>Cierre anterior:</strong> {new Date(event.previousClosedAt).toLocaleString('es-BO')}</p>}
+            {event.previousWarehouseClosedAt && <p><strong>Recepción de almacén anterior:</strong> {new Date(event.previousWarehouseClosedAt).toLocaleString('es-BO')}</p>}
+            {event.previousClosedByName && <p><strong>Cierre anterior realizado por:</strong> {event.previousClosedByName}</p>}
+            {event.reopenedAt && <p><strong>Reabierto:</strong> {new Date(event.reopenedAt).toLocaleString('es-BO')}</p>}
+            {(event.reopenedByName || event.reopenedBy) && <p><strong>Por:</strong> {event.reopenedByName || event.reopenedBy}</p>}
+            <p className="break-words"><strong>Motivo:</strong> {event.reason ? `“${event.reason}”` : 'Sin motivo disponible en este registro.'}</p>
+            {closedAgain && <p><strong>Cerrado nuevamente:</strong> {new Date(closedAgain).toLocaleString('es-BO')}</p>}
+          </section>
+        })}
+      </div>}
+    </Modal>
   )
 
   const reopenModal = (
@@ -836,21 +904,40 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     </Modal>
   )
 
+  const historyOwnerModal = (
+    <ChoiceModal
+      isOpen={isHistoryOwnerOpen}
+      onClose={() => setIsHistoryOwnerOpen(false)}
+      title="Filtrar cierres"
+      subtitle="Selecciona una ruta y su distribuidor"
+      searchable
+      options={[{ value: '', label: 'Todas las rutas / distribuidores' }, ...historyOwners]}
+      selectedValue={historyOwnerFilter}
+      onSelect={value => { setHistoryOwnerFilter(value); setHistoryVisibleCount(20) }}
+    />
+  )
+
+  if (closureViewMode === 'history') {
+    return (
+      <Screen title="Cierre y arqueo de caja" subtitle="Consulta de cierres anteriores">
+        {closureNavigationControls}
+        {closureHistory}
+        {historyOwnerModal}
+        {reopenHistoryModal}
+        {reopenModal}
+        {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
+      </Screen>
+    )
+  }
+
   if (!dispatch) {
     if (session.role === 'admin' && closureTab === 'admin') {
       return (
-        <Screen title="Cierre y arqueo de caja">
-          <div className="mb-3">
-            <Segmented
-              value={closureTab}
-              options={[
-                { value: 'routes', label: 'Cierres de ruta' },
-                { value: 'admin', label: 'Caja Administración' },
-              ]}
-              onChange={val => setClosureTab(val as 'routes' | 'admin')}
-            />
-          </div>
+        <Screen title="Cierre y arqueo de caja" subtitle="Administración">
+          {closureNavigationControls}
           {adminClosureContent}
+          {historyOwnerModal}
+          {reopenHistoryModal}
           {reopenModal}
           {adminClosureModal}
           {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
@@ -860,18 +947,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
     return (
       <Screen title="Cierre de ruta">
-        {session.role === 'admin' && (
-          <div className="mb-3">
-            <Segmented
-              value={closureTab}
-              options={[
-                { value: 'routes', label: 'Cierres de ruta' },
-                { value: 'admin', label: 'Caja Administración' },
-              ]}
-              onChange={val => setClosureTab(val as 'routes' | 'admin')}
-            />
-          </div>
-        )}
+        {closureNavigationControls}
         {justClosedRouteName && (
           <div className="flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 mb-3">
             <CheckCircle2 size={20} className="shrink-0 text-emerald-600" />
@@ -890,7 +966,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           title="No hay rutas abiertas"
           description={isDistributor ? 'El arqueo se habilita cuando Almacén registra una carga abierta para tu usuario.' : 'El arqueo se hace sobre un despacho abierto. Registra un despacho primero.'}
         />
-        {closureHistory}
+        {historyOwnerModal}
+        {reopenHistoryModal}
         {reopenModal}
         {adminClosureModal}
         {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
@@ -900,18 +977,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
   return (
     <Screen title="Cierre y arqueo de caja" subtitle={closureTab === 'admin' ? 'Administración' : `${dispatch.routeName} · ${dispatch.distributorName}`}>
-      {session.role === 'admin' && (
-        <div className="mb-3">
-          <Segmented
-            value={closureTab}
-            options={[
-              { value: 'routes', label: 'Cierres de ruta' },
-              { value: 'admin', label: 'Caja Administración' },
-            ]}
-            onChange={val => setClosureTab(val as 'routes' | 'admin')}
-          />
-        </div>
-      )}
+      {closureNavigationControls}
       {closureTab === 'admin' ? (
         adminClosureContent
       ) : (
@@ -1094,9 +1160,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               </SecondaryButton>
             )}
           </div>
-        {closureHistory}
       </div>
       )}
+      {historyOwnerModal}
+      {reopenHistoryModal}
       <ChoiceModal
         isOpen={isDispatchOpen}
         onClose={() => setIsDispatchOpen(false)}

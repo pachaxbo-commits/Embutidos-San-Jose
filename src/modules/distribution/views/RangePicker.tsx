@@ -8,11 +8,13 @@ import type { DistRoute } from '../types'
 export type RangePreset = 'today' | 'week' | 'month' | 'custom'
 
 /** 2026-08-14 -> 14/08/2026 */
+// eslint-disable-next-line react-refresh/only-export-components
 export function formatDayKey(dayKey: string): string {
   const [year, month, day] = (dayKey || '').split('-')
   return year ? `${day}/${month}/${year}` : dayKey
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function describeRange(dayKeys: string[]): string {
   if (dayKeys.length === 0) return ''
   if (dayKeys.length === 1) return formatDayKey(dayKeys[0])
@@ -29,21 +31,26 @@ export function RangePicker({
   routes,
   routeFilter,
   onRouteFilterChange,
+  initialPreset,
+  onPresetChange,
 }: {
   dayKeys: string[]
   onChange: (dayKeys: string[]) => void
   routes?: DistRoute[]
   routeFilter?: string
   onRouteFilterChange?: (routeId: string) => void
+  initialPreset?: RangePreset
+  onPresetChange?: (preset: RangePreset) => void
 }) {
   const [rangeError, setRangeError] = useState('')
-  const [preset, setPreset] = useState<RangePreset>(dayKeys.length === 1 ? 'today' : 'custom')
-  const [from, setFrom] = useState(dayKeys[0] ?? toDayKey(new Date()))
-  const [to, setTo] = useState(dayKeys[dayKeys.length - 1] ?? toDayKey(new Date()))
+  const [preset, setPreset] = useState<RangePreset>(initialPreset ?? (dayKeys.length === 1 ? 'today' : 'custom'))
+  const from = dayKeys[0] ?? toDayKey(new Date())
+  const to = dayKeys[dayKeys.length - 1] ?? toDayKey(new Date())
   const [isRouteOpen, setIsRouteOpen] = useState(false)
 
   const applyPreset = (next: RangePreset) => {
     setPreset(next)
+    onPresetChange?.(next)
     const today = new Date()
 
     if (next === 'today') {
@@ -93,7 +100,6 @@ export function RangePicker({
               type="date"
               value={from}
               onChange={(event) => {
-                setFrom(event.target.value)
                 applyCustom(event.target.value, to)
               }}
             />
@@ -103,7 +109,6 @@ export function RangePicker({
               type="date"
               value={to}
               onChange={(event) => {
-                setTo(event.target.value)
                 applyCustom(from, event.target.value)
               }}
             />
