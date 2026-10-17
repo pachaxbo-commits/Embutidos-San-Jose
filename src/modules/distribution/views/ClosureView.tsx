@@ -83,7 +83,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
   const dispatch = availableDispatches.find(item => item.id === selectedDispatchId) ?? availableDispatches[0] ?? null
 
-  const existingClosure = data.closures.find((closure) => closure.dispatchId === dispatch?.id) ?? null
+  const existingClosure = dispatch
+    ? data.closures.find((closure) => closure.dispatchId === dispatch.id) ?? null
+    : null
 
   const returnsAlreadyApplied = existingClosure
     ? Boolean(existingClosure.warehouseClosedBy)
@@ -566,6 +568,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   }
 
   const accessibleHistoricalClosures = useMemo(() => data.closures
+    .filter(closure => closure.status === 'closed')
     .filter(closure => session.role !== 'distributor' || closure.distributorUid === session.uid || closure.returnDeclaredBy === session.uid)
     .filter(closure => session.role !== 'warehouse' || (closure.warehouseId || 'central') === (session.warehouseId || 'central')),
   [data.closures, session.role, session.uid, session.warehouseId])
@@ -1171,7 +1174,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         subtitle="Selecciona un despacho abierto"
         searchable
         options={availableDispatches.map(item => ({ value: item.id, label: item.routeName, description: `${item.distributorName} · ${new Date(item.createdAt).toLocaleString('es-BO')}` }))}
-        selectedValue={dispatch.id}
+        selectedValue={dispatch?.id ?? ''}
         onSelect={setSelectedDispatchId}
       />
 
@@ -1261,7 +1264,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           <div className="grid min-w-0 gap-4">
             <div className="grid grid-cols-2 gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
               <div><p className="text-xs font-bold text-indigo-800">Debía retornar</p><p className="mt-1 text-xl font-black text-indigo-950">{formatQty(receiptModalRow.expectedReturn, receiptModalRow.unitType)}</p></div>
-              <div><p className="text-xs font-bold text-indigo-800">Declarado por distribuidor</p><p className="mt-1 break-words text-xl font-black text-indigo-950">{receiptModalRow.declaredReturn === undefined ? 'Sin registro' : formatQty(Number(receiptModalRow.declaredReturn), receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-bold text-indigo-800">Declarado por distribuidor</p>{receiptModalRow.declaredReturnNormal === undefined ? <p className="mt-1 break-words text-xl font-black text-indigo-950">Sin registro</p> : <div className="mt-1 break-words text-sm font-bold text-indigo-950"><p>Normal: {formatQty(Number(receiptModalRow.declaredReturnNormal), receiptModalRow.unitType)}</p><p>Merma: {formatQty(Number(receiptModalRow.declaredReturnMerma || 0), receiptModalRow.unitType)}</p><p className="text-lg font-black">Total: {formatQty(Number(receiptModalRow.declaredReturn), receiptModalRow.unitType)}</p></div>}</div>
             </div>
 
             <div className="grid min-w-0 gap-4">
@@ -1269,7 +1272,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                 <Field label="Retorno normal" hint="Producto que vuelve normalmente al stock.">
                   <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.normal} placeholder="Cantidad recibida" onChange={event => setReceiptModalDraft(current => ({ ...current, normal: event.target.value }))} />
                 </Field>
-                {receiptModalRow.declaredReturn !== undefined && <div className="mt-2"><SecondaryButton full onClick={() => setReceiptModalDraft(current => ({ ...current, normal: String(receiptModalRow.declaredReturn) }))}>Usar cantidad declarada</SecondaryButton></div>}
+                {receiptModalRow.declaredReturnNormal !== undefined && <div className="mt-2"><SecondaryButton full onClick={() => setReceiptModalDraft(current => ({ ...current, normal: String(receiptModalRow.declaredReturnNormal), merma: String(receiptModalRow.declaredReturnMerma || 0) }))}>Usar cantidad declarada</SecondaryButton></div>}
               </div>
               <Field label="Merma de retorno" hint="También vuelve al stock; se registra aparte para control.">
                 <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.merma} placeholder="0" onChange={event => setReceiptModalDraft(current => ({ ...current, merma: event.target.value }))} />
