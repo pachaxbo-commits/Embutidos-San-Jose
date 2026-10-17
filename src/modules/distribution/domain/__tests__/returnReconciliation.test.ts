@@ -1,4 +1,4 @@
-import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calculateReturnBreakdown, calculateReturnDeclarationDifference, parseReturnQuantityInput, validateReturnQuantity } from '../returnReconciliation.ts'
+import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calculateReturnBreakdown, calculateReturnDeclarationDifference, parseReturnQuantityInput, validateReturnDeclarationInput, validateReturnQuantity } from '../returnReconciliation.ts'
 
 const assert = (condition: unknown, message: string) => {
   if (!condition) throw new Error(`FAIL: ${message}`)
@@ -44,4 +44,13 @@ assert(quarantinedExcess.sellableReturn === 2.1 && quarantinedExcess.sellableFro
 assert(parseReturnQuantityInput('1.84') === 1.84, 'campo acepta decimal con punto')
 assert(parseReturnQuantityInput('1,84') === 1.84, 'campo normaliza decimal con coma')
 assert(parseReturnQuantityInput('1,') === null, 'decimal incompleto se conserva para seguir escribiendo y se valida al confirmar')
-console.log('Suite de rendición de retorno: 24 comprobaciones.')
+assert(validateReturnDeclarationInput('kg', 'normal', '')?.message === 'Completa el retorno normal.', 'identifica retorno normal vacío')
+assert(validateReturnDeclarationInput('kg', 'merma', '')?.message === 'Completa la merma.', 'identifica merma vacía')
+assert(validateReturnDeclarationInput('kg', 'merma', '0,')?.message === 'Termina de escribir el decimal.', 'identifica merma con decimal incompleto')
+assert(validateReturnDeclarationInput('kg', 'normal', '1.')?.message === 'Termina de escribir el decimal.', 'identifica retorno normal con decimal incompleto')
+assert(validateReturnDeclarationInput('kg', 'normal', '.')?.message === 'Termina de escribir el decimal.', 'identifica separador decimal todavía incompleto')
+assert(validateReturnDeclarationInput('kg', 'normal', '0.08') === null, 'acepta kg con punto decimal')
+assert(validateReturnDeclarationInput('kg', 'merma', '0,08') === null, 'acepta kg con coma decimal')
+assert(validateReturnDeclarationInput('package', 'normal', '1.5')?.message === 'Este producto requiere una cantidad entera.', 'distingue decimal inválido para paquetes')
+assert(validateReturnDeclarationInput('kg', 'normal', '-1')?.message === 'La cantidad no puede ser negativa.', 'identifica cantidad negativa')
+console.log('Suite de rendición de retorno: 33 comprobaciones.')

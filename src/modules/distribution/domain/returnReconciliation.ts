@@ -36,6 +36,40 @@ export function parseReturnQuantityInput(value: string): number | null {
   return Number.isFinite(parsed) && parsed >= 0 ? round3(parsed) : null
 }
 
+export type ReturnDeclarationField = 'normal' | 'merma'
+
+export interface ReturnDeclarationInputIssue {
+  field: ReturnDeclarationField
+  message: string
+}
+
+/** Valida el texto original sin convertir decimales intermedios en cero. */
+export function validateReturnDeclarationInput(
+  unitType: UnitType,
+  field: ReturnDeclarationField,
+  input: string,
+): ReturnDeclarationInputIssue | null {
+  const raw = input.trim()
+  if (!raw) return { field, message: field === 'normal' ? 'Completa el retorno normal.' : 'Completa la merma.' }
+
+  if (/^[.,]$/.test(raw) || /^\d+[.,]$/.test(raw)) {
+    return { field, message: 'Termina de escribir el decimal.' }
+  }
+
+  const normalized = raw.replace(',', '.')
+  const parsed = Number(normalized)
+  if (Number.isFinite(parsed) && parsed < 0) {
+    return { field, message: 'La cantidad no puede ser negativa.' }
+  }
+
+  const quantity = parseReturnQuantityInput(raw)
+  if (quantity === null) return { field, message: 'Escribe una cantidad válida.' }
+  if (!validateReturnQuantity(unitType, quantity)) {
+    return { field, message: 'Este producto requiere una cantidad entera.' }
+  }
+  return null
+}
+
 /**
  * Semántica nueva de recepción:
  * - retorno normal y merma recuperable vuelven al stock vendible;
