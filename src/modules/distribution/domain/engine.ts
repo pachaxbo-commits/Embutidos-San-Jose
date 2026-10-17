@@ -90,6 +90,7 @@ export function describeVariance(variance: number): VarianceLabel {
 export interface LoadedTotals {
   initialDispatch: number
   additions: number
+  dispatchMerma: number
   totalLoaded: number
   productName: string
   unitType: UnitType
@@ -107,6 +108,7 @@ export function computeLoadedByProduct(dispatch: DistDispatch | null): Map<strin
       unitType: line.unitType,
       initialDispatch: round2((current?.initialDispatch ?? 0) + line.quantity),
       additions: current?.additions ?? 0,
+      dispatchMerma: round2((current?.dispatchMerma ?? 0) + (line.dispatchMerma || 0)),
       totalLoaded: round2((current?.totalLoaded ?? 0) + line.quantity),
     })
   }
@@ -120,6 +122,7 @@ export function computeLoadedByProduct(dispatch: DistDispatch | null): Map<strin
         unitType: line.unitType,
         initialDispatch: current?.initialDispatch ?? 0,
         additions: round2((current?.additions ?? 0) + line.quantity),
+        dispatchMerma: round2((current?.dispatchMerma ?? 0) + (line.dispatchMerma || 0)),
         totalLoaded: round2((current?.totalLoaded ?? 0) + line.quantity),
       })
     }

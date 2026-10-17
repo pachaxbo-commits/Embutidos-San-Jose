@@ -142,6 +142,9 @@ export interface DistStockMovement extends DistBaseDoc {
   unitType: UnitType
   /** Cantidad positiva siempre; el signo lo dan centralDelta / routeDelta */
   quantity: number
+  /** Desglose informativo de carga física; no representa pérdida. */
+  normalQuantity?: number
+  dispatchMerma?: number
   centralDelta: number
   routeDelta: number
   fromLocation?: string
@@ -165,6 +168,11 @@ export interface DistDispatchLine {
   productId: string
   productName: string
   unitType: UnitType
+  /** Cantidad normal; solo existe en despachos creados con la semántica nueva. */
+  normalQuantity?: number
+  /** Merma adicional que se entrega físicamente a la ruta; no es pérdida. */
+  dispatchMerma?: number
+  dispatchMermaAllocations?: DistLotAllocation[]
   quantity: number
   waste?: number
   wasteCost?: number | null
@@ -205,6 +213,8 @@ export interface DistDispatchCorrection {
   productName: string
   oldQuantity: number
   newQuantity: number
+  oldDispatchMerma?: number
+  newDispatchMerma?: number
   returnedQuantity?: number
   addedQuantity?: number
   unitType: UnitType
@@ -485,6 +495,9 @@ export interface DistClosureProductRow {
   expectedReturn: number
   /** Cantidad total declarada por el distribuidor; no es necesariamente producto apto. */
   declaredReturn?: number
+  declaredReturnNormal?: number
+  /** Declaración separada del distribuidor; ausente significa 0 en históricos. */
+  declaredReturnMerma?: number
   /** Cantidad total pesada y recibida físicamente por Almacén, incluye la merma. */
   physicalReturn?: number
   /** Retorno normal que vuelve al stock vendible. */
@@ -505,6 +518,7 @@ export type ClosureStatus = 'draft' | 'warehouse_done' | 'closed' | 'reopened'
 export interface DistClosure extends DistBaseDoc {
   warehouseId?: string
   declaredReturns?: Record<string, number>
+  declaredReturnMermas?: Record<string, number>
   returnDeclaredBy?: string
   returnDeclaredAt?: string
   dispatchId: string

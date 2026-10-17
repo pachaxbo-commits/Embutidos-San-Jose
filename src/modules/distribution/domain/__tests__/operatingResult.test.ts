@@ -39,6 +39,12 @@ const returnLoss = movement({ id: 'return-loss-unassigned', type: 'return_waste_
 const withReturnMovements = computeOperatingResult([], [], [], [recoverableMerma, returnLoss], ['2026-10-10'])
 equal(withReturnMovements.losses, 3, 'la merma recuperable no es pérdida y sí se incluye la pérdida sin lote trazable')
 equal(withReturnMovements.details.find((entry) => entry.key === 'losses')?.rows[0]?.tipo, 'Pérdida sin lote de origen identificado', 'la pérdida sin lote tiene etiqueta comprensible')
+const dispatchMermaMovement = movement({ id: 'dispatch-merma', type: 'dispatch', normalQuantity: 80, dispatchMerma: 2.3, quantity: 82.3, lossCost: null })
+const withDispatchMerma = computeOperatingResult([], [], [], [dispatchMermaMovement], ['2026-10-10'])
+equal(withDispatchMerma.losses, 0, 'la merma adicional entregada físicamente a ruta no se cuenta como pérdida')
+equal(withDispatchMerma.operatingResult, 0, 'dispatchMerma no reduce el resultado operativo')
+const legacyDispatchWaste = computeOperatingResult([], [], [], [movement({ id: 'legacy-dispatch-waste', type: 'dispatch_waste', lossCost: 5 })], ['2026-10-10'])
+equal(legacyDispatchWaste.losses, 5, 'dispatch_waste histórico conserva su significado de pérdida')
 const unknownReturnLoss = computeOperatingResult([], [], [], [{ ...returnLoss, id: 'unknown-return-loss', lossCost: null }], ['2026-10-10'])
 equal(unknownReturnLoss.operatingResult, null, 'no se inventa el resultado si una pérdida de retorno no tiene costo histórico')
 

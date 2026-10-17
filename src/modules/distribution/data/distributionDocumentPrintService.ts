@@ -58,6 +58,7 @@ export function printDispatchTicket(dispatch: DistDispatch): Promise<string> {
         quantity: row.totalLoaded,
         unitLabel: row.unitType === 'kg' ? 'kg' : row.unitType === 'package' ? 'paq' : 'u',
         lineTotal: 0,
+        modifiersText: row.dispatchMerma > 0 ? [`Cantidad normal ${round2(row.totalLoaded - row.dispatchMerma)}`, `Merma adicional ${round2(row.dispatchMerma)}`, `Total físico ${round2(row.totalLoaded)}`] : undefined,
       })),
       'Firma de quien recibe: __________________',
     ),
@@ -74,7 +75,7 @@ export function formatDispatchTextSummary(dispatch: DistDispatch): string {
   const header = `*EMBUTIDOS SAN JOSÉ*\n*HOJA DE DESPACHO EN RUTA*\nDespacho: ${dispatch.id.slice(-6).toUpperCase()}\nRuta: ${dispatch.routeName}\nDistribuidor: ${dispatch.distributorName}\nFecha: ${new Date(dispatch.createdAt).toLocaleString('es-BO')}`
 
   const initialLines = dispatch.lines.map(
-    (l) => `• ${l.productName}: ${l.quantity} ${l.unitType === 'kg' ? 'kg' : 'paq'}`,
+    (l) => `• ${l.productName}: ${l.quantity} ${l.unitType === 'kg' ? 'kg' : 'paq'}${l.dispatchMerma ? ` (normal ${round2(l.quantity - l.dispatchMerma)} + merma adicional ${round2(l.dispatchMerma)})` : ''}`,
   ).join('\n')
 
   let additionsText = ''
@@ -84,7 +85,7 @@ export function formatDispatchTextSummary(dispatch: DistDispatch): string {
       const time = new Date(a.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })
       const resp = a.warehouseResponsibleName || a.createdByName || 'Almacén'
       const lines = a.quantityByProduct.map(
-        (q) => `  + ${q.productName}: ${q.quantity} ${q.unitType === 'kg' ? 'kg' : 'paq'}`,
+        (q) => `  + ${q.productName}: ${q.quantity} ${q.unitType === 'kg' ? 'kg' : 'paq'}${q.dispatchMerma ? ` (normal ${round2(q.quantity - q.dispatchMerma)} + merma adicional ${round2(q.dispatchMerma)})` : ''}`,
       ).join('\n')
       return `Aumento #${i + 1} (${time} · ${resp}):\n${lines}`
     }).join('\n')
@@ -112,7 +113,7 @@ Fecha y hora: ${new Date(dispatch.createdAt).toLocaleString('es-BO')}
 Almacén: ${dispatch.warehouseResponsibleName || 'Almacén Central'}`
 
   const initialLines = dispatch.lines.map(
-    (l) => `• ${l.productName}: ${l.quantity} ${l.unitType === 'kg' ? 'kg' : 'paq'}`,
+    (l) => `• ${l.productName}: ${l.quantity} ${l.unitType === 'kg' ? 'kg' : 'paq'}${l.dispatchMerma ? ` (normal ${round2(l.quantity - l.dispatchMerma)} + merma adicional ${round2(l.dispatchMerma)})` : ''}`,
   ).join('\n')
 
   let additionsText = ''
@@ -122,7 +123,7 @@ Almacén: ${dispatch.warehouseResponsibleName || 'Almacén Central'}`
       const time = new Date(a.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })
       const resp = a.warehouseResponsibleName || a.createdByName || 'Almacén'
       const lines = a.quantityByProduct.map(
-        (q) => `  + ${q.productName}: ${q.quantity} ${q.unitType === 'kg' ? 'kg' : 'paq'}`,
+        (q) => `  + ${q.productName}: ${q.quantity} ${q.unitType === 'kg' ? 'kg' : 'paq'}${q.dispatchMerma ? ` (normal ${round2(q.quantity - q.dispatchMerma)} + merma adicional ${round2(q.dispatchMerma)})` : ''}`,
       ).join('\n')
       return `Aumento #${i + 1} (${time} · ${resp}):\n${lines}`
     }).join('\n')
@@ -190,7 +191,7 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
 
   autoTable(doc, {
     startY: 59,
-    head: [['Producto', 'Detalle de presentación', 'Lote', 'Vencimiento', 'Cantidad inicial', 'Unidad']],
+    head: [['Producto', 'Detalle de presentación', 'Lote', 'Vencimiento', 'Normal', 'Merma adicional', 'Total físico', 'Unidad']],
     body: dispatch.lines.map((l) => {
       const prod = productsMap.get(l.productId)
       const pres = getProductPresentation(prod)
@@ -201,6 +202,8 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
         pres || '—',
         lot,
         exp,
+        l.unitType === 'kg' ? Number(l.normalQuantity ?? (l.quantity - (l.dispatchMerma || 0))).toFixed(2) : String(l.quantity),
+        l.unitType === 'kg' ? Number(l.dispatchMerma || 0).toFixed(2) : '0',
         l.unitType === 'kg' ? l.quantity.toFixed(2) : String(l.quantity),
         l.unitType === 'kg' ? 'kg' : 'paquetes',
       ]
@@ -213,8 +216,10 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
       1: { cellWidth: 45, textColor: [71, 85, 105] },
       2: { cellWidth: 26 },
       3: { cellWidth: 24 },
-      4: { cellWidth: 22, halign: 'right', fontStyle: 'bold' },
-      5: { cellWidth: 16, halign: 'center' },
+      4: { cellWidth: 18, halign: 'right' },
+      5: { cellWidth: 19, halign: 'right' },
+      6: { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
+      7: { cellWidth: 16, halign: 'center' },
     },
     margin: { left: 14, right: 14 },
   })
@@ -242,7 +247,7 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
 
       autoTable(doc, {
         startY: y + 8,
-        head: [['Producto', 'Detalle de presentación', 'Lote asignado', 'Vencimiento', 'Cantidad añadida', 'Unidad']],
+        head: [['Producto', 'Detalle de presentación', 'Lote asignado', 'Vencimiento', 'Normal', 'Merma adicional', 'Total físico añadido', 'Unidad']],
         body: add.quantityByProduct.map((l) => {
           const prod = productsMap.get(l.productId)
           const pres = getProductPresentation(prod)
@@ -253,6 +258,8 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
             pres || '—',
             lot,
             exp,
+            l.unitType === 'kg' ? Number(l.normalQuantity ?? (l.quantity - (l.dispatchMerma || 0))).toFixed(2) : `+${String(l.quantity)}`,
+            l.unitType === 'kg' ? Number(l.dispatchMerma || 0).toFixed(2) : '0',
             `+${l.unitType === 'kg' ? l.quantity.toFixed(2) : String(l.quantity)}`,
             l.unitType === 'kg' ? 'kg' : 'paquetes',
           ]
@@ -265,8 +272,10 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
           1: { cellWidth: 45 },
           2: { cellWidth: 26 },
           3: { cellWidth: 24 },
-          4: { cellWidth: 22, halign: 'right', fontStyle: 'bold', textColor: [180, 83, 9] },
-          5: { cellWidth: 16, halign: 'center', textColor: [180, 83, 9] },
+          4: { cellWidth: 18, halign: 'right' },
+          5: { cellWidth: 19, halign: 'right' },
+          6: { cellWidth: 20, halign: 'right', fontStyle: 'bold', textColor: [180, 83, 9] },
+          7: { cellWidth: 16, halign: 'center', textColor: [180, 83, 9] },
         },
         margin: { left: 14, right: 14 },
       })
@@ -284,7 +293,7 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
   const loadedMap = computeLoadedByProduct(dispatch)
   autoTable(doc, {
     startY: y + 3,
-    head: [['Producto', 'Detalle de presentación', 'Carga inicial', 'Aumentos', 'TOTAL A RENDICIÓN', 'Unidad']],
+    head: [['Producto', 'Detalle de presentación', 'Carga inicial', 'Aumentos', 'Merma adicional', 'TOTAL A RENDICIÓN', 'Unidad']],
     body: [...loadedMap.entries()].map(([productId, row]) => {
       const prod = productsMap.get(productId)
       const pres = getProductPresentation(prod)
@@ -293,6 +302,7 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
         pres || '—',
         row.unitType === 'kg' ? row.initialDispatch.toFixed(2) : String(row.initialDispatch),
         row.additions > 0 ? `+${row.unitType === 'kg' ? row.additions.toFixed(2) : String(row.additions)}` : '0',
+        row.unitType === 'kg' ? row.dispatchMerma.toFixed(2) : '0',
         row.unitType === 'kg' ? row.totalLoaded.toFixed(2) : String(row.totalLoaded),
         row.unitType === 'kg' ? 'kg' : 'paquetes',
       ]
@@ -305,8 +315,9 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
       1: { cellWidth: 45 },
       2: { cellWidth: 24, halign: 'right' },
       3: { cellWidth: 22, halign: 'right', textColor: [180, 83, 9] },
-      4: { cellWidth: 26, halign: 'right', fontStyle: 'bold', textColor: [200, 16, 46] },
-      5: { cellWidth: 16, halign: 'center' },
+      4: { cellWidth: 23, halign: 'right', textColor: [180, 83, 9] },
+      5: { cellWidth: 26, halign: 'right', fontStyle: 'bold', textColor: [200, 16, 46] },
+      6: { cellWidth: 16, halign: 'center' },
     },
     margin: { left: 14, right: 14 },
   })
@@ -440,7 +451,7 @@ export function printClosureTicket(closure: DistClosure): Promise<string> {
         quantity: row.sold,
         unitLabel: row.unitType === 'kg' ? 'kg vendidos' : 'vendidos',
         lineTotal: 0,
-        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado ${row.declaredReturn ?? closure.declaredReturns?.[row.productId] ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Retorno normal ${row.actualReturn}`, `Merma recuperable ${row.returnMerma || 0}`, `No apto/pérdida ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
+        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado distribuidor: normal ${row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId] ?? 's/registro'} + merma ${row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0} = ${row.declaredReturn ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Retorno normal ${row.actualReturn}`, `Merma recuperable ${row.returnMerma || 0}`, `No apto/pérdida ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
       })),
       closure.status === 'closed'
         ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared ?? 0).toFixed(2)}`
@@ -528,7 +539,7 @@ export async function generateClosurePdf(closure: DistClosure) {
         row.unitType === 'kg' ? row.sold.toFixed(2) : String(row.sold),
         row.unitType === 'kg' ? (row.courtesy || 0).toFixed(2) : String(row.courtesy || 0),
         row.unitType === 'kg' ? row.expectedReturn.toFixed(2) : String(row.expectedReturn),
-        (() => { const value = row.declaredReturn ?? closure.declaredReturns?.[row.productId]; return value === undefined ? 'Sin registro' : row.unitType === 'kg' ? Number(value).toFixed(2) : String(value) })(),
+        (() => { const total = row.declaredReturn ?? (closure.declaredReturns?.[row.productId] === undefined ? undefined : Number(closure.declaredReturns[row.productId]) + Number(closure.declaredReturnMermas?.[row.productId] || 0)); const normal = row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId]; const merma = row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0; return total === undefined ? 'Sin registro' : normal === undefined ? (row.unitType === 'kg' ? Number(total).toFixed(2) : String(total)) : row.unitType === 'kg' ? `${Number(normal).toFixed(2)} + ${Number(merma).toFixed(2)} = ${Number(total).toFixed(2)}` : String(total) })(),
         (() => { const value = row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0); const formatted = row.unitType === 'kg' ? Number(value).toFixed(2) : String(value); return row.physicalReturn === undefined ? `${formatted} (aprox.)` : formatted })(),
         row.unitType === 'kg' ? row.actualReturn.toFixed(2) : String(row.actualReturn),
         row.unitType === 'kg' ? (row.returnMerma || 0).toFixed(2) : String(row.returnMerma || 0),

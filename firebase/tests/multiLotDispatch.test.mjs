@@ -24,6 +24,7 @@ const read = async (collection, id) => (await root.collection(collection).doc(id
 async function command(actor, type, payload, expected = 'confirmed') {
   const id = `${prefix}-${type}-${Math.random().toString(36).slice(2)}`
   await setDoc(doc(env.authenticatedContext(actor).firestore(), 'restaurants', 'sanjose', 'distOperations', id), { id, restaurantId: 'sanjose', createdBy: actor, createdAt: new Date().toISOString(), type, payload, status: 'queued' })
+  await processCommand(db, root.collection('distOperations').doc(id))
   const ref = root.collection('distOperations').doc(id)
   const until = Date.now() + 60000
   let row

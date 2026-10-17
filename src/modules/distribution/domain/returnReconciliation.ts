@@ -1,5 +1,6 @@
 import type { UnitType } from '../types'
 const round2 = (value: number) => Math.round((Number(value) + Number.EPSILON) * 100) / 100
+const round3 = (value: number) => Math.round((Number(value) + Number.EPSILON) * 1000) / 1000
 
 export interface ReturnBreakdown {
   apt: number
@@ -32,7 +33,7 @@ export function parseReturnQuantityInput(value: string): number | null {
   const normalized = raw.replace(',', '.')
   if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized) || normalized.endsWith('.')) return null
   const parsed = Number(normalized)
-  return Number.isFinite(parsed) && parsed >= 0 ? round2(parsed) : null
+  return Number.isFinite(parsed) && parsed >= 0 ? round3(parsed) : null
 }
 
 /**
@@ -47,18 +48,18 @@ export function calculatePhysicalReturnBreakdown(
   recoverableMerma: number,
   nonSellable: number,
 ): PhysicalReturnBreakdown {
-  const expectedQty = round2(expected)
-  const normalQty = round2(normal)
-  const mermaQty = round2(recoverableMerma)
-  const nonSellableQty = round2(nonSellable)
+  const expectedQty = round3(expected)
+  const normalQty = round3(normal)
+  const mermaQty = round3(recoverableMerma)
+  const nonSellableQty = round3(nonSellable)
   const values = [expectedQty, normalQty, mermaQty, nonSellableQty]
   if (!values.every(Number.isFinite) || values.some((value) => value < 0)) {
     throw new Error('Las cantidades de retorno deben ser válidas y no negativas.')
   }
 
-  const totalReceived = round2(normalQty + mermaQty + nonSellableQty)
-  const sellableReturn = round2(normalQty + mermaQty)
-  const sellableFromDispatch = round2(Math.min(sellableReturn, expectedQty))
+  const totalReceived = round3(normalQty + mermaQty + nonSellableQty)
+  const sellableReturn = round3(normalQty + mermaQty)
+  const sellableFromDispatch = round3(Math.min(sellableReturn, expectedQty))
   return {
     normalReturn: normalQty,
     recoverableMerma: mermaQty,
@@ -66,10 +67,26 @@ export function calculatePhysicalReturnBreakdown(
     totalReceived,
     sellableReturn,
     sellableFromDispatch,
-    sellableOverage: round2(Math.max(0, sellableReturn - expectedQty)),
-    shortage: round2(Math.max(0, expectedQty - totalReceived)),
-    overage: round2(Math.max(0, totalReceived - expectedQty)),
+    sellableOverage: round3(Math.max(0, sellableReturn - expectedQty)),
+    shortage: round3(Math.max(0, expectedQty - totalReceived)),
+    overage: round3(Math.max(0, totalReceived - expectedQty)),
   }
+}
+
+/** Suma una sola vez las dos partes que el distribuidor devuelve físicamente. */
+export function calculateDeclaredReturnTotal(normal: number, recoverableMerma: number): number {
+  if (![normal, recoverableMerma].every(Number.isFinite) || normal < 0 || recoverableMerma < 0) {
+    throw new Error('La devolución declarada debe contener cantidades válidas y no negativas.')
+  }
+  return round3(normal + recoverableMerma)
+}
+
+/** Diferencia entre lo recibido físicamente y el total declarado por el distribuidor. */
+export function calculateReturnDeclarationDifference(declaredTotal: number, receivedTotal: number): number {
+  if (![declaredTotal, receivedTotal].every(Number.isFinite) || declaredTotal < 0 || receivedTotal < 0) {
+    throw new Error('La declaración y la recepción deben ser cantidades válidas y no negativas.')
+  }
+  return round3(receivedTotal - declaredTotal)
 }
 
 /** Calcula la rendición física sin confundir producto vendible, merma y faltante. */

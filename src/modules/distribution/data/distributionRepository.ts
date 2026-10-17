@@ -132,10 +132,11 @@ export async function verifyQr(sourceType: 'sale' | 'collection' | 'claim', sour
 import { normalizeClosure } from '../domain/closurePeriod'
 export { normalizeClosure }
 
-/** Declarar retorno no modifica stock; almacen confirma la recepcion posteriormente. */
+/** La declaración no modifica stock; almacén confirma después las cantidades físicas. */
 export async function declareRouteReturn(
   dispatch: DistDispatch,
   quantities: Record<string, number>,
+  recoverableMermas: Record<string, number> = {},
   physicalCashDeclared?: number,
 ) {
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -143,6 +144,9 @@ export async function declareRouteReturn(
   }
   if (Object.values(quantities).some(q => !Number.isFinite(q) || q < 0)) {
     throw new Error('Las cantidades deben ser positivas o cero.')
+  }
+  if (Object.values(recoverableMermas).some(q => !Number.isFinite(q) || q < 0)) {
+    throw new Error('Las mermas de retorno deben ser positivas o cero.')
   }
   if (physicalCashDeclared !== undefined && (!Number.isFinite(physicalCashDeclared) || physicalCashDeclared < 0)) {
     throw new Error('El efectivo físico declarado debe ser mayor o igual a cero.')
@@ -159,15 +163,12 @@ export async function declareRouteReturn(
     distributorUid: dispatch.distributorUid,
     distributorName: dispatch.distributorName,
     declaredReturns: quantities,
+    declaredReturnMermas: recoverableMermas,
     returnDeclaredBy: ctx.uid,
     returnDeclaredAt: now,
     dayKey: dispatch.dayKey,
     ...(physicalCashDeclared !== undefined
-      ? {
-          physicalCashDeclared,
-          cashDeclaredBy: ctx.uid,
-          cashDeclaredAt: now,
-        }
+      ? { physicalCashDeclared, cashDeclaredBy: ctx.uid, cashDeclaredAt: now }
       : {}),
   }, { merge: true })
   await batch.commit()
@@ -792,6 +793,7 @@ export interface DispatchCorrectionChange {
   additionId?: string
   productId?: string
   newQuantity?: number
+  newDispatchMerma?: number
   voidAddition?: boolean
   lotId?: string
 }
@@ -802,6 +804,7 @@ export interface CorrectDispatchInput {
   additionId?: string
   productId?: string
   newQuantity?: number
+  newDispatchMerma?: number
   voidAddition?: boolean
   reason: string
   changes?: DispatchCorrectionChange[]

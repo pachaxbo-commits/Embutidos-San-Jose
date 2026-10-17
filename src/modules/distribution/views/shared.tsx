@@ -10,7 +10,7 @@ export function formatBs(value: number): string {
 }
 
 export function formatQty(value: number, unitType: UnitType): string {
-  const amount = round2(value)
+  const amount = unitType === 'kg' ? Math.round((Number(value) + Number.EPSILON) * 1000) / 1000 : round2(value)
   if (unitType === 'kg') return `${amount} kg`
   if (unitType === 'package') return `${amount} paq`
   return `${amount} u`

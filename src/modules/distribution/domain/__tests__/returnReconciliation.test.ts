@@ -1,4 +1,4 @@
-import { calculatePhysicalReturnBreakdown, calculateReturnBreakdown, parseReturnQuantityInput, validateReturnQuantity } from '../returnReconciliation.ts'
+import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calculateReturnBreakdown, calculateReturnDeclarationDifference, parseReturnQuantityInput, validateReturnQuantity } from '../returnReconciliation.ts'
 
 const assert = (condition: unknown, message: string) => {
   if (!condition) throw new Error(`FAIL: ${message}`)
@@ -22,6 +22,9 @@ assert(validateReturnQuantity('kg', 1.5), 'kilogramos admiten decimales')
 assert(!validateReturnQuantity('kg', -1), 'ninguna unidad permite retorno negativo')
 const exact2 = calculatePhysicalReturnBreakdown(2, 1.84, 0.16, 0)
 assert(exact2.totalReceived === 2 && exact2.sellableFromDispatch === 2 && exact2.shortage === 0 && exact2.overage === 0, '1,84 normal + 0,16 de merma vuelve exactamente 2 kg al stock')
+assert(calculateDeclaredReturnTotal(3, 0.08) === 3.08, '3 kg normal + 0,08 de merma se declara como 3,08 kg físicos')
+assert(calculateDeclaredReturnTotal(3.08, 0.08) === 3.16, '3,08 normal + 0,08 de merma muestra 3,16 antes de confirmar')
+assert(calculateReturnDeclarationDifference(3.08, 3.05) === -0.03, '3,05 recibidos frente a 3,08 declarados muestra diferencia -0,03 kg')
 const exact6 = calculatePhysicalReturnBreakdown(6, 5.54, 0.46, 0)
 assert(exact6.sellableFromDispatch === 6 && exact6.shortage === 0, '5,54 normal + 0,46 de merma recuperable devuelve 6 kg')
 const exact9 = calculatePhysicalReturnBreakdown(9, 8.56, 0.44, 0)
@@ -34,9 +37,11 @@ const exactPhysicalMix = calculatePhysicalReturnBreakdown(2, 1.7, 0.2, 0.1)
 assert(exactPhysicalMix.totalReceived === 2 && exactPhysicalMix.sellableFromDispatch === 1.9 && exactPhysicalMix.nonSellableReturn === 0.1 && exactPhysicalMix.shortage === 0, '1,7 normal + 0,2 de merma recuperable + 0,1 no apto recibe 2 kg y devuelve 1,9 kg vendibles')
 const shortWithMerma = calculatePhysicalReturnBreakdown(2, 1.7, 0.2, 0)
 assert(shortWithMerma.totalReceived === 1.9 && shortWithMerma.shortage === 0.1, '1,7 normal + 0,2 de merma deja faltante de 0,1 kg')
+const exactShortage = calculatePhysicalReturnBreakdown(2, 1.765, 0, 0)
+assert(exactShortage.shortage === 0.235, '2 kg esperados y 1,765 kg recibidos muestran faltante real de 0,235 kg')
 const quarantinedExcess = calculatePhysicalReturnBreakdown(2, 2.1, 0, 0)
 assert(quarantinedExcess.sellableReturn === 2.1 && quarantinedExcess.sellableFromDispatch === 2 && quarantinedExcess.sellableOverage === 0.1 && quarantinedExcess.overage === 0.1, 'sobrante vendible sobre el despacho queda separado para cuarentena')
 assert(parseReturnQuantityInput('1.84') === 1.84, 'campo acepta decimal con punto')
 assert(parseReturnQuantityInput('1,84') === 1.84, 'campo normaliza decimal con coma')
 assert(parseReturnQuantityInput('1,') === null, 'decimal incompleto se conserva para seguir escribiendo y se valida al confirmar')
-console.log('Suite de rendición de retorno: 20 comprobaciones.')
+console.log('Suite de rendición de retorno: 24 comprobaciones.')
