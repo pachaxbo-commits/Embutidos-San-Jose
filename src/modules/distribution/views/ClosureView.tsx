@@ -127,9 +127,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const setReturns = (updater: (current: Record<string, string>) => Record<string, string>) => setReturnDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedReturns) }))
   const reviewedReceiptIds = new Set(receiptReviewedByDispatch[dispatchKey] || [])
 
-  const [routeSales, setRouteSales] = useState<DistSale[]>([])
-  const [routeCollections, setRouteCollections] = useState<DistCollection[]>([])
-  const [routeExpenses, setRouteExpenses] = useState<DistExpense[]>([])
+  // Las suscripciones anteriores pueden seguir vivas durante un render al cambiar
+  // de ruta. Nunca conciliar un despacho con ventas/caja de otro despacho.
+  const [salesSnapshot, setSalesSnapshot] = useState<{ dispatchId: string; rows: DistSale[] }>({ dispatchId: '', rows: [] })
+  const [collectionsSnapshot, setCollectionsSnapshot] = useState<{ dispatchId: string; rows: DistCollection[] }>({ dispatchId: '', rows: [] })
+  const [expensesSnapshot, setExpensesSnapshot] = useState<{ dispatchId: string; rows: DistExpense[] }>({ dispatchId: '', rows: [] })
+  const routeSales = salesSnapshot.dispatchId === dispatchKey ? salesSnapshot.rows : []
+  const routeCollections = collectionsSnapshot.dispatchId === dispatchKey ? collectionsSnapshot.rows : []
+  const routeExpenses = expensesSnapshot.dispatchId === dispatchKey ? expensesSnapshot.rows : []
   const [readyDispatch, setReadyDispatch] = useState('')
   const loaded = readyDispatch === dispatchKey
   useEffect(() => {
@@ -140,10 +145,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const mark = (key: string) => { ready.add(key); if (ready.size >= expected) setReadyDispatch(dispatchKey) }
     const fail = (e: Error) => setError(e.message)
     const ownerUid = session.role === 'distributor' ? session.uid : undefined
-    const stop = [subscribeSales(days, dispatchRoute, rows => { setRouteSales(rows.filter(s => s.sourceLocation !== 'centralWarehouse' && (s.dispatchId === dispatchKey || (!s.dispatchId && s.createdAt >= dispatchCreated)))); mark('sales') }, fail, ownerUid)]
+    const stop = [subscribeSales(days, dispatchRoute, rows => { setSalesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(s => s.sourceLocation !== 'centralWarehouse' && (s.dispatchId === dispatchKey || (!s.dispatchId && s.createdAt >= dispatchCreated))) }); mark('sales') }, fail, ownerUid)]
     if (session.role !== 'warehouse') {
-      stop.push(subscribeCollections(days, dispatchRoute, rows => { setRouteCollections(rows.filter(c => c.createdAt >= dispatchCreated)); mark('collections') }, fail, ownerUid))
-      stop.push(subscribeExpenses(days, dispatchRoute, rows => { setRouteExpenses(rows.filter(e => e.createdAt >= dispatchCreated)); mark('expenses') }, fail, ownerUid))
+      stop.push(subscribeCollections(days, dispatchRoute, rows => { setCollectionsSnapshot({ dispatchId: dispatchKey, rows: rows.filter(c => c.createdAt >= dispatchCreated) }); mark('collections') }, fail, ownerUid))
+      stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.createdAt >= dispatchCreated) }); mark('expenses') }, fail, ownerUid))
     }
     return () => stop.forEach(fn => fn())
   }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid])
