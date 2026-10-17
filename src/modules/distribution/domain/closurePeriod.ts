@@ -9,6 +9,9 @@ export function normalizeClosure(raw: Partial<DistClosure> & { id: string }): Di
   const createdAt = raw.createdAt || raw.returnDeclaredAt || raw.warehouseClosedAt || raw.closedAt || ''
   const status: ClosureStatus = raw.status || (raw.warehouseClosedBy ? 'warehouse_done' : 'draft')
   return {
+    // Preserve optional fields written by Firestore (audit trail, return split,
+    // closure metadata, etc.) before normalizing required legacy-safe fields.
+    ...raw,
     id: raw.id,
     restaurantId: raw.restaurantId || 'sanjose',
     branchId: raw.branchId || 'main',
@@ -25,6 +28,8 @@ export function normalizeClosure(raw: Partial<DistClosure> & { id: string }): Di
     status,
     products: Array.isArray(raw.products) ? raw.products : [],
     declaredReturns: raw.declaredReturns || {},
+    declaredReturnMermas: raw.declaredReturnMermas || {},
+    reopenHistory: Array.isArray(raw.reopenHistory) ? raw.reopenHistory : [],
     returnDeclaredBy: raw.returnDeclaredBy || '',
     returnDeclaredAt: raw.returnDeclaredAt || '',
     cashSales: Number(raw.cashSales) || 0,
@@ -50,6 +55,7 @@ export function normalizeClosure(raw: Partial<DistClosure> & { id: string }): Di
     varianceReviewedBy: raw.varianceReviewedBy || '',
     reopenedAt: raw.reopenedAt || '',
     reopenedBy: raw.reopenedBy || '',
+    reopenedByName: raw.reopenedByName || '',
   }
 }
 

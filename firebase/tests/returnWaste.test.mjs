@@ -64,6 +64,7 @@ try {
   const reversedWaste = (await root.collection('distStockMovements').where('refId', '==', first.id).get()).docs.map((doc) => doc.data()).find((movement) => movement.type === 'return_waste')
   pass(reopened.result.id === closureId && closure.status === 'reopened' && closure.warehouseClosedBy === '', 'reapertura deja corregir la recepción nuevamente')
   pass(closure.declaredReturns[product] === 6 && closure.reopenHistory[0].products[0].physicalReturn === 6, 'reapertura preserva declaración y snapshot de la recepción anterior')
+  pass(closure.reopenHistory[0].reopenedBy === admin && closure.reopenHistory[0].reopenedByName === 'Admin QA' && Boolean(closure.reopenHistory[0].previousClosedAt) && closure.reopenHistory[0].previousClosedBy === admin && closure.reopenHistory[0].previousClosedByName === 'Admin QA', 'reapertura futura guarda quién reabrió y quién/hora del cierre anterior')
   pass(Boolean(reversedWaste?.reversedAt && reversedWaste.reversalOperationId), 'la merma anterior queda auditada como revertida para no duplicar pérdidas en reportes')
   pass((await read('distBalances', `${routeLoc}__${product}`)).quantity === 6 && (await read('distBalances', `central__${product}`)).quantity === 0, 'reapertura revierte exactamente la aplicación previa al lote y balances originales')
   lot = await read('distLots', lotId)

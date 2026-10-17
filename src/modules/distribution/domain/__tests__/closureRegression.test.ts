@@ -40,6 +40,40 @@ export async function runClosureRegressionTestSuite() {
   assert(normalized.expectedCash === 0 && normalized.cashDifference === 0, 'normalizer ensures financial fields are numeric')
   assert(normalized.routeName === 'Ruta no especificada', 'normalizer sets default routeName when missing')
 
+  const reopenedRaw = {
+    ...rawDraftDoc,
+    id: 'closure_reopened',
+    closureType: 'route' as const,
+    note: 'Nota de jornada',
+    warehouseResponsibleName: 'Almacén QA',
+    declaredReturnMermas: { prod_1: 0.16 },
+    reopenedAt: '2026-10-17T14:32:00.000Z',
+    reopenedBy: 'admin-1',
+    reopenedByName: 'Administración',
+    reopenReason: 'Registrar cobro faltante',
+    preserveFinancialSnapshot: true,
+    reversedStockMovementIds: ['movement-1'],
+    reopenHistory: [{
+      reopenedAt: '2026-10-17T14:32:00.000Z',
+      reason: 'Registrar cobro faltante',
+      warehouseClosedBy: 'warehouse-1',
+      warehouseClosedAt: '2026-10-16T21:00:00.000Z',
+      products: [],
+      reopenedBy: 'admin-1',
+      reopenedByName: 'Administración',
+      previousClosedAt: '2026-10-16T21:15:00.000Z',
+      previousClosedBy: 'admin-1',
+      previousClosedByName: 'Administración',
+    }],
+  }
+  const normalizedReopened = normalizeClosure(reopenedRaw)
+  assert(normalizedReopened.reopenReason === 'Registrar cobro faltante', 'normalizer conserva el motivo de reapertura')
+  assert(normalizedReopened.reopenedAt === reopenedRaw.reopenedAt && normalizedReopened.reopenedBy === 'admin-1' && normalizedReopened.reopenedByName === 'Administración', 'normalizer conserva fecha y responsable de reapertura')
+  assert(normalizedReopened.reopenHistory?.[0]?.previousClosedAt === '2026-10-16T21:15:00.000Z' && normalizedReopened.reopenHistory[0]?.reopenedByName === 'Administración', 'normalizer conserva auditoría por ciclo de reapertura')
+  assert(normalizedReopened.preserveFinancialSnapshot === true && normalizedReopened.reversedStockMovementIds?.[0] === 'movement-1', 'normalizer conserva protecciones y movimientos revertidos')
+  assert(normalizedReopened.declaredReturnMermas?.prod_1 === 0.16 && normalizedReopened.closureType === 'route' && normalizedReopened.note === 'Nota de jornada' && normalizedReopened.warehouseResponsibleName === 'Almacén QA', 'normalizer conserva metadatos de cierre y merma declarada')
+  assert(normalizeClosure({ id: 'legacy-reopen' }).reopenHistory?.length === 0, 'cierres históricos sin reopenHistory reciben lista vacía segura')
+
   // 2. Test sorting behavior in ClosureView:
   // Pre-fix, sorting [closed, draft] executed `undefined.localeCompare(...)` causing TypeError.
   const historicalClosure: DistClosure = {
@@ -76,7 +110,7 @@ export async function runClosureRegressionTestSuite() {
   let sortCrashed = false
   try {
     list.sort((a, b) => getClosureSortTimestamp(b).localeCompare(getClosureSortTimestamp(a)))
-  } catch (err) {
+  } catch {
     sortCrashed = true
   }
 
@@ -96,7 +130,7 @@ export async function runClosureRegressionTestSuite() {
   let datelessSortCrashed = false
   try {
     datelessList.sort((a, b) => getClosureSortTimestamp(b).localeCompare(getClosureSortTimestamp(a)))
-  } catch (err) {
+  } catch {
     datelessSortCrashed = true
   }
   assert(!datelessSortCrashed, 'comparator handles completely dateless closures gracefully')
@@ -106,7 +140,7 @@ export async function runClosureRegressionTestSuite() {
   try {
     const periodResults = closuresInPeriod([historicalClosure, normalized], ['2026-08-14'])
     assert(periodResults.length === 1 && periodResults[0].id === 'closure_disp_123', 'closuresInPeriod correctly filters by dayKey')
-  } catch (err) {
+  } catch {
     closuresInPeriodCrashed = true
   }
   assert(!closuresInPeriodCrashed, 'closuresInPeriod handles draft closure without crashing')
@@ -115,7 +149,7 @@ export async function runClosureRegressionTestSuite() {
   try {
     const diffs = pendingDifferenceClosures([normalized, historicalClosure])
     assert(diffs.length === 0, 'pendingDifferenceClosures safely ignores draft without differences')
-  } catch (err) {
+  } catch {
     pendingDiffCrashed = true
   }
   assert(!pendingDiffCrashed, 'pendingDifferenceClosures runs safely on draft closures')

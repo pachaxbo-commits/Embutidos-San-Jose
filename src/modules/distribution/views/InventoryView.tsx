@@ -16,6 +16,7 @@ import { RangePicker, describeRange } from './RangePicker'
 import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inventoryHistorySheet } from '../data/reportExports'
 import { getTodayStockIntakes } from '../domain/todayIntakes'
 import { reportUnitLabel } from '../domain/reportLabels'
+import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
@@ -24,6 +25,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   shortage: 'Faltante', overage: 'Sobrante', exchange: 'Cambio de producto',
   return_merma: 'Merma recuperable al retorno', return_waste: 'Producto no apto al recibir retorno',
   return_waste_unassigned: 'Pérdida sin lote de origen identificado', courtesy: 'Salida por cortesía',
+  dispatch_waste: 'Pérdida registrada al despachar',
   customer_return: 'Devolución del cliente',
 }
 
@@ -55,6 +57,8 @@ export function InventoryView({ session, data }: DistributionViewProps) {
   const [error, setError] = useState<string | null>(null)
   const [choice, setChoice] = useState<'warehouse' | 'lot' | null>(null)
   const [historyProduct, setHistoryProduct] = useState<DistProduct | null>(null)
+  const [historyProductFilter, setHistoryProductFilter] = useState<ProductMovementFilter>('all')
+  const [generalHistorySearch, setGeneralHistorySearch] = useState('')
   const [isGeneralHistoryOpen, setIsGeneralHistoryOpen] = useState(false)
   const [historyDays, setHistoryDays] = useState<string[]>([toDayKey(new Date())])
   const [historyExporting, setHistoryExporting] = useState<'pdf' | 'excel' | null>(null)
@@ -80,17 +84,23 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       return { movement, delta }
     })
     .filter(row => Math.abs(row.delta) > 0.0001)
-    .sort((a, b) => b.movement.createdAt.localeCompare(a.movement.createdAt)), [data.movements, historyDays, warehouseLocation])
+    .filter(row => !generalHistorySearch.trim() || row.movement.productName.toLocaleLowerCase('es').includes(generalHistorySearch.trim().toLocaleLowerCase('es')))
+    .sort((a, b) => b.movement.createdAt.localeCompare(a.movement.createdAt)), [data.movements, historyDays, warehouseLocation, generalHistorySearch])
 
   const generalHistorySheet = inventoryHistorySheet(data, historyDays, warehouseId)
+  const productHistoryMovements = useMemo(
+    () => historyProduct ? filterProductMovementHistory(data.movements, historyProduct.id, historyProductFilter) : [],
+    [data.movements, historyProduct, historyProductFilter],
+  )
 
   const downloadGeneralHistory = async (format: 'pdf' | 'excel') => {
     if (historyExporting) return
     setHistoryExporting(format)
     try {
       const description = `${warehouseName} · ${describeRange(historyDays)} · Emitido ${new Date().toLocaleString('es-BO')}`
-      if (format === 'pdf') await exportPdf([generalHistorySheet], description, 'SanJose-historial-inventario.pdf')
-      else await exportExcel([generalHistorySheet], description, 'SanJose-historial-inventario.xlsx')
+      const searchedSheet = { ...generalHistorySheet, rows: generalHistorySheet.rows.filter(row => !generalHistorySearch.trim() || String(row[1] || '').toLocaleLowerCase('es').includes(generalHistorySearch.trim().toLocaleLowerCase('es'))) }
+      if (format === 'pdf') await exportPdf([searchedSheet], description, 'SanJose-historial-inventario.pdf')
+      else await exportExcel([searchedSheet], description, 'SanJose-historial-inventario.xlsx')
     } catch (downloadError) {
       setError((downloadError as Error).message || 'No se pudo generar el historial de inventario.')
     } finally {
@@ -281,7 +291,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                           </button>}
                         </>
                       )}
-                      <button type="button" aria-label={`Historial de ingresos de ${product.name}`} onClick={() => setHistoryProduct(product)} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"><History size={16} /></button>
+                      <button type="button" aria-label={`Ver historial de ${product.name}`} onClick={() => { setHistoryProduct(product); setHistoryProductFilter('all') }} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"><History size={16} /></button>
                     </div>
                   </div>
                 )
@@ -397,8 +407,9 @@ export function InventoryView({ session, data }: DistributionViewProps) {
               <h4 className="text-xs font-black uppercase tracking-wider text-slate-900">Historial de movimientos</h4>
             </div>
             <p className="mb-3 text-xs font-semibold text-slate-600">
-              Historial de ingresos, despachos, transferencias y bajas ocurridas en el periodo seleccionado.
+              Historial de ingresos, despachos, devoluciones, mermas, faltantes, sobrantes, transferencias y ajustes.
             </p>
+            <TextInput value={generalHistorySearch} onChange={event => setGeneralHistorySearch(event.target.value)} placeholder="Buscar producto en el historial..." />
             <RangePicker dayKeys={historyDays} onChange={setHistoryDays} />
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
@@ -444,10 +455,35 @@ export function InventoryView({ session, data }: DistributionViewProps) {
           {generalMovements.length === 0 && <EmptyBlock title="Sin movimientos en este periodo" description="Prueba otro rango de fechas." />}
         </div>
       </Modal>
-      <Modal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} title="Historial de ingresos" subtitle={historyProduct?.name}>
-        <div className="grid gap-2">
-          {data.movements.filter(movement => movement.type === 'intake' && movement.productId === historyProduct?.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(movement => <article key={movement.id} className="rounded-2xl border border-slate-200 p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-extrabold text-slate-900">Nuevo ingreso</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleDateString('es-BO')} · {new Date(movement.createdAt).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })}</p></div><strong className="shrink-0 text-sm text-emerald-700">+{formatQty(movement.quantity, movement.unitType)}</strong></div><p className="mt-2 text-[11px] text-slate-600">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Usuario'} · {visiblePersonName(movement.responsibleName)}</p>{movement.lotCode && <p className="mt-1 text-[11px] text-slate-500">Lote {movement.lotCode}</p>}{movement.note && <p className="mt-1 text-[11px] text-slate-500">{movement.note}</p>}</article>)}
-          {!data.movements.some(movement => movement.type === 'intake' && movement.productId === historyProduct?.id) && <p className="rounded-2xl border border-dashed border-slate-200 p-4 text-center text-xs font-semibold text-slate-500">Todavía no hay ingresos registrados para este producto.</p>}
+      <Modal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} title="Historial del producto" subtitle={historyProduct?.name} size="lg">
+        <div className="grid min-w-0 gap-3">
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar historial del producto">
+            {([
+              ['all', 'Todos'], ['losses', 'Mermas'], ['differences', 'Faltantes / sobrantes'], ['dispatchReturns', 'Despachos / retornos'], ['intakesAdjustments', 'Ingresos / ajustes'],
+            ] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={historyProductFilter === value} onClick={() => setHistoryProductFilter(value)} className={`min-h-[36px] rounded-xl border px-3 text-[11px] font-extrabold ${historyProductFilter === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
+          </div>
+          <p className="text-[11px] font-semibold text-slate-500">{productHistoryMovements.length} movimientos · incluye correcciones y registros revertidos para conservar la trazabilidad.</p>
+          <div className="grid max-h-[65vh] gap-2 overflow-y-auto pr-1">
+            {productHistoryMovements.map(movement => {
+              const hasDispatchMerma = isDispatchWithMerma(movement)
+              const merma = Number(movement.dispatchMerma || 0)
+              const normal = Number(movement.normalQuantity ?? Math.max(0, movement.quantity - merma))
+              const recoverable = movement.type === 'return_merma'
+              const loss = ['dispatch_waste', 'return_waste', 'return_waste_unassigned', 'shortage'].includes(movement.type)
+              const label = movement.type === 'return_merma' ? 'Merma recuperable · vuelve al stock vendible' : movement.type === 'return_waste' || movement.type === 'return_waste_unassigned' ? 'Producto no apto / pérdida · no vuelve al stock' : MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'
+              return <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className={`break-words text-xs font-extrabold ${recoverable ? 'text-emerald-800' : loss ? 'text-rose-800' : 'text-slate-900'}`}>{label}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p></div><strong className="shrink-0 text-sm tabular-nums text-slate-900">{formatQty(movement.quantity, movement.unitType)}</strong></div>
+                {hasDispatchMerma && <div className="mt-2 rounded-xl border border-emerald-100 bg-emerald-50 p-2 text-[11px] text-emerald-950"><b>Despacho normal:</b> {formatQty(normal, movement.unitType)} · <b>Merma adicional:</b> {formatQty(merma, movement.unitType)} · <b>Total físico:</b> {formatQty(movement.quantity, movement.unitType)}</div>}
+                <p className="mt-2 break-words text-[10px] text-slate-600">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}{movement.routeId ? ` · ${data.routes.find(route => route.id === movement.routeId)?.name || 'Ruta registrada'}` : ''}</p>
+                <p className="mt-1 break-words text-[10px] text-slate-600">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Distribuidor'} · {visiblePersonName(movement.responsibleName)}</p>
+                {movement.lotCode && <p className="mt-1 text-[10px] text-slate-500">Lote: {movement.lotCode}</p>}
+                {loss && <p className="mt-1 text-[10px] font-semibold text-rose-700">Costo histórico de pérdida: {movement.lossCost == null ? 'No disponible' : `Bs ${Number(movement.lossCost).toFixed(2)}`}</p>}
+                {movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}
+                {movement.reversedAt && <p className="mt-2 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Movimiento revertido el {new Date(movement.reversedAt).toLocaleString('es-BO')}{movement.reversalReason ? ` · Motivo: ${movement.reversalReason}` : ''}</p>}
+              </article>
+            })}
+          </div>
+          {productHistoryMovements.length === 0 && <p className="rounded-2xl border border-dashed border-slate-200 p-4 text-center text-xs font-semibold text-slate-500">No hay movimientos de este tipo para el producto.</p>}
         </div>
       </Modal>
       <Modal

@@ -3,6 +3,7 @@ import { getActiveReceiptPrinter } from '../../../services/printing/printerBoots
 import type { PrintJobPayload } from '../../../types/printing'
 import type { DistClosure, DistDispatch, DistProduct, DistQuote } from '../types'
 import { computeLoadedByProduct, round2 } from '../domain/engine'
+import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
 import { printHtmlDocument } from '../../../services/printing/documentPrintService'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
@@ -441,21 +442,28 @@ export async function shareDispatch(dispatch: DistDispatch, products: DistProduc
 }
 
 export function printClosureTicket(closure: DistClosure): Promise<string> {
+  const latestReopen = closureReopenEvents(closure).at(-1)
+  const reopenNote = latestReopen?.reopenedAt
+    ? `Reabierto: ${new Date(latestReopen.reopenedAt).toLocaleString('es-BO')}${latestReopen.reason ? ` · ${latestReopen.reason.slice(0, 72)}` : ''}`
+    : ''
   return printTicket(
     basePayload(
       'CIERRE DE RUTA',
       `${closure.routeName} - ${closure.distributorName}`,
-      closure.products.map((row) => ({
-        name: row.productName,
-        basePrice: 0,
-        quantity: row.sold,
-        unitLabel: row.unitType === 'kg' ? 'kg vendidos' : 'vendidos',
-        lineTotal: 0,
-        modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado distribuidor: normal ${row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId] ?? 's/registro'} + merma ${row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0} = ${row.declaredReturn ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Retorno normal ${row.actualReturn}`, `Merma recuperable ${row.returnMerma || 0}`, `No apto/pérdida ${row.returnWaste || 0}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
-      })),
-      closure.status === 'closed'
+      closure.products.map((row) => {
+        const returned = closureReturnSummary(row)
+        return {
+          name: row.productName,
+          basePrice: 0,
+          quantity: row.sold,
+          unitLabel: row.unitType === 'kg' ? 'kg vendidos' : 'vendidos',
+          lineTotal: 0,
+          modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado distribuidor: normal ${row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId] ?? 's/registro'} + merma ${row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0} = ${row.declaredReturn ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Retorno normal ${returned.normal}`, `Merma recuperable ${returned.recoverableMerma}`, `Total apto recibido ${returned.totalApto}`, `Vuelve al stock vendible ${returned.returnsToSellableStock}${returned.quarantinedSellableOverage > 0 ? ` · ${returned.quarantinedSellableOverage} en cuarentena` : ''}`, `No apto/pérdida ${returned.nonSellable}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
+        }
+      }),
+      [closure.status === 'closed'
         ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared ?? 0).toFixed(2)}`
-        : 'Cierre pendiente de completar',
+        : 'Cierre pendiente de completar', reopenNote].filter(Boolean).join('\n'),
     ),
     `closure:${closure.id}`,
   )
@@ -510,17 +518,32 @@ export async function generateClosurePdf(closure: DistClosure) {
 
   let y = 54
 
-  // Alerta de reapertura si fue reabierto
-  if (closure.reopenedAt) {
-    doc.setFillColor(254, 243, 199)
-    doc.rect(14, y, pageWidth - 28, 12, 'F')
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(8)
-    doc.setTextColor(146, 64, 14)
-    doc.text(`DOCUMENTO REABIERTO el ${new Date(closure.reopenedAt).toLocaleString('es-BO')} por ${closure.reopenedByName || closure.reopenedBy || 'Administración'}`, 18, y + 5)
-    doc.setFont('helvetica', 'normal')
-    doc.text(`Motivo: ${closure.reopenReason || 'Sin motivo registrado'}`, 18, y + 9)
-    y += 16
+  // Auditoría visible en PDF: conserva cada evento y no inventa datos ausentes.
+  const reopenEvents = closureReopenEvents(closure)
+  if (reopenEvents.length) {
+    for (const [index, event] of reopenEvents.entries()) {
+      const lines = [
+        `${index === 0 ? 'DOCUMENTO REABIERTO' : 'REAPERTURA'}${event.reopenedAt ? ` · ${new Date(event.reopenedAt).toLocaleString('es-BO')}` : ''}${event.reopenedByName || event.reopenedBy ? ` · ${event.reopenedByName || event.reopenedBy}` : ''}`,
+        ...(event.previousClosedAt ? [`Cierre anterior: ${new Date(event.previousClosedAt).toLocaleString('es-BO')}`] : []),
+        ...(event.previousWarehouseClosedAt ? [`Recepción anterior de almacén: ${new Date(event.previousWarehouseClosedAt).toLocaleString('es-BO')}`] : []),
+        ...(event.reason ? [`Motivo: ${event.reason}`] : []),
+      ].flatMap((line) => doc.splitTextToSize(line, pageWidth - 36))
+      const blockHeight = Math.max(10, lines.length * 4 + 4)
+      doc.setFillColor(254, 243, 199)
+      doc.rect(14, y, pageWidth - 28, blockHeight, 'F')
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8)
+      doc.setTextColor(146, 64, 14)
+      doc.text(lines, 18, y + 4)
+      y += blockHeight + 3
+    }
+    if (closure.closedAt) {
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(8)
+      doc.setTextColor(30, 41, 59)
+      doc.text(`Cerrado nuevamente: ${new Date(closure.closedAt).toLocaleString('es-BO')}`, 18, y)
+      y += 6
+    }
   }
 
   // SECCIÓN 1: PRODUCTOS DEVUELTOS Y VARIACIONES (si existen productos)
@@ -532,7 +555,7 @@ export async function generateClosurePdf(closure: DistClosure) {
 
     autoTable(doc, {
       startY: y + 3,
-      head: [['Producto', 'Despachado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físico', 'Retorno normal', 'Merma recuperable', 'No apto / pérdida', 'Faltante', 'Sobrante', 'Unidad']],
+      head: [['Producto', 'Despachado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físico', 'Retorno normal', 'Merma recuperable', 'Total apto recibido', 'Vuelve al stock vendible', 'No apto / pérdida', 'Faltante', 'Sobrante', 'Unidad']],
       body: closure.products.map((row) => [
         row.productName,
         row.unitType === 'kg' ? row.totalLoaded.toFixed(2) : String(row.totalLoaded),
@@ -543,6 +566,8 @@ export async function generateClosurePdf(closure: DistClosure) {
         (() => { const value = row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0); const formatted = row.unitType === 'kg' ? Number(value).toFixed(2) : String(value); return row.physicalReturn === undefined ? `${formatted} (aprox.)` : formatted })(),
         row.unitType === 'kg' ? row.actualReturn.toFixed(2) : String(row.actualReturn),
         row.unitType === 'kg' ? (row.returnMerma || 0).toFixed(2) : String(row.returnMerma || 0),
+        row.unitType === 'kg' ? (row.actualReturn + (row.returnMerma || 0)).toFixed(2) : String(row.actualReturn + (row.returnMerma || 0)),
+        row.unitType === 'kg' ? Math.min(row.expectedReturn, row.actualReturn + (row.returnMerma || 0)).toFixed(2) : String(Math.min(row.expectedReturn, row.actualReturn + (row.returnMerma || 0))),
         row.unitType === 'kg' ? (row.returnWaste || 0).toFixed(2) : String(row.returnWaste || 0),
         row.unitType === 'kg' ? (row.shortage ?? 0).toFixed(2) : String(row.shortage ?? 0),
         row.unitType === 'kg' ? (row.overage || 0).toFixed(2) : String(row.overage || 0),
@@ -552,19 +577,21 @@ export async function generateClosurePdf(closure: DistClosure) {
       headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
       bodyStyles: { fontSize: 7.5, cellPadding: 2 },
       columnStyles: {
-        0: { cellWidth: 39, fontStyle: 'bold' },
-        1: { cellWidth: 16, halign: 'right' },
-        2: { cellWidth: 16, halign: 'right' },
-        3: { cellWidth: 15, halign: 'right' },
-        4: { cellWidth: 17, halign: 'right' },
-        5: { cellWidth: 22, halign: 'right' },
-        6: { cellWidth: 18, halign: 'right' },
-        7: { cellWidth: 17, halign: 'right', fontStyle: 'bold' },
-        8: { cellWidth: 14, halign: 'right' },
-        9: { cellWidth: 14, halign: 'right' },
-        10: { cellWidth: 14, halign: 'right' },
-        11: { cellWidth: 14, halign: 'right' },
-        12: { cellWidth: 16, halign: 'center' },
+        0: { cellWidth: 34, fontStyle: 'bold' },
+        1: { cellWidth: 14, halign: 'right' },
+        2: { cellWidth: 14, halign: 'right' },
+        3: { cellWidth: 14, halign: 'right' },
+        4: { cellWidth: 15, halign: 'right' },
+        5: { cellWidth: 20, halign: 'right' },
+        6: { cellWidth: 17, halign: 'right' },
+        7: { cellWidth: 13, halign: 'right', fontStyle: 'bold' },
+        8: { cellWidth: 13, halign: 'right' },
+        9: { cellWidth: 13, halign: 'right', fontStyle: 'bold' },
+        10: { cellWidth: 17, halign: 'right', fontStyle: 'bold' },
+        11: { cellWidth: 13, halign: 'right' },
+        12: { cellWidth: 13, halign: 'right' },
+        13: { cellWidth: 13, halign: 'right' },
+        14: { cellWidth: 14, halign: 'center' },
       },
       margin: { left: 14, right: 14 },
     })

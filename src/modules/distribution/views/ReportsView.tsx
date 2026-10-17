@@ -39,11 +39,13 @@ import {
   resolveCreditProducts,
 } from '../domain/creditRoutes'
 import { closuresInPeriod } from '../domain/closurePeriod'
+import { closureReopenEvents } from '../domain/closureAudit'
+import { computeDistributorDifferences } from '../domain/distributorDifferences'
 
 type MainCategory = 'resumen' | 'dinero' | 'ventas' | 'creditos' | 'inventario'
 type DineroSubTab = 'flujo' | 'cobros' | 'gastos' | 'arqueos'
 type VentasSubTab = 'ventas' | 'cortesias' | 'productos' | 'ganancias' | 'kardex' | 'clientes'
-type InventarioSubTab = 'existencias' | 'movimientos'
+type InventarioSubTab = 'existencias' | 'movimientos' | 'diferencias'
 
 const MAIN_CATEGORIES: { value: MainCategory; label: string }[] = [
   { value: 'resumen', label: 'Resumen' },
@@ -71,6 +73,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false)
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null)
   const [selectedProfitProduct, setSelectedProfitProduct] = useState<ProductProfitSummaryItem | null>(null)
+  const [selectedDifferenceClosure, setSelectedDifferenceClosure] = useState<DistributionViewProps['data']['closures'][number] | null>(null)
   const [customerSearchTerm, setCustomerSearchTerm] = useState('')
 
   const attributionError = reportAttributionError(data, session.dayKeys, routeFilter, sellerFilter)
@@ -86,7 +89,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       return ventasSubTab
     }
     if (mainCategory === 'inventario') {
-      return inventarioSubTab === 'existencias' ? 'inventario' : 'movimientos'
+      return inventarioSubTab === 'existencias' ? 'inventario' : inventarioSubTab === 'movimientos' ? 'movimientos' : 'diferencias'
     }
     return 'resumen'
   }, [mainCategory, dineroSubTab, ventasSubTab, inventarioSubTab])
@@ -94,6 +97,15 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const allSellers = useMemo(
     () => computeSellerBreakdown(data.sales, data.collections, data.expenses, data.claims),
     [data.sales, data.collections, data.expenses, data.claims],
+  )
+  const sellerOptions = useMemo(() => {
+    const sellers = new Map(allSellers.map((seller) => [seller.sellerUid, seller.sellerName]))
+    for (const closure of data.closures) if (closure.distributorUid && closure.distributorName) sellers.set(closure.distributorUid, closure.distributorName)
+    return [...sellers.entries()].map(([sellerUid, sellerName]) => ({ sellerUid, sellerName }))
+  }, [allSellers, data.closures])
+  const distributorDifferences = useMemo(
+    () => computeDistributorDifferences(data.closures, data.movements, session.dayKeys, routeFilter, sellerFilter),
+    [data.closures, data.movements, session.dayKeys, routeFilter, sellerFilter],
   )
 
   const handleOpenExportModal = (kind: 'Excel' | 'PDF') => {
@@ -482,10 +494,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
           onRouteFilterChange={setRouteFilter}
         />
 
-        {allSellers.length > 1 && (
-          <Field label="Vendedor">
+        {(sellerOptions.length > 1 || (mainCategory === 'inventario' && inventarioSubTab === 'diferencias')) && (
+          <Field label="Distribuidor / vendedor">
             <ChoiceButton
-              label={sellerFilter ? allSellers.find((s) => s.sellerUid === sellerFilter)?.sellerName : 'Todos los vendedores'}
+              label={sellerFilter ? sellerOptions.find((s) => s.sellerUid === sellerFilter)?.sellerName : 'Todos los vendedores'}
               placeholder="Todos los vendedores"
               onClick={() => setIsSellerOpen(true)}
             />
@@ -849,11 +861,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                             </h4>
                           </div>
                           <p className="mt-0.5 text-[11px] font-semibold text-slate-500">
-                            {closure.closedAt ? `Cerrado el ${new Date(closure.closedAt).toLocaleString('es-BO')}` : (closure.createdAt ? `Creado el ${new Date(closure.createdAt).toLocaleString('es-BO')}` : '')}
+                            {closure.dayKey ? `Jornada ${closure.dayKey}` : ''}{closure.closedAt ? ` · Cierre actual ${new Date(closure.closedAt).toLocaleString('es-BO')}` : (closure.createdAt ? ` · Creado el ${new Date(closure.createdAt).toLocaleString('es-BO')}` : '')}
                             {closure.warehouseResponsibleName ? ` · Recepción almacén: ${closure.warehouseResponsibleName}` : ''}
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
+                          {(closure.reopenedAt || (closure.reopenHistory?.length || 0) > 0) && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black text-amber-900">REABIERTO</span>}
                           {closure.status === 'closed' ? (
                             <VarianceBadge variance={closure.cashDifference} />
                           ) : (
@@ -865,11 +878,16 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       </div>
 
                       {/* Auditoría de reapertura si fue reabierto */}
-                      {closure.reopenedAt && (
+                      {closureReopenEvents(closure).length > 0 && (
                         <div className="mt-2.5 rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
-                          <span className="font-extrabold">REABIERTO:</span> el {new Date(closure.reopenedAt).toLocaleString('es-BO')}
-                          {closure.reopenedByName ? ` por ${closure.reopenedByName}` : ''}.
-                          {closure.reopenReason ? ` Motivo: "${closure.reopenReason}"` : ''}
+                          <p className="mb-1 font-extrabold">HISTORIAL DE REAPERTURAS</p>
+                          {closureReopenEvents(closure).map((event, index) => <p key={`${event.reopenedAt || 'reopen'}-${index}`} className="mt-1 break-words">
+                            {event.reopenedAt && <>Reabierto: {new Date(event.reopenedAt).toLocaleString('es-BO')}. </>}
+                            {event.previousClosedAt && <>Cierre anterior: {new Date(event.previousClosedAt).toLocaleString('es-BO')}. </>}
+                            {event.previousWarehouseClosedAt && <>Recepción anterior de almacén: {new Date(event.previousWarehouseClosedAt).toLocaleString('es-BO')}. </>}
+                            {(event.reopenedByName || event.reopenedBy) && <>Por: {event.reopenedByName || event.reopenedBy}. </>}
+                            {event.reason && <>Motivo: “{event.reason}”.</>}
+                          </p>)}
                         </div>
                       )}
 
@@ -1548,6 +1566,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
               {[
                 { value: 'existencias', label: 'Existencias actuales' },
                 { value: 'movimientos', label: 'Movimientos' },
+                { value: 'diferencias', label: 'Diferencias por distribuidor' },
               ].map((sub) => (
                 <button
                   key={sub.value}
@@ -1605,6 +1624,38 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                 </SectionCard>
               )
             })()}
+            {inventarioSubTab === 'diferencias' && (
+              <SectionCard title="Diferencias por distribuidor">
+                <div className="grid gap-3">
+                  <p className="text-xs text-slate-600">Faltantes y sobrantes de recepciones de almacén para el periodo seleccionado. No compensa sobrantes contra faltantes ni genera descuentos de sueldo.</p>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    <div className="rounded-xl border border-rose-100 bg-rose-50 p-3"><p className="text-[10px] font-black uppercase text-rose-800">Faltantes · kg</p><p className="mt-1 text-sm font-black text-rose-900">{formatQty(distributorDifferences.shortages.kg, 'kg')}</p></div>
+                    <div className="rounded-xl border border-rose-100 bg-rose-50 p-3"><p className="text-[10px] font-black uppercase text-rose-800">Faltantes · paquetes</p><p className="mt-1 text-sm font-black text-rose-900">{formatQty(distributorDifferences.shortages.packages, 'package')}</p></div>
+                    <div className="rounded-xl border border-rose-100 bg-rose-50 p-3"><p className="text-[10px] font-black uppercase text-rose-800">Faltantes · unidades</p><p className="mt-1 text-sm font-black text-rose-900">{formatQty(distributorDifferences.shortages.units, 'unit')}</p></div>
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 p-3"><p className="text-[10px] font-black uppercase text-amber-900">Sobrantes · kg</p><p className="mt-1 text-sm font-black text-amber-950">{formatQty(distributorDifferences.overages.kg, 'kg')}</p></div>
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 p-3"><p className="text-[10px] font-black uppercase text-amber-900">Sobrantes · paquetes</p><p className="mt-1 text-sm font-black text-amber-950">{formatQty(distributorDifferences.overages.packages, 'package')}</p></div>
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 p-3"><p className="text-[10px] font-black uppercase text-amber-900">Sobrantes · unidades</p><p className="mt-1 text-sm font-black text-amber-950">{formatQty(distributorDifferences.overages.units, 'unit')}</p></div>
+                  </div>
+                  <div className={`rounded-xl border p-3 ${distributorDifferences.missingShortageCostCount ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'}`}>
+                    <p className="text-[10px] font-black uppercase text-slate-600">Valor histórico de faltantes</p>
+                    <p className="mt-1 text-sm font-black text-slate-900">{distributorDifferences.missingShortageCostCount ? `INCOMPLETO · subtotal conocido ${formatBs(distributorDifferences.knownShortageValue)}` : formatBs(distributorDifferences.knownShortageValue)}</p>
+                    {distributorDifferences.missingShortageCostCount > 0 && <p className="mt-1 text-[11px] font-semibold text-amber-900">Hay {distributorDifferences.missingShortageCostCount} movimiento(s) sin costo histórico disponible; no se estimó su valor.</p>}
+                  </div>
+                  {distributorDifferences.rows.length === 0 ? <EmptyBlock title="Sin faltantes ni sobrantes en este periodo" description="Prueba otro periodo o distribuidor." /> : <div className="grid gap-2">
+                    {distributorDifferences.rows.map((row) => {
+                      const reopened = closureReopenEvents(row.closure).length > 0
+                      return <button key={`${row.closure.id}-${row.productId}`} type="button" onClick={() => setSelectedDifferenceClosure(row.closure)} className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-slate-400 hover:bg-slate-50">
+                        <div className="flex items-start justify-between gap-2"><span className="min-w-0"><strong className="block break-words text-xs text-slate-900">{row.distributorName} · {row.productName}</strong><span className="mt-0.5 block text-[10px] text-slate-500">{new Date(row.closure.warehouseClosedAt || row.closure.closedAt || row.closure.createdAt).toLocaleDateString('es-BO')} · {row.routeName} · Cierre {row.closure.id.slice(-6).toUpperCase()}</span></span>{reopened && <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-900">REABIERTO</span>}</div>
+                        <span className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-slate-600 sm:grid-cols-4"><span>Debía: <b>{formatQty(row.expected, row.unitType)}</b></span><span>Recibió: <b>{formatQty(row.received, row.unitType)}</b></span><span>Faltante: <b className="text-rose-700">{formatQty(row.shortage, row.unitType)}</b></span><span>Sobrante: <b className="text-amber-800">{formatQty(row.overage, row.unitType)}</b></span></span>
+                        <span className="mt-1 block text-[10px] font-bold text-slate-700">Valor histórico del faltante: {row.shortageValueKnown ? formatBs(row.shortageValue || 0) : 'Incompleto · costo no disponible'}</span>
+                        {reopened && closureReopenEvents(row.closure).at(-1)?.reason && <span className="mt-1 block break-words text-[10px] text-amber-900">Motivo de reapertura: {closureReopenEvents(row.closure).at(-1)?.reason}</span>}
+                      </button>
+                    })}
+                  </div>}
+                  <p className="text-[10px] font-medium text-slate-500">La exportación PDF y Excel usa los filtros actuales de periodo, ruta y distribuidor.</p>
+                </div>
+              </SectionCard>
+            )}
           </div>
         )}
       </div>
@@ -1612,9 +1663,9 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       <ChoiceModal
         isOpen={isSellerOpen}
         onClose={() => setIsSellerOpen(false)}
-        title="Filtrar por vendedor"
+        title="Filtrar por distribuidor o vendedor"
         searchable
-        options={[{ value: '', label: 'Todos los vendedores' }, ...allSellers.map((s) => ({ value: s.sellerUid, label: s.sellerName }))]}
+              options={[{ value: '', label: 'Todos los vendedores' }, ...sellerOptions.map((s) => ({ value: s.sellerUid, label: s.sellerName }))]}
         selectedValue={sellerFilter}
         onSelect={setSellerFilter}
       />
@@ -1645,6 +1696,19 @@ export function ReportsView({ session, data }: DistributionViewProps) {
             {printFeedback && <p className="rounded-xl bg-amber-50 p-2 text-xs font-bold text-amber-800">{printFeedback}</p>}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(selectedDifferenceClosure)}
+        onClose={() => setSelectedDifferenceClosure(null)}
+        title="Detalle del cierre y sus diferencias"
+        subtitle={selectedDifferenceClosure ? `${selectedDifferenceClosure.routeName} · ${selectedDifferenceClosure.distributorName} · Jornada ${selectedDifferenceClosure.dayKey || 'sin fecha'}` : ''}
+      >
+        {selectedDifferenceClosure && <div className="grid gap-3">
+          {closureReopenEvents(selectedDifferenceClosure).length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950"><strong>REABIERTO</strong>{closureReopenEvents(selectedDifferenceClosure).map((event, index) => <p key={`${event.reopenedAt || 'reopen'}-${index}`} className="mt-1 break-words">{event.reopenedAt ? `${new Date(event.reopenedAt).toLocaleString('es-BO')} · ` : ''}{event.reopenedByName || event.reopenedBy || ''}{event.reason ? ` · Motivo: ${event.reason}` : ''}</p>)}</div>}
+          <div className="grid gap-2">{selectedDifferenceClosure.products.map((row) => <article key={row.productId} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs"><strong>{row.productName}</strong><div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3"><span>Debía retornar: <b>{formatQty(row.expectedReturn, row.unitType)}</b></span><span>Recibió: <b>{formatQty(row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0), row.unitType)}</b></span><span>Faltante: <b className="text-rose-700">{formatQty(row.shortage ?? 0, row.unitType)}</b></span><span>Sobrante: <b className="text-amber-800">{formatQty(row.overage || 0, row.unitType)}</b></span><span>Retorno normal: <b>{formatQty(row.actualReturn, row.unitType)}</b></span><span>Merma recuperable: <b>{formatQty(row.returnMerma || 0, row.unitType)}</b></span></div></article>)}</div>
+          {selectedDifferenceClosure.closedAt && <p className="text-[11px] text-slate-500">Cierre actual: {new Date(selectedDifferenceClosure.closedAt).toLocaleString('es-BO')}</p>}
+        </div>}
       </Modal>
 
       <Modal

@@ -125,6 +125,8 @@ try {
   })
   const shortageClosure = await read('distClosures', `closure_${shortageDispatch.id}`)
   pass(shortageClosure.products[0].shortage === 0.235, '2 kg esperados y 1.765 recibidos registran faltante real de 0.235 kg')
+  const shortageMovement = (await root.collection('distStockMovements').where('dispatchId', '==', shortageDispatch.id).get()).docs.map(row => row.data()).find(row => row.type === 'shortage' && !row.reversedAt)
+  pass(shortageClosure.products[0].shortageMovementId === shortageMovement?.id, 'cierre conserva enlace exacto al movimiento de faltante con costo histórico')
   pass((await read('distBalances', `route__${route}-shortage__${shortageProduct}`)).quantity === 0, 'el faltante real se concilia sin completar artificialmente el retorno')
   pass((await read('distBalances', `central__${shortageProduct}`)).quantity === 9.765, 'almacén recibe exactamente 1.765 kg sin redondearlo a 1.77')
   pass((await read('distLots', `${shortageIntake.id}__0`)).quantities.central === 9.765, 'el lote original conserva exactamente las milésimas recibidas')

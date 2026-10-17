@@ -151,8 +151,10 @@ export interface DistStockMovement extends DistBaseDoc {
   toLocation?: string
   routeId?: string
   /** Documento que origino el movimiento (dispatchId, saleId, closureId) */
-  refType?: 'dispatch' | 'sale' | 'closure' | 'manual'
+  refType?: 'dispatch' | 'sale' | 'closure' | 'operation' | 'manual'
   refId?: string
+  /** Despacho relacionado, presente en movimientos de retorno/faltante/sobrante. */
+  dispatchId?: string
   note?: string
   reversedAt?: string
   reversedBy?: string
@@ -510,7 +512,23 @@ export interface DistClosureProductRow {
   shortage?: number
   overage?: number
   lossCost?: number | null
+  /** Enlace exacto al movimiento de faltante activo que conserva el costo histórico. */
+  shortageMovementId?: string
   variance: number
+}
+
+export interface DistClosureReopenHistoryEntry {
+  reopenedAt: string
+  reason: string
+  preserveFinancialSnapshot?: boolean
+  warehouseClosedBy: string
+  warehouseClosedAt: string
+  products: DistClosureProductRow[]
+  reopenedBy?: string
+  reopenedByName?: string
+  previousClosedAt?: string
+  previousClosedBy?: string
+  previousClosedByName?: string
 }
 
 export type ClosureStatus = 'draft' | 'warehouse_done' | 'closed' | 'reopened'
@@ -545,20 +563,14 @@ export interface DistClosure extends DistBaseDoc {
   warehouseClosedAt?: string
   warehouseResponsibleName?: string
   closedBy?: string
+  closedByName?: string
   closedAt?: string
   reopenedBy?: string
   reopenedByName?: string
   reopenedAt?: string
   reopenReason?: string
   preserveFinancialSnapshot?: boolean
-  reopenHistory?: Array<{
-    reopenedAt: string
-    reason: string
-    preserveFinancialSnapshot?: boolean
-    warehouseClosedBy: string
-    warehouseClosedAt: string
-    products: DistClosureProductRow[]
-  }>
+  reopenHistory?: DistClosureReopenHistoryEntry[]
   reversedStockMovementIds?: string[]
   /** La revisión reconoce la diferencia sin modificar el cierre ni el stock. */
   varianceReviewedBy?: string

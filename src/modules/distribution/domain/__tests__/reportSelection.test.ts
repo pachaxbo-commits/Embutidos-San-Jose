@@ -77,6 +77,7 @@ export async function runReportSelectionTestSuite() {
   assert(defaultSheetIdForTab('cobros') === 'collections', 'pestaña cobros preselecciona Cobros')
   assert(defaultSheetIdForTab('gastos') === 'expenses', 'pestaña gastos preselecciona Gastos')
   assert(defaultSheetIdForTab('arqueos') === 'closures', 'pestaña arqueos preselecciona Arqueos')
+  assert(defaultSheetIdForTab('diferencias') === 'distributorDifferences', 'pestaña de diferencias preselecciona el reporte por distribuidor')
   assert(defaultSheetIdForTab('desconocido') === 'summary', 'pestaña desconocida cae por defecto en Resumen')
 
   // 7. Consistencia biyectiva de mapeo de nombres y llaves

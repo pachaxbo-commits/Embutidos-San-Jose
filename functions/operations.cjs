@@ -310,6 +310,7 @@ class Operation {
       responsibleRole: this.member.role,
       ...extra,
     });
+    return id;
   }
   flush() {
     for (const e of this.stock.values()) {
@@ -2289,6 +2290,7 @@ async function closure(o, p) {
       physicalCashDeclared: round(requested.physicalCashDeclared),
       cashDifference: round(requested.physicalCashDeclared - expectedCash),
       closedBy: o.actor,
+      closedByName: o.member.displayName || o.actor,
       closedAt: o.now,
       note: requested.note || "",
     };
@@ -2423,10 +2425,11 @@ async function closure(o, p) {
           }, precision);
         }
       }
+      let shortageMovementId;
       if (shortage > 0) {
         const loss = await o.take(pid, route, shortage, { allowExpired: true, precision });
         const knownCost = loss.every((a) => a.productionCost !== null);
-        o.ledger(pid, shortage, route, null, "shortage", {
+        shortageMovementId = o.ledger(pid, shortage, route, null, "shortage", {
           allocations: loss,
           lossCost: knownCost ? round(loss.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null,
           dispatchId: d.id,
@@ -2495,6 +2498,7 @@ async function closure(o, p) {
         returnWasteReason: wasteReason,
         shortage,
         overage,
+        ...(shortageMovementId ? { shortageMovementId } : {}),
         lossCost: wasteFromRoute === waste && wasteParts.every((a) => a.productionCost !== null)
           ? round(wasteParts.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
           : null,
@@ -2589,6 +2593,7 @@ async function closure(o, p) {
     status: "closed",
     ...moneySnapshot,
     closedBy: o.actor,
+    closedByName: o.member.displayName || o.actor,
     closedAt: o.now,
   };
   o.put("distClosures", id, c);
@@ -2884,6 +2889,9 @@ handlers.reopen = async (o, p) => {
   const reopenHistory = [...(c.reopenHistory || [])];
   const preserveFinancialSnapshot = p.preserveFinancialSnapshot === true;
   if (c.warehouseClosedBy) {
+    const previousClosedAt = c.closedAt || c.warehouseClosedAt || "";
+    const previousClosedBy = c.closedBy || c.warehouseClosedBy || "";
+    const previousClosedByName = c.closedByName || "";
     reopenHistory.push({
       reopenedAt: o.now,
       reason: p.reason.trim(),
@@ -2891,6 +2899,11 @@ handlers.reopen = async (o, p) => {
       warehouseClosedBy: c.warehouseClosedBy,
       warehouseClosedAt: c.warehouseClosedAt || "",
       products: c.products || [],
+      reopenedBy: o.actor,
+      reopenedByName: o.member.displayName || o.actor,
+      ...(previousClosedAt ? { previousClosedAt } : {}),
+      ...(previousClosedBy ? { previousClosedBy } : {}),
+      ...(previousClosedByName ? { previousClosedByName } : {}),
     });
   }
   o.put("distClosures", c.id, {

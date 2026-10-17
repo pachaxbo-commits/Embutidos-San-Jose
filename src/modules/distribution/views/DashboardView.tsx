@@ -314,7 +314,7 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
                     <dl className="mt-2 grid grid-cols-3 gap-2">
                       <div><dt className="text-[9px] font-bold uppercase text-slate-400">Entregado</dt><dd className="text-xs font-black text-slate-800">{formatQty(row.dispatched, row.unitType)}</dd></div>
                       <div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black text-slate-800">{formatQty(row.sold, row.unitType)}</dd></div>
-                      <div><dt className="text-[9px] font-bold uppercase text-slate-400">Devuelto</dt><dd className="text-xs font-black text-slate-800">{formatQty(row.returned, row.unitType)}</dd></div>
+                      <div><dt className="text-[9px] font-bold uppercase text-slate-400">Stock vendible recuperado</dt><dd className="text-xs font-black text-slate-800">{formatQty(row.returned, row.unitType)}</dd></div>
                     </dl>
                   </div>
                 ))}
@@ -481,7 +481,7 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
                       <dd className="text-xs font-black tabular-nums text-slate-800">{formatQty(row.sold, row.unitType)}</dd>
                     </div>
                     <div>
-                      <dt className="text-[10px] font-bold uppercase text-slate-400">Devuelto</dt>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Stock vendible recuperado</dt>
                       <dd className="text-xs font-black tabular-nums text-slate-800">
                         {formatQty(row.returned, row.unitType)}
                       </dd>

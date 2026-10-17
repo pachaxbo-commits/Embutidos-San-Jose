@@ -14,6 +14,7 @@ export type ReportSheetId =
   | 'returnReconciliation'
   | 'inventory'
   | 'movements'
+  | 'distributorDifferences'
   | 'transfers'
   | 'claims'
 
@@ -39,6 +40,7 @@ export const REPORT_OPTIONS: readonly ReportOption[] = [
   { id: 'returnReconciliation', label: 'Detalle de retorno, mermas y faltantes', sheetName: 'Detalle de retorno' },
   { id: 'inventory', label: 'Existencias actuales', sheetName: 'Existencias actuales' },
   { id: 'movements', label: 'Movimientos', sheetName: 'Movimientos' },
+  { id: 'distributorDifferences', label: 'Diferencias por distribuidor', sheetName: 'Diferencias por distribuidor' },
   { id: 'transfers', label: 'Transferencias', sheetName: 'Transferencias' },
   { id: 'claims', label: 'Cambios y devoluciones', sheetName: 'Cambios y devoluciones' },
 ] as const
@@ -78,6 +80,8 @@ export function defaultSheetIdForTab(tab: string): ReportSheetId {
       return 'inventory'
     case 'movimientos':
       return 'movements'
+    case 'diferencias':
+      return 'distributorDifferences'
     case 'creditos':
       return 'credits'
     case 'cobros':

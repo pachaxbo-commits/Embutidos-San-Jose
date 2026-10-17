@@ -31,6 +31,8 @@ import {
   computeProductProfitReport,
   type ProductProfitReport,
 } from "../domain/productProfit";
+import { computeDistributorDifferences } from "../domain/distributorDifferences";
+import { closureReopenEvents, closureReturnSummary } from "../domain/closureAudit";
 import {
   type ReportSheetId,
   type ReportOption,
@@ -759,7 +761,12 @@ export function reportSheets(
       id: 'closures',
       name: "Arqueos",
       headers: [
-        "Fecha",
+        "Jornada",
+        "Recepción de almacén",
+        "Recepción anterior de almacén",
+        "Reabierto",
+        "Motivo de reapertura",
+        "Cierre actual",
         "Distribuidor",
         "Ruta",
         "Estado",
@@ -770,30 +777,41 @@ export function reportSheets(
       rows: (() => {
         const closures = data.closures.filter(inScope).filter((c) => !seller || c.distributorUid === seller)
         return [
-          ...closures.map((c) => [
-          reportDateTime(c.createdAt),
-          reportPersonName(c.distributorName),
-          reportRecordName(c.routeName, "Ruta registrada"),
-          reportClosureLabel(c.status),
-          c.expectedCash ?? null,
-          c.physicalCashDeclared ?? null,
-          c.cashDifference ?? null,
-          ] as Cell[]),
-          ["TOTAL", "", "", "", round2(closures.reduce((n, c) => n + (c.expectedCash || 0), 0)), round2(closures.reduce((n, c) => n + (c.physicalCashDeclared || 0), 0)), round2(closures.reduce((n, c) => n + (c.cashDifference || 0), 0))],
+          ...closures.map((c) => {
+            const latestReopen = closureReopenEvents(c).at(-1)
+            return [
+              c.dayKey || reportDate(c.createdAt),
+              c.warehouseClosedAt ? reportDateTime(c.warehouseClosedAt) : '',
+              latestReopen?.previousWarehouseClosedAt ? reportDateTime(latestReopen.previousWarehouseClosedAt) : '',
+              latestReopen?.reopenedAt ? reportDateTime(latestReopen.reopenedAt) : '',
+              latestReopen?.reason || '',
+              c.closedAt ? reportDateTime(c.closedAt) : '',
+              reportPersonName(c.distributorName),
+              reportRecordName(c.routeName, "Ruta registrada"),
+              latestReopen ? `${reportClosureLabel(c.status)} · REABIERTO` : reportClosureLabel(c.status),
+              c.expectedCash ?? null,
+              c.physicalCashDeclared ?? null,
+              c.cashDifference ?? null,
+            ] as Cell[]
+          }),
+          ["TOTAL", "", "", "", "", "", "", "", "", round2(closures.reduce((n, c) => n + (c.expectedCash || 0), 0)), round2(closures.reduce((n, c) => n + (c.physicalCashDeclared || 0), 0)), round2(closures.reduce((n, c) => n + (c.cashDifference || 0), 0))],
         ]
       })(),
     },
     {
       id: 'returnReconciliation',
       name: 'Detalle de retorno',
-      headers: ['Fecha', 'Ruta', 'Producto', 'Unidad', 'Cargado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físicamente (aprox. en históricos)', 'Retorno normal', 'Merma recuperable', 'Producto no apto / pérdida', 'Costo pérdida (Bs)', 'Motivo de pérdida', 'Faltante', 'Sobrante'],
+      headers: ['Fecha', 'Ruta', 'Producto', 'Unidad', 'Cargado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físicamente (aprox. en históricos)', 'Retorno normal', 'Merma recuperable', 'Total apto recibido', 'Vuelve al stock vendible', 'Producto no apto / pérdida', 'Costo pérdida (Bs)', 'Motivo de pérdida', 'Faltante', 'Sobrante'],
       rows: (() => {
         const closures = data.closures.filter(inScope).filter(c => !seller || c.distributorUid === seller)
         const products = closures.flatMap(c => c.products.map(p => ({ closure: c, product: p })))
         const sum = (pick: (p: typeof products[number]['product']) => number) => round2(products.reduce((n, row) => n + pick(row.product), 0))
-        const rows = products.map(({closure:c,product:p}) => [reportDateTime(c.createdAt), reportRecordName(c.routeName, 'Ruta registrada'), reportRecordName(p.productName, 'Producto registrado'), reportUnitLabel(p.unitType), p.totalLoaded, p.sold, p.courtesy || 0, p.expectedReturn, p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? null, p.physicalReturn ?? p.actualReturn + (p.returnMerma || 0) + (p.returnWaste || 0), p.actualReturn, p.returnMerma || 0, p.returnWaste || 0, p.lossCost ?? null, p.returnWasteReason || '', p.shortage ?? Math.max(0, p.expectedReturn - p.actualReturn - (p.returnMerma || 0) - (p.returnWaste || 0)), p.overage || 0] as Cell[])
+        const rows = products.map(({closure:c,product:p}) => {
+          const returned = closureReturnSummary(p)
+          return [reportDateTime(c.createdAt), reportRecordName(c.routeName, 'Ruta registrada'), reportRecordName(p.productName, 'Producto registrado'), reportUnitLabel(p.unitType), p.totalLoaded, p.sold, p.courtesy || 0, p.expectedReturn, p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? null, p.physicalReturn ?? p.actualReturn + (p.returnMerma || 0) + (p.returnWaste || 0), p.actualReturn, p.returnMerma || 0, returned.totalApto, returned.returnsToSellableStock, p.returnWaste || 0, p.lossCost ?? null, p.returnWasteReason || '', p.shortage ?? Math.max(0, p.expectedReturn - p.actualReturn - (p.returnMerma || 0) - (p.returnWaste || 0)), p.overage || 0] as Cell[]
+        })
         const costKnown = products.every(({product:p}) => (p.returnWaste || 0) === 0 || typeof p.lossCost === 'number')
-        return [...rows, ['TOTAL', '', '', '', sum(p=>p.totalLoaded), sum(p=>p.sold), sum(p=>p.courtesy||0), sum(p=>p.expectedReturn), round2(products.reduce((n, { closure:c, product:p }) => n + Number(p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? 0), 0)), round2(products.reduce((n, { product:p }) => n + Number(p.physicalReturn ?? p.actualReturn + (p.returnMerma || 0) + (p.returnWaste || 0)), 0)), sum(p=>p.actualReturn), sum(p=>p.returnMerma||0), sum(p=>p.returnWaste||0), costKnown ? sum(p=>p.lossCost||0) : null, '', sum(p=>p.shortage ?? Math.max(0,p.expectedReturn-p.actualReturn-(p.returnMerma||0)-(p.returnWaste||0))), sum(p=>p.overage||0)]]
+        return [...rows, ['TOTAL', '', '', '', sum(p=>p.totalLoaded), sum(p=>p.sold), sum(p=>p.courtesy||0), sum(p=>p.expectedReturn), round2(products.reduce((n, { closure:c, product:p }) => n + Number(p.declaredReturn ?? c.declaredReturns?.[p.productId] ?? 0), 0)), round2(products.reduce((n, { product:p }) => n + Number(p.physicalReturn ?? p.actualReturn + (p.returnMerma || 0) + (p.returnWaste || 0)), 0)), sum(p=>p.actualReturn), sum(p=>p.returnMerma||0), round2(products.reduce((n, { product:p }) => n + closureReturnSummary(p).totalApto, 0)), round2(products.reduce((n, { product:p }) => n + closureReturnSummary(p).returnsToSellableStock, 0)), sum(p=>p.returnWaste||0), costKnown ? sum(p=>p.lossCost||0) : null, '', sum(p=>p.shortage ?? Math.max(0,p.expectedReturn-p.actualReturn-(p.returnMerma||0)-(p.returnWaste||0))), sum(p=>p.overage||0)]]
       })(),
     },
     (() => {
@@ -830,6 +848,43 @@ export function reportSheets(
           m.note || "",
         ]),
     },
+    (() => {
+      const report = computeDistributorDifferences(data.closures, data.movements, days, route, seller)
+      const detailRows: Cell[][] = report.rows.map((row) => {
+        const lastReopen = closureReopenEvents(row.closure).at(-1)
+        return [
+          reportDateTime(row.closure.warehouseClosedAt || row.closure.closedAt || row.closure.createdAt),
+          reportRecordName(row.routeName, 'Ruta registrada'),
+          reportPersonName(row.distributorName),
+          reportRecordName(row.productName, 'Producto registrado'),
+          reportUnitLabel(row.unitType),
+          row.expected,
+          row.received,
+          row.shortage,
+          row.overage,
+          row.shortageValue,
+          `Cierre ${row.closure.id.slice(-6).toUpperCase()}`,
+          lastReopen ? `REABIERTO${lastReopen.reason ? ` · ${lastReopen.reason}` : ''}` : '',
+        ]
+      })
+      const totals: Cell[][] = [
+        ['TOTAL FALTANTES (kg)', '', '', '', '', '', '', report.shortages.kg, '', '', '', ''],
+        ['TOTAL FALTANTES (paq)', '', '', '', '', '', '', report.shortages.packages, '', '', '', ''],
+        ['TOTAL FALTANTES (un)', '', '', '', '', '', '', report.shortages.units, '', '', '', ''],
+        ['TOTAL SOBRANTES (kg)', '', '', '', '', '', '', '', report.overages.kg, '', '', ''],
+        ['TOTAL SOBRANTES (paq)', '', '', '', '', '', '', '', report.overages.packages, '', '', ''],
+        ['TOTAL SOBRANTES (un)', '', '', '', '', '', '', '', report.overages.units, '', '', ''],
+        ['VALOR CONOCIDO DE FALTANTES (Bs)', '', '', '', '', '', '', '', '', report.knownShortageValue, '', ''],
+        ['MOVIMIENTOS SIN COSTO HISTÓRICO', '', '', '', '', '', '', '', '', '', '', report.missingShortageCostCount],
+      ]
+      return {
+        id: 'distributorDifferences' as const,
+        name: 'Diferencias por distribuidor',
+        headers: ['Fecha', 'Ruta', 'Distribuidor', 'Producto', 'Unidad', 'Debía retornar', 'Recibido', 'Faltante', 'Sobrante', 'Valor histórico faltante (Bs)', 'Cierre', 'Auditoría'],
+        rows: [...detailRows, ...totals],
+        meta: { missingShortageCostCount: report.missingShortageCostCount, knownShortageValue: report.knownShortageValue },
+      }
+    })(),
     {
       id: 'transfers',
       name: "Transferencias",
