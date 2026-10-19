@@ -11,7 +11,7 @@ import { PrimaryButton, SecondaryButton } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { RestaurantMember, UserRole } from '../../../types'
 import type { DistRoute } from '../types'
-import { routeDisplayName, routeKindLabel } from '../domain/routeLabels'
+import { isAssignableDistributorRoute, routeDisplayName, routeKindLabel } from '../domain/routeLabels'
 
 const ROLES: { value: UserRole; label: string; description: string }[] = [
   { value: 'admin', label: 'Administración', description: 'Acceso completo a la empresa y a todas las rutas.' },
@@ -19,6 +19,11 @@ const ROLES: { value: UserRole; label: string; description: string }[] = [
   { value: 'distributor', label: 'Distribuidores', description: 'Venta, cobranza, gastos y cierre de su ruta asignada.' },
   { value: 'support', label: 'Soporte técnico', description: 'Configuración, impresoras y entrega limpia; sin acceso a información comercial.' },
 ]
+
+function assignedRouteName(routes: DistRoute[], routeId: string | undefined, fallback = ''): string {
+  const route = routes.find((item) => item.id === routeId)
+  return route ? routeDisplayName(route) : fallback
+}
 
 export function UsersView({ session, data, membersOverride }: DistributionViewProps & { membersOverride?: RestaurantMember[] }) {
   const liveMembers = useTenantMembers()
@@ -56,7 +61,10 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
   const activeAdminCount = members.filter(member => member.role === 'admin' && member.active !== false).length
 
   // Solo rutas activas para asignaciones de nuevos distribuidores
-  const activeRoutes = useMemo(() => data.routes.filter(r => r.active !== false), [data.routes])
+  const activeRoutes = useMemo(
+    () => data.routes.filter(r => r.active !== false && isAssignableDistributorRoute(r)),
+    [data.routes],
+  )
 
   const submit = async () => {
     if (busy) return
@@ -293,7 +301,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
                                 {member.role === 'distributor' && (
                                   <Field label="Ruta asignada">
                                     <ChoiceButton
-                                      label={data.routes.find((r) => r.id === member.routeId)?.name || 'Sin ruta'}
+                                      label={assignedRouteName(data.routes, member.routeId, 'Sin ruta')}
                                       placeholder="Selecciona ruta"
                                       onClick={() => setMemberChoice({ kind: 'route', member })}
                                     />
@@ -487,7 +495,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
           {role === 'distributor' && (
             <Field label="Ruta" required hint="Solo se muestran rutas activas">
               <ChoiceButton
-                label={data.routes.find((r) => r.id === routeId)?.name}
+                label={assignedRouteName(data.routes, routeId) || undefined}
                 placeholder="Selecciona ruta activa"
                 onClick={() => setNewChoice('route')}
               />
@@ -679,7 +687,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
         title="Ruta asignada"
         subtitle="Solo rutas activas disponibles para asignación"
         searchable
-        options={activeRoutes.map((r) => ({ value: r.id, label: r.name }))}
+        options={activeRoutes.map((r) => ({ value: r.id, label: routeDisplayName(r) }))}
         selectedValue={memberChoice?.member.routeId || ''}
         onSelect={(value) => {
           const m = memberChoice?.member
@@ -718,7 +726,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
         title="Ruta del distribuidor"
         subtitle="Solo rutas activas disponibles para asignación"
         searchable
-        options={activeRoutes.map((r) => ({ value: r.id, label: r.name }))}
+        options={activeRoutes.map((r) => ({ value: r.id, label: routeDisplayName(r) }))}
         selectedValue={routeId}
         onSelect={setRouteId}
       />
