@@ -1,6 +1,6 @@
 import { LotsAndHistory } from './LotsAndHistory'
 import { useMemo, useRef, useState } from 'react'
-import { FileSpreadsheet, History, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
+import { FileSpreadsheet, FileText, History, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -69,6 +69,9 @@ export function InventoryView({ session, data }: DistributionViewProps) {
   const [isQuarantineOpen, setIsQuarantineOpen] = useState(false)
   const [historyDays, setHistoryDays] = useState<string[]>([toDayKey(new Date())])
   const [historyExporting, setHistoryExporting] = useState<'pdf' | 'excel' | null>(null)
+  const [isIntakeHistoryOpen, setIsIntakeHistoryOpen] = useState(false)
+  const intakeHistoryPreviousDays = useRef<string[]>(session.dayKeys)
+  const [intakeHistoryExporting, setIntakeHistoryExporting] = useState(false)
 
   const { route } = useStockIndex(data.balances, session.routeId)
   const central = new Map(data.products.map(p => [p.id, data.balances.find(b => b.id === warehouseBalanceId(warehouseId, p.id))?.quantity || 0]))
@@ -134,6 +137,33 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     () => getTodayStockIntakes(data, warehouseId),
     [data, warehouseId],
   )
+  const intakeHistory = useMemo(() => getTodayStockIntakes(data, warehouseId, session.dayKeys), [data, warehouseId, session.dayKeys])
+  const downloadIntakeHistory = async (format: 'pdf' | 'excel') => {
+    if (intakeHistoryExporting) return
+    setIntakeHistoryExporting(true)
+    try {
+      if (!intakeHistory.items.length) throw new Error('No hay ingresos confirmados para las fechas seleccionadas.')
+      if (format === 'pdf') await exportTodayIntakesPdf(data, warehouseId, session.dayKeys, 'SanJose-historial-ingresos.pdf')
+      else {
+        const summary = { name: 'Resumen de ingresos', headers: ['Producto', 'Presentación', 'Total', 'Unidad', 'Operaciones'], rows: intakeHistory.summary.map(item => [item.productName, item.presentation || 'Estándar', item.totalQuantity, reportUnitLabel(item.unitType), item.movementCount]) }
+        const detail = { name: 'Detalle de ingresos', headers: ['Fecha y hora', 'Producto', 'Cantidad', 'Unidad', 'Lote', 'Elaboración', 'Vencimiento', 'Almacén', 'Responsable', 'Observación'], rows: intakeHistory.items.map(item => [`${item.dateFormatted} ${item.time}`, item.productName, item.quantity, reportUnitLabel(item.unitType), item.lotCode, item.manufacturedOn, item.expiresOn, item.warehouseName, item.responsible, item.note]) }
+        await exportExcel([summary, detail], `Historial de ingresos · ${describeRange(session.dayKeys)} · ${warehouseName}`, 'SanJose-historial-ingresos.xlsx')
+      }
+    } catch (exportError) { setError((exportError as Error).message || 'No se pudo generar el historial de ingresos.') }
+    finally { setIntakeHistoryExporting(false) }
+  }
+  const printIntakeHistory = () => {
+    const popup = window.open('', '_blank')
+    if (!popup) return
+    const esc = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] || char)
+    const rows = intakeHistory.items.map(item => `<tr><td>${esc(`${item.dateFormatted} ${item.time}`)}</td><td>${esc(item.productName)}</td><td>${item.quantity.toFixed(item.unitType === 'kg' ? 3 : 2)} ${reportUnitLabel(item.unitType)}</td><td>${esc(item.lotCode)}</td><td>${esc(item.manufacturedOn || '—')}</td><td>${esc(item.expiresOn || '—')}</td><td>${esc(item.warehouseName)}</td><td>${esc(item.responsible)}</td><td>${esc(item.note || '—')}</td></tr>`).join('')
+    popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Historial de ingresos</title><style>body{font:12px Arial;color:#1e293b;padding:24px}h1{color:#991b1b}table{border-collapse:collapse;width:100%;font-size:10px}td,th{border:1px solid #cbd5e1;padding:5px;text-align:left}th{background:#e2e8f0}@media print{body{padding:0}}</style></head><body><h1>EMBUTIDOS SAN JOSÉ</h1><h2>HISTORIAL DE INGRESOS AL ALMACÉN</h2><p>${esc(describeRange(session.dayKeys))} · ${esc(warehouseName)} · ${intakeHistory.items.length} ingresos confirmados</p><table><thead><tr><th>Fecha y hora</th><th>Producto</th><th>Cantidad</th><th>Lote</th><th>Elaboración</th><th>Vencimiento</th><th>Almacén</th><th>Responsable</th><th>Observación</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`)
+    popup.document.close()
+  }
+  const closeIntakeHistory = () => {
+    setIsIntakeHistoryOpen(false)
+    session.setDayKeys(intakeHistoryPreviousDays.current)
+  }
   const pendingQuarantineCount = useMemo(() => quarantineRows(data.lots, data.movements, data.warehouses)
     .filter(row => row.status === 'pending' && row.location === lotLocation).length, [data.lots, data.movements, data.warehouses, lotLocation])
   const [todayIntakesExporting, setTodayIntakesExporting] = useState(false)
@@ -272,6 +302,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                 <Printer size={15} />
                 <span>{todayIntakesExporting ? 'Generando…' : 'Imprimir ingresos de hoy'}</span>
               </button>
+              <button type="button" onClick={() => { intakeHistoryPreviousDays.current = session.dayKeys; session.setDayKeys([toDayKey(new Date())]); setIsIntakeHistoryOpen(true) }} className="flex min-h-[38px] shrink-0 items-center justify-center gap-2 rounded-xl border border-emerald-300 bg-white px-3.5 text-xs font-extrabold text-emerald-900 hover:bg-emerald-50"><History size={15}/> Historial de ingresos</button>
             </div>
             <TextInput value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto..." />
             <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2">
@@ -365,6 +396,14 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       </div>
 
       <LotsAndHistory session={session} data={data} />
+      <Modal isOpen={isIntakeHistoryOpen} onClose={closeIntakeHistory} title="Historial de ingresos" subtitle="Ingresos confirmados al almacén · sin pendientes ni movimientos revertidos" size="lg">
+        <div className="grid min-w-0 gap-3">
+          <RangePicker dayKeys={session.dayKeys} initialPreset="today" onChange={session.setDayKeys}/>
+          <div className="grid grid-cols-2 gap-2 rounded-xl bg-emerald-50 p-3 text-xs sm:grid-cols-4"><p><strong>{intakeHistory.totalMovements}</strong><br/>Ingresos registrados</p><p><strong>{new Set(intakeHistory.items.map(item => item.productId)).size}</strong><br/>Productos diferentes</p><p><strong>{intakeHistory.totals.kg.toFixed(3)} kg</strong><br/>Total en peso</p><p><strong>{intakeHistory.totals.package.toFixed(2)} paq · {intakeHistory.totals.unit.toFixed(2)} u</strong><br/>Otros totales</p></div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3"><button type="button" disabled={intakeHistoryExporting || !intakeHistory.items.length} onClick={() => void downloadIntakeHistory('pdf')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-xl bg-slate-900 px-3 text-xs font-extrabold text-white disabled:opacity-50"><FileText size={15}/> Descargar PDF</button><button type="button" disabled={intakeHistoryExporting || !intakeHistory.items.length} onClick={() => void downloadIntakeHistory('excel')} className="flex min-h-[42px] items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 text-xs font-extrabold text-slate-800 disabled:opacity-50"><FileSpreadsheet size={15}/> Descargar Excel</button><button type="button" disabled={!intakeHistory.items.length} onClick={printIntakeHistory} className="flex min-h-[42px] items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 text-xs font-extrabold text-slate-800 disabled:opacity-50"><Printer size={15}/> Imprimir</button></div>
+          {!intakeHistory.items.length ? <EmptyBlock title="No hay ingresos confirmados en este periodo" description="Prueba Semana, Mes o selecciona otras fechas."/> : <div className="grid max-h-[55vh] min-w-0 gap-2 overflow-y-auto">{intakeHistory.items.map(item => <article key={item.movementId} className="min-w-0 rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-start justify-between gap-2"><strong className="min-w-0 break-words text-sm text-slate-900">{item.productName}</strong><strong className="shrink-0 text-sm tabular-nums">{formatQty(item.quantity, item.unitType)}</strong></div><p className="mt-1 break-words text-xs text-slate-600">{item.dateFormatted} · {item.time} · {item.warehouseName} · {item.responsible}</p><p className="mt-1 break-words text-xs text-slate-700">Lote: {item.lotCode} · Elaboración: {item.manufacturedOn || '—'} · Vencimiento: {item.expiresOn || '—'}</p>{item.note && <p className="mt-1 break-words text-xs text-slate-600">Observación: {item.note}</p>}</article>)}</div>}
+        </div>
+      </Modal>
       <Modal isOpen={isGeneralHistoryOpen} onClose={() => setIsGeneralHistoryOpen(false)} title="Historial general de inventario" subtitle={warehouseName} size="lg">
         <div className="grid gap-4">
           <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/60 p-4">

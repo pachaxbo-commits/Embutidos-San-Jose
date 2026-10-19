@@ -340,8 +340,23 @@ async function runTests() {
     async () => {
       await generateTodayIntakesPdfBytes(testData, 'central', '2026-01-01')
     },
-    /No hay ingresos de inventario registrados hoy/,
+    /No hay ingresos de inventario confirmados/,
   )
+
+  // Historical query applies the operational dayKey, excludes pending/reverted entries and preserves kg precision.
+  const historicalMovements = [...sampleMovements,
+    { ...sampleMovements[0]!, id: 'mov-intake-yesterday-confirmed', dayKey: yesterday, createdAt: `${yesterday}T23:30:00.000Z`, quantity: 1.234 },
+    { ...sampleMovements[0]!, id: 'mov-intake-pending', dayKey: yesterday, createdAt: `${yesterday}T12:00:00.000Z`, pendingConfirmation: true, quantity: 5 },
+    { ...sampleMovements[0]!, id: 'mov-intake-reversed', dayKey: yesterday, createdAt: `${yesterday}T12:00:00.000Z`, reversedAt: `${today}T08:00:00.000Z`, quantity: 6 },
+  ]
+  const priorDay = getTodayStockIntakes({ ...testData, movements: historicalMovements }, 'central', [yesterday])
+  assert.equal(priorDay.items.length, 2, 'Fecha histórica incluye ingresos confirmados no revertidos')
+  const precisePriorIntake = priorDay.items.find(item => item.movementId === 'mov-intake-yesterday-confirmed')
+  assert.equal(precisePriorIntake?.quantity, 1.234, 'Conserva tres decimales de kg')
+  assert.equal(precisePriorIntake?.dateFormatted, '06/10/2026', 'Usa el dayKey operativo histórico')
+  const range = getTodayStockIntakes({ ...testData, movements: historicalMovements }, 'central', [yesterday, today])
+  assert.equal(range.items.some((item) => item.movementId === 'mov-intake-yesterday-confirmed'), true, 'Rango incluye día anterior')
+  assert.equal(range.items.some((item) => item.movementId === 'mov-intake-pending' || item.movementId === 'mov-intake-reversed'), false, 'Rango excluye pendientes y revertidos')
 
   // Caso 6: Producto kg -> conserva kg
   const chorizoItem = centralResult.items.find((i) => i.productId === 'prod-chorizo')

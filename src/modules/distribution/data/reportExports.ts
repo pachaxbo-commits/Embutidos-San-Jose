@@ -2027,7 +2027,7 @@ export { generateTodayIntakesPdfBytes, getTodayStockIntakes };
 export async function exportTodayIntakesPdf(
   data: Pick<DistributionData, "movements" | "products" | "lots" | "warehouses">,
   warehouseId = "central",
-  targetDayKey?: string,
+  targetDayKey?: string | string[],
   filename = "SanJose-ingresos-hoy.pdf",
 ): Promise<void> {
   const bytes = await generateTodayIntakesPdfBytes(data, warehouseId, targetDayKey);
