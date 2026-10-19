@@ -11,6 +11,7 @@ import { getTodayStockIntakes } from "../domain/todayIntakes";
 import type { DistributionViewProps } from "./DistributionApp";
 import type { DistLot } from "../types";
 import { visiblePersonName } from "./displayText";
+import { lotUpdateReasonError } from "../domain/rejectedOperations";
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: "Ingreso de stock",
@@ -388,6 +389,11 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
             disabled={busy}
             onClick={async () => {
               if (!editing) return;
+              const reasonError = lotUpdateReasonError(reason);
+              if (reasonError) {
+                setError(reasonError);
+                return;
+              }
               setBusy(true);
               try {
                 await submitOperation(
@@ -439,10 +445,11 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
               onChange={(e) => setCost(e.target.value)}
             />
           </Field>
-          <Field label="Motivo de la corrección">
+          <Field label="Motivo de la actualización" required>
             <TextInput
               value={reason}
               onChange={(e) => setReason(e.target.value)}
+              placeholder="Indica por qué estás modificando este lote"
             />
           </Field>
           <p className="text-xs">

@@ -79,7 +79,7 @@ export interface DistProduct {
 export interface DistRoute {
   id: string
   name: string
-  /** 'route' = ruta de distribuidor, 'direct' = venta directa / impulsacion */
+  /** 'route' = ruta de distribuidor, 'direct' = valor histórico para el canal Impulsación */
   kind: 'route' | 'direct'
   active: boolean
   restaurantId: string

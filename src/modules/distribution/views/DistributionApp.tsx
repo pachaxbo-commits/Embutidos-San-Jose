@@ -36,6 +36,7 @@ import { ErrorBoundary } from '../../../components/ErrorBoundary'
 import { useBackButtonBridge } from '../../../hooks/useBackHandler'
 import { useDistributionData, useSyncStatus } from '../state/useDistributionStore'
 import { toDayKey } from '../domain/engine'
+import { getRejectedOperationActionLabel, getRejectedOperationMetadata, getRejectedOperationModule, rejectedOperationStatusMessage } from '../domain/rejectedOperations'
 import { PrimaryButton, SyncStatusPill } from './shared'
 import { DashboardView } from './DashboardView'
 import { DistributorHomeView } from './DistributorHomeView'
@@ -60,10 +61,6 @@ const IS_NATIVE_ANDROID = import.meta.env.MODE === 'android' && Capacitor.isNati
 const AndroidUpdater = IS_NATIVE_ANDROID
   ? lazy(() => import('../../../features/android-updater/AndroidUpdater'))
   : null
-
-const REJECTED_OPERATION_LABELS: Record<string, string> = { sale: 'Venta', collection: 'Cobro de cartera', expense: 'Gasto', creditStatus: 'Verificación de crédito' }
-const rejectedOperationLabel = (type: string) => REJECTED_OPERATION_LABELS[type] || 'Operación'
-const rejectedOperationModule = (type: string): ModuleId => type === 'sale' ? 'dist.sales' : type === 'expense' ? 'dist.expenses' : 'dist.credits'
 
 export interface DistributionSession {
   restaurantId: string
@@ -351,14 +348,22 @@ export function DistributionApp({
           {syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}
           {data.operations.filter(o => o.status === 'queued').length > 0 && <p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o => o.status === 'queued').length}. Se guardaron en el dispositivo y se enviarán al recuperar conexión. No vuelvas a registrarlas.</p>}
           {data.operations.filter(o => o.status === 'rejected' && !o.acknowledged).map(o => {
-            const payload = o.payload as { customerId?: string; customerName?: string; receivable?: { customerName?: string } }
+            const payload = o.payload as { customerId?: string; customerName?: string; receivable?: { customerName?: string }; lotId?: string; productId?: string; lotCode?: string }
             const customerName = payload.customerName || payload.receivable?.customerName || data.customers.find(customer => customer.id === payload.customerId)?.name
+            const lot = payload.lotId ? data.lots.find(item => item.id === payload.lotId) : undefined
+            const productName = lot?.productName || (payload.productId ? data.products.find(product => product.id === payload.productId)?.name : undefined)
+            const entityDetails = productName
+              ? `Producto: ${productName}${payload.lotCode || lot?.lotCode ? ` · Lote: ${payload.lotCode || lot?.lotCode}` : ''}`
+              : customerName ? `Cliente: ${customerName}` : undefined
+            const operationMetadata = getRejectedOperationMetadata(o.type)
+            const destination = getRejectedOperationModule(o.type, session.role)
             return <article key={o.id} role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
-              <p className="font-extrabold">Una operación realizada sin conexión fue rechazada al sincronizar.</p>
-              <p className="mt-1">Tipo: {rejectedOperationLabel(o.type)} · Fecha: {new Date(o.createdAt).toLocaleString('es-BO')}{customerName ? ` · Cliente: ${customerName}` : ''}</p>
+              <p className="font-extrabold">{operationMetadata.label} rechazada</p>
+              <p className="mt-1">{rejectedOperationStatusMessage()}</p>
+              <p className="mt-1">Fecha: {new Date(o.createdAt).toLocaleString('es-BO')}{entityDetails ? ` · ${entityDetails}` : ''}</p>
               <p className="mt-1"><span className="font-bold">Motivo:</span> {o.error || 'El servidor no aceptó la operación.'}</p>
               <div className="mt-2 flex flex-wrap gap-2">
-                <button className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold" onClick={() => selectModule(rejectedOperationModule(o.type))}>Revisar en {o.type === 'sale' ? 'Ventas' : o.type === 'expense' ? 'Gastos' : 'Créditos'}</button>
+                <button className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold" onClick={() => selectModule(destination ?? 'dist.dashboard')}>{getRejectedOperationActionLabel(o.type, session.role)}</button>
                 <button className="rounded-lg px-3 py-1.5 font-bold underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button>
               </div>
             </article>

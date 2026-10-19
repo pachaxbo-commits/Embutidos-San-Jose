@@ -11,6 +11,7 @@ import { PrimaryButton, SecondaryButton } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { RestaurantMember, UserRole } from '../../../types'
 import type { DistRoute } from '../types'
+import { routeDisplayName, routeKindLabel } from '../domain/routeLabels'
 
 const ROLES: { value: UserRole; label: string; description: string }[] = [
   { value: 'admin', label: 'Administración', description: 'Acceso completo a la empresa y a todas las rutas.' },
@@ -394,7 +395,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
                         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-rose-100 text-rose-700">
                           <MapPin size={16} />
                         </span>
-                        <h4 className="text-sm font-extrabold text-slate-900">{route.name}</h4>
+                        <h4 className="text-sm font-extrabold text-slate-900">{routeDisplayName(route)}</h4>
                         <span
                           className={`rounded-full px-2 py-0.5 text-[9px] font-black uppercase ${
                             isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
@@ -403,7 +404,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
                           {isActive ? 'Activa' : 'Inactiva'}
                         </span>
                         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-600">
-                          {route.kind === 'direct' ? 'Venta directa / Impulsación' : 'Ruta distribuidor'}
+                          {routeKindLabel(route.kind)}
                         </span>
                       </div>
                       <p className="mt-1.5 text-xs text-slate-500">
@@ -609,7 +610,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
               onChange={setNewRouteKind}
               options={[
                 { value: 'route', label: 'Ruta distribuidor' },
-                { value: 'direct', label: 'Venta directa / Impulsación' },
+                { value: 'direct', label: 'Impulsación' },
               ]}
             />
           </Field>
@@ -643,7 +644,7 @@ export function UsersView({ session, data, membersOverride }: DistributionViewPr
               onChange={setEditRouteKind}
               options={[
                 { value: 'route', label: 'Ruta distribuidor' },
-                { value: 'direct', label: 'Venta directa / Impulsación' },
+                { value: 'direct', label: 'Impulsación' },
               ]}
             />
           </Field>
