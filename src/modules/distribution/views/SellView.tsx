@@ -432,7 +432,9 @@ export function SellView({ session, data }: DistributionViewProps) {
         routeName,
         sellerUid: session.uid,
         sellerName: session.userName,
-        dispatchId: openDispatch?.id,
+        // Una venta de Administración sale del almacén central y no pertenece
+        // al despacho abierto que pueda estar visible en paralelo.
+        dispatchId: isDistributor ? openDispatch?.id : undefined,
         customerId: customerId || undefined,
         customerName: selectedCustomer?.name,
         customerCode: selectedCustomer?.customerCode || selectedCustomer?.identityNumber,

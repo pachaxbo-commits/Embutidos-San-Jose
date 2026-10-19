@@ -51,6 +51,15 @@ export function matchesRoute(recordRouteId?: string | null, filterRouteId?: stri
   return cleanRecord === cleanFilter
 }
 
+/** A central-warehouse sale never belongs to a dispatch cash close, even if
+ * stale client state accidentally attached that dispatchId to the sale. */
+export function isSaleForDispatch(
+  sale: { routeId?: string | null; sourceLocation?: string | null },
+  dispatchRouteId: string,
+): boolean {
+  return (!sale.routeId || sale.routeId === dispatchRouteId) && sale.sourceLocation !== 'centralWarehouse'
+}
+
 /**
  * Obtiene el nombre canónico de una ruta para UI / etiquetas.
  */

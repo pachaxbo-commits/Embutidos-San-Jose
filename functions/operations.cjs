@@ -4,6 +4,10 @@ const expenseCategoryDefaults = expensePresetRegistry.defaults;
 const round = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const roundAt = (n, precision = 2) => Math.round((Number(n) + Number.EPSILON) * (10 ** precision)) / (10 ** precision);
 const quantityPrecision = (product) => product?.unitType === "kg" ? 3 : 2;
+// Alias financiero de Administración. No incluye Impulsación ni rutas operativas.
+const isAdministrationRouteId = (routeId) => routeId === "admin" || routeId === "administracion";
+const isSaleForDispatch = (sale, routeId) =>
+  (!sale.routeId || sale.routeId === routeId) && sale.sourceLocation !== "centralWarehouse";
 class BusinessError extends Error {}
 const check = (condition, message) => {
   if (!condition) throw new BusinessError(message);
@@ -1247,7 +1251,9 @@ async function sale(o, p) {
     routeName: p.routeName,
     sellerUid: o.actor,
     sellerName: o.member.displayName || o.actor,
-    dispatchId: p.dispatchId || "",
+    // El rol admin vende desde almacén central, no desde el despacho abierto
+    // que el cliente pueda tener seleccionado por su estado de pantalla.
+    dispatchId: o.member.role === "distributor" ? p.dispatchId || "" : "",
     customerId: p.customerId || "",
     customerName: p.customerName || "",
     customerCode: p.customerCode || "",
@@ -1909,6 +1915,8 @@ module.exports = {
   dayKey,
   round,
   handlers,
+  isAdministrationRouteId,
+  isSaleForDispatch,
 };
 async function adjustment(o, p) {
   o.admin();
@@ -2261,17 +2269,17 @@ async function closure(o, p) {
     const id = requested.id || `closure_admin_${dayKey}_${o.id}`;
 
     const sales = (await o.query("distSales", "dayKey", dayKey))
-      .filter((s) => s.routeId === "admin" || (!s.routeId && s.sourceLocation === "centralWarehouse"))
+      .filter((s) => isAdministrationRouteId(s.routeId) || (!s.routeId && s.sourceLocation === "centralWarehouse"))
       .map((sale) => (sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale));
 
     const collections = (await o.query("distCollections", "dayKey", dayKey))
-      .filter((x) => x.routeId === "admin" || x.collectedByUid === o.actor);
+      .filter((x) => isAdministrationRouteId(x.routeId) || x.collectedByUid === o.actor);
 
     const expenses = (await o.query("distExpenses", "dayKey", dayKey))
-      .filter((x) => (x.routeId === "admin" || !x.routeId) && !x.voided);
+      .filter((x) => (isAdministrationRouteId(x.routeId) || !x.routeId) && !x.voided);
 
     const claims = (await o.query("distClaims", "dayKey", dayKey))
-      .filter((x) => x.routeId === "admin");
+      .filter((x) => isAdministrationRouteId(x.routeId));
 
     const sum = (list, key) => round(list.reduce((n, r) => n + (r[key] || 0), 0));
     const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
@@ -2320,9 +2328,11 @@ async function closure(o, p) {
     previous = (await o.read("distClosures", id)) || {};
   const route = location("route", d.routeId),
     warehouse = location("warehouse", d.warehouseId || "central");
-  const sales = (await o.query("distSales", "dispatchId", d.id)).map((sale) =>
-    sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
-  );
+  const sales = (await o.query("distSales", "dispatchId", d.id))
+    .filter((sale) => isSaleForDispatch(sale, d.routeId))
+    .map((sale) =>
+      sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
+    );
   if (p.mode === "warehouse") {
     o.owns(warehouse);
     check(!previous.warehouseClosedBy, "El retorno ya se confirmó.");
