@@ -17,6 +17,7 @@ import {
   type SupportSettings,
 } from '../data/supportMaintenance'
 import { PrimaryButton, SecondaryButton, SectionCard } from './shared'
+import { DiagnosticReportsModal } from '../../../components/DiagnosticReportsModal'
 
 const RESET_PHRASE = 'LIMPIAR EMBUTIDOS SAN JOSE'
 const SCOPE_LABELS: Record<string, string> = {
@@ -42,6 +43,7 @@ export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpen
   const [phrase, setPhrase] = useState('')
   const [acknowledged, setAcknowledged] = useState(false)
   const [selectedGroups, setSelectedGroups] = useState<CleanupGroupKey[]>([...RECOMMENDED_CLEANUP_GROUPS])
+  const [diagnosticModalOpen, setDiagnosticModalOpen] = useState(false)
   const cleanupSelection = resolveCleanupGroups(selectedGroups)
 
   useEffect(() => {
@@ -123,7 +125,13 @@ export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpen
         <div className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3"><ShieldCheck size={20} className="mt-0.5 text-emerald-700" /><div><strong className="text-sm text-emerald-900">Información comercial bloqueada</strong><p className="mt-1 text-xs font-medium leading-relaxed text-emerald-800">Este rol no puede consultar ventas, clientes, créditos, cobros, gastos, stock, cierres ni reportes.</p></div></div>
         <div className="mt-3 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3"><DatabaseBackup size={20} className="mt-0.5 text-amber-700" /><div className="flex-1"><strong className="text-sm text-amber-900">Preparar entrega limpia</strong><p className="mt-1 text-xs font-medium leading-relaxed text-amber-800">Selecciona qué información deseas retirar. Se creará un respaldo antes de eliminar cualquier dato. Por defecto se conservan los clientes registrados.</p><div className="mt-3"><SecondaryButton onClick={() => { setResetOpen(true); setPreview(null); setSelectedGroups([...RECOMMENDED_CLEANUP_GROUPS]); setError(null) }}><Wrench size={16} /> Revisar limpieza</SecondaryButton></div></div></div>
       </SectionCard>
+
+      <SectionCard title="Diagnóstico de errores">
+        <p className="text-xs font-semibold leading-relaxed text-slate-600">Los reportes no incluyen documentos, contraseñas ni información comercial. Se guardan solo en este dispositivo.</p>
+        <div className="mt-3"><SecondaryButton onClick={() => setDiagnosticModalOpen(true)}>Consultar últimos errores registrados</SecondaryButton></div>
+      </SectionCard>
     </div>
+    {diagnosticModalOpen && <DiagnosticReportsModal isOpen onClose={() => setDiagnosticModalOpen(false)} />}
 
     <Modal isOpen={resetOpen} onClose={() => !busy && setResetOpen(false)} title="Preparar entrega limpia" subtitle={preview ? '3. Confirmar identidad y alcance' : '1. Seleccionar datos · 2. Revisar conteo'} size="lg" footer={preview ? <PrimaryButton full disabled={busy || !password || !acknowledged || phrase !== RESET_PHRASE} onClick={() => void executeReset()}>{busy ? 'Creando respaldo y limpiando...' : 'Crear respaldo y limpiar datos'}</PrimaryButton> : <PrimaryButton full disabled={busy || selectedGroups.length === 0} onClick={() => void inspectReset()}>{busy ? 'Calculando...' : 'Mostrar datos que se limpiarán'}</PrimaryButton>}>
       {!preview ? <div className="grid gap-3">

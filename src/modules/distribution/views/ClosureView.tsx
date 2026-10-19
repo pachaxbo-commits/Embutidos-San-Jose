@@ -15,6 +15,7 @@ import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calcula
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
 import { closureHistoryOwnerKey, closureOperationalDayKey, filterClosureHistory, visibleClosureHistory } from '../domain/closureHistory'
 import { RangePicker, describeRange, formatDayKey, type RangePreset } from './RangePicker'
+import { recordDiagnosticEvent } from '../../../lib/errorDiagnostics'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   draft: 'Devolución declarada; espera confirmación de almacén',
@@ -88,6 +89,24 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const existingClosure = dispatch
     ? data.closures.find((closure) => closure.dispatchId === dispatch.id) ?? null
     : null
+  const previousClosureStatusesRef = useRef<Map<string, string>>(new Map())
+  const previousOpenDispatchIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const knownStatuses = previousClosureStatusesRef.current
+    for (const closure of data.closures) {
+      const previousStatus = knownStatuses.get(closure.dispatchId)
+      if (previousStatus !== closure.status) {
+        recordDiagnosticEvent('closure_snapshot', closure.status as 'draft' | 'warehouse_done' | 'closed' | 'reopened')
+        if (closure.status === 'closed') recordDiagnosticEvent('post_close_render', 'closed')
+        knownStatuses.set(closure.dispatchId, closure.status)
+      }
+    }
+    const currentOpenDispatchIds = new Set(data.openDispatches.map(item => item.id))
+    for (const id of previousOpenDispatchIdsRef.current) {
+      if (!currentOpenDispatchIds.has(id)) recordDiagnosticEvent('dispatch_removed', 'none')
+    }
+    previousOpenDispatchIdsRef.current = currentOpenDispatchIds
+  }, [data.closures, data.openDispatches])
 
   const returnsAlreadyApplied = existingClosure
     ? Boolean(existingClosure.warehouseClosedBy)
@@ -493,7 +512,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }
 
     try {
+      recordDiagnosticEvent('operation_sent', status)
       await saveClosure({ closure, applyStockReturn: status === 'warehouse_done' && !returnsAlreadyApplied })
+      recordDiagnosticEvent('confirmation_received', status)
       if (status === 'closed') {
         setJustClosedRouteName(dispatch.routeName)
       }
@@ -572,6 +593,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       return
     }
     setError(null)
+    recordDiagnosticEvent('before_confirmation', 'closed')
     setConfirmingClosure(true)
   }
 

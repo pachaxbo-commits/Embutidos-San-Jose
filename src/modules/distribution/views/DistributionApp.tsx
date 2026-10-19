@@ -7,6 +7,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
 import {
   AlertTriangle,
+  Bug,
   Boxes,
   ClipboardList,
   Grid3x3,
@@ -31,6 +32,7 @@ import { hasPermission } from '../../../services/permissionService'
 import { applyAppTheme } from '../../../lib/appTheme'
 import { BottomNav, type BottomNavItem } from '../../../components/ui/BottomNav'
 import { Modal } from '../../../components/ui/Modal'
+import { DiagnosticReportsModal } from '../../../components/DiagnosticReportsModal'
 import { TextInput } from '../../../components/ui/Form'
 import { ErrorBoundary } from '../../../components/ErrorBoundary'
 import { useBackButtonBridge } from '../../../hooks/useBackHandler'
@@ -138,6 +140,7 @@ export function DistributionApp({
   const modules = useMemo(() => getVisibleModules(can, role), [can, role])
   const [currentModule, setCurrentModule] = useState<ModuleId>('dist.dashboard')
   const [isMoreOpen, setIsMoreOpen] = useState(false)
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false)
   const [isSignOutOpen, setIsSignOutOpen] = useState(false)
   const [manualUpdateRequest, setManualUpdateRequest] = useState(0)
   const [dayKeys, setDayKeys] = useState<string[]>([toDayKey(new Date())])
@@ -291,6 +294,7 @@ export function DistributionApp({
           <div className="flex shrink-0 items-center gap-2">
             <span className="sm:hidden"><SyncStatusPill state={syncState} compact /></span>
             <span className="hidden sm:inline-flex"><SyncStatusPill state={syncState} /></span>
+            <button type="button" onClick={() => setIsDiagnosticsOpen(true)} aria-label="Consultar diagnóstico de errores" title="Diagnóstico de errores" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"><Bug size={16} /></button>
             {rejectedOperationCount > 0 && <span title="Revisa las alertas para ver el motivo de las operaciones rechazadas." className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-black text-rose-800"><AlertTriangle size={12} />{rejectedOperationCount} rechazadas</span>}
             <button
               type="button"
@@ -368,7 +372,7 @@ export function DistributionApp({
               </div>
             </article>
           })}
-          <ErrorBoundary key={activeModule} onReset={() => selectModule('dist.dashboard')}>{renderModule()}</ErrorBoundary>
+          <ErrorBoundary key={activeModule} viewName={activeModule} onReset={() => selectModule('dist.dashboard')}>{renderModule()}</ErrorBoundary>
         </main>
       </div>
 
@@ -473,6 +477,7 @@ export function DistributionApp({
           </button>
         </div>
       </Modal>
+      {isDiagnosticsOpen && <DiagnosticReportsModal isOpen onClose={() => setIsDiagnosticsOpen(false)} />}
       {AndroidUpdater && (
         <Suspense fallback={null}>
           <AndroidUpdater
