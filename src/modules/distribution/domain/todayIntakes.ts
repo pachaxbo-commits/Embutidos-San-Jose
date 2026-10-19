@@ -1,13 +1,14 @@
 import type { jsPDF } from 'jspdf'
 import type { DistributionData } from '../state/useDistributionStore.ts'
 import type { DistStockMovement, UnitType } from '../types.ts'
-import { round2, toDayKey } from './engine.ts'
+import { toDayKey } from './engine.ts'
 import { getProductPresentation } from './productPresentation.ts'
 import { reportPersonName, reportRecordName, reportUnitLabel } from './reportLabels.ts'
 
 export interface TodayIntakeItem {
   movementId: string
   createdAt: string
+  dateFormatted: string
   time: string
   productId: string
   productName: string
@@ -40,6 +41,12 @@ export interface TodayIntakesResult {
   items: TodayIntakeItem[]
   summary: TodayIntakeSummary[]
   totalMovements: number
+  totals: { kg: number; package: number; unit: number }
+}
+
+function quantityPrecision(unitType: UnitType, value: number): number {
+  const factor = unitType === 'kg' ? 1000 : 100
+  return Math.round((Number(value) || 0) * factor) / factor
 }
 
 export function formatDayKeyToDate(dayKey: string): string {
@@ -67,10 +74,13 @@ export function formatTimeFromIso(iso: string): string {
 export function getTodayStockIntakes(
   data: Pick<DistributionData, 'movements' | 'products' | 'lots' | 'warehouses'>,
   warehouseId = 'central',
-  targetDayKey?: string,
+  targetDayKey?: string | string[],
 ): TodayIntakesResult {
-  const dayKey = targetDayKey || toDayKey(new Date())
-  const dateFormatted = formatDayKeyToDate(dayKey)
+  const dayKeys = Array.isArray(targetDayKey) ? targetDayKey : targetDayKey ? [targetDayKey] : [toDayKey(new Date())]
+  const dayKey = dayKeys[0] || toDayKey(new Date())
+  const dateFormatted = dayKeys.length === 1
+    ? formatDayKeyToDate(dayKey)
+    : `${formatDayKeyToDate(dayKeys[0])} a ${formatDayKeyToDate(dayKeys[dayKeys.length - 1])}`
 
   const warehouseName =
     warehouseId === 'central'
@@ -88,9 +98,10 @@ export function getTodayStockIntakes(
   const matchedMovements = data.movements
     .filter((m: DistStockMovement) => {
       if (m.type !== 'intake') return false
+      if (m.pendingConfirmation || m.reversedAt) return false
 
       const movementDay = m.dayKey || toDayKey(m.createdAt)
-      if (movementDay !== dayKey) return false
+      if (!dayKeys.includes(movementDay)) return false
 
       if (warehouseId === 'central') {
         return !m.toLocation || m.toLocation === 'central' || m.centralDelta > 0
@@ -132,11 +143,12 @@ export function getTodayStockIntakes(
     return {
       movementId: m.id,
       createdAt: m.createdAt,
+      dateFormatted: formatDayKeyToDate(m.dayKey || toDayKey(m.createdAt)),
       time: formatTimeFromIso(m.createdAt),
       productId: m.productId,
       productName: reportRecordName(m.productName, product?.name || 'Producto'),
       presentation,
-      quantity: round2(m.quantity),
+      quantity: quantityPrecision(m.unitType, m.quantity),
       unitType: m.unitType,
       warehouseId,
       warehouseName,
@@ -154,7 +166,7 @@ export function getTodayStockIntakes(
     const key = `${item.productId}__${item.unitType}`
     const existing = summaryMap.get(key)
     if (existing) {
-      existing.totalQuantity = round2(existing.totalQuantity + item.quantity)
+      existing.totalQuantity = quantityPrecision(existing.unitType, existing.totalQuantity + item.quantity)
       existing.movementCount += 1
     } else {
       summaryMap.set(key, {
@@ -171,6 +183,8 @@ export function getTodayStockIntakes(
   const summary = [...summaryMap.values()].sort((a, b) =>
     a.productName.localeCompare(b.productName),
   )
+  const totals = { kg: 0, package: 0, unit: 0 }
+  for (const item of items) totals[item.unitType] = quantityPrecision(item.unitType, totals[item.unitType] + item.quantity)
 
   return {
     dayKey,
@@ -180,6 +194,7 @@ export function getTodayStockIntakes(
     items,
     summary,
     totalMovements: items.length,
+    totals,
   }
 }
 
@@ -218,11 +233,11 @@ function drawBrandedPdfHeader(pdf: jsPDF, title: string, subtitle?: string) {
 export async function generateTodayIntakesPdfBytes(
   data: Pick<DistributionData, 'movements' | 'products' | 'lots' | 'warehouses'>,
   warehouseId = 'central',
-  targetDayKey?: string,
+  targetDayKey?: string | string[],
 ): Promise<Uint8Array> {
   const intakes = getTodayStockIntakes(data, warehouseId, targetDayKey)
   if (intakes.items.length === 0) {
-    throw new Error('No hay ingresos de inventario registrados hoy.')
+    throw new Error('No hay ingresos de inventario confirmados para el periodo seleccionado.')
   }
 
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([
@@ -230,18 +245,18 @@ export async function generateTodayIntakesPdfBytes(
     import('jspdf-autotable'),
   ])
 
-  const pdf = new jsPDF({ orientation: 'portrait', format: 'letter' })
+  const pdf = new jsPDF({ orientation: 'landscape', format: 'letter' })
   const pageWidth = pdf.internal.pageSize.getWidth()
   const pageHeight = pdf.internal.pageSize.getHeight()
 
   const subtitle = `Fecha: ${intakes.dateFormatted}  ·  Almacén: ${intakes.warehouseName}  ·  Total movimientos: ${intakes.totalMovements}`
-  drawBrandedPdfHeader(pdf, 'INGRESOS DE INVENTARIO DEL DÍA', subtitle)
+  drawBrandedPdfHeader(pdf, 'INGRESOS DE INVENTARIO', subtitle)
 
   // 1. Resumen ingresado hoy (agrupado por producto y unidad)
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(8.5)
   pdf.setTextColor(30, 41, 59)
-  pdf.text('1. Resumen ingresado hoy (agrupado por producto y unidad)', 14, 34)
+  pdf.text('1. Resumen de ingresos (agrupado por producto y unidad)', 14, 34)
 
   autoTable(pdf, {
     startY: 37,
@@ -249,7 +264,7 @@ export async function generateTodayIntakesPdfBytes(
     body: intakes.summary.map((s) => [
       s.productName,
       s.presentation || 'Estándar',
-      round2(s.totalQuantity),
+      s.totalQuantity,
       reportUnitLabel(s.unitType),
       String(s.movementCount),
     ]),
@@ -258,20 +273,20 @@ export async function generateTodayIntakesPdfBytes(
     bodyStyles: { fontSize: 7.5, cellPadding: 2 },
     alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
-      0: { cellWidth: 55, fontStyle: 'bold' },
-      1: { cellWidth: 44, textColor: [71, 85, 105] },
-      2: { cellWidth: 32, halign: 'right', fontStyle: 'bold' },
-      3: { cellWidth: 26 },
-      4: { cellWidth: 30, halign: 'center' },
+      0: { cellWidth: 53, fontStyle: 'bold' },
+      1: { cellWidth: 42, textColor: [71, 85, 105] },
+      2: { cellWidth: 30, halign: 'right', fontStyle: 'bold' },
+      3: { cellWidth: 25 },
+      4: { cellWidth: 28, halign: 'center' },
     },
-    tableWidth: 187,
+    tableWidth: 178,
     margin: { left: 14, right: 14 },
   })
 
   // 2. Detalle de ingresos individuales
   let detailStartY = (pdf as unknown as AutoTableJsPDF).lastAutoTable.finalY + 8
   if (detailStartY > 220) {
-    pdf.addPage('letter', 'portrait')
+    pdf.addPage('letter', 'landscape')
     drawBrandedPdfHeader(pdf, 'DETALLE DE INGRESOS (CONTINUACIÓN)', subtitle)
     detailStartY = 33
   }
@@ -283,36 +298,38 @@ export async function generateTodayIntakesPdfBytes(
 
   autoTable(pdf, {
     startY: detailStartY + 4,
-    head: [['Hora', 'Producto', 'Presentación', 'Cantidad', 'Unidad', 'Almacén', 'Lote', 'F. Elab.', 'F. Venc.', 'Responsable']],
+    head: [['Fecha/hora', 'Producto', 'Presentación', 'Cantidad', 'Unidad', 'Almacén', 'Lote', 'F. Elab.', 'F. Venc.', 'Responsable', 'Observación']],
     body: intakes.items.map((item) => [
-      item.time,
+      `${item.dateFormatted} ${item.time}`,
       item.productName,
       item.presentation || '—',
-      round2(item.quantity),
+      item.quantity,
       reportUnitLabel(item.unitType),
       item.warehouseName,
       item.lotCode || '—',
       item.manufacturedOn ? (item.manufacturedOn.includes('-') ? item.manufacturedOn.split('-').reverse().join('/') : item.manufacturedOn) : '—',
       item.expiresOn ? (item.expiresOn.includes('-') ? item.expiresOn.split('-').reverse().join('/') : item.expiresOn) : '—',
       item.responsible,
+      item.note || '—',
     ]),
     theme: 'grid',
     headStyles: { fillColor: [71, 85, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7, cellPadding: 2 },
     bodyStyles: { fontSize: 7, cellPadding: 1.8, overflow: 'linebreak' },
     alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
-      0: { cellWidth: 13, halign: 'center' },
-      1: { cellWidth: 35, fontStyle: 'bold' },
-      2: { cellWidth: 23, textColor: [71, 85, 105] },
-      3: { cellWidth: 15, halign: 'right', fontStyle: 'bold' },
-      4: { cellWidth: 12 },
-      5: { cellWidth: 18 },
-      6: { cellWidth: 17, fontStyle: 'bold' },
-      7: { cellWidth: 17 },
-      8: { cellWidth: 17 },
-      9: { cellWidth: 20 },
+      0: { cellWidth: 20, halign: 'center' },
+      1: { cellWidth: 30, fontStyle: 'bold' },
+      2: { cellWidth: 18, textColor: [71, 85, 105] },
+      3: { cellWidth: 14, halign: 'right', fontStyle: 'bold' },
+      4: { cellWidth: 10 },
+      5: { cellWidth: 16 },
+      6: { cellWidth: 15, fontStyle: 'bold' },
+      7: { cellWidth: 16 },
+      8: { cellWidth: 16 },
+      9: { cellWidth: 22 },
+      10: { cellWidth: 30 },
     },
-    tableWidth: 187,
+    tableWidth: 207,
     margin: { left: 14, right: 14 },
   })
 

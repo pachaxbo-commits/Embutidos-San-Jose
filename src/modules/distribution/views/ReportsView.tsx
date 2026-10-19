@@ -41,11 +41,12 @@ import {
 import { closuresInPeriod } from '../domain/closurePeriod'
 import { closureReopenEvents } from '../domain/closureAudit'
 import { computeDistributorDifferences } from '../domain/distributorDifferences'
+import { MermaReportView } from './MermaReportView'
 
 type MainCategory = 'resumen' | 'dinero' | 'ventas' | 'creditos' | 'inventario'
 type DineroSubTab = 'flujo' | 'cobros' | 'gastos' | 'arqueos'
 type VentasSubTab = 'ventas' | 'cortesias' | 'productos' | 'ganancias' | 'kardex' | 'clientes'
-type InventarioSubTab = 'existencias' | 'movimientos' | 'diferencias'
+type InventarioSubTab = 'existencias' | 'movimientos' | 'diferencias' | 'mermas'
 
 const MAIN_CATEGORIES: { value: MainCategory; label: string }[] = [
   { value: 'resumen', label: 'Resumen' },
@@ -89,7 +90,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       return ventasSubTab
     }
     if (mainCategory === 'inventario') {
-      return inventarioSubTab === 'existencias' ? 'inventario' : inventarioSubTab === 'movimientos' ? 'movimientos' : 'diferencias'
+      return inventarioSubTab === 'existencias' ? 'inventario' : inventarioSubTab === 'movimientos' ? 'movimientos' : inventarioSubTab === 'mermas' ? 'mermas' : 'diferencias'
     }
     return 'resumen'
   }, [mainCategory, dineroSubTab, ventasSubTab, inventarioSubTab])
@@ -1567,11 +1568,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                 { value: 'existencias', label: 'Existencias actuales' },
                 { value: 'movimientos', label: 'Movimientos' },
                 { value: 'diferencias', label: 'Diferencias por distribuidor' },
+                { value: 'mermas', label: 'Mermas' },
               ].map((sub) => (
                 <button
                   key={sub.value}
                   type="button"
-                  onClick={() => setInventarioSubTab(sub.value as InventarioSubTab)}
+                  onClick={() => { if (sub.value === 'mermas') session.setDayKeys([toDayKey(new Date())]); setInventarioSubTab(sub.value as InventarioSubTab) }}
                   className={`min-h-[36px] rounded-xl px-3 text-xs font-bold transition ${
                     inventarioSubTab === sub.value
                       ? 'bg-slate-900 text-white'
@@ -1656,6 +1658,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                 </div>
               </SectionCard>
             )}
+            {inventarioSubTab === 'mermas' && <MermaReportView session={session} data={data} />}
           </div>
         )}
       </div>
