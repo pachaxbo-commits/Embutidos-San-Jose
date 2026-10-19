@@ -6,6 +6,7 @@ import { EmptyBlock } from '../../../components/ui/Screen'
 import { exportExcel, exportPdf, type ReportSheet } from '../data/reportExports'
 import { newOperationId, resolveQuarantine } from '../data/distributionRepository'
 import { filterQuarantineRows, quarantineRows, summarizeQuarantine, type QuarantineRow, type QuarantineStatusFilter } from '../domain/quarantine'
+import { operationFailureMessage } from '../domain/operationFailureMessage'
 import { toDayKey } from '../domain/engine'
 import type { DistributionData } from '../state/useDistributionStore'
 import type { DistributionSession } from './DistributionApp'
@@ -89,7 +90,7 @@ export function QuarantineView({ session, data, isOpen, onClose, defaultLocation
       setReviewRow(null)
     } catch (failure) {
       if ((failure as { rejected?: boolean }).rejected) operationId.current = null
-      setError((failure as Error).message || 'No se pudo resolver el producto en cuarentena.')
+      setError(operationFailureMessage('resolveQuarantine', failure))
     } finally { setBusy(false); submitLock.current = false }
   }
 

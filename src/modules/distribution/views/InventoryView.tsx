@@ -19,6 +19,8 @@ import { reportUnitLabel } from '../domain/reportLabels'
 import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
 import { stockAvailability } from '../domain/stockAvailability'
 import { quarantineRows } from '../domain/quarantine'
+import { validateIntakeLotDates } from '../domain/inventoryIntakeValidation'
+import { operationFailureMessage } from '../domain/operationFailureMessage'
 import { QuarantineView } from './QuarantineView'
 
 const MOVEMENT_LABELS: Record<string, string> = {
@@ -179,6 +181,13 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       setError('La cantidad del ingreso debe ser mayor a cero.')
       return
     }
+    if (intakeMode === 'intake') {
+      const dateError = validateIntakeLotDates(manufacturedOn, expiresOn)
+      if (dateError) {
+        setError(dateError)
+        return
+      }
+    }
     if (intakeMode === 'adjustment' && quantity >= 0) {
       setError('Para dar de baja stock indica una cantidad negativa. Para aumentarlo utiliza Ingreso por lote.')
       return
@@ -209,7 +218,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
       setIntakeProduct(null)
     } catch (submitError) {
       if ((submitError as { rejected?: boolean }).rejected) operation.current = null
-      setError((submitError as Error).message || 'No se pudo registrar el movimiento.')
+      setError(operationFailureMessage(intakeMode === 'intake' ? 'intake' : 'adjustment', submitError) || 'No se pudo registrar el movimiento.')
     } finally {
       setIsSubmitting(false)
     }
