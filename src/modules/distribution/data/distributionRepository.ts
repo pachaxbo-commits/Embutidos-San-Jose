@@ -1007,8 +1007,8 @@ export interface SaveClosureInput {
  * - descarga la ruta por lo retornado y ajusta el faltante/sobrante,
  *   de modo que la ruta queda en cero y nunca se descuenta dos veces central.
  */
-export async function saveClosure(input: SaveClosureInput): Promise<string> {
-  await submitOperation('closure', { ...input, mode: input.applyStockReturn ? 'warehouse' : 'money', warehouseResponsibleName: localStorage.getItem('sanjose_warehouse_responsible') || '' }, newOperationId('closure'))
+export async function saveClosure(input: SaveClosureInput, operationId = newOperationId('closure')): Promise<string> {
+  await submitOperation('closure', { ...input, mode: input.applyStockReturn ? 'warehouse' : 'money', warehouseResponsibleName: localStorage.getItem('sanjose_warehouse_responsible') || '' }, operationId)
   return input.closure.id
 }
 
