@@ -542,7 +542,28 @@ export interface DistClosureReopenHistoryEntry {
 
 export type ClosureStatus = 'draft' | 'warehouse_done' | 'closed' | 'reopened'
 
+export interface DistClosureRectification {
+  id: string
+  version: number
+  closureId: string
+  createdAt: string
+  createdBy: string
+  createdByName: string
+  reason: string
+  operationId: string
+  originalHash: string
+  sourceHash: string
+  original: DistClosure
+  corrected: DistClosure
+  changes: { field: string; before: number; after: number; sourceDocumentIds: string[] }[]
+  excludedSaleIds: string[]
+  sourceDocumentIds: string[]
+}
+
 export interface DistClosure extends DistBaseDoc {
+  rectificationId?: string
+  rectification?: DistClosureRectification
+  rectificationView?: 'original' | 'corrected'
   warehouseId?: string
   declaredReturns?: Record<string, number>
   declaredReturnMermas?: Record<string, number>

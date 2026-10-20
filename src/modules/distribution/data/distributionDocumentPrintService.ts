@@ -4,6 +4,7 @@ import type { PrintJobPayload } from '../../../types/printing'
 import type { DistClosure, DistDispatch, DistProduct, DistQuote } from '../types'
 import { computeLoadedByProduct, round2 } from '../domain/engine'
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
+import { closureRectificationLabel, closureRectificationView } from '../domain/closureRectification'
 import { printHtmlDocument } from '../../../services/printing/documentPrintService'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
@@ -442,6 +443,7 @@ export async function shareDispatch(dispatch: DistDispatch, products: DistProduc
 }
 
 export function printClosureTicket(closure: DistClosure): Promise<string> {
+  closure = closureRectificationView(closure, closure.rectificationView || 'corrected')
   const latestReopen = closureReopenEvents(closure).at(-1)
   const reopenNote = latestReopen?.reopenedAt
     ? `Reabierto: ${new Date(latestReopen.reopenedAt).toLocaleString('es-BO')}${latestReopen.reason ? ` · ${latestReopen.reason.slice(0, 72)}` : ''}`
@@ -463,9 +465,9 @@ export function printClosureTicket(closure: DistClosure): Promise<string> {
       }),
       [closure.status === 'closed'
         ? `EFECTIVO ESPERADO: Bs ${round2(closure.expectedCash).toFixed(2)} | DECLARADO: Bs ${round2(closure.physicalCashDeclared ?? 0).toFixed(2)}`
-        : 'Cierre pendiente de completar', reopenNote].filter(Boolean).join('\n'),
+        : 'Cierre pendiente de completar', reopenNote, closureRectificationLabel(closure), closure.rectification ? `Diferencia original: Bs ${closure.rectification.original.cashDifference.toFixed(2)}` : ''].filter(Boolean).join('\n'),
     ),
-    `closure:${closure.id}`,
+    `closure:${closure.id}${closure.rectification ? `:${closure.rectification.id}:${closure.rectificationView}` : ''}`,
   )
 }
 
@@ -477,6 +479,7 @@ export async function printOperationalSheet(title: string, subtitle: string, row
 }
 
 export async function generateClosurePdf(closure: DistClosure) {
+  closure = closureRectificationView(closure, closure.rectificationView || 'corrected')
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([
     import('jspdf'),
     import('jspdf-autotable'),
@@ -517,6 +520,21 @@ export async function generateClosurePdf(closure: DistClosure) {
   doc.text(`Recepción almacén: ${closure.warehouseResponsibleName || 'Almacén central'}          Estado: ${closure.status === 'closed' ? 'FINALIZADO' : 'PENDIENTE'}`, 18, 46)
 
   let y = 54
+
+  if (closure.rectification) {
+    const audit = closure.rectification
+    const lines = [closureRectificationLabel(closure),
+      `${new Date(audit.createdAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })} · ${audit.createdByName}`,
+      `Motivo: ${audit.reason}`,
+      `Diferencia original preservada: Bs ${audit.original.cashDifference.toFixed(2)}. Diferencia conciliada: Bs ${audit.corrected.cashDifference.toFixed(2)}.`,
+    ].flatMap(line => doc.splitTextToSize(line, pageWidth - 36))
+    doc.setFillColor(239,246,255)
+    doc.rect(14,y,pageWidth-28,lines.length*4+6,'F')
+    doc.setFontSize(8)
+    doc.setTextColor(30,64,175)
+    doc.text(lines,18,y+4)
+    y += lines.length*4+11
+  }
 
   // Auditoría visible en PDF: conserva cada evento y no inventa datos ausentes.
   const reopenEvents = closureReopenEvents(closure)
@@ -576,8 +594,9 @@ export async function generateClosurePdf(closure: DistClosure) {
       theme: 'grid',
       headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
       bodyStyles: { fontSize: 7.5, cellPadding: 2 },
+      rowPageBreak: 'avoid',
       columnStyles: {
-        0: { cellWidth: 34, fontStyle: 'bold' },
+        0: { cellWidth: pageWidth - 28 - 203, fontStyle: 'bold' },
         1: { cellWidth: 14, halign: 'right' },
         2: { cellWidth: 14, halign: 'right' },
         3: { cellWidth: 14, halign: 'right' },
@@ -628,7 +647,7 @@ export async function generateClosurePdf(closure: DistClosure) {
     columnStyles: {
       0: { cellWidth: 70, fontStyle: 'bold' },
       1: { cellWidth: 35, halign: 'right', fontStyle: 'bold' },
-      2: { cellWidth: 83, textColor: [71, 85, 105] },
+      2: { cellWidth: pageWidth - 28 - 105, textColor: [71, 85, 105] },
     },
     didParseCell: (data) => {
       if (data.row.index === 6) {
@@ -650,7 +669,7 @@ export async function generateClosurePdf(closure: DistClosure) {
 
   // Firmas
   y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 24
-  if (y > pageHeight - 35) {
+  if (y > pageHeight - 20) {
     doc.addPage()
     y = 35
   }
@@ -667,10 +686,14 @@ export async function generateClosurePdf(closure: DistClosure) {
   doc.text(`Recibe Almacén / Admin (${closure.warehouseResponsibleName || closure.closedBy || 'Administración'})`, 127, y + 4)
 
   // Pie de página
-  doc.setFontSize(7.5)
-  doc.setTextColor(148, 163, 184)
-  doc.text(`Generado el: ${new Date().toLocaleString('es-BO')} · Embutidos San José`, 14, pageHeight - 8)
-  doc.text(`Página 1 de 1`, pageWidth - 28, pageHeight - 8)
+  const pageCount = doc.getNumberOfPages()
+  for (let page = 1; page <= pageCount; page++) {
+    doc.setPage(page)
+    doc.setFontSize(7.5)
+    doc.setTextColor(148, 163, 184)
+    doc.text(`Generado el: ${new Date().toLocaleString('es-BO')} · Embutidos San José${closure.rectification ? ` · ${closure.rectificationView === 'original' ? 'ORIGINAL PRESERVADO' : 'RECTIFICADO'}` : ''}`, 14, pageHeight - 8)
+    doc.text(`Página ${page} de ${pageCount}`, pageWidth - 28, pageHeight - 8)
+  }
 
   return doc
 }

@@ -19,6 +19,8 @@
     "test:subscription-permissions": "node --experimental-strip-types src/modules/distribution/state/__tests__/distributionSubscriptionPolicy.test.ts",
     "test:closure-regression": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureRegression.test.ts",
     "test:closure-audit": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureAudit.test.ts",
+    "test:closure-rectification": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/closureRectification.test.mjs\"",
+    "test:closure-rectification-view": "node scripts/test-closure-rectification-view.mjs",
     "test:closure-history": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureHistory.test.ts",
     "test:closure-lifecycle": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/closureLifecycle.test.mjs\"",
     "test:closure-lifecycle-ui": "node scripts/test-closure-lifecycle.mjs",

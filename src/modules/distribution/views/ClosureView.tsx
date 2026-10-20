@@ -10,6 +10,8 @@ import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, fo
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
 import { printClosureTicket, printClosureSheet, shareClosurePdf } from '../data/distributionDocumentPrintService'
+import { closureRectificationView } from '../domain/closureRectification'
+import { ClosureRectificationAudit } from './ClosureRectificationAudit'
 import { getProductPresentation } from '../domain/productPresentation'
 import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calculateReturnBreakdown, calculateReturnDeclarationDifference, parseReturnQuantityInput, validateReturnDeclarationInput, validateReturnQuantity } from '../domain/returnReconciliation'
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
@@ -63,6 +65,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [justClosedRouteName, setJustClosedRouteName] = useState<string | null>(null)
   const [isDispatchOpen, setIsDispatchOpen] = useState(false)
   const [historyOpenId, setHistoryOpenId] = useState<string | null>(null)
+  const [rectificationModes, setRectificationModes] = useState<Record<string, 'original' | 'corrected'>>({})
   const [reviewingClosureId, setReviewingClosureId] = useState('')
   const [confirmingDeclaration, setConfirmingDeclaration] = useState(false)
   const [confirmingClosure, setConfirmingClosure] = useState(false)
@@ -632,13 +635,15 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         <p className="text-xs font-bold text-slate-600">{describeRange(historyDayKeys)} · {historyOwnerLabel} · {filteredHistoricalClosures.length} cierres encontrados{filteredHistoricalClosures.length > 0 ? ` · mostrando ${historicalClosures.length}` : ''}</p>
       </div>
       {filteredHistoricalClosures.length === 0 ? <EmptyBlock title={historyDayKeys.length === 1 && historyDayKeys[0] === todayKey ? 'No hay cierres para hoy.' : 'No hay cierres para este periodo.'} description="Prueba Semana, Mes o selecciona otras fechas." /> : <div className="mt-3 grid gap-2">
-        {historicalClosures.map(closure => {
+        {historicalClosures.map(historyClosure => {
+          const closure = closureRectificationView(historyClosure, rectificationModes[historyClosure.id] || 'corrected')
           const expanded = historyOpenId === closure.id
           const hasProductDifference = closure.products.some(row => Math.abs(Number(row.variance) || 0) > 0.001)
           const closureTimestamp = closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt
           const reopenEvents = closureReopenEvents(closure)
           return <article key={closure.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
             <div className="grid gap-2 p-3">
+              {closure.rectification && <span className="w-fit rounded-full bg-blue-100 px-2 py-1 text-[10px] font-black text-blue-900">RECTIFICADO</span>}
               <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><strong className="break-words text-sm text-slate-900">{closure.routeName || 'Ruta registrada'} · {closure.distributorName || 'Distribuidor'}</strong>{reopenEvents.length > 0 && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-black tracking-wide text-amber-900">REABIERTO</span>}</div>
                   <p className="mt-1 text-xs font-bold text-slate-700">Jornada: {formatDayKey(closureOperationalDayKey(closure)) || 'Sin fecha registrada'}</p>
@@ -653,6 +658,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               </div>
             </div>
             {expanded && <div className="grid gap-3 border-t border-slate-100 p-3">
+              <ClosureRectificationAudit closure={closure} onSelect={mode => setRectificationModes(current => ({ ...current, [closure.id]: mode }))} />
               <div className="grid gap-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
                 <p><strong>Jornada / fecha operativa:</strong> {closure.dayKey || 'Sin fecha registrada'}</p>
                 {closure.warehouseClosedAt && <p><strong>Recepción de almacén:</strong> {new Date(closure.warehouseClosedAt).toLocaleString('es-BO')}</p>}
