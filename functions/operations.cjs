@@ -2926,6 +2926,7 @@ handlers.reopen = async (o, p) => {
   o.admin();
   check(p.reason?.trim(), "La razón de la reapertura es obligatoria.");
   const c = await o.read("distClosures", p.closureId);
+  check(!c?.rectification, "Este cierre tiene una rectificación auditada y requiere revisión administrativa especializada antes de reabrirlo.");
   check(c?.status === "closed", "Solo se puede reabrir un cierre finalizado.");
   const d = c.dispatchId ? await o.read("distDispatches", c.dispatchId) : null;
   let reversedMovementIds = [];
@@ -3041,6 +3042,36 @@ handlers.reopen = async (o, p) => {
     });
   }
   return { id: c.id };
+};
+
+handlers.rectifyClosureAttribution = async (o, p) => {
+  o.admin();
+  check(typeof p.reason === 'string' && p.reason.trim().length >= 10, 'Escribe el motivo de la rectificación.');
+  const original = await o.read('distClosures', p.closureId);
+  check(original && !original.rectification, 'El cierre no existe o ya fue rectificado.');
+  const dispatch = await o.read('distDispatches', original.dispatchId);
+  const sources = {
+    sales: await o.query('distSales', 'dispatchId', original.dispatchId),
+    collections: await o.query('distCollections', 'routeId', original.routeId),
+    expenses: await o.query('distExpenses', 'routeId', original.routeId),
+    claims: await o.query('distClaims', 'routeId', original.routeId),
+  };
+  let plan;
+  try { plan = require('./closure-rectification.cjs').planClosureRectification(original, dispatch, sources); }
+  catch(error) { check(false, error.message); }
+  check(plan.originalHash === p.expectedOriginalHash && plan.sourceHash === p.expectedSourceHash,
+    'El cierre o sus fuentes cambiaron desde la revisión. No se aplicó ninguna rectificación.');
+  const id = `${original.id}__rectification_v1`;
+  check(!await o.read('distClosureRectifications', id), 'La rectificación ya existe.');
+  const record = { id, restaurantId:'sanjose', version:1, closureId:original.id, dispatchId:original.dispatchId,
+    routeId:original.routeId, distributorUid:original.distributorUid, dayKey:original.dayKey,
+    createdAt:o.now, createdBy:o.actor, createdByName:o.member.displayName || o.actor,
+    reason:p.reason.trim(), operationId:o.id, ...plan };
+  // Original business fields remain untouched. Both audit record and projection
+  // pointer are written in the same transaction, without loading/moving stock.
+  o.put('distClosureRectifications', id, record);
+  o.put('distClosures', original.id, {...original,rectificationId:id,rectification:record});
+  return {id,closureId:original.id,version:1,originalHash:plan.originalHash,sourceHash:plan.sourceHash};
 };
 
 handlers.reviewVariance = async (o, p) => {

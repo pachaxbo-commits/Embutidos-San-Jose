@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -225,7 +226,8 @@ try {
   assert.match(copiedReport, /closure diagnostic sentinel/)
   assert.match(copiedReport, /componentStack/)
   assert.match(copiedReport, /dist\.closure/)
-  assert.match(copiedReport, /1\.4\.44/)
+  const expectedVersion = readFileSync(new URL('../android/app/build.gradle', import.meta.url), 'utf8').match(/versionName\s+"([^"]+)"/)[1]
+  assert.equal(JSON.parse(copiedReport).appVersion, expectedVersion)
   // La vuelta al inicio limpia la vista del error, pero no el almacenamiento local.
   await click('Volver al inicio')
   assert.doesNotMatch(container.textContent || '', /Se produjo un error al mostrar esta sección/)

@@ -1,11 +1,13 @@
 import type { DistClosure, ClosureStatus } from "../types.ts";
 import { matchesRoute, toDayKey } from "./engine.ts";
+import { closureRectificationView } from './closureRectification.ts';
 
 /**
  * Normaliza cualquier documento de cierre (incluyendo borradores parciales creados por el distribuidor)
  * garantizando que todos los campos requeridos por DistClosure estén presentes de forma segura.
  */
 export function normalizeClosure(raw: Partial<DistClosure> & { id: string }): DistClosure {
+  raw = closureRectificationView(raw as DistClosure, raw.rectificationView || 'corrected')
   const createdAt = raw.createdAt || raw.returnDeclaredAt || raw.warehouseClosedAt || raw.closedAt || ''
   const status: ClosureStatus = raw.status || (raw.warehouseClosedBy ? 'warehouse_done' : 'draft')
   return {

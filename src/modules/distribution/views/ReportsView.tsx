@@ -28,6 +28,7 @@ import {
   toDayKey,
 } from '../domain/engine'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
+import { ClosureRectificationAudit } from './ClosureRectificationAudit'
 import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
@@ -868,6 +869,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                         </div>
                         <div className="flex items-center gap-2">
                           {(closure.reopenedAt || (closure.reopenHistory?.length || 0) > 0) && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black text-amber-900">REABIERTO</span>}
+                          {closure.rectification && <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-900">RECTIFICADO</span>}
                           {closure.status === 'closed' ? (
                             <VarianceBadge variance={closure.cashDifference} />
                           ) : (
@@ -879,6 +881,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       </div>
 
                       {/* Auditoría de reapertura si fue reabierto */}
+                      <ClosureRectificationAudit closure={closure} />
                       {closureReopenEvents(closure).length > 0 && (
                         <div className="mt-2.5 rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
                           <p className="mb-1 font-extrabold">HISTORIAL DE REAPERTURAS</p>

@@ -34,6 +34,7 @@ import {
 } from "../domain/productProfit";
 import { computeDistributorDifferences } from "../domain/distributorDifferences";
 import { closureReopenEvents, closureReturnSummary } from "../domain/closureAudit";
+import { normalizeClosure } from '../domain/closurePeriod';
 import {
   type ReportSheetId,
   type ReportOption,
@@ -376,6 +377,7 @@ export function reportSheets(
   route = "",
   seller = "",
 ): ReportSheet[] {
+  data = { ...data, closures: data.closures.map(normalizeClosure) };
   const attributionError = reportAttributionError(data, days, route, seller);
   if (attributionError) throw new Error(attributionError);
   const inScope = (r: {
@@ -774,6 +776,9 @@ export function reportSheets(
         "Esperado (Bs)",
         "Declarado (Bs)",
         "Diferencia (Bs)",
+        "Rectificación",
+        "Diferencia original (Bs)",
+        "Responsable / motivo de rectificación",
       ],
       rows: (() => {
         const closures = data.closures.filter(inScope).filter((c) => !seller || c.distributorUid === seller)
@@ -793,6 +798,9 @@ export function reportSheets(
               c.expectedCash ?? null,
               c.physicalCashDeclared ?? null,
               c.cashDifference ?? null,
+              c.rectification ? `RECTIFICADO v${c.rectification.version} · ${reportDateTime(c.rectification.createdAt)}` : '',
+              c.rectification?.original.cashDifference ?? null,
+              c.rectification ? `${c.rectification.createdByName} · ${c.rectification.reason}` : '',
             ] as Cell[]
           }),
           ["TOTAL", "", "", "", "", "", "", "", "", round2(closures.reduce((n, c) => n + (c.expectedCash || 0), 0)), round2(closures.reduce((n, c) => n + (c.physicalCashDeclared || 0), 0)), round2(closures.reduce((n, c) => n + (c.cashDifference || 0), 0))],
@@ -805,6 +813,7 @@ export function reportSheets(
       headers: ['Fecha', 'Ruta', 'Producto', 'Unidad', 'Cargado', 'Vendido', 'Cortesía', 'Debía retornar', 'Declarado distribuidor', 'Recibido físicamente (aprox. en históricos)', 'Retorno normal', 'Merma recuperable', 'Total apto recibido', 'Vuelve al stock vendible', 'Producto no apto / pérdida', 'Costo pérdida (Bs)', 'Motivo de pérdida', 'Faltante', 'Sobrante'],
       rows: (() => {
         const closures = data.closures.filter(inScope).filter(c => !seller || c.distributorUid === seller)
+          .map(c => c.rectification ? { ...c, routeName: `${c.routeName} · RECTIFICADO` } : c)
         const products = closures.flatMap(c => c.products.map(p => ({ closure: c, product: p })))
         const sum = (pick: (p: typeof products[number]['product']) => number) => round2(products.reduce((n, row) => n + pick(row.product), 0))
         const rows = products.map(({closure:c,product:p}) => {
