@@ -31,7 +31,7 @@ const SCOPE_LABELS: Record<string, string> = {
   distAdjustmentRequests: 'Solicitudes de ajuste', distWarehouseShifts: 'Turnos de almacén',
 }
 
-export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpenPrinterSettings: () => void; initialSettings?: SupportSettings }) {
+export function SupportView({ onOpenPrinterSettings, onOpenDiagnostics, initialSettings }: { onOpenPrinterSettings: () => void; onOpenDiagnostics?: () => void; initialSettings?: SupportSettings }) {
   const [settings, setSettings] = useState<SupportSettings>(initialSettings ?? DEFAULT_SUPPORT_SETTINGS)
   const [loading, setLoading] = useState(!initialSettings)
   const [busy, setBusy] = useState(false)
@@ -127,8 +127,9 @@ export function SupportView({ onOpenPrinterSettings, initialSettings }: { onOpen
       </SectionCard>
 
       <SectionCard title="Diagnóstico de errores">
-        <p className="text-xs font-semibold leading-relaxed text-slate-600">Los reportes no incluyen documentos, contraseñas ni información comercial. Se guardan solo en este dispositivo.</p>
-        <div className="mt-3"><SecondaryButton onClick={() => setDiagnosticModalOpen(true)}>Consultar últimos errores registrados</SecondaryButton></div>
+        <p className="text-xs font-semibold leading-relaxed text-slate-600">Consulta los errores enviados automáticamente por Administración, Almacén y distribuidores. Los reportes se filtran y revisan sin modificar operaciones de negocio.</p>
+        {onOpenDiagnostics && <div className="mt-3"><PrimaryButton onClick={onOpenDiagnostics}><AlertTriangle size={16} /> Abrir centro global de diagnósticos</PrimaryButton></div>}
+        <div className="mt-2"><SecondaryButton onClick={() => setDiagnosticModalOpen(true)}>Consultar respaldo local de este dispositivo</SecondaryButton></div>
       </SectionCard>
     </div>
     {diagnosticModalOpen && <DiagnosticReportsModal isOpen onClose={() => setDiagnosticModalOpen(false)} />}

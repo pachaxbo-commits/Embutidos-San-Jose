@@ -3,8 +3,10 @@ const { getAuth } = require("firebase-admin/auth");
 const { getFirestore } = require("firebase-admin/firestore");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { processCommand } = require("./operations.cjs");
 const { prepareCleanDelivery, executeCleanDelivery } = require("./maintenance.cjs");
+const { submitDiagnostic, listDiagnostics, updateDiagnostic } = require("./error-diagnostics.cjs");
 initializeApp();
 exports.processSanJoseOperation = onDocumentCreated(
   {
@@ -16,6 +18,33 @@ exports.processSanJoseOperation = onDocumentCreated(
   },
   async (event) => {
     if (event.data) await processCommand(getFirestore(), event.data.ref);
+  },
+);
+
+exports.manageSanJoseDiagnostics = onCall(
+  { region: "us-central1", memory: "256MiB", maxInstances: 3, invoker: "public" },
+  async (request) => {
+    const db = getFirestore();
+    const action = request.data?.action;
+    if (action === "submit") return submitDiagnostic(db, request);
+    if (action === "list") return listDiagnostics(db, request);
+    if (action === "update") return updateDiagnostic(db, request);
+    throw new HttpsError("invalid-argument", "La acción de diagnóstico no es válida.");
+  },
+);
+
+exports.pruneSanJoseErrorDiagnostics = onSchedule(
+  { schedule: "every 24 hours", timeZone: "America/La_Paz", region: "us-central1", memory: "256MiB", maxInstances: 1 },
+  async () => {
+    const collection = getFirestore().collection("restaurants/sanjose/distErrorDiagnostics");
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    // Bounded deletion: subsequent daily runs continue if the collection ever
+    // accumulates more than this safe batch size.
+    const expired = await collection.where("lastOccurredAt", "<", cutoff).limit(400).get();
+    if (expired.empty) return;
+    const batch = getFirestore().batch();
+    expired.docs.forEach((document) => batch.delete(document.ref));
+    await batch.commit();
   },
 );
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");

@@ -270,6 +270,15 @@ service cloud.firestore {
         || (distDistributor(restaurantId) && resource.data.distributorUid == request.auth.uid);
       allow write: if false;
     }
+    // Incident reports are submitted and changed only through callable
+    // Functions, which sanitize data and derive identity from Firebase Auth.
+    match /restaurants/{restaurantId}/distErrorDiagnostics/{reportId} {
+      allow get, list: if distAdmin(restaurantId) || distSupport(restaurantId);
+      allow create, update, delete: if false;
+    }
+    match /restaurants/{restaurantId}/distDiagnosticRateLimits/{uid} {
+      allow read, write: if false;
+    }
     match /restaurants/{restaurantId}/distWarehouseShifts/{shiftId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId);
       allow write: if false;

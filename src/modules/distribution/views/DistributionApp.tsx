@@ -33,6 +33,7 @@ import { applyAppTheme } from '../../../lib/appTheme'
 import { BottomNav, type BottomNavItem } from '../../../components/ui/BottomNav'
 import { Modal } from '../../../components/ui/Modal'
 import { DiagnosticReportsModal } from '../../../components/DiagnosticReportsModal'
+import { configureDiagnosticSession } from '../../../lib/errorDiagnostics'
 import { TextInput } from '../../../components/ui/Form'
 import { ErrorBoundary } from '../../../components/ErrorBoundary'
 import { useBackButtonBridge } from '../../../hooks/useBackHandler'
@@ -55,6 +56,7 @@ import { ProductsView } from './ProductsView'
 import { ReportsView } from './ReportsView'
 import { UsersView } from './UsersView'
 import { SupportView } from './SupportView'
+import { DiagnosticCenterView } from './DiagnosticCenterView'
 import { QuotesView } from './QuotesView'
 import type { Permission, UserRole } from '../../../types'
 import type { DistributionData } from '../state/useDistributionStore'
@@ -103,6 +105,7 @@ const MODULE_ICONS: Partial<Record<ModuleId, BottomNavItem<ModuleId>['icon']>> =
   'dist.users': UserCog,
   'printer-settings': Printer,
   'dist.support': Settings2,
+  'dist.diagnostics': Bug,
 }
 
 export function DistributionApp({
@@ -186,6 +189,11 @@ export function DistributionApp({
     setDayKeys,
   }
 
+  useEffect(() => {
+    configureDiagnosticSession({ restaurantId, uid, role, routeId: scopeRouteId })
+    return () => configureDiagnosticSession(null)
+  }, [restaurantId, uid, role, scopeRouteId])
+
   const syncState = useSyncStatus()
   const rejectedOperationCount = data.operations.filter(operation => operation.status === 'rejected' && !operation.acknowledged).length
 
@@ -267,7 +275,9 @@ export function DistributionApp({
       case 'dist.users':
         return <UsersView {...viewProps} />
       case 'dist.support':
-        return <SupportView onOpenPrinterSettings={onOpenPrinterSettings} initialSettings={role === 'support' ? undefined : data.supportSettings} />
+        return <SupportView onOpenPrinterSettings={onOpenPrinterSettings} onOpenDiagnostics={() => selectModule('dist.diagnostics')} initialSettings={role === 'support' ? undefined : data.supportSettings} />
+      case 'dist.diagnostics':
+        return <DiagnosticCenterView />
       default:
         return null
     }

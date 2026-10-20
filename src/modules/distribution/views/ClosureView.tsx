@@ -5,7 +5,7 @@ import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { buildReconciliation, computeMoneySummary, isSaleForDispatch, matchesRoute, round2, toDayKey } from '../domain/engine'
-import { declareRouteReturn, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
+import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
@@ -17,7 +17,7 @@ import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calcula
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
 import { closureHistoryOwnerKey, closureOperationalDayKey, filterClosureHistory, visibleClosureHistory } from '../domain/closureHistory'
 import { RangePicker, describeRange, formatDayKey, type RangePreset } from './RangePicker'
-import { recordDiagnosticEvent } from '../../../lib/errorDiagnostics'
+import { recordDiagnosticEvent, setDiagnosticClosureContext } from '../../../lib/errorDiagnostics'
 
 const CLOSURE_STATUS: Record<DistClosure['status'], string> = {
   draft: 'Devolución declarada; espera confirmación de almacén',
@@ -92,6 +92,22 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const existingClosure = dispatch
     ? data.closures.find((closure) => closure.dispatchId === dispatch.id) ?? null
     : null
+  useEffect(() => {
+    const closure = data.closures.find(item => item.dispatchId === selectedDispatchId)
+    if (!selectedDispatchId) {
+      setDiagnosticClosureContext(null)
+      return
+    }
+    setDiagnosticClosureContext({
+      dispatchId: selectedDispatchId,
+      ...(closure?.id ? { closureId: closure.id } : {}),
+      ...(closure?.dayKey ? { dayKey: closure.dayKey } : {}),
+      dispatchStatus: dispatch ? 'open' : 'closed',
+      ...(closure?.status ? { closureStatus: closure.status } : { closureStatus: 'unknown' }),
+      confirmation: 'unknown',
+    })
+    return () => setDiagnosticClosureContext(null)
+  }, [data.closures, dispatch, selectedDispatchId])
   const previousClosureStatusesRef = useRef<Map<string, string>>(new Map())
   const previousOpenDispatchIdsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
@@ -99,14 +115,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     for (const closure of data.closures) {
       const previousStatus = knownStatuses.get(closure.dispatchId)
       if (previousStatus !== closure.status) {
-        recordDiagnosticEvent('closure_snapshot', closure.status as 'draft' | 'warehouse_done' | 'closed' | 'reopened')
-        if (closure.status === 'closed') recordDiagnosticEvent('post_close_render', 'closed')
+        recordDiagnosticEvent('closure_snapshot', closure.status as 'draft' | 'warehouse_done' | 'closed' | 'reopened', { dispatchId: closure.dispatchId, closureId: closure.id, operationStatus: 'unknown' })
+        if (closure.status === 'closed') recordDiagnosticEvent('post_close_render', 'closed', { dispatchId: closure.dispatchId, closureId: closure.id })
         knownStatuses.set(closure.dispatchId, closure.status)
       }
     }
     const currentOpenDispatchIds = new Set(data.openDispatches.map(item => item.id))
     for (const id of previousOpenDispatchIdsRef.current) {
-      if (!currentOpenDispatchIds.has(id)) recordDiagnosticEvent('dispatch_removed', 'none')
+      if (!currentOpenDispatchIds.has(id)) recordDiagnosticEvent('dispatch_removed', 'none', { dispatchId: id })
     }
     previousOpenDispatchIdsRef.current = currentOpenDispatchIds
   }, [data.closures, data.openDispatches])
@@ -514,14 +530,22 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       return
     }
 
+    let diagnosticOperationId = ''
     try {
-      recordDiagnosticEvent('operation_sent', status)
-      await saveClosure({ closure, applyStockReturn: status === 'warehouse_done' && !returnsAlreadyApplied })
-      recordDiagnosticEvent('confirmation_received', status)
+      const operationId = newOperationId('closure')
+      diagnosticOperationId = operationId
+      setDiagnosticClosureContext({ dispatchId: dispatch.id, closureId: closure.id, operationId, dayKey: closure.dayKey, dispatchStatus: 'open', closureStatus: status, confirmation: 'queued' })
+      recordDiagnosticEvent('operation_sent', status, { dispatchId: dispatch.id, closureId: closure.id, operationId, operationStatus: 'queued' })
+      await saveClosure({ closure, applyStockReturn: status === 'warehouse_done' && !returnsAlreadyApplied }, operationId)
+      setDiagnosticClosureContext({ dispatchId: dispatch.id, closureId: closure.id, operationId, dayKey: closure.dayKey, dispatchStatus: status === 'closed' ? 'closed' : 'open', closureStatus: status, confirmation: 'confirmed' })
+      recordDiagnosticEvent('confirmation_received', status, { dispatchId: dispatch.id, closureId: closure.id, operationId, operationStatus: 'confirmed' })
       if (status === 'closed') {
         setJustClosedRouteName(dispatch.routeName)
       }
     } catch (submitError) {
+      const rejected = Boolean((submitError as { rejected?: boolean }).rejected)
+      setDiagnosticClosureContext({ dispatchId: dispatch.id, closureId: closure.id, operationId: diagnosticOperationId, dayKey: closure.dayKey, dispatchStatus: 'open', closureStatus: status, confirmation: rejected ? 'rejected' : 'unknown' })
+      recordDiagnosticEvent('confirmation_received', status, { dispatchId: dispatch.id, closureId: closure.id, operationId: diagnosticOperationId, operationStatus: rejected ? 'rejected' : 'unknown' })
       setError((submitError as Error).message || 'No se pudo guardar el cierre.')
     } finally {
       isSubmittingRef.current = false
@@ -596,7 +620,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       return
     }
     setError(null)
-    recordDiagnosticEvent('before_confirmation', 'closed')
+    recordDiagnosticEvent('before_confirmation', 'closed', { dispatchId: dispatch?.id, closureId: existingClosure?.id })
     setConfirmingClosure(true)
   }
 

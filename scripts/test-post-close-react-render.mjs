@@ -29,6 +29,7 @@ const vite = await createServer({
       return `export const subscribeSales = (days, routeId, callback) => globalThis.__postCloseSubscribe('sales', days, routeId, callback)
 export const subscribeCollections = (days, routeId, callback) => globalThis.__postCloseSubscribe('collections', days, routeId, callback)
 export const subscribeExpenses = (days, routeId, callback) => globalThis.__postCloseSubscribe('expenses', days, routeId, callback)
+export const newOperationId = (prefix) => prefix + '-test-id'
 export const saveClosure = async (payload) => { globalThis.__postCloseSaves.push(payload); return payload.closure }
 export const declareRouteReturn = async (...args) => { globalThis.__postCloseDeclarations.push(args) }
 export const reopenClosure = async () => { throw new Error('No se esperaba reabrir') }
@@ -51,6 +52,7 @@ console.error = (...args) => {
   priorConsoleError(...args)
 }
 window.localStorage.clear()
+diagnostics.configureDiagnosticSession({ restaurantId: 'sanjose', uid: 'admin-test', role: 'admin', routeId: null })
 let copiedReport = ''
 Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copiedReport = text } } })
 globalThis.__postCloseSaves = []
@@ -221,7 +223,7 @@ try {
   assert.match(container.textContent || '', /Se produjo un error al mostrar esta sección/)
   assert.doesNotMatch(container.textContent || '', /closure diagnostic sentinel|componentStack|at DiagnosticProbe/)
   assert.match(container.textContent || '', /Código de error: ERR-[A-F0-9]{6}/)
-  assert.match(container.textContent || '', /Copia este reporte y envíalo a soporte/)
+  assert.match(container.textContent || '', /Reporte (enviado a soporte|pendiente de enviar|guardado en este dispositivo)/)
   await click('Copiar reporte del error')
   assert.match(copiedReport, /closure diagnostic sentinel/)
   assert.match(copiedReport, /componentStack/)
@@ -235,6 +237,7 @@ try {
   const savedReports = diagnostics.getDiagnosticReports()
   assert.ok(savedReports.some(report => report.code === diagnostic[1]?.code), 'el reporte persiste después de volver al inicio')
   assert.equal(savedReports.length, 1)
+  assert.notEqual(diagnostics.getDiagnosticDeliveryState(diagnostic[1]?.code), 'sent', 'el UI nunca presenta como enviado un reporte sin aceptación del servidor')
   const sensitive = diagnostics.recordErrorDiagnostic({
     error: new Error('cliente: Ana Pérez; Bs 123.45; telefono 76543210; password=secreto'),
     source: 'unhandled_rejection', view: 'dist.closure',

@@ -6,6 +6,7 @@ export type ModuleId =
   | 'dist.collections' | 'dist.customers' | 'dist.expenses' | 'dist.closure'
   | 'dist.reports' | 'dist.users' | 'dist.products' | 'dist.support'
   | 'dist.quotes' | 'dist.operating-result'
+  | 'dist.diagnostics'
   | 'printer-settings'
 
 export interface ModuleDefinition {
@@ -43,6 +44,7 @@ export const SAN_JOSE_APP_CONFIG = {
     { id: 'dist.reports', label: 'Reportes', requiredPermission: 'dist.reports.view' },
     { id: 'dist.users', label: 'Usuarios', requiredPermission: 'dist.users.manage' },
     { id: 'dist.support', label: 'Configuración', requiredPermission: 'support.settings.manage', navigableBy: ['support'] },
+    { id: 'dist.diagnostics', label: 'Diagnóstico de errores', navigableBy: ['admin', 'support'] },
     { id: 'dist.claims', label: 'Cambios y devoluciones', anyOfPermissions: ['dist.users.manage', 'dist.sale.create'], navigableBy: ['admin', 'distributor'] },
     { id: 'dist.qr', label: 'Verificar QR', requiredPermission: 'dist.users.manage' },
     { id: 'dist.warehouses', label: 'Almacenes', requiredPermission: 'dist.dispatch.create' },

@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { AlertCircle, RefreshCw, Home, Copy } from 'lucide-react'
-import { formatDiagnosticReport, recordErrorDiagnostic, tryCopyDiagnosticText, type ErrorDiagnosticReport } from '../lib/errorDiagnostics'
+import { formatDiagnosticReport, getDiagnosticDeliveryState, recordErrorDiagnostic, tryCopyDiagnosticText, type ErrorDiagnosticReport } from '../lib/errorDiagnostics'
 
 interface Props {
   children: ReactNode
@@ -15,6 +15,7 @@ interface State {
   report: ErrorDiagnosticReport | null
   copyFailed: boolean
   copied: boolean
+  delivery: 'pending' | 'sent' | 'local'
 }
 
 export class ErrorBoundary extends Component<Props, State> {
@@ -24,10 +25,11 @@ export class ErrorBoundary extends Component<Props, State> {
     report: null,
     copyFailed: false,
     copied: false,
+    delivery: 'local',
   }
 
   public static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error, report: null, copyFailed: false, copied: false }
+    return { hasError: true, error, report: null, copyFailed: false, copied: false, delivery: 'local' }
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
@@ -39,6 +41,21 @@ export class ErrorBoundary extends Component<Props, State> {
       componentStack: report.componentStack,
     })
     this.setState({ report })
+    this.pollDelivery(report.code, 0)
+  }
+
+  private deliveryTimer: ReturnType<typeof setTimeout> | null = null
+
+  public componentWillUnmount() {
+    if (this.deliveryTimer) clearTimeout(this.deliveryTimer)
+  }
+
+  private pollDelivery = (code: string, attempt: number) => {
+    const delivery = getDiagnosticDeliveryState(code)
+    this.setState({ delivery })
+    if (delivery === 'pending' && attempt < 12) {
+      this.deliveryTimer = setTimeout(() => this.pollDelivery(code, attempt + 1), 500)
+    }
   }
 
   public copyReport = async () => {
@@ -74,11 +91,11 @@ export class ErrorBoundary extends Component<Props, State> {
               {this.props.fallbackTitle || 'Se produjo un error al mostrar esta sección.'}
             </h2>
             <p className="mt-2 text-xs text-slate-500 leading-relaxed">
-              Ocurrió un problema inesperado al procesar la información. Puedes reintentar o volver a la pantalla principal.
+              Se produjo un problema al mostrar esta sección. Puedes reintentar o volver a la pantalla principal; el guardado de una operación se confirma por separado.
             </p>
             {this.state.report && <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
               <p className="font-bold">Código de error: {this.state.report.code}</p>
-              <p className="mt-1">Copia este reporte y envíalo a soporte para identificar el problema.</p>
+              <p className="mt-1">{this.state.delivery === 'sent' ? 'Reporte enviado a soporte.' : this.state.delivery === 'pending' ? 'Reporte pendiente de enviar; se conservará para reintentar.' : 'Reporte guardado en este dispositivo; se enviará al iniciar sesión con esta cuenta.'}</p>
             </div>}
             <div className="mt-5 flex flex-col sm:flex-row gap-2 justify-center">
               <button
