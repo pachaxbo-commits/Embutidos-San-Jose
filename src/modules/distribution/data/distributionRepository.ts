@@ -127,42 +127,23 @@ export { normalizeClosure }
 export async function declareRouteReturn(
   dispatch: DistDispatch,
   quantities: Record<string, number>,
-  recoverableMermas: Record<string, number> = {},
   physicalCashDeclared?: number,
 ) {
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    throw new Error('Declarar la devolución requiere conexión a Internet.')
-  }
   if (Object.values(quantities).some(q => !Number.isFinite(q) || q < 0)) {
     throw new Error('Las cantidades deben ser positivas o cero.')
-  }
-  if (Object.values(recoverableMermas).some(q => !Number.isFinite(q) || q < 0)) {
-    throw new Error('Las mermas de retorno deben ser positivas o cero.')
   }
   if (physicalCashDeclared !== undefined && (!Number.isFinite(physicalCashDeclared) || physicalCashDeclared < 0)) {
     throw new Error('El efectivo físico declarado debe ser mayor o igual a cero.')
   }
-  const ctx = await getContext(true)
-  const id = `closure_${dispatch.id}`
-  const now = new Date().toISOString()
-  const batch = writeBatch(ctx.db)
-  batch.set(docRef(ctx, DIST_COLLECTIONS.closures, id), {
-    id,
-    restaurantId: ctx.restaurantId,
+  await submitOperation('closure', {
+    mode: 'declaration',
     dispatchId: dispatch.id,
-    routeId: dispatch.routeId,
-    distributorUid: dispatch.distributorUid,
-    distributorName: dispatch.distributorName,
     declaredReturns: quantities,
-    declaredReturnMermas: recoverableMermas,
-    returnDeclaredBy: ctx.uid,
-    returnDeclaredAt: now,
-    dayKey: dispatch.dayKey,
-    ...(physicalCashDeclared !== undefined
-      ? { physicalCashDeclared, cashDeclaredBy: ctx.uid, cashDeclaredAt: now }
-      : {}),
-  }, { merge: true })
-  await batch.commit()
+    // Las declaraciones nuevas solo registran cantidades normales. El almacén
+    // es el único que crea el desglose de merma recuperable en la recepción.
+    declaredReturnMermas: {},
+    ...(physicalCashDeclared !== undefined ? { physicalCashDeclared } : {}),
+  }, `closure-declaration_${dispatch.id}`)
 }
 const APPLIED_OPERATIONS_KEY = 'pachax_dist_applied_operations'
 

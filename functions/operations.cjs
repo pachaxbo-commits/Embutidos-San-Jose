@@ -2215,6 +2215,8 @@ async function closure(o, p) {
     check(d?.status === "open", "La ruta ya no está abierta para declarar el retorno.");
     check(o.member.role === "distributor" && d.distributorUid === o.actor,
       "Solo el distribuidor asignado puede declarar el retorno de esta ruta.");
+    check(Object.keys(p).every((key) => ["mode", "dispatchId", "declaredReturns", "declaredReturnMermas", "physicalCashDeclared"].includes(key)),
+      "La declaración solo admite cantidades normales y efectivo; almacén registra la merma.");
     const id = `closure_${d.id}`;
     const previous = (await o.read("distClosures", id)) || {};
     check(!previous.returnDeclaredAt && !previous.warehouseClosedBy,
@@ -2223,13 +2225,13 @@ async function closure(o, p) {
     const declaredReturnMermas = p.declaredReturnMermas || {};
     check(declaredReturns && typeof declaredReturns === "object" && !Array.isArray(declaredReturns),
       "Falta la declaración del retorno normal.");
-    check(declaredReturnMermas && typeof declaredReturnMermas === "object" && !Array.isArray(declaredReturnMermas),
-      "La declaración de merma debe ser válida.");
+    check(declaredReturnMermas && typeof declaredReturnMermas === "object" && !Array.isArray(declaredReturnMermas)
+      && Object.keys(declaredReturnMermas).length === 0,
+      "El distribuidor declara solo el retorno normal; almacén registra la merma.");
     const loaded = getDispatchLoadedMap(d);
+    const zeroDeclaredReturnMermas = Object.fromEntries([...loaded.keys()].map((pid) => [pid, 0]));
     check(Object.keys(declaredReturns).length === loaded.size && [...loaded.keys()].every((pid) => Object.prototype.hasOwnProperty.call(declaredReturns, pid)),
       "Declara el retorno de todos los productos de la ruta.");
-    check(Object.keys(declaredReturnMermas).every((pid) => loaded.has(pid)),
-      "La merma declarada incluye un producto que no pertenece a la ruta.");
     for (const [pid, quantity] of Object.entries(declaredReturns)) {
       const product = await o.product(pid);
       check(Number.isFinite(quantity) && quantity >= 0, "El retorno normal debe ser una cantidad válida y no negativa.");
@@ -2252,7 +2254,8 @@ async function closure(o, p) {
       distributorUid: d.distributorUid,
       distributorName: d.distributorName,
       declaredReturns,
-      declaredReturnMermas,
+      declaredReturnMermas: zeroDeclaredReturnMermas,
+      returnDeclarationMode: "normal_only",
       returnDeclaredBy: o.actor,
       returnDeclaredAt: now,
       dayKey: d.dayKey,

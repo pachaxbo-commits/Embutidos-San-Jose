@@ -454,13 +454,21 @@ export function printClosureTicket(closure: DistClosure): Promise<string> {
       `${closure.routeName} - ${closure.distributorName}`,
       closure.products.map((row) => {
         const returned = closureReturnSummary(row)
+        const declaredNormal = row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId]
+        const declaredMerma = row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0
+        const declaredTotal = row.declaredReturn ?? (declaredNormal === undefined ? undefined : Number(declaredNormal) + Number(declaredMerma))
+        const declaredText = declaredTotal === undefined
+          ? 's/registro'
+          : closure.returnDeclarationMode === 'normal_only'
+            ? `${declaredNormal} normal (declaración simple)`
+            : `normal ${declaredNormal ?? declaredTotal} + merma ${declaredMerma} = ${declaredTotal}`
         return {
           name: row.productName,
           basePrice: 0,
           quantity: row.sold,
           unitLabel: row.unitType === 'kg' ? 'kg vendidos' : 'vendidos',
           lineTotal: 0,
-          modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado distribuidor: normal ${row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId] ?? 's/registro'} + merma ${row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0} = ${row.declaredReturn ?? 's/registro'}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Retorno normal ${returned.normal}`, `Merma recuperable ${returned.recoverableMerma}`, `Total apto recibido ${returned.totalApto}`, `Vuelve al stock vendible ${returned.returnsToSellableStock}${returned.quarantinedSellableOverage > 0 ? ` · ${returned.quarantinedSellableOverage} en cuarentena` : ''}`, `No apto/pérdida ${returned.nonSellable}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
+          modifiersText: [`Vendido ${row.sold}`, `Cortesía ${row.courtesy || 0}`, `Debía retornar ${row.expectedReturn}`, `Declarado distribuidor: ${declaredText}`, `Recibido ${row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)}${row.physicalReturn === undefined ? ' (aprox.)' : ''}`, `Retorno normal ${returned.normal}`, `Merma recuperable ${returned.recoverableMerma}`, `Total apto recibido ${returned.totalApto}`, `Vuelve al stock vendible ${returned.returnsToSellableStock}${returned.quarantinedSellableOverage > 0 ? ` · ${returned.quarantinedSellableOverage} en cuarentena` : ''}`, `No apto/pérdida ${returned.nonSellable}${row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}`, `Faltante ${row.shortage ?? 0}`, `Sobrante ${row.overage || 0}`],
         }
       }),
       [closure.status === 'closed'
@@ -580,7 +588,7 @@ export async function generateClosurePdf(closure: DistClosure) {
         row.unitType === 'kg' ? row.sold.toFixed(2) : String(row.sold),
         row.unitType === 'kg' ? (row.courtesy || 0).toFixed(2) : String(row.courtesy || 0),
         row.unitType === 'kg' ? row.expectedReturn.toFixed(2) : String(row.expectedReturn),
-        (() => { const total = row.declaredReturn ?? (closure.declaredReturns?.[row.productId] === undefined ? undefined : Number(closure.declaredReturns[row.productId]) + Number(closure.declaredReturnMermas?.[row.productId] || 0)); const normal = row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId]; const merma = row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0; return total === undefined ? 'Sin registro' : normal === undefined ? (row.unitType === 'kg' ? Number(total).toFixed(2) : String(total)) : row.unitType === 'kg' ? `${Number(normal).toFixed(2)} + ${Number(merma).toFixed(2)} = ${Number(total).toFixed(2)}` : String(total) })(),
+        (() => { const total = row.declaredReturn ?? (closure.declaredReturns?.[row.productId] === undefined ? undefined : Number(closure.declaredReturns[row.productId]) + Number(closure.declaredReturnMermas?.[row.productId] || 0)); const normal = row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId]; const merma = row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0; return total === undefined ? 'Sin registro' : closure.returnDeclarationMode === 'normal_only' ? `${row.unitType === 'kg' ? Number(normal ?? total).toFixed(2) : String(normal ?? total)} normal (simple)` : normal === undefined ? (row.unitType === 'kg' ? Number(total).toFixed(2) : String(total)) : row.unitType === 'kg' ? `${Number(normal).toFixed(2)} + ${Number(merma).toFixed(2)} = ${Number(total).toFixed(2)}` : String(total) })(),
         (() => { const value = row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0); const formatted = row.unitType === 'kg' ? Number(value).toFixed(2) : String(value); return row.physicalReturn === undefined ? `${formatted} (aprox.)` : formatted })(),
         row.unitType === 'kg' ? row.actualReturn.toFixed(2) : String(row.actualReturn),
         row.unitType === 'kg' ? (row.returnMerma || 0).toFixed(2) : String(row.returnMerma || 0),

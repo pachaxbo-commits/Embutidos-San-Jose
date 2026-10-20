@@ -71,7 +71,7 @@ export async function runClosureRegressionTestSuite() {
   assert(normalizedReopened.reopenedAt === reopenedRaw.reopenedAt && normalizedReopened.reopenedBy === 'admin-1' && normalizedReopened.reopenedByName === 'Administración', 'normalizer conserva fecha y responsable de reapertura')
   assert(normalizedReopened.reopenHistory?.[0]?.previousClosedAt === '2026-10-16T21:15:00.000Z' && normalizedReopened.reopenHistory[0]?.reopenedByName === 'Administración', 'normalizer conserva auditoría por ciclo de reapertura')
   assert(normalizedReopened.preserveFinancialSnapshot === true && normalizedReopened.reversedStockMovementIds?.[0] === 'movement-1', 'normalizer conserva protecciones y movimientos revertidos')
-  assert(normalizedReopened.declaredReturnMermas?.prod_1 === 0.16 && normalizedReopened.closureType === 'route' && normalizedReopened.note === 'Nota de jornada' && normalizedReopened.warehouseResponsibleName === 'Almacén QA', 'normalizer conserva metadatos de cierre y merma declarada')
+assert(normalizedReopened.declaredReturnMermas?.prod_1 === 0.16 && normalizedReopened.returnDeclarationMode === undefined && normalizedReopened.closureType === 'route' && normalizedReopened.note === 'Nota de jornada' && normalizedReopened.warehouseResponsibleName === 'Almacén QA', 'normalizer conserva merma histórica sin reinterpretarla como declaración simple')
   assert(normalizeClosure({ id: 'legacy-reopen' }).reopenHistory?.length === 0, 'cierres históricos sin reopenHistory reciben lista vacía segura')
 
   // 2. Test sorting behavior in ClosureView:

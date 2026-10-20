@@ -198,6 +198,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const value = returns[productId]
     const merma = recoverableMermas[productId] ?? '0'
     const row = productRows.find(item => item.productId === productId)
+    if (isDistributor) return value !== undefined && value !== '' && parseReturnQuantityInput(value) !== null
     return value !== undefined && value !== '' && parseReturnQuantityInput(value) !== null
       && (row?.unitType !== 'kg' || (merma !== '' && parseReturnQuantityInput(merma) !== null))
   }
@@ -209,7 +210,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const returnWaste = parsedWastes[row.productId] || 0
     const returnMerma = parsedRecoverableMermas[row.productId] || 0
     const breakdown = isDistributor
-      ? calculateReturnBreakdown(row.expectedReturn, row.actualReturn + (row.unitType === 'kg' ? (parseReturnQuantityInput(recoverableMermas[row.productId] || '0') ?? 0) : 0), 0)
+      ? calculateReturnBreakdown(row.expectedReturn, row.actualReturn, 0)
       : calculatePhysicalReturnBreakdown(row.expectedReturn, row.actualReturn, returnMerma, returnWaste)
     const saved = existingProductsById.get(row.productId)
     const declaredReturnNormal = existingClosure?.declaredReturns?.[row.productId] ?? saved?.declaredReturnNormal ?? (saved?.declaredReturn != null ? saved.declaredReturn - (saved.declaredReturnMerma || 0) : undefined)
@@ -230,10 +231,6 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       variance: breakdown.overage - breakdown.shortage,
     }
   })
-  const declaredReturnMermas = Object.fromEntries(productRows.map(row => [
-    row.productId,
-    row.unitType === 'kg' ? (parseReturnQuantityInput(recoverableMermas[row.productId] ?? '0') ?? 0) : 0,
-  ]))
   useEffect(() => {
     if (!returnInputIssue) return
     const card = returnCardRefs.current[returnInputIssue.productId]
@@ -556,11 +553,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const requestDeclarationConfirmation = () => {
     if (isSubmittingRef.current || isSubmitting) return
     for (const row of productRows) {
-      const normalIssue = validateReturnDeclarationInput(row.unitType, 'normal', returns[row.productId] ?? '')
-      const mermaIssue = row.unitType === 'kg'
-        ? validateReturnDeclarationInput(row.unitType, 'merma', recoverableMermas[row.productId] ?? '')
-        : null
-      const issue = normalIssue ?? mermaIssue
+      const issue = validateReturnDeclarationInput(row.unitType, 'normal', returns[row.productId] ?? '')
       if (issue) {
         setProductSearch('')
         setReturnInputIssue({ productId: row.productId, field: issue.field, message: issue.message })
@@ -589,7 +582,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     setIsSubmitting(true)
     setError(null)
     try {
-      await declareRouteReturn(dispatch, parsedReturns, declaredReturnMermas, cashNum)
+      await declareRouteReturn(dispatch, parsedReturns, cashNum)
       setConfirmingDeclaration(false)
     } catch (e) {
       setError((e as Error).message)
@@ -692,9 +685,16 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                 const declaredNormal = row.declaredReturnNormal ?? closure.declaredReturns?.[row.productId]
                 const declaredMerma = row.declaredReturnMerma ?? closure.declaredReturnMermas?.[row.productId] ?? 0
                 const declared = declaredNormal === undefined ? row.declaredReturn : round2(Number(declaredNormal) + Number(declaredMerma))
+                const declaredLabel = declared === undefined
+                  ? 'Sin registro'
+                  : closure.returnDeclarationMode === 'normal_only'
+                    ? `${formatQty(Number(declaredNormal ?? declared), row.unitType)} normal (declaración simple)`
+                    : declaredNormal === undefined
+                      ? formatQty(Number(declared), row.unitType)
+                      : `Normal ${formatQty(Number(declaredNormal), row.unitType)} + merma ${formatQty(Number(declaredMerma), row.unitType)} = ${formatQty(Number(declared), row.unitType)}`
                 const physical = row.physicalReturn ?? row.actualReturn + (row.returnMerma || 0) + (row.returnWaste || 0)
                 const returnSummary = closureReturnSummary(row)
-                return <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Despachado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Cortesía</dt><dd className="text-xs font-black">{formatQty(row.courtesy || 0, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía retornar</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Declarado por distribuidor</dt><dd className="text-xs font-black">{declared === undefined ? 'Sin registro' : declaredNormal === undefined ? formatQty(Number(declared), row.unitType) : `Normal ${formatQty(Number(declaredNormal), row.unitType)} + merma ${formatQty(Number(declaredMerma), row.unitType)} = ${formatQty(Number(declared), row.unitType)}`}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Recibido físicamente</dt><dd className="text-xs font-black">{formatQty(physical, row.unitType)}{row.physicalReturn === undefined ? ' · aprox.' : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Retorno normal</dt><dd className="text-xs font-black text-emerald-700">{formatQty(returnSummary.normal, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Merma recuperable</dt><dd className="text-xs font-black text-emerald-700">{formatQty(returnSummary.recoverableMerma, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Total apto recibido</dt><dd className="text-xs font-black text-emerald-800">{formatQty(returnSummary.totalApto, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vuelve al stock vendible</dt><dd className="text-xs font-black text-emerald-800">{formatQty(returnSummary.returnsToSellableStock, row.unitType)}{returnSummary.quarantinedSellableOverage > 0 ? ` · ${formatQty(returnSummary.quarantinedSellableOverage, row.unitType)} en cuarentena` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Producto no apto / pérdida</dt><dd className="text-xs font-black text-rose-700">{formatQty(returnSummary.nonSellable, row.unitType)}{row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Costo de pérdida</dt><dd className="text-xs font-black">{row.lossCost == null && (row.returnWaste || 0) > 0 ? 'No disponible' : formatBs(row.lossCost || 0)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Faltante</dt><dd className="text-xs font-black">{row.shortage ?? Math.max(0, row.expectedReturn - physical)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Sobrante</dt><dd className="text-xs font-black">{formatQty(row.overage || 0, row.unitType)}</dd></div></dl></div>
+                return <div key={row.productId} className="rounded-xl bg-slate-50 p-3"><div className="flex items-start justify-between gap-2"><strong className="min-w-0 break-words text-xs text-slate-900">{row.productName}</strong><VarianceBadge variance={row.variance} unitType={row.unitType} /></div><dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><div><dt className="text-[9px] font-bold uppercase text-slate-400">Despachado</dt><dd className="text-xs font-black">{formatQty(row.totalLoaded, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vendido</dt><dd className="text-xs font-black">{formatQty(row.sold, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Cortesía</dt><dd className="text-xs font-black">{formatQty(row.courtesy || 0, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Debía retornar</dt><dd className="text-xs font-black">{formatQty(row.expectedReturn, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Declarado por distribuidor</dt><dd className="text-xs font-black">{declaredLabel}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Recibido físicamente</dt><dd className="text-xs font-black">{formatQty(physical, row.unitType)}{row.physicalReturn === undefined ? ' · aprox.' : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Retorno normal</dt><dd className="text-xs font-black text-emerald-700">{formatQty(returnSummary.normal, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Merma recuperable</dt><dd className="text-xs font-black text-emerald-700">{formatQty(returnSummary.recoverableMerma, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Total apto recibido</dt><dd className="text-xs font-black text-emerald-800">{formatQty(returnSummary.totalApto, row.unitType)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Vuelve al stock vendible</dt><dd className="text-xs font-black text-emerald-800">{formatQty(returnSummary.returnsToSellableStock, row.unitType)}{returnSummary.quarantinedSellableOverage > 0 ? ` · ${formatQty(returnSummary.quarantinedSellableOverage, row.unitType)} en cuarentena` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Producto no apto / pérdida</dt><dd className="text-xs font-black text-rose-700">{formatQty(returnSummary.nonSellable, row.unitType)}{row.returnWasteReason ? ` · ${row.returnWasteReason}` : ''}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Costo de pérdida</dt><dd className="text-xs font-black">{row.lossCost == null && (row.returnWaste || 0) > 0 ? 'No disponible' : formatBs(row.lossCost || 0)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Faltante</dt><dd className="text-xs font-black">{row.shortage ?? Math.max(0, row.expectedReturn - physical)}</dd></div><div><dt className="text-[9px] font-bold uppercase text-slate-400">Sobrante</dt><dd className="text-xs font-black">{formatQty(row.overage || 0, row.unitType)}</dd></div></dl></div>
               })}</div>
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Egresos en efectivo" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared ?? 0)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
@@ -1067,7 +1067,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           </Field>
         )}
 
-        <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">{isDistributor ? 'Para cerrar tu ruta, primero declara cuánto producto devuelves. Almacén debe contar y confirmar físicamente esa devolución; después se habilita el cierre final del efectivo.' : 'El distribuidor declara las cantidades. Almacén confirma la recepción física y después se habilita el cierre final. Confirmar y cerrar requieren conexión.'}</p>
+        <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">{isDistributor ? 'Escribe únicamente la cantidad normal que devuelves. Almacén revisará y registrará por separado cualquier merma recuperable o producto no apto; después de confirmar la recepción se habilita el cierre final del efectivo.' : 'El distribuidor declara la cantidad normal. Almacén confirma la recepción física y registra por separado la merma recuperable o el producto no apto; después se habilita el cierre final. Confirmar y cerrar requieren conexión.'}</p>
         <SectionCard title="Productos devueltos">
           {!isDistributor && <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm font-bold text-indigo-900" role="status">{reviewedReceiptIds.size} de {productRows.length} productos revisados</div>}
           <div className="relative mb-3"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={productSearch} onChange={event => setProductSearch(event.target.value)} placeholder="Buscar producto sin perder cantidades..." className="pl-9" /></div>
@@ -1091,7 +1091,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                       <h3 className="break-words text-sm font-black leading-snug text-slate-900">{row.productName}</h3>
                       {presentation && <p className="mt-0.5 text-xs font-semibold text-slate-500">{presentation}</p>}
                     </div>
-                    {isDeclared(row.productId) ? <VarianceBadge variance={row.variance} unitType={row.unitType} /> : <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">SIN DECLARAR</span>}
+                    {isDeclared(row.productId) ? (isDistributor ? <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-800">DECLARADO</span> : <VarianceBadge variance={row.variance} unitType={row.unitType} />) : <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">SIN DECLARAR</span>}
                   </div>
 
                   {rowIssue && <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-800" role="alert">Revisa esta cantidad: {rowIssue.message}</p>}
@@ -1107,15 +1107,11 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                   {isDistributor ? <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
                     <h4 className="text-xs font-black uppercase tracking-wide text-blue-900">Declaración del distribuidor</h4>
                     <div className="mt-2 grid gap-2">
-                      <Field label="Retorno normal">
+                      <Field label="CANTIDAD QUE DEVUELVES" hint="Escribe únicamente la cantidad normal que devuelves. Almacén revisará y registrará la merma por separado.">
                         <TextInput type="text" inputMode={row.unitType === 'kg' ? 'decimal' : 'numeric'} data-return-field="normal" aria-invalid={Boolean(rowIssue?.field === 'normal')} value={returns[row.productId] ?? ''} disabled={returnsAlreadyApplied || Boolean(existingClosure?.returnDeclaredAt)} placeholder="Escribe la cantidad" onChange={event => { setReturns(current => ({ ...current, [row.productId]: event.target.value })); if (rowIssue?.field === 'normal') setReturnInputIssue(null) }} />
                       </Field>
                       {rowIssue?.field === 'normal' && <p className="mt-1 text-xs font-semibold text-rose-700">{rowIssue.message}</p>}
-                      {row.unitType === 'kg' && <Field label="Merma de retorno" hint="Cantidad separada de la devolución normal que también estás entregando físicamente.">
-                        <TextInput type="text" inputMode="decimal" data-return-field="merma" aria-invalid={Boolean(rowIssue?.field === 'merma')} value={recoverableMermas[row.productId] ?? '0'} disabled={returnsAlreadyApplied || Boolean(existingClosure?.returnDeclaredAt)} placeholder="0" onChange={event => { setRecoverableMermaDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? recoverableMermas), [row.productId]: event.target.value } })); if (rowIssue?.field === 'merma') setReturnInputIssue(null) }} />
-                      </Field>}
-                      {rowIssue?.field === 'merma' && <p className="mt-1 text-xs font-semibold text-rose-700">{rowIssue.message}</p>}
-                      <div className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-extrabold text-blue-950">TOTAL FÍSICO QUE DEVUELVES: {formatQty(calculateDeclaredReturnTotal(parseReturnQuantityInput(returns[row.productId] || '') ?? 0, row.unitType === 'kg' ? (parseReturnQuantityInput(recoverableMermas[row.productId] ?? '0') ?? 0) : 0), row.unitType)}</div>
+                      <div className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-extrabold text-blue-950">CANTIDAD NORMAL DECLARADA: {formatQty(parseReturnQuantityInput(returns[row.productId] || '') ?? 0, row.unitType)}</div>
                       <div className="flex gap-1 pb-0.5">
                         <button type="button" disabled={Boolean(existingClosure?.returnDeclaredAt)} onClick={() => setReturns(current => ({ ...current, [row.productId]: '0' }))} className="min-h-10 rounded-lg border border-blue-200 bg-white px-3 text-xs font-bold text-blue-900 disabled:opacity-40">0</button>
                         <button type="button" disabled={Boolean(existingClosure?.returnDeclaredAt)} onClick={() => setReturns(current => ({ ...current, [row.productId]: String(row.expectedReturn) }))} className="min-h-10 rounded-lg border border-blue-200 bg-white px-3 text-xs font-bold text-blue-900 disabled:opacity-40">Todo</button>
@@ -1126,9 +1122,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                       <div><p className="text-xs font-bold text-slate-600">Debía retornar</p><p className="text-lg font-black text-indigo-800">{formatQty(row.expectedReturn, row.unitType)}</p></div>
                       <div className="flex flex-wrap items-center gap-2">{reviewed ? <><span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-black text-emerald-800">REVISADO</span><VarianceBadge variance={row.variance} unitType={row.unitType} /></> : <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black text-amber-900">PENDIENTE DE RECIBIR</span>}</div>
                     </div>
-                    <p className="mt-2 text-xs text-slate-600">Declarado por distribuidor: <strong>{declaredNormal === undefined ? 'Sin registro' : `Normal ${formatQty(Number(declaredNormal), row.unitType)} + merma ${formatQty(Number(declaredMerma), row.unitType)} = ${formatQty(Number(declaredTotal), row.unitType)}`}</strong></p>
-                    {declaredTotal !== undefined && reviewed && <p className="mt-1 text-xs font-semibold text-indigo-800">Diferencia contra declaración: {formatQty(calculateReturnDeclarationDifference(declaredTotal, breakdown.totalReceived ?? 0), row.unitType)}</p>}
-                    {reviewed && <p className="mt-1 text-xs text-slate-700">Recibido {formatQty(breakdown.totalReceived, row.unitType)} · vuelve al stock {formatQty(breakdown.sellableFromDispatch, row.unitType)}{enteredWaste > 0 ? ` · no apto ${formatQty(enteredWaste, row.unitType)}` : ''}</p>}
+                    <p className="mt-2 text-xs text-slate-600">Declarado por distribuidor: <strong>{declaredNormal === undefined ? 'Sin registro' : existingClosure?.returnDeclarationMode === 'normal_only' ? `${formatQty(Number(declaredNormal), row.unitType)} normal` : `Normal ${formatQty(Number(declaredNormal), row.unitType)} + merma ${formatQty(Number(declaredMerma), row.unitType)} = ${formatQty(Number(declaredTotal), row.unitType)}`}</strong></p>
+                    {declaredTotal !== undefined && reviewed && <p className="mt-1 text-xs font-semibold text-indigo-800">{existingClosure?.returnDeclarationMode === 'normal_only' ? 'Diferencia entre normal declarado y recibido' : 'Diferencia contra declaración'}: {formatQty(calculateReturnDeclarationDifference(existingClosure?.returnDeclarationMode === 'normal_only' ? Number(declaredNormal) : declaredTotal, existingClosure?.returnDeclarationMode === 'normal_only' ? breakdown.normalReturn : breakdown.totalReceived), row.unitType)}</p>}
+                    {reviewed && <p className="mt-1 text-xs text-slate-700">{existingClosure?.returnDeclarationMode === 'normal_only' ? `Normal recibido ${formatQty(breakdown.normalReturn, row.unitType)} · Merma recuperable registrada por Almacén: ${formatQty(breakdown.recoverableMerma, row.unitType)} · ` : ''}Total físico recibido {formatQty(breakdown.totalReceived, row.unitType)} · vuelve al stock {formatQty(breakdown.sellableFromDispatch, row.unitType)}{enteredWaste > 0 ? ` · no apto ${formatQty(enteredWaste, row.unitType)}` : ''}</p>}
                     <div className="mt-3"><PrimaryButton full disabled={returnsAlreadyApplied} onClick={() => openReceiptEditor(row.productId)}>{reviewed ? 'Editar recepción' : 'Registrar recepción'}</PrimaryButton></div>
                   </div>}
                 </article>
@@ -1301,17 +1297,17 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               <div className="flex items-center justify-between font-bold text-slate-700 mb-1">
                 <span>Resumen de productos devueltos:</span>
                 <span className="text-slate-900">
-                  {productRows.filter(r => (parsedReturns[r.productId] || 0) + (declaredReturnMermas[r.productId] || 0) > 0).length} con retorno
+                  {productRows.filter(r => (parsedReturns[r.productId] || 0) > 0).length} con retorno
                 </span>
               </div>
               <div className="max-h-36 overflow-y-auto divide-y divide-slate-100 pr-1">
-                {productRows.filter(r => (parsedReturns[r.productId] || 0) + (declaredReturnMermas[r.productId] || 0) > 0).map(row => (
+                {productRows.filter(r => (parsedReturns[r.productId] || 0) > 0).map(row => (
                   <div key={row.productId} className="flex items-center justify-between py-1 text-[11px]">
                     <span className="truncate text-slate-600">{row.productName}</span>
-                    <span className="text-right font-bold text-slate-900 tabular-nums">Normal {formatQty(parsedReturns[row.productId] || 0, row.unitType)} + merma {formatQty(declaredReturnMermas[row.productId] || 0, row.unitType)} = {formatQty((parsedReturns[row.productId] || 0) + (declaredReturnMermas[row.productId] || 0), row.unitType)}</span>
+                    <span className="text-right font-bold text-slate-900 tabular-nums">{formatQty(parsedReturns[row.productId] || 0, row.unitType)} normal</span>
                   </div>
                 ))}
-                {productRows.every(r => !((parsedReturns[r.productId] || 0) + (declaredReturnMermas[r.productId] || 0) > 0)) && (
+                {productRows.every(r => !(parsedReturns[r.productId] || 0)) && (
                   <p className="text-[11px] italic text-slate-500 py-1">Sin productos a devolver (retorno 0 en todos)</p>
                 )}
               </div>
@@ -1346,7 +1342,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           <div className="grid min-w-0 gap-4">
             <div className="grid grid-cols-2 gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
               <div><p className="text-xs font-bold text-indigo-800">Debía retornar</p><p className="mt-1 text-xl font-black text-indigo-950">{formatQty(receiptModalRow.expectedReturn, receiptModalRow.unitType)}</p></div>
-              <div><p className="text-xs font-bold text-indigo-800">Declarado por distribuidor</p>{receiptModalRow.declaredReturnNormal === undefined ? <p className="mt-1 break-words text-xl font-black text-indigo-950">Sin registro</p> : <div className="mt-1 break-words text-sm font-bold text-indigo-950"><p>Normal: {formatQty(Number(receiptModalRow.declaredReturnNormal), receiptModalRow.unitType)}</p><p>Merma: {formatQty(Number(receiptModalRow.declaredReturnMerma || 0), receiptModalRow.unitType)}</p><p className="text-lg font-black">Total: {formatQty(Number(receiptModalRow.declaredReturn), receiptModalRow.unitType)}</p></div>}</div>
+              <div><p className="text-xs font-bold text-indigo-800">Declaración del distribuidor</p>{receiptModalRow.declaredReturnNormal === undefined ? <p className="mt-1 break-words text-xl font-black text-indigo-950">Sin registro</p> : <div className="mt-1 break-words text-sm font-bold text-indigo-950">{existingClosure?.returnDeclarationMode === 'normal_only' ? <p className="text-lg font-black">{formatQty(Number(receiptModalRow.declaredReturnNormal), receiptModalRow.unitType)} normal</p> : <><p>Normal: {formatQty(Number(receiptModalRow.declaredReturnNormal), receiptModalRow.unitType)}</p><p>Merma: {formatQty(Number(receiptModalRow.declaredReturnMerma || 0), receiptModalRow.unitType)}</p><p className="text-lg font-black">Total declarado: {formatQty(Number(receiptModalRow.declaredReturn), receiptModalRow.unitType)}</p></>}</div>}</div>
             </div>
 
             <div className="grid min-w-0 gap-4">
@@ -1354,7 +1350,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                 <Field label="Retorno normal" hint="Producto que vuelve normalmente al stock.">
                   <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.normal} placeholder="Cantidad recibida" onChange={event => setReceiptModalDraft(current => ({ ...current, normal: event.target.value }))} />
                 </Field>
-                {receiptModalRow.declaredReturnNormal !== undefined && <div className="mt-2"><SecondaryButton full onClick={() => setReceiptModalDraft(current => ({ ...current, normal: String(receiptModalRow.declaredReturnNormal), merma: String(receiptModalRow.declaredReturnMerma || 0) }))}>Usar cantidad declarada</SecondaryButton></div>}
+                {receiptModalRow.declaredReturnNormal !== undefined && <div className="mt-2"><SecondaryButton full onClick={() => setReceiptModalDraft(current => ({ ...current, normal: String(receiptModalRow.declaredReturnNormal) }))}>Usar cantidad declarada</SecondaryButton></div>}
               </div>
               <Field label="Merma de retorno" hint="También vuelve al stock; se registra aparte para control.">
                 <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.merma} placeholder="0" onChange={event => setReceiptModalDraft(current => ({ ...current, merma: event.target.value }))} />

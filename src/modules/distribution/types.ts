@@ -567,6 +567,8 @@ export interface DistClosure extends DistBaseDoc {
   warehouseId?: string
   declaredReturns?: Record<string, number>
   declaredReturnMermas?: Record<string, number>
+  /** Las declaraciones nuevas contienen solo cantidad normal; ausente en históricos. */
+  returnDeclarationMode?: 'normal_only' | 'normal_and_merma'
   returnDeclaredBy?: string
   returnDeclaredAt?: string
   dispatchId: string

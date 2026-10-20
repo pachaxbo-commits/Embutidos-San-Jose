@@ -78,26 +78,34 @@ try {
     declaredReturns: { [productId]: 89 }, declaredReturnMermas: { [productId]: -0.1 }, physicalCashDeclared: 0,
   }, 'rejected')
   pass(!(await read('distClosures', closureId)), 'el servidor rechaza mermas declaradas negativas sin crear cierre')
+  await command(seller, 'closure', {
+    mode: 'declaration', dispatchId: dispatch.id,
+    declaredReturns: { [productId]: 89 }, declaredReturnMermas: { [productId]: 2.6 }, physicalCashDeclared: 0,
+  }, 'rejected')
+  pass(!(await read('distClosures', closureId)), 'el servidor rechaza merma recuperable enviada por payload del distribuidor')
   const sellerDb = env.authenticatedContext(seller).firestore()
-  await setDoc(doc(sellerDb, 'restaurants', 'sanjose', 'distClosures', closureId), {
-    id: closureId, restaurantId: 'sanjose', dispatchId: dispatch.id, routeId: route,
-    distributorUid: seller, distributorName: 'QA distribuidor',
-    declaredReturns: { [productId]: 89 }, declaredReturnMermas: { [productId]: 2.6 },
-    returnDeclaredBy: seller, returnDeclaredAt: new Date().toISOString(), dayKey: dispatchDoc.dayKey,
-    physicalCashDeclared: 0, cashDeclaredBy: seller, cashDeclaredAt: new Date().toISOString(),
+  const declarationOperation = await command(seller, 'closure', {
+    mode: 'declaration', dispatchId: dispatch.id,
+    declaredReturns: { [productId]: 89 }, declaredReturnMermas: {}, physicalCashDeclared: 0,
   })
   const declaration = await read('distClosures', closureId)
-  pass(declaration.declaredReturns[productId] === 89 && declaration.declaredReturnMermas[productId] === 2.6, 'declaración conserva normal 89 y merma 2.6 en campos distintos')
+  pass(declaration.declaredReturns[productId] === 89 && declaration.declaredReturnMermas[productId] === 0 && declaration.returnDeclarationMode === 'normal_only', 'declaración nueva conserva solo cantidad normal y el servidor registra merma como cero por producto')
+  const balancesAfterDeclaration = (await read('distBalances', `central__${productId}`)).quantity
+  await processCommand(db, root.collection('distOperations').doc(declarationOperation.id))
+  pass((await read('distBalances', `central__${productId}`)).quantity === balancesAfterDeclaration, 'reintentar la misma declaración confirmada no mueve stock')
   await assertFails(setDoc(doc(sellerDb, 'restaurants', 'sanjose', 'distClosures', `${prefix}-forged`), {
-    id: `${prefix}-forged`, restaurantId: 'sanjose', dispatchId: dispatch.id, routeId: `${route}-otra`,
+    id: `${prefix}-forged`, restaurantId: 'sanjose', dispatchId: dispatch.id, routeId: route,
     distributorUid: seller, distributorName: 'QA distribuidor', declaredReturns: { [productId]: 91.6 },
     declaredReturnMermas: { [productId]: 2.6 }, returnDeclaredBy: seller,
     returnDeclaredAt: new Date().toISOString(), dayKey: dispatchDoc.dayKey,
   }))
+  await assertFails(setDoc(doc(sellerDb, 'restaurants', 'sanjose', 'distClosures', closureId), {
+    declaredReturnMermas: { [productId]: 2.6 },
+  }, { merge: true }))
   checks += 1
   await assertFails(setDoc(doc(sellerDb, 'restaurants', 'sanjose', 'distClosures', closureId), { products: [{ returnWaste: 0 }] }, { merge: true }))
   checks += 1
-  pass(true, 'Rules permiten declarar solo en ruta propia y bloquean escritura de recepción')
+  pass(true, 'Rules bloquean escritura directa de declaraciones y de recepción; el servidor valida la ruta propia')
 
   const beforeReceipt = (await read('distBalances', `central__${productId}`)).quantity
   await command(warehouse, 'closure', {
@@ -105,7 +113,7 @@ try {
     warehouseResponsibleName: 'QA almacén',
   })
   const receivedClosure = await read('distClosures', closureId)
-  pass(receivedClosure.products[0].actualReturn === 89 && receivedClosure.products[0].returnMerma === 2.6 && receivedClosure.products[0].returnWaste === 0, 'almacén confirma 89 normal + 2.6 merma con pérdida cero')
+  pass(receivedClosure.products[0].actualReturn === 89 && receivedClosure.products[0].returnMerma === 2.6 && receivedClosure.products[0].returnWaste === 0, 'almacén confirma 89 normal + 2.6 merma con pérdida cero aunque declaración nueva no incluye merma')
   pass((await read('distBalances', `central__${productId}`)).quantity === beforeReceipt + 91.6, 'retorno normal más merma recuperable vuelve completo al stock')
   pass((await read('distBalances', `route__${route}__${productId}`)).quantity === 0, 'al confirmar retorno la ruta queda conciliada en cero')
   const returnMovements = await root.collection('distStockMovements').where('dispatchId', '==', dispatch.id).get()
