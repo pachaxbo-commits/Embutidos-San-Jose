@@ -621,6 +621,8 @@ export interface DistQrVerification {
   routeId: string
   sourceType: 'sale' | 'collection' | 'claim'
   sourceId: string
+  /** Revisión económica de la venta verificada; ausente en verificaciones históricas. */
+  sourceRevision?: number
   amount: number
   verifiedBy: string
   verifiedAt: string

@@ -7,38 +7,47 @@ import { Field, TextInput } from '../../../components/ui/Form'
 import { RangePicker } from './RangePicker'
 import { verifyQr } from '../data/distributionRepository'
 import { matchesRoute } from '../domain/engine'
+import { hasCurrentSaleQrVerification, saleQrPaymentState } from '../domain/qrPayment'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { KpiCard, PrimaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 
 export function QrView({ session, data }: DistributionViewProps) {
   const { members } = useTenantMembers()
-  const [target, setTarget] = useState<{ type: 'sale' | 'collection' | 'claim'; id: string } | null>(null)
+  const [target, setTarget] = useState<{ type: 'sale' | 'collection' | 'claim'; id: string; revision?: number } | null>(null)
   const [reference, setReference] = useState('')
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectedSellerFilter, setSelectedSellerFilter] = useState('all')
   const [isSellerFilterOpen, setIsSellerFilterOpen] = useState(false)
 
   const allRows = useMemo(() => [
     ...data.sales
-      .filter((s) => s.qrAmount > 0 && !s.pendingConfirmation)
-      .map((s) => ({
-        id: s.id,
-        type: 'sale' as const,
-        amount: s.qrAmount,
-        name: s.customerName || 'Cliente ocasional',
-        at: s.createdAt,
-        sellerUid: s.sellerUid,
-        sellerName: s.sellerName,
-        routeId: s.routeId,
-        sourceLocation: s.sourceLocation,
-      })),
+      .filter((s) => saleQrPaymentState(s).amount > 0)
+      .map((s) => {
+        const payment = saleQrPaymentState(s)
+        return {
+          id: s.id,
+          type: 'sale' as const,
+          amount: payment.amount,
+          verificationId: payment.verificationId,
+          revision: payment.revision,
+          sale: s,
+          name: s.customerName || 'Cliente ocasional',
+          at: s.createdAt,
+          sellerUid: s.sellerUid,
+          sellerName: s.sellerName,
+          routeId: s.routeId,
+          sourceLocation: s.sourceLocation,
+        }
+      }),
     ...data.collections
       .filter((c) => (c.qrAmount ?? (c.method === 'qr' ? c.amount : 0)) > 0)
       .map((c) => ({
         id: c.id,
         type: 'collection' as const,
+        verificationId: `collection_${c.id}`,
         amount: c.qrAmount ?? (c.method === 'qr' ? c.amount : 0),
         name: c.customerName,
         at: c.createdAt,
@@ -52,6 +61,7 @@ export function QrView({ session, data }: DistributionViewProps) {
       .map((c) => ({
         id: c.id,
         type: 'claim' as const,
+        verificationId: `claim_${c.id}`,
         amount: c.qrIn,
         name: c.customerName,
         at: c.createdAt,
@@ -60,7 +70,7 @@ export function QrView({ session, data }: DistributionViewProps) {
         routeId: c.routeId,
         sourceLocation: undefined,
       })),
-  ].sort((a, b) => b.at.localeCompare(a.at)), [data.sales, data.collections, data.claims, session.dayKeys])
+  ].sort((a, b) => b.at.localeCompare(a.at)), [data.sales, data.collections, data.claims])
 
   const rows = useMemo(() => {
     if (selectedSellerFilter === 'all') return allRows
@@ -74,7 +84,12 @@ export function QrView({ session, data }: DistributionViewProps) {
   }, [allRows, selectedSellerFilter])
 
   const requiresVerification = data.supportSettings.requireQrVerification
-  const confirmed = requiresVerification ? rows.filter((r) => data.qrVerifications.some((v) => v.id === `${r.type}_${r.id}`)) : rows
+  const verificationFor = (row: (typeof allRows)[number]) => data.qrVerifications.find((verification) =>
+    row.type === 'sale'
+      ? hasCurrentSaleQrVerification(row.sale, verification)
+      : verification.id === row.verificationId,
+  )
+  const confirmed = requiresVerification ? rows.filter((row) => Boolean(verificationFor(row))) : rows
   const total = rows.reduce((sum, r) => sum + r.amount, 0)
   const verified = confirmed.reduce((sum, r) => sum + r.amount, 0)
 
@@ -94,11 +109,18 @@ export function QrView({ session, data }: DistributionViewProps) {
     if (!target || busy) return
     setBusy(true)
     setError('')
+    setSuccess('')
     try {
-      await verifyQr(target.type, target.id, reference)
+      const result = await verifyQr(target.type, target.id, reference, target.revision)
+      setSuccess(result.status === 'already-verified'
+        ? 'Este pago ya tenía una verificación para su revisión vigente; no se creó otra.'
+        : 'Pago QR verificado correctamente.')
       setTarget(null)
     } catch (e) {
-      setError((e as Error).message)
+      const failure = e as Error & { code?: string }
+      setError(failure.code === 'permission-denied'
+        ? 'No se pudo confirmar la verificación bancaria. No vuelvas a registrarla hasta comprobar si ya quedó guardada.'
+        : failure.message)
     } finally {
       setBusy(false)
     }
@@ -118,6 +140,7 @@ export function QrView({ session, data }: DistributionViewProps) {
           dayKeys={session.dayKeys}
           onChange={session.setDayKeys}
         />
+        {success && <p role="status" className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{success}</p>}
 
         {session.role === 'admin' && (
           <div className="flex items-center gap-2">
@@ -153,7 +176,7 @@ export function QrView({ session, data }: DistributionViewProps) {
 
       <div className="flex flex-col gap-2">
         {rows.map((r) => {
-          const v = data.qrVerifications.find((x) => x.id === `${r.type}_${r.id}`)
+          const v = verificationFor(r)
           const isDone = !requiresVerification || !!v
           return (
             <article
@@ -173,7 +196,7 @@ export function QrView({ session, data }: DistributionViewProps) {
                 )}
                 {v && (
                   <span className="text-xs font-medium text-emerald-700">
-                    Ref: {v.reference} · por {v.verifiedBy}
+                    Ref: {v.reference} · por {members.find((member) => member.uid === v.verifiedBy)?.displayName || v.verifiedBy}
                   </span>
                 )}
               </div>
@@ -187,9 +210,10 @@ export function QrView({ session, data }: DistributionViewProps) {
                   <button
                     type="button"
                     onClick={() => {
-                      setTarget({ type: r.type, id: r.id })
+                      setTarget({ type: r.type, id: r.id, ...(r.type === 'sale' ? { revision: r.revision } : {}) })
                       setReference('')
                       setError('')
+                      setSuccess('')
                     }}
                     className="flex h-8 items-center gap-1 rounded-2xl bg-slate-900 px-3 text-xs font-bold text-white shadow-sm hover:bg-slate-800"
                   >

@@ -1604,6 +1604,8 @@ async function editSale(o, p) {
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes corregir tus propias ventas.");
+  const qrVerifications = await o.query("distQrVerifications", "sourceId", sale.id);
+  check(!qrVerifications.some(row => row.sourceType === "sale"), "La venta tiene una verificación bancaria QR. Requiere revisión administrativa antes de corregirla.");
   const dispatch = sale.dispatchId ? await o.read("distDispatches", sale.dispatchId) : null;
   check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. Usa un flujo administrativo posterior al cierre.");
   const isCourtesy = sale.saleKind === "courtesy" || sale.effectiveSnapshot?.saleKind === "courtesy";
@@ -1720,6 +1722,8 @@ async function voidSale(o, p) {
   check(sale, "Venta inexistente.");
   check(!sale.voidedAt, "La venta ya fue anulada.");
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes anular tus propias ventas.");
+  const qrVerifications = await o.query("distQrVerifications", "sourceId", sale.id);
+  check(!qrVerifications.some(row => row.sourceType === "sale"), "La venta tiene una verificación bancaria QR. Requiere revisión administrativa antes de anularla.");
   const dispatch = sale.dispatchId ? await o.read("distDispatches", sale.dispatchId) : null;
   check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. La venta no puede anularse desde el flujo diario.");
   if (sale.dispatchId) {

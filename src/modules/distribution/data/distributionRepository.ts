@@ -48,6 +48,7 @@ import type {
   UnitType,
 } from '../types'
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from './supportMaintenance'
+import { recordQrVerification, type QrSourceType } from './qrVerification'
 
 /**
  * Repositorio de distribucion movil.
@@ -114,19 +115,9 @@ export async function transferWarehouseStock(from: string, to: string, line: Dis
   await submitOperation('transfer', { from, to, line, note }, operationId)
 }
 
-export async function verifyQr(sourceType: 'sale' | 'collection' | 'claim', sourceId: string, reference: string) {
-  if (!reference.trim()) throw new Error('Ingresa la referencia bancaria de la verificacion.')
+export async function verifyQr(sourceType: QrSourceType, sourceId: string, reference: string, expectedRevision?: number) {
   const ctx = await getContext(true)
-  await runTransaction(ctx.db, async tx => {
-    const verificationRef = docRef(ctx, DIST_COLLECTIONS.qrVerifications, `${sourceType}_${sourceId}`)
-    if ((await tx.get(verificationRef)).exists()) return
-    const source = await tx.get(docRef(ctx, sourceType === 'sale' ? DIST_COLLECTIONS.sales : sourceType === 'claim' ? 'distClaims' : DIST_COLLECTIONS.collections, sourceId))
-    const data = source.data()
-    const amount = sourceType === 'sale' ? data?.qrAmount : sourceType === 'claim' ? data?.qrIn : (data?.qrAmount ?? (data?.method === 'qr' ? data.amount : 0))
-    if (!data || !(amount > 0)) throw new Error('No existe un pago QR pendiente para este movimiento.')
-    tx.set(verificationRef, { id: `${sourceType}_${sourceId}`, restaurantId: ctx.restaurantId, routeId: data.routeId,
-      sourceType, sourceId, amount, reference: reference.trim(), verifiedBy: ctx.uid, verifiedAt: new Date().toISOString() })
-  })
+  return recordQrVerification(ctx.db, ctx.restaurantId, ctx.uid, sourceType, sourceId, reference, expectedRevision)
 }
 
 import { normalizeClosure } from '../domain/closurePeriod'

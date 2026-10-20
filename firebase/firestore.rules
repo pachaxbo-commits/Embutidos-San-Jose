@@ -107,6 +107,35 @@ service cloud.firestore {
       return request.resource.data.restaurantId == restaurantId;
     }
 
+    function saleCurrentQrAmount(sale) {
+      let snapshot = sale.get('effectiveSnapshot', null);
+      return snapshot is map && snapshot.get('qrAmount', null) is number && snapshot.get('qrAmount', 0) >= 0
+        ? snapshot.get('qrAmount', 0)
+        : sale.get('qrAmount', 0);
+    }
+
+    function saleCurrentRevision(sale) {
+      return sale.get('revision', 0);
+    }
+
+    function saleQrVerificationId(saleId, revision) {
+      return revision == 0 ? 'sale_' + saleId : 'sale_' + saleId + '_r' + string(revision);
+    }
+
+    function validSaleQrVerification(restaurantId, verificationId) {
+      let sourceId = request.resource.data.sourceId;
+      let salePath = /databases/$(database)/documents/restaurants/$(restaurantId)/distSales/$(sourceId);
+      let sale = get(salePath).data;
+      let revision = saleCurrentRevision(sale);
+      return exists(salePath)
+        && !sale.keys().hasAny(['voidedAt'])
+        && sale.get('pendingConfirmation', false) != true
+        && verificationId == saleQrVerificationId(sourceId, revision)
+        && request.resource.data.sourceRevision == revision
+        && request.resource.data.routeId == sale.routeId
+        && request.resource.data.amount == saleCurrentQrAmount(sale);
+    }
+
     // Catalogo y rutas: lectura para cualquier miembro activo, escritura solo
     // administracion (los precios son configuracion, no operacion diaria).
     match /restaurants/{restaurantId}/distProducts/{productId} {
@@ -152,8 +181,7 @@ service cloud.firestore {
         && request.resource.data.amount > 0 && request.resource.data.reference is string
         && request.resource.data.reference.size() > 0
         && ((request.resource.data.sourceType == 'sale'
-          && verificationId == 'sale_' + request.resource.data.sourceId
-          && request.resource.data.amount == get(/databases/$(database)/documents/restaurants/$(restaurantId)/distSales/$(request.resource.data.sourceId)).data.qrAmount)
+          && validSaleQrVerification(restaurantId, verificationId))
         || (request.resource.data.sourceType == 'collection'
           && verificationId == 'collection_' + request.resource.data.sourceId
           && get(/databases/$(database)/documents/restaurants/$(restaurantId)/distCollections/$(request.resource.data.sourceId)).data.method == 'qr'
