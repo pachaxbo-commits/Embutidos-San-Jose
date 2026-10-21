@@ -1,0 +1,75 @@
+import { roundStockQuantity } from './stockAvailability.ts'
+import type { DistBalance, DistLot, UnitType } from '../types.ts'
+
+export type WarehouseLotStatus = 'Disponible' | 'Disponible · trazabilidad incompleta' | 'Vencido' | 'Cuarentena'
+
+export interface WarehouseLotRow {
+  lot: DistLot
+  physical: number
+  available: number
+  status: WarehouseLotStatus
+  hasFractionalCountQuantity: boolean
+}
+
+export function productWarehouseLotRows(
+  productId: string,
+  unitType: UnitType,
+  lots: DistLot[],
+  location: string,
+  today: string,
+): WarehouseLotRow[] {
+  return lots
+    .filter((lot) => lot.productId === productId)
+    .map((lot) => ({ lot, physical: roundStockQuantity(Number(lot.quantities?.[location]) || 0, unitType) }))
+    .filter((row) => row.physical > 0)
+    .map(({ lot, physical }) => {
+      const expired = Boolean(lot.expiresOn && lot.expiresOn < today)
+      const traceIncomplete = !lot.lotCode?.trim() || !lot.manufacturedOn || !lot.expiresOn
+      const status: WarehouseLotStatus = lot.quarantined
+        ? 'Cuarentena'
+        : expired
+          ? 'Vencido'
+          : traceIncomplete
+            ? 'Disponible · trazabilidad incompleta'
+            : 'Disponible'
+      return {
+        lot,
+        physical,
+        available: status.startsWith('Disponible') ? physical : 0,
+        status,
+        // Keep anomalous historical values visible as stored; never round a
+        // fractional package/unit count into a fabricated integer.
+        hasFractionalCountQuantity: unitType !== 'kg' && Math.abs(physical - Math.round(physical)) > 0.000001,
+      }
+    })
+    .sort((a, b) => {
+      const aValid = Boolean(a.lot.expiresOn && /^\d{4}-\d{2}-\d{2}$/.test(a.lot.expiresOn))
+      const bValid = Boolean(b.lot.expiresOn && /^\d{4}-\d{2}-\d{2}$/.test(b.lot.expiresOn))
+      if (aValid && bValid) return a.lot.expiresOn.localeCompare(b.lot.expiresOn) || a.lot.lotCode.localeCompare(b.lot.lotCode)
+      if (aValid !== bValid) return aValid ? -1 : 1
+      return a.lot.lotCode.localeCompare(b.lot.lotCode)
+    })
+}
+
+export function warehouseLotReconciliation(
+  rows: WarehouseLotRow[],
+  balance: DistBalance | undefined,
+  unitType: UnitType,
+) {
+  const lotPhysical = roundStockQuantity(rows.reduce((sum, row) => sum + row.physical, 0), unitType)
+  const lotAvailable = roundStockQuantity(rows.reduce((sum, row) => sum + row.available, 0), unitType)
+  const balancePhysical = roundStockQuantity(Number(balance?.quantity) || 0, unitType)
+  const balanceAvailable = roundStockQuantity(Number(balance?.availableQuantity ?? balance?.quantity) || 0, unitType)
+  const lotUnavailable = roundStockQuantity(Math.max(0, lotPhysical - lotAvailable), unitType)
+  const untracedPhysical = roundStockQuantity(Math.max(0, balancePhysical - lotPhysical), unitType)
+  return {
+    lotPhysical,
+    lotAvailable,
+    lotUnavailable,
+    balancePhysical,
+    balanceAvailable,
+    balanceUnavailable: roundStockQuantity(Math.max(0, balancePhysical - balanceAvailable), unitType),
+    untracedPhysical,
+    isBalanced: Math.abs(balancePhysical - lotPhysical) < 0.001,
+  }
+}

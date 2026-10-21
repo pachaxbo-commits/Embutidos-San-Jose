@@ -1,6 +1,6 @@
 import { LotsAndHistory } from './LotsAndHistory'
 import { useMemo, useRef, useState } from 'react'
-import { FileSpreadsheet, FileText, History, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
+import { FileSpreadsheet, FileText, History, Layers, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -18,6 +18,7 @@ import { getTodayStockIntakes } from '../domain/todayIntakes'
 import { reportUnitLabel } from '../domain/reportLabels'
 import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
 import { stockAvailability } from '../domain/stockAvailability'
+import { productWarehouseLotRows, warehouseLotReconciliation } from '../domain/productWarehouseLots'
 import { quarantineRows } from '../domain/quarantine'
 import { validateIntakeLotDates } from '../domain/inventoryIntakeValidation'
 import { operationFailureMessage } from '../domain/operationFailureMessage'
@@ -63,6 +64,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
   const [error, setError] = useState<string | null>(null)
   const [choice, setChoice] = useState<'warehouse' | 'lot' | null>(null)
   const [historyProduct, setHistoryProduct] = useState<DistProduct | null>(null)
+  const [lotsProduct, setLotsProduct] = useState<DistProduct | null>(null)
   const [historyProductFilter, setHistoryProductFilter] = useState<ProductMovementFilter>('all')
   const [generalHistorySearch, setGeneralHistorySearch] = useState('')
   const [isGeneralHistoryOpen, setIsGeneralHistoryOpen] = useState(false)
@@ -102,6 +104,15 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     () => historyProduct ? filterProductMovementHistory(data.movements, historyProduct.id, historyProductFilter) : [],
     [data.movements, historyProduct, historyProductFilter],
   )
+  const selectedProductBalance = lotsProduct
+    ? data.balances.find((item) => item.id === warehouseBalanceId(warehouseId, lotsProduct.id))
+    : undefined
+  const selectedProductLotRows = lotsProduct
+    ? productWarehouseLotRows(lotsProduct.id, lotsProduct.unitType, data.lots, lotLocation, toDayKey())
+    : []
+  const selectedProductLotTotals = lotsProduct
+    ? warehouseLotReconciliation(selectedProductLotRows, selectedProductBalance, lotsProduct.unitType)
+    : null
 
   const downloadGeneralHistory = async (format: 'pdf' | 'excel') => {
     if (historyExporting) return
@@ -318,7 +329,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                       <p className="text-[11px] font-semibold text-emerald-800">Disponible para venta: <strong>{formatQty(availability.available, product.unitType)}</strong></p>
                       {availability.unavailable > 0 && <details className="mt-1 text-[11px] font-semibold text-amber-800"><summary className="cursor-pointer">No disponible: {formatQty(availability.unavailable, product.unitType)}</summary><div className="mt-1 pl-2 text-slate-600">{availability.quarantine > 0 && <p>En cuarentena: {formatQty(availability.quarantine, product.unitType)}</p>}{availability.expired > 0 && <p>Vencido: {formatQty(availability.expired, product.unitType)}</p>}{availability.other > 0 && <p>Por revisar: {formatQty(availability.other, product.unitType)}</p>}</div></details>}
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="grid w-[84px] shrink-0 grid-cols-2 gap-1">
                       {(canIntake || canAdjust) && (
                         <>
                           {canIntake && <button
@@ -340,6 +351,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                         </>
                       )}
                       <button type="button" aria-label={`Ver historial de ${product.name}`} onClick={() => { setHistoryProduct(product); setHistoryProductFilter('all') }} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"><History size={16} /></button>
+                      <button type="button" aria-label={`Ver lotes de ${product.name}`} onClick={() => setLotsProduct(product)} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"><Layers size={16} /></button>
                     </div>
                   </div>
                 )
@@ -512,6 +524,36 @@ export function InventoryView({ session, data }: DistributionViewProps) {
         </div>
       </Modal>
       <QuarantineView session={session} data={data} isOpen={isQuarantineOpen} onClose={() => setIsQuarantineOpen(false)} defaultLocation={lotLocation} />
+      <Modal isOpen={Boolean(lotsProduct)} onClose={() => setLotsProduct(null)} title="Lotes del producto" subtitle={lotsProduct ? `${lotsProduct.name} · ${lotsProduct.presentation || lotsProduct.description || 'Presentación estándar'} · ${warehouseName}` : ''} size="lg">
+        {lotsProduct && selectedProductLotTotals && <div className="grid min-w-0 gap-3">
+          <div className="grid grid-cols-1 gap-2 rounded-2xl bg-slate-50 p-3 text-xs sm:grid-cols-3">
+            <p><span className="text-slate-500">Existencia física</span><br/><strong className="text-sm text-slate-900">{formatQty(selectedProductLotTotals.balancePhysical, lotsProduct.unitType)}</strong></p>
+            <p><span className="text-slate-500">Disponible para venta</span><br/><strong className="text-sm text-emerald-800">{formatQty(selectedProductLotTotals.balanceAvailable, lotsProduct.unitType)}</strong></p>
+            <p><span className="text-slate-500">No disponible</span><br/><strong className="text-sm text-amber-800">{formatQty(selectedProductLotTotals.balanceUnavailable, lotsProduct.unitType)}</strong></p>
+          </div>
+          {selectedProductLotTotals.untracedPhysical > 0 && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Hay {formatQty(selectedProductLotTotals.untracedPhysical, lotsProduct.unitType)} en el saldo del almacén que no está asignado a lotes con existencia. No se atribuyó esa cantidad a ningún lote.</p>}
+          {selectedProductLotRows.length > 0 && !selectedProductLotTotals.isBalanced && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">El saldo físico del almacén ({formatQty(selectedProductLotTotals.balancePhysical, lotsProduct.unitType)}) no coincide con la suma de lotes ({formatQty(selectedProductLotTotals.lotPhysical, lotsProduct.unitType)}). Esta consulta no ajusta ni corrige inventario.</p>}
+          {selectedProductLotRows.length === 0
+            ? selectedProductLotTotals.balancePhysical > 0
+              ? <EmptyBlock title="No hay lotes con saldo registrado" description={`El saldo físico del almacén es ${formatQty(selectedProductLotTotals.balancePhysical, lotsProduct.unitType)}. La trazabilidad por lote no está disponible; no se asignaron cantidades ficticias.`}/>
+              : <EmptyBlock title="Este producto no tiene lotes con existencia en este almacén" description="Los lotes con cantidad cero no se muestran en la consulta actual."/>
+            : <div className="grid max-h-[58vh] min-w-0 gap-2 overflow-y-auto pr-1">
+              {selectedProductLotRows.map(({ lot, physical, available, status, hasFractionalCountQuantity }) => <article key={lot.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-900">Lote {lot.lotCode || 'sin código registrado'}</p><p className={`mt-1 inline-flex max-w-full rounded-full px-2 py-1 text-[10px] font-black ${status === 'Cuarentena' ? 'bg-amber-100 text-amber-900' : status === 'Vencido' ? 'bg-rose-100 text-rose-900' : 'bg-emerald-100 text-emerald-900'}`}>{status}</p></div>
+                  <strong className="shrink-0 text-sm tabular-nums text-slate-900">{formatQty(physical, lotsProduct.unitType)}</strong>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
+                  <p>Disponible por lote: <strong className={available > 0 ? 'text-emerald-800' : 'text-slate-800'}>{formatQty(available, lotsProduct.unitType)}</strong></p>
+                  <p>Elaboración: <strong>{lot.manufacturedOn || 'No registrada'}</strong></p>
+                  <p>Vencimiento: <strong>{lot.expiresOn || 'No registrada'}</strong></p>
+                </div>
+                {hasFractionalCountQuantity && <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900">La cantidad registrada no es un número entero. Se muestra tal como está guardada; esta consulta no la corrige.</p>}
+              </article>)}
+            </div>}
+          {selectedProductLotRows.length > 0 && <p className="text-[11px] text-slate-500">Suma física por lotes: {formatQty(selectedProductLotTotals.lotPhysical, lotsProduct.unitType)} · disponible identificado por lote: {formatQty(selectedProductLotTotals.lotAvailable, lotsProduct.unitType)} · no disponible por lote: {formatQty(selectedProductLotTotals.lotUnavailable, lotsProduct.unitType)}. Los totales superiores provienen del saldo del almacén.</p>}
+        </div>}
+      </Modal>
       <Modal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} title="Historial del producto" subtitle={historyProduct?.name} size="lg">
         <div className="grid min-w-0 gap-3">
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar historial del producto">

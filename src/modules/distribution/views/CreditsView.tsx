@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, HandCoins, History, Printer, Search, Share2, ShieldAlert, UserPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Download, HandCoins, History, Printer, Search, Share2, ShieldAlert, UserPlus } from 'lucide-react'
 import { RangePicker } from './RangePicker'
 import { Modal } from '../../../components/ui/Modal'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
@@ -7,8 +7,8 @@ import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../com
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { toDayKey, round2 } from '../domain/engine'
 import { buildProvisionalCollectionSnapshot } from '../domain/provisionalCollection'
-import { adjustReceivable, newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride, voidReceivable } from '../data/distributionRepository'
-import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
+import { adjustReceivable, loadCustomerCreditStatementData, newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride, voidReceivable } from '../data/distributionRepository'
+import { exportCustomerCreditStatement, exportExcel, exportPdf, reportSheets } from '../data/reportExports'
 import {
   computeCreditPortfolioByRoute,
   allocateCreditBySubtotal,
@@ -20,6 +20,7 @@ import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistReceivable, DistReceivableLineAdjustment, DistSaleLine } from '../types'
 import { printCollectionReceipt, printLargeCollectionReceipt, shareCollectionReceipt } from '../data/distributionReceiptService'
+import { customerStatementFilename } from '../domain/customerCreditStatement'
 
 /**
  * Cartera por cliente y cobranzas.
@@ -55,6 +56,9 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [paidOpen, setPaidOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
+  const [statementCustomer, setStatementCustomer] = useState<CustomerCreditRouteView | null>(null)
+  const [statementError, setStatementError] = useState('')
+  const [statementExporting, setStatementExporting] = useState<'pdf' | 'excel' | null>(null)
   const [editingReceivable, setEditingReceivable] = useState<DistReceivable | null>(null)
   const [editAmount, setEditAmount] = useState('')
   const [editDate, setEditDate] = useState('')
@@ -238,6 +242,39 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       setExportError((exportFailure as Error).message)
     } finally {
       setExporting(false)
+    }
+  }
+
+  const exportCustomerStatement = async (entry: CustomerCreditRouteView, kind: 'pdf' | 'excel') => {
+    if (statementExporting) return
+    setStatementExporting(kind)
+    setStatementError('')
+    try {
+      const distributorUid = session.role === 'distributor' ? session.uid : undefined
+      const sources = await loadCustomerCreditStatementData(entry.customerId, distributorUid)
+      const customer = data.customers.find((item) => item.id === entry.customerId)
+      const salesById = new Map([...data.sales, ...sources.sales].map((sale) => [sale.id, sale]))
+      const customerForStatement = {
+        id: entry.customerId,
+        name: customer?.name || entry.customerName,
+        identityNumber: customer?.identityNumber || entry.identityNumber,
+        customerCode: customer?.customerCode || entry.customerCode,
+      }
+      const filename = customerStatementFilename(customerForStatement.name, entry.customerId, kind === 'pdf' ? 'pdf' : 'xlsx')
+      await exportCustomerCreditStatement({
+        customer: customerForStatement,
+        receivables: sources.receivables,
+        collections: sources.collections,
+        adjustments: session.can('dist.credit.adjust') ? data.receivableAdjustments : [],
+        routes: data.routes,
+        salesById,
+        adjustmentsAvailable: session.can('dist.credit.adjust'),
+      }, filename, kind)
+      setStatementCustomer(null)
+    } catch (exportFailure) {
+      setStatementError((exportFailure as Error).message || 'No se pudo generar el estado de cuenta completo. Verifica la conexión y vuelve a intentar.')
+    } finally {
+      setStatementExporting(null)
     }
   }
 
@@ -530,6 +567,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                 key={entry.customerId}
                 className="flex w-full min-w-0 flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between"
               >
+                <div className="flex min-w-0 flex-1 items-start gap-1.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -582,6 +620,17 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                     </p>
                   )}
                 </button>
+                <button
+                  type="button"
+                  aria-label={`Descargar estado de cuenta de ${entry.customerName}`}
+                  title="Descargar cartera completa del cliente"
+                  disabled={statementExporting !== null}
+                  onClick={() => { setStatementCustomer(entry); setStatementError('') }}
+                  className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  <Download size={16} />
+                </button>
+                </div>
 
                 <div className="flex shrink-0 items-center justify-between gap-3 sm:flex-col sm:items-end sm:justify-center">
                   <div className="text-right">
@@ -622,6 +671,28 @@ export function CreditsView({ session, data }: DistributionViewProps) {
           })}
         </div>
       </div>
+
+      <Modal
+        isOpen={Boolean(statementCustomer)}
+        onClose={() => { if (!statementExporting) { setStatementCustomer(null); setStatementError('') } }}
+        title="Descargar estado de cuenta"
+        subtitle={statementCustomer?.customerName}
+        size="sm"
+      >
+        <div className="grid gap-3">
+          <p className="text-xs leading-5 text-slate-600">Se incluirá la cartera vigente completa del cliente y su historial confirmado, sin aplicar los filtros de fecha o ruta usados para localizarlo.</p>
+          {session.role === 'distributor' && <p className="rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-[11px] font-semibold text-amber-900">El documento se limita a las deudas y cobros autorizados para esta cuenta.</p>}
+          {statementError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-2.5 text-xs font-bold text-rose-800">{statementError}</p>}
+          <div className="grid grid-cols-2 gap-2">
+            <SecondaryButton disabled={statementExporting !== null} onClick={() => statementCustomer && void exportCustomerStatement(statementCustomer, 'pdf')}>
+              {statementExporting === 'pdf' ? 'Generando…' : 'Descargar PDF'}
+            </SecondaryButton>
+            <SecondaryButton disabled={statementExporting !== null} onClick={() => statementCustomer && void exportCustomerStatement(statementCustomer, 'excel')}>
+              {statementExporting === 'excel' ? 'Generando…' : 'Descargar Excel'}
+            </SecondaryButton>
+          </div>
+        </div>
+      </Modal>
 
       {/* Modal de Selector de Ruta */}
       <ChoiceModal

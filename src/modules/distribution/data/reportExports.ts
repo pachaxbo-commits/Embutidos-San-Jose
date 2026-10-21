@@ -33,6 +33,7 @@ import {
   type ProductProfitReport,
 } from "../domain/productProfit";
 import { computeDistributorDifferences } from "../domain/distributorDifferences";
+import { buildCustomerCreditStatement, type CustomerCreditStatementInput } from "../domain/customerCreditStatement.ts";
 import { closureReopenEvents, closureReturnSummary } from "../domain/closureAudit";
 import { normalizeClosure } from '../domain/closurePeriod';
 import {
@@ -2029,6 +2030,85 @@ export async function exportCustomerStatement(
     `${customer.name} · CI ${customer.identityNumber || "pendiente"} · ${customer.phone || ""} · ${customer.address || ""} · emitido ${new Date().toLocaleDateString("es-BO")}`,
     "SanJose-estado-cuenta.pdf",
   );
+}
+
+/** Estado de cuenta individual con cartera completa dentro del alcance autorizado. */
+export async function exportCustomerCreditStatement(
+  input: CustomerCreditStatementInput,
+  filename: string,
+  format: 'pdf' | 'excel',
+) {
+  const statement = buildCustomerCreditStatement(input)
+  const debtRows = (rows: typeof statement.currentDebts) => rows.map((row) => [
+    row.date,
+    row.reference,
+    row.route,
+    row.distributor,
+    row.products,
+    row.original,
+    row.paid,
+    row.credited,
+    row.balance,
+    row.note,
+  ] as Cell[])
+  const paymentRows = statement.payments.map((row) => [
+    reportDateTime(row.date), row.reference, row.method, row.cash, row.qr, row.total, row.responsible, row.note,
+  ] as Cell[])
+  const adjustmentRows = statement.adjustments.map((row) => [
+    reportDateTime(row.date), row.reference, row.action, row.previous, row.current, row.responsible, row.reason,
+  ] as Cell[])
+  const common = `${statement.customerName} · ${statement.customerCode} · emitido ${statement.issuedAt} · ${statement.scopeLabel}`
+  const sheets: ReportSheet[] = [
+    {
+      name: 'Resumen de cuenta',
+      headers: ['Concepto', 'Detalle', 'Importe (Bs)'],
+      rows: [
+        ['Cliente', statement.customerName, null],
+        ['Código / CI', statement.customerCode, null],
+        ['Alcance', statement.scopeLabel, null],
+        ['Emitido', statement.issuedAt, null],
+        ['Cartera vigente', `${statement.currentDebts.length} deudas activas`, null],
+        ['Saldo anterior registrado (incluido en cartera vigente)', 'Identificado por separado dentro del detalle', statement.openingBalance],
+        ['Abonos históricos mostrados (no se suman nuevamente a la deuda)', `${statement.payments.length} cobros · efectivo ${statement.paymentCashTotal.toFixed(2)} · QR ${statement.paymentQrTotal.toFixed(2)}`, statement.paymentTotal],
+        ['Saldo pendiente total', 'Deudas vigentes únicamente; excluye saldadas y anuladas', statement.outstandingTotal],
+        ['Historial de ajustes', statement.adjustmentsAvailable ? 'Disponible para esta cuenta' : 'No visible con los permisos de esta cuenta', null],
+        ['Detalle histórico de productos no disponible', `${statement.historicalProductDetailsMissing} créditos sin productos recuperables`, null],
+      ],
+    },
+    {
+      name: 'Deudas vigentes',
+      headers: ['Fecha', 'Referencia', 'Ruta de origen', 'Distribuidor', 'Productos y cantidades', 'Importe original (Bs)', 'Pagos aplicados (Bs)', 'Compensaciones (Bs)', 'Saldo pendiente (Bs)', 'Nota'],
+      rows: [
+        ...debtRows(statement.currentDebts),
+        ['TOTAL PENDIENTE', '', '', '', '', null, null, null, statement.outstandingTotal, ''],
+      ],
+    },
+    {
+      name: 'Créditos saldados',
+      headers: ['Fecha', 'Referencia', 'Ruta de origen', 'Distribuidor', 'Productos y cantidades', 'Importe original (Bs)', 'Pagos aplicados (Bs)', 'Compensaciones (Bs)', 'Saldo (Bs)', 'Nota'],
+      rows: debtRows(statement.paidDebts),
+    },
+    {
+      name: 'Abonos y cobros',
+      headers: ['Fecha y hora', 'Referencia de deuda', 'Método', 'Efectivo (Bs)', 'QR (Bs)', 'Total cobrado (Bs)', 'Responsable', 'Nota'],
+      rows: [
+        ...paymentRows,
+        ['TOTAL DE COBROS HISTÓRICOS', '', '', statement.paymentCashTotal, statement.paymentQrTotal, statement.paymentTotal, '', 'No sumar nuevamente al saldo pendiente'],
+      ],
+    },
+    {
+      name: 'Ajustes y anulaciones',
+      headers: ['Fecha y hora', 'Referencia', 'Acción', 'Importe anterior (Bs)', 'Importe vigente (Bs)', 'Responsable', 'Motivo'],
+      rows: [
+        ...adjustmentRows,
+        ...statement.voidedDebts.map((row) => [row.date, row.reference, 'Deuda anulada — excluida del saldo vigente', row.original, 0, row.distributor, row.note || 'Motivo de anulación no disponible'] as Cell[]),
+        ...(!statement.adjustmentsAvailable ? [['Historial de ajustes no disponible para este perfil', '', '', null, null, '', 'El saldo actual se conserva; no se inventan eventos históricos.'] as Cell[]] : []),
+      ],
+    },
+  ]
+  if (format === 'pdf') await exportPdf(sheets, common, filename.replace(/\.xlsx$/i, '.pdf'))
+  else await exportExcel(sheets, common, filename.replace(/\.pdf$/i, '.xlsx'))
+  return statement
 }
 
 export { generateTodayIntakesPdfBytes, getTodayStockIntakes };

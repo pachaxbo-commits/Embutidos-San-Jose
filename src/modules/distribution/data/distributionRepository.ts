@@ -6,7 +6,9 @@ import {
   collection,
   runTransaction,
   getDocs,
+  getDocsFromServer,
   getDoc,
+  getDocFromServer,
   doc,
   deleteField,
   onSnapshot,
@@ -552,6 +554,59 @@ export function subscribeReceivables(
     onData,
     onError,
   )
+}
+
+/**
+ * Carga, solo para exportación, el estado completo y confirmado de un cliente.
+ * La consulta se hace al servidor para no presentar una cartera parcial desde
+ * caché/offline; los distribuidores quedan limitados a sus propios créditos y
+ * cobros. Las reglas Firestore siguen siendo la autoridad final.
+ */
+export async function loadCustomerCreditStatementData(customerId: string, distributorUid?: string): Promise<{
+  receivables: DistReceivable[]
+  collections: DistCollection[]
+  sales: DistSale[]
+}> {
+  const context = await getContext()
+  const receivablesRef = collectionRef(context, DIST_COLLECTIONS.receivables)
+  const collectionsRef = collectionRef(context, DIST_COLLECTIONS.collections)
+  const receivableQuery = distributorUid
+    ? query(receivablesRef, where('distributorUid', '==', distributorUid))
+    : query(receivablesRef, where('customerId', '==', customerId))
+  const collectionQuery = distributorUid
+    ? query(collectionsRef, where('collectedByUid', '==', distributorUid))
+    : query(collectionsRef, where('customerId', '==', customerId))
+
+  const [receivablesSnapshot, collectionsSnapshot] = await Promise.all([
+    getDocsFromServer(receivableQuery),
+    getDocsFromServer(collectionQuery),
+  ])
+  const receivables = receivablesSnapshot.docs
+    .map((entry) => ({ id: entry.id, ...entry.data() }) as DistReceivable)
+    .filter((row) => row.customerId === customerId && (!distributorUid || row.distributorUid === distributorUid))
+  const collections = collectionsSnapshot.docs
+    .map((entry) => ({ id: entry.id, ...entry.data() }) as DistCollection)
+    .filter((row) => row.customerId === customerId && (!distributorUid || row.collectedByUid === distributorUid))
+    .filter((row) => !row.pendingConfirmation)
+
+  const linkedSaleIds = [...new Set(receivables
+    .filter((row) => !row.saleLines?.length && row.saleId)
+    .map((row) => row.saleId!))]
+  const sales = (await Promise.all(linkedSaleIds.map(async (saleId) => {
+    try {
+      const snapshot = await getDocFromServer(docRef(context, 'distSales', saleId))
+      if (!snapshot.exists()) return null
+      const sale = { id: snapshot.id, ...snapshot.data() } as DistSale
+      if (distributorUid && sale.sellerUid !== distributorUid) return null
+      return sale
+    } catch (error) {
+      const code = (error as { code?: string }).code
+      if (code === 'permission-denied' || code === 'firestore/permission-denied') return null
+      throw error
+    }
+  }))).filter((sale): sale is DistSale => sale !== null)
+
+  return { receivables, collections, sales }
 }
 
 /** Historial inmutable de ajustes de cartera: solo Administración lo consulta. */
