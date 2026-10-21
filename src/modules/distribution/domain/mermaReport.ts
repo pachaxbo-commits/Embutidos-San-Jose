@@ -80,6 +80,9 @@ export function computeMermaReport(
   const routeById = new Map(routes.map((route) => [route.id, route]))
   const productById = new Map(products.map((product) => [product.id, product]))
   const rows = movements.flatMap((movement): MermaReportRow[] => {
+    // Keep the original overage auditable, but exclude it from active summaries
+    // after its fictitious quantity has been rectified.
+    if (movement.rectifiedAt || movement.rectifiedByMovementId) return []
     const kind = kindForMovement(movement)
     if (!kind || movement.reversedAt || movement.pendingConfirmation) return []
     const dayKey = movement.dayKey || toDayKey(movement.createdAt)

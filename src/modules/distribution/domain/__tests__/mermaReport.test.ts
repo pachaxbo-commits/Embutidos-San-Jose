@@ -21,6 +21,7 @@ const data = [
   movement('unfit', 'return_waste', 0.1, { routeId: 'domingo-real', dispatchId: 'dispatch-d', lossCost: null, reason: 'Deteriorado' } as Partial<DistStockMovement>),
   movement('short', 'shortage', 0.235, { routeId: 'domingo-real', dispatchId: 'dispatch-d', lossCost: 10 }),
   movement('over', 'overage', 0.05, { routeId: 'domingo-real', dispatchId: 'dispatch-d' }),
+  movement('rectified-over', 'overage', 13.5, { routeId: 'route-sacaba', dispatchId: 'dispatch-luciano', rectifiedAt: '2026-10-21T23:00:00.000Z', rectifiedByMovementId: 'rectification__0' }),
   movement('reversed', 'return_merma', 9, { routeId: 'domingo-real', reversedAt: '2026-10-20T00:00:00.000Z' }),
   movement('admin', 'dispatch', 1, { routeId: 'administracion', dispatchMerma: 0.9 }),
 ] as DistStockMovement[]
@@ -33,6 +34,7 @@ expect(report.totals.unfit.kg, 0.1, 'No apto separado')
 expect(report.totals.shortage.kg, 0.235, 'Faltante separado')
 expect(report.totals.overage.kg, 0.05, 'Sobrante separado')
 expect(report.rows.some(row => row.id === 'reversed'), false, 'Movimientos revertidos excluidos')
+expect(report.rows.some(row => row.id === 'rectified-over'), false, 'Sobrante original rectificado sigue auditable pero no integra cantidades vigentes')
 expect(report.rows.find(row => row.id === 'unfit')?.lossCost, null, 'No inventa costo histórico')
 expect(report.rows.find(row => row.id === 'admin')?.routeName, 'Administración', 'Administración separada de rutas')
 expect(report.byRoute.find(row => row.routeId === 'domingo-real')?.dispatchMerma, 2.5, 'Ruta Domingo por separado')

@@ -224,6 +224,7 @@ service cloud.firestore {
           || (request.resource.data.type in ['openingBalance','creditOverride','changeProductUnit'] && distAdmin(restaurantId))
           || (request.resource.data.type in ['editReceivable','voidReceivable'] && distAdmin(restaurantId))
           || (request.resource.data.type == 'resolveQuarantine' && distAdmin(restaurantId))
+          || (request.resource.data.type == 'rectifyQuarantineInputError' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyClosureAttribution' && distAdmin(restaurantId))
           || (request.resource.data.type in ['quoteCreate','quoteUpdate','quoteCancel','quoteDelete'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type in ['editSale','voidSale'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))

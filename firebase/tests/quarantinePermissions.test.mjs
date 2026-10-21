@@ -9,7 +9,9 @@ const projectId = 'demo-pachax-audit'
 const host = '127.0.0.1'
 const port = 8085
 const rules = fs.readFileSync('firebase/firestore.rules', 'utf8')
-const oldRules = rules.replace(/^\s*\|\| \(request\.resource\.data\.type == 'resolveQuarantine' && distAdmin\(restaurantId\)\)\r?\n/m, '')
+const oldRules = rules
+  .replace(/^\s*\|\| \(request\.resource\.data\.type == 'resolveQuarantine' && distAdmin\(restaurantId\)\)\r?\n/m, '')
+  .replace(/^\s*\|\| \(request\.resource\.data\.type == 'rectifyQuarantineInputError' && distAdmin\(restaurantId\)\)\r?\n/m, '')
 assert.notEqual(oldRules, rules, 'la suite debe encontrar la regla nueva para construir la línea base previa al fix')
 
 const require = createRequire(new URL('../../functions/package.json', import.meta.url))
@@ -30,18 +32,22 @@ const users = {
 }
 let checks = 0
 const pass = (condition, label) => { assert.ok(condition, label); checks++; console.log('PASS', label) }
-const operationData = (id, restaurantId = 'sanjose', createdBy = users.admin) => ({
+const operationData = (id, restaurantId = 'sanjose', createdBy = users.admin, type = 'resolveQuarantine') => ({
   id,
   restaurantId,
   createdBy,
   createdAt: new Date().toISOString(),
-  type: 'resolveQuarantine',
+  type,
   payload: { lotId: `${prefix}-quarantine-lot`, location: 'central', resolution: 'released_existing_lot', destinationLotId: `${prefix}-good-lot`, reason: 'Verificación QA' },
   status: 'queued',
 })
 const request = (actor, id, restaurantId = 'sanjose', createdBy = actor) => setDoc(
   doc(env.authenticatedContext(actor).firestore(), 'restaurants', restaurantId, 'distOperations', id),
   operationData(id, restaurantId, createdBy),
+)
+const requestType = (actor, id, type, restaurantId = 'sanjose', createdBy = actor) => setDoc(
+  doc(env.authenticatedContext(actor).firestore(), 'restaurants', restaurantId, 'distOperations', id),
+  operationData(id, restaurantId, createdBy, type),
 )
 const setRules = async (source) => {
   const response = await fetch(`http://${host}:${port}/emulator/v1/projects/${projectId}:securityRules`, {
@@ -92,6 +98,21 @@ try {
   const operationId = `${prefix}-same-operation`
   await assertSucceeds(request(users.admin, operationId))
   pass(true, 'con la regla corregida, Administración puede crear resolveQuarantine queued')
+
+  const rectificationId = `${prefix}-rectify-admin`
+  await setRules(oldRules)
+  let rectificationBaseline
+  try { await requestType(users.admin, rectificationId, 'rectifyQuarantineInputError') } catch (error) { rectificationBaseline = error }
+  assert.equal(rectificationBaseline?.code, 'permission-denied', 'rules previas deben negar la nueva rectificación')
+  await setRules(rules)
+  await assertSucceeds(requestType(users.admin, rectificationId, 'rectifyQuarantineInputError'))
+  await assertFails(requestType(users.warehouse, `${prefix}-rectify-warehouse`, 'rectifyQuarantineInputError'))
+  await assertFails(requestType(users.distributor, `${prefix}-rectify-distributor`, 'rectifyQuarantineInputError'))
+  await assertFails(requestType(users.support, `${prefix}-rectify-support`, 'rectifyQuarantineInputError'))
+  await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), 'restaurants', 'sanjose', 'distOperations', `${prefix}-rectify-anon`), operationData(`${prefix}-rectify-anon`, 'sanjose', 'anonymous', 'rectifyQuarantineInputError')))
+  await assertFails(requestType(users.admin, `${prefix}-rectify-other-tenant`, 'rectifyQuarantineInputError', 'other-tenant'))
+  checks += 6
+  pass(true, 'la rectificación permite solo admin tenant sanjose; deniega warehouse, distributor, support, anónimo y otro tenant')
 
   for (const collection of ['distLots', 'distBalances', 'distStockMovements', 'distLotHistory']) {
     await assertFails(setDoc(doc(env.authenticatedContext(users.admin).firestore(), 'restaurants', 'sanjose', collection, `${prefix}-forbidden-write`), { id: `${prefix}-forbidden-write`, restaurantId: 'sanjose' }))

@@ -60,7 +60,8 @@ export function quarantineRows(
         warehouseName,
         resolutionLabel: resolution === 'released_existing_lot' || resolution === 'released_new_lot'
           ? 'Liberado a venta'
-          : resolution === 'discarded' ? 'Descartado / no apto' : undefined,
+          : resolution === 'discarded' ? 'Descartado / no apto'
+            : resolution === 'rectified_input_error' ? 'Rectificado — error de registro' : undefined,
       })
     }
   }

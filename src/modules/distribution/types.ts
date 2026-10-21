@@ -169,6 +169,11 @@ export interface DistStockMovement extends DistBaseDoc {
   reversedBy?: string
   reversalOperationId?: string
   reversalReason?: string
+  /** Auditoría bidireccional de un movimiento corregido sin borrarlo. */
+  rectifiedAt?: string
+  rectifiedByOperationId?: string
+  rectifiedByMovementId?: string
+  rectificationReason?: string
 }
 
 export interface DistDispatchLine {
@@ -636,7 +641,7 @@ export interface DistLot {
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;
  quantities: Record<string, number>; quarantined?: boolean; legacy?: boolean; createdAt: string; createdBy: string;
  quarantineResolvedAt?: string; quarantineResolvedBy?: string; quarantineResolvedByName?: string;
- quarantineResolution?: 'released_existing_lot' | 'released_new_lot' | 'discarded';
+ quarantineResolution?: 'released_existing_lot' | 'released_new_lot' | 'discarded' | 'rectified_input_error';
  quarantineResolutionReason?: string; quarantineResolvedQuantity?: number; quarantineResolvedLocation?: string;
  quarantineOriginalLotCode?: string;
  quarantineDestinationLotId?: string; quarantineDestinationLotCode?: string; quarantineLossCost?: number | null;

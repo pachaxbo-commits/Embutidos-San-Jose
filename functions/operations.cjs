@@ -2909,6 +2909,84 @@ handlers.resolveQuarantine = async (o, p) => {
   });
   return { lotId, resolution, quantity, location: loc, destinationLotId: destinationLot?.id || (resolution === "released_new_lot" ? lot.id : ""), movementId };
 };
+
+// Audited correction for the confirmed 15 kg vs 1.5 kg entry error on
+// Luciano's 2026-10-17 Mortadela jamonada Granel closure. This is not a loss.
+handlers.rectifyQuarantineInputError = async (o, p) => {
+  o.admin();
+  const lotId = safeId(p.lotId), movementId = safeId(p.movementId);
+  const dispatchId = safeId(p.dispatchId), closureId = safeId(p.closureId);
+  const productId = safeId(p.productId), amount = 13.5;
+  const reason = "Rectificación aprobada: error de digitación en el retorno de Luciano del 17/10/2026. Se registraron 15 kg en lugar de 1,5 kg; 13,5 kg no existieron físicamente.";
+  check(p.confirmation === "RECTIFICAR-13.5-KG-FICTICIOS", "Confirma explícitamente la rectificación del registro incorrecto.");
+
+  const [lot, product, dispatch, closure, movement] = await Promise.all([
+    o.read("distLots", lotId), o.read("distProducts", productId),
+    o.read("distDispatches", dispatchId), o.read("distClosures", closureId),
+    o.read("distStockMovements", movementId),
+  ]);
+  check(lot && product && dispatch && closure && movement, "No se encontró toda la trazabilidad. No se modificó el inventario.");
+  check(product.unitType === "kg" && /mortadela\s+jamonada\s+granel/i.test(product.name), "El producto no corresponde al incidente autorizado.");
+  check(dispatch.dayKey === "2026-10-17" && dispatch.routeId === "route-sacaba" && /luciano/i.test(String(dispatch.distributorName || "")) && dispatch.status === "closed", "El despacho no corresponde a la jornada y ruta autorizadas.");
+  check(closure.id === closureId && closure.dispatchId === dispatchId && closure.dayKey === "2026-10-17" && /luciano/i.test(String(closure.distributorName || "")) && closure.status === "closed", "El cierre no corresponde al despacho y jornada autorizados.");
+  check(!closure.rectification && !closure.rectificationId, "El cierre ya tiene una rectificación anterior.");
+  const row = (closure.products || []).find((item) => item.productId === productId);
+  check(row && Number(row.totalLoaded) === 5 && Number(row.sold) === 3.5 && Number(row.expectedReturn) === 1.5 && Number(row.physicalReturn) === 15 && Number(row.actualReturn) === 15 && Number(row.overage) === amount, "Las cantidades efectivas ya no prueban el error exacto 15 kg frente a 1,5 kg.");
+  check(lot.productId === productId && lot.lotCode === "SOBRANTE POR REVISAR" && lot.quarantined === true && !lot.quarantineResolvedAt && !lot.quarantineResolution && Number(lot.quantities?.central) === amount && Object.entries(lot.quantities || {}).every(([loc, value]) => loc === "central" || Number(value || 0) === 0), "La cuarentena ya cambió o fue resuelta.");
+  check(movement.type === "overage" && movement.lotId === lotId && movement.dispatchId === dispatchId && !movement.reversedAt && Number(movement.quantity) === amount && Number(movement.centralDelta) === amount && movement.toLocation === "central", "El movimiento de sobrante ya cambió.");
+  const sourceOperation = movement.refId ? await o.read("distOperations", movement.refId) : null;
+  check(sourceOperation?.type === "closure" && sourceOperation.status === "confirmed" && sourceOperation.payload?.mode === "warehouse" && sourceOperation.payload?.closure?.dispatchId === dispatchId, "No se verificó la operación confirmada que originó el sobrante.");
+
+  const lotMovements = await o.query("distStockMovements", "lotId", lotId);
+  check(lotMovements.filter((item) => !item.reversedAt).length === 1 && lotMovements.some((item) => item.id === movementId && !item.reversedAt), "El lote tiene movimientos posteriores; requiere revisión administrativa.");
+  const allLots = await o.query("distLots", "productId", productId);
+  const balance = await o.read("distBalances", balanceId("central", productId));
+  const precision = quantityPrecision(product);
+  const lotTotal = roundAt(allLots.reduce((sum, item) => sum + Number(item.quantities?.central || 0), 0), precision);
+  const balanceTotal = roundAt(Number(balance?.quantity || 0), precision);
+  check(balance && Math.abs(balanceTotal - lotTotal) < 0.5 / (10 ** precision), "El balance central y los lotes no concilian; no se modificó el inventario.");
+  check(lotTotal >= amount && balanceTotal >= amount, "El stock central no contiene íntegramente la cantidad ficticia.");
+
+  const entry = await o.loadStock(productId, "central");
+  const sourceLot = entry.lots.find((item) => item.id === lotId);
+  check(sourceLot && entry.balances.get("central") && roundAt(Number(sourceLot.quantities?.central || 0), precision) === amount, "La cuarentena cambió durante la transacción.");
+  sourceLot.quantities = { ...(sourceLot.quantities || {}), central: 0 };
+  o.move(entry, "central", -amount, precision);
+  sourceLot.quarantined = true;
+  sourceLot.quarantineResolvedAt = o.now;
+  sourceLot.quarantineResolvedBy = o.actor;
+  sourceLot.quarantineResolvedByName = o.member.displayName || o.actor;
+  sourceLot.quarantineResolution = "rectified_input_error";
+  sourceLot.quarantineResolutionReason = reason;
+  sourceLot.quarantineResolvedQuantity = amount;
+  sourceLot.quarantineResolvedLocation = "central";
+  sourceLot.quarantineOriginalLotCode = sourceLot.quarantineOriginalLotCode || sourceLot.lotCode;
+  sourceLot.quarantineRectificationOriginalQuantity = 15;
+  sourceLot.quarantineRectificationPhysicalQuantity = 1.5;
+  const correctionMovementId = o.ledger(productId, amount, "central", null, "quarantine_rectification", {
+    lotId, quarantineSourceLotId: lotId, dispatchId, refType: "closure", refId: closureId,
+    sourceMovementId: movementId, sourceOperationId: sourceOperation.id, reason,
+    recordedQuantity: 15, physicalQuantity: 1.5, fictitiousQuantity: amount,
+    lossCost: null, note: reason,
+  }, precision);
+  // Keep original quantity/delta intact and add a two-way audit link.
+  o.put("distStockMovements", movementId, {
+    ...movement, rectifiedAt: o.now, rectifiedByOperationId: o.id,
+    rectifiedByMovementId: correctionMovementId, rectificationReason: reason,
+  });
+  o.put("distLotHistory", `${o.id}__history`, {
+    id: `${o.id}__history`, ...o.base(), lotId, productId, operationId: o.id,
+    action: "quarantine_input_error_rectification", resolution: "rectified_input_error",
+    quantity: amount, location: "central", reason, actor: o.actor,
+    actorName: o.member.displayName || o.actor, dispatchId, closureId,
+    sourceMovementId: movementId, sourceOperationId: sourceOperation.id,
+    correctionMovementId,
+    previous: { lotCode: lot.lotCode, quarantined: true, quantity: amount },
+    next: { lotCode: lot.lotCode, quarantined: true, quantity: 0, resolution: "rectified_input_error" },
+    recordedQuantity: 15, physicalQuantity: 1.5, fictitiousQuantity: amount,
+  });
+  return { lotId, dispatchId, closureId, productId, sourceMovementId: movementId, correctionMovementId, quantity: amount, resolution: "rectified_input_error" };
+};
 async function refreshCreditStatus(db, root, customerId) {
   await db.runTransaction(async (tx) => {
     const rows = await tx.get(
