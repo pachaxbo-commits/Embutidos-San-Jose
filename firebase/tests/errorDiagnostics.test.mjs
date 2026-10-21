@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+process.env.FIRESTORE_EMULATOR_HOST ||= '127.0.0.1:8085'
 const require = createRequire(new URL('../../functions/package.json', import.meta.url))
 const { initializeApp } = require('firebase-admin/app')
 const { getFirestore } = require('firebase-admin/firestore')

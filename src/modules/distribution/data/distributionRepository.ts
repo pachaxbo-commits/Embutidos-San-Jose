@@ -223,14 +223,38 @@ export interface DistSyncState {
    */
   hasUnsyncedWrites: boolean
   lastError?: string | null
+  lastErrorDetails?: { operationType?: string; operationId?: string; occurredAt?: string; errorCode?: string; legacy?: boolean } | null
   lastSyncedAt: string | null
+}
+
+const SYNC_ERROR_KEY = 'pachax_dist_sync_error'
+function readStoredSyncError(): Pick<DistSyncState, 'lastError' | 'lastErrorDetails'> {
+  try {
+    const stored = localStorage.getItem(SYNC_ERROR_KEY)
+    if (!stored) return { lastError: null, lastErrorDetails: null }
+    try {
+      const parsed = JSON.parse(stored) as { message?: unknown; operationType?: unknown; operationId?: unknown; occurredAt?: unknown; errorCode?: unknown }
+      if (typeof parsed?.message === 'string') return {
+        lastError: parsed.message,
+        lastErrorDetails: {
+          ...(typeof parsed.operationType === 'string' ? { operationType: parsed.operationType } : {}),
+          ...(typeof parsed.operationId === 'string' ? { operationId: parsed.operationId } : {}),
+          ...(typeof parsed.occurredAt === 'string' ? { occurredAt: parsed.occurredAt } : {}),
+          ...(typeof parsed.errorCode === 'string' ? { errorCode: parsed.errorCode } : {}),
+        },
+      }
+    } catch { /* pre-metadata errors were stored as plain text */ }
+    return { lastError: stored, lastErrorDetails: { legacy: true } }
+  } catch {
+    return { lastError: null, lastErrorDetails: null }
+  }
 }
 
 let syncState: DistSyncState = {
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
   pending: 0,
   hasUnsyncedWrites: false,
-  lastError: localStorage.getItem('pachax_dist_sync_error'),
+  ...readStoredSyncError(),
   lastSyncedAt: null,
 }
 
@@ -269,7 +293,7 @@ if (typeof window !== 'undefined') {
     syncState = { ...syncState, isOnline: event.type === 'online' }
     emitSyncState()
   }
-  window.addEventListener('distribution-operation-error', () => { syncState = { ...syncState, lastError: localStorage.getItem('pachax_dist_sync_error') }; emitSyncState() })
+  window.addEventListener('distribution-operation-error', () => { syncState = { ...syncState, ...readStoredSyncError() }; emitSyncState() })
   window.addEventListener('online', update)
   window.addEventListener('offline', update)
 }
@@ -298,9 +322,11 @@ function commitInBackground(batch: WriteBatch, operationId: string, label: strin
       emitSyncState()
       appliedOperations.delete(operationId)
       localStorage.setItem(APPLIED_OPERATIONS_KEY, JSON.stringify([...appliedOperations]))
-      const message = `No se guardó ${label}. Revisa los datos y registra nuevamente la operación. ${(error as Error).message}`
-      localStorage.setItem('pachax_dist_sync_error', message)
-      syncState = { ...syncState, lastError: message }
+      const failure = error as Error & { code?: string }
+      const message = `No se confirmó ${label}. Verifica el estado antes de intentar registrarla nuevamente. ${failure.message}`
+      const details = { operationId, operationType: label, occurredAt: new Date().toISOString(), ...(failure.code ? { errorCode: failure.code } : {}) }
+      localStorage.setItem(SYNC_ERROR_KEY, JSON.stringify({ message, ...details }))
+      syncState = { ...syncState, lastError: message, lastErrorDetails: details }
       emitSyncState()
       console.error(`[distribution] fallo al sincronizar ${label} (${operationId})`, error)
     })
@@ -1098,7 +1124,7 @@ export function subscribeCreditOverrides(onData: (rows: DistCreditOverride[]) =>
 export async function registerClaim(payload: Record<string, unknown>, operationId: string) { return submitOperation<DistClaim>('claim', payload, operationId) }
 
 export function dismissSyncError() {
-  localStorage.removeItem('pachax_dist_sync_error')
-  syncState = { ...syncState, lastError: null }
+  localStorage.removeItem(SYNC_ERROR_KEY)
+  syncState = { ...syncState, lastError: null, lastErrorDetails: null }
   emitSyncState()
 }

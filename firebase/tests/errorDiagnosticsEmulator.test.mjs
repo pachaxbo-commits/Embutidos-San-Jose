@@ -3,9 +3,9 @@ import { createRequire } from 'node:module'
 import { randomBytes } from 'node:crypto'
 
 const projectId = 'demo-pachax-audit'
-const authBase = 'http://127.0.0.1:9095'
-const functionsBase = `http://127.0.0.1:5001/${projectId}/us-central1/manageSanJoseDiagnostics`
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+const authBase = process.env.SANJOSE_AUTH_EMULATOR_BASE || 'http://127.0.0.1:9095'
+const functionsBase = process.env.SANJOSE_FUNCTIONS_EMULATOR_BASE || `http://127.0.0.1:5001/${projectId}/us-central1/manageSanJoseDiagnostics`
+process.env.FIRESTORE_EMULATOR_HOST = process.env.SANJOSE_FIRESTORE_EMULATOR_HOST || '127.0.0.1:8085'
 const require = createRequire(new URL('../../functions/package.json', import.meta.url))
 const { initializeApp } = require('firebase-admin/app')
 const { getFirestore } = require('firebase-admin/firestore')

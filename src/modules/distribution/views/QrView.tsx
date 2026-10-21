@@ -8,6 +8,7 @@ import { RangePicker } from './RangePicker'
 import { verifyQr } from '../data/distributionRepository'
 import { matchesRoute } from '../domain/engine'
 import { hasCurrentSaleQrVerification, saleQrPaymentState } from '../domain/qrPayment'
+import { formatQrRecordDate } from '../domain/qrRecordDate'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { KpiCard, PrimaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -36,6 +37,8 @@ export function QrView({ session, data }: DistributionViewProps) {
           sale: s,
           name: s.customerName || 'Cliente ocasional',
           at: s.createdAt,
+          dayKey: s.dayKey,
+          transactionDateLabel: 'Venta registrada',
           sellerUid: s.sellerUid,
           sellerName: s.sellerName,
           routeId: s.routeId,
@@ -51,6 +54,8 @@ export function QrView({ session, data }: DistributionViewProps) {
         amount: c.qrAmount ?? (c.method === 'qr' ? c.amount : 0),
         name: c.customerName,
         at: c.createdAt,
+        dayKey: c.dayKey,
+        transactionDateLabel: 'Cobro registrado',
         sellerUid: c.collectedByUid,
         sellerName: c.collectedByName,
         routeId: c.routeId,
@@ -65,6 +70,8 @@ export function QrView({ session, data }: DistributionViewProps) {
         amount: c.qrIn,
         name: c.customerName,
         at: c.createdAt,
+        dayKey: c.dayKey,
+        transactionDateLabel: 'Reclamo registrado',
         sellerUid: c.sellerUid,
         sellerName: c.sellerName,
         routeId: c.routeId,
@@ -178,15 +185,17 @@ export function QrView({ session, data }: DistributionViewProps) {
         {rows.map((r) => {
           const v = verificationFor(r)
           const isDone = !requiresVerification || !!v
+          const transactionDate = formatQrRecordDate(r.at, r.dayKey)
+          const verificationDate = v ? formatQrRecordDate(v.verifiedAt) : null
           return (
             <article
               key={`${r.type}_${r.id}`}
-              className="flex items-center justify-between rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
+              className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
             >
-              <div className="flex min-w-0 flex-1 flex-col gap-0.5 pr-3">
-                <span className="text-xs font-semibold text-slate-400">
-                  {r.type === 'sale' ? 'Venta' : r.type === 'collection' ? 'Cobranza' : 'Reclamo'} ·{' '}
-                  {new Date(r.at).toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' })}
+              <div className="flex min-w-0 flex-1 flex-col gap-1 sm:pr-3">
+                <span className="text-xs font-semibold text-slate-500">
+                  {r.transactionDateLabel} · {transactionDate.text}
+                  {transactionDate.precision === 'date' && ' · hora no disponible'}
                 </span>
                 <span className="truncate text-sm font-bold text-slate-800">{r.name}</span>
                 {session.role === 'admin' && r.sellerName && (
@@ -195,12 +204,18 @@ export function QrView({ session, data }: DistributionViewProps) {
                   </span>
                 )}
                 {v && (
-                  <span className="text-xs font-medium text-emerald-700">
-                    Ref: {v.reference} · por {members.find((member) => member.uid === v.verifiedBy)?.displayName || v.verifiedBy}
-                  </span>
+                  <>
+                    <span className="break-words text-xs font-medium text-emerald-700">
+                      Ref: {v.reference} · por {members.find((member) => member.uid === v.verifiedBy)?.displayName || v.verifiedBy}
+                    </span>
+                    {verificationDate && <span className="text-xs font-medium text-emerald-700">
+                      Verificado por Administración · {verificationDate.text}
+                      {verificationDate.precision === 'date' && ' · hora no disponible'}
+                    </span>}
+                  </>
                 )}
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex shrink-0 items-center justify-between gap-3 sm:justify-end">
                 <span className="text-base font-black tabular-nums text-slate-900">{formatBs(r.amount)}</span>
                 {isDone ? (
                   <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">

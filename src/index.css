@@ -3,30 +3,33 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light !important;
+  color-scheme: light;
   font-family: "Plus Jakarta Sans", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background-color: #F6F8FC;
+  background-color: #E9EDF2;
   color: #172033;
 
-  --background: #F6F8FC;
+  --background: #E9EDF2;
   --surface: #FFFFFF;
-  --surface-secondary: #F1F5F9;
-  --border: #DCE3EC;
+  --surface-secondary: #F1F4F7;
+  --border: #D4DCE5;
 
   --text-primary: #172033;
-  --text-secondary: #64748B;
-  --text-muted: #94A3B8;
+  --text-secondary: #475569;
+  --text-muted: #64748B;
 
-  --primary: #2563EB;
-  --primary-hover: #1D4ED8;
-  --primary-soft: #EAF2FF;
+  --primary: #C1121F;
+  --primary-hover: #9D0E19;
+  --primary-soft: #FDECEE;
 
   --accent: #0EA5A8;
   --accent-soft: #E6F7F7;
 
   --success: #16A34A;
+  --success-soft: #DCFCE7;
   --warning: #D97706;
+  --warning-soft: #FEF3C7;
   --danger: #DC2626;
+  --danger-soft: #FEE2E2;
 
   /* Safe areas (Android/iOS). Se usan en shells, navegacion inferior y modales. */
   --safe-top: env(safe-area-inset-top, 0px);
@@ -43,9 +46,9 @@ html, body {
   margin: 0;
   padding: 0;
   min-width: 320px;
-  background-color: #F6F8FC !important;
-  color: #172033 !important;
-  color-scheme: light !important;
+  background-color: var(--background);
+  color: var(--text-primary);
+  color-scheme: light;
   font-family: "Plus Jakarta Sans", Inter, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -132,20 +135,20 @@ html.is-native-app {
   min-width: 44px;
 }
 
-/* Force Light Controls on Android & Browsers */
+/* Native controls follow the selected palette on web and Android WebView. */
 input,
 select,
 textarea {
-  color-scheme: light !important;
-  background-color: #FFFFFF !important;
-  color: #172033 !important;
-  border-color: #DCE3EC !important;
+  color-scheme: light;
+  background-color: var(--surface) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border) !important;
   font: inherit;
 }
 
 input::placeholder,
 textarea::placeholder {
-  color: #94A3B8 !important;
+  color: var(--text-muted) !important;
   opacity: 1;
 }
 
@@ -186,6 +189,212 @@ button {
 }
 
 .brand-float { animation: brand-float 3.2s ease-in-out infinite; }
+
+/* Dark palette bridges legacy fixed Tailwind utilities without changing layout. */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #202630;
+  --surface: #303946;
+  --surface-secondary: #414D5C;
+  --border: #566273;
+  --text-primary: #F8FAFC;
+  --text-secondary: #CBD5E1;
+  --text-muted: #AAB7C7;
+  --primary-soft: #4A2930;
+  --accent-soft: #4B4225;
+  --success: #69D3A8;
+  --success-soft: #203C35;
+  --warning: #F2C76D;
+  --warning-soft: #443A27;
+  --danger: #F38A9A;
+  --danger-soft: #442B35;
+}
+
+[data-theme="dark"] body,
+[data-theme="dark"] #root { background-color: var(--background); color: var(--text-primary); color-scheme: dark; }
+[data-theme="dark"] input,
+[data-theme="dark"] select,
+[data-theme="dark"] textarea { color-scheme: dark; }
+
+[data-theme="dark"] .bg-white { background-color: var(--surface) !important; }
+[data-theme="dark"] .bg-slate-50,
+[data-theme="dark"] .bg-gray-50,
+[data-theme="dark"] [class*="bg-slate-50/"],
+[data-theme="dark"] [class*="bg-gray-50/"] { background-color: var(--background) !important; }
+[data-theme="dark"] .bg-slate-100,
+[data-theme="dark"] .bg-slate-200,
+[data-theme="dark"] .bg-gray-100,
+[data-theme="dark"] [class*="bg-slate-100/"],
+[data-theme="dark"] [class*="bg-slate-200/"],
+[data-theme="dark"] [class*="bg-gray-100/"] { background-color: var(--surface-secondary) !important; }
+[data-theme="dark"] .bg-slate-700,
+[data-theme="dark"] .bg-slate-800,
+[data-theme="dark"] .bg-slate-900 { background-color: #171E28 !important; }
+[data-theme="dark"] .border-slate-100,
+[data-theme="dark"] .border-slate-200,
+[data-theme="dark"] .border-slate-300,
+[data-theme="dark"] .border-slate-400,
+[data-theme="dark"] .border-slate-900,
+[data-theme="dark"] .border-gray-100,
+[data-theme="dark"] .border-gray-200,
+[data-theme="dark"] .border-gray-300,
+[data-theme="dark"] [class*="border-slate-100/"],
+[data-theme="dark"] [class*="border-slate-200/"],
+[data-theme="dark"] [class*="border-gray-100/"],
+[data-theme="dark"] [class*="border-gray-200/"] { border-color: var(--border) !important; }
+[data-theme="dark"] .border-white,
+[data-theme="dark"] [class~="border-white/80"] { border-color: #566273 !important; }
+[data-theme="dark"] .text-slate-900,
+[data-theme="dark"] .text-slate-800,
+[data-theme="dark"] .text-slate-700,
+[data-theme="dark"] .text-gray-900,
+[data-theme="dark"] .text-gray-800,
+[data-theme="dark"] .text-gray-700 { color: var(--text-primary) !important; }
+[data-theme="dark"] .text-slate-600,
+[data-theme="dark"] .text-slate-500,
+[data-theme="dark"] .text-slate-400,
+[data-theme="dark"] .text-slate-300,
+[data-theme="dark"] .text-gray-600,
+[data-theme="dark"] .text-gray-500,
+[data-theme="dark"] .text-gray-400 { color: var(--text-secondary) !important; }
+[data-theme="dark"] .placeholder-slate-400::placeholder { color: var(--text-muted) !important; }
+
+[data-theme="dark"] .bg-rose-50,
+[data-theme="dark"] .bg-red-50,
+[data-theme="dark"] [class*="bg-red-400/"],
+[data-theme="dark"] [class*="bg-red-500/"],
+[data-theme="dark"] [class*="bg-rose-50/"],
+[data-theme="dark"] [class*="bg-red-50/"] { background-color: #442B35 !important; }
+[data-theme="dark"] .bg-rose-100,
+[data-theme="dark"] .bg-rose-200,
+[data-theme="dark"] .bg-red-100,
+[data-theme="dark"] [class*="bg-rose-100/"],
+[data-theme="dark"] [class*="bg-rose-200/"],
+[data-theme="dark"] [class*="bg-red-100/"] { background-color: #593340 !important; }
+[data-theme="dark"] .border-rose-100,
+[data-theme="dark"] .border-rose-200,
+[data-theme="dark"] .border-rose-300,
+[data-theme="dark"] .border-rose-400,
+[data-theme="dark"] .border-rose-500,
+[data-theme="dark"] .border-rose-700,
+[data-theme="dark"] .border-red-200,
+[data-theme="dark"] [class*="border-rose-100/"],
+[data-theme="dark"] [class*="border-rose-200/"],
+[data-theme="dark"] [class*="border-red-200/"] { border-color: #8C4B5C !important; }
+[data-theme="dark"] .text-rose-500,
+[data-theme="dark"] .text-rose-600,
+[data-theme="dark"] .text-rose-700,
+[data-theme="dark"] .text-rose-800,
+[data-theme="dark"] .text-rose-900,
+[data-theme="dark"] .text-rose-950,
+[data-theme="dark"] .text-red-600,
+[data-theme="dark"] .text-red-700,
+[data-theme="dark"] .text-red-800 { color: #FDA4AF !important; }
+
+[data-theme="dark"] .bg-amber-50,
+[data-theme="dark"] .bg-yellow-50,
+[data-theme="dark"] [class*="bg-amber-50/"],
+[data-theme="dark"] [class*="bg-yellow-50/"] { background-color: #443A27 !important; }
+[data-theme="dark"] .bg-amber-100,
+[data-theme="dark"] .bg-amber-200,
+[data-theme="dark"] .bg-yellow-100,
+[data-theme="dark"] [class*="bg-amber-100/"],
+[data-theme="dark"] [class*="bg-amber-200/"],
+[data-theme="dark"] [class*="bg-yellow-100/"] { background-color: #58482A !important; }
+[data-theme="dark"] .border-amber-100,
+[data-theme="dark"] .border-amber-200,
+[data-theme="dark"] .border-amber-300,
+[data-theme="dark"] .border-amber-400,
+[data-theme="dark"] .border-amber-500,
+[data-theme="dark"] .border-yellow-200,
+[data-theme="dark"] [class*="border-amber-200/"],
+[data-theme="dark"] [class*="border-yellow-200/"] { border-color: #8C7444 !important; }
+[data-theme="dark"] .text-amber-600,
+[data-theme="dark"] .text-amber-700,
+[data-theme="dark"] .text-amber-800,
+[data-theme="dark"] .text-amber-900,
+[data-theme="dark"] .text-amber-950,
+[data-theme="dark"] .text-yellow-900,
+[data-theme="dark"] .text-yellow-950 { color: #FCD98A !important; }
+
+[data-theme="dark"] .bg-emerald-50,
+[data-theme="dark"] [class*="bg-emerald-50/"] { background-color: #203C35 !important; }
+[data-theme="dark"] .bg-emerald-100,
+[data-theme="dark"] .bg-emerald-200,
+[data-theme="dark"] [class*="bg-emerald-100/"],
+[data-theme="dark"] [class*="bg-emerald-200/"] { background-color: #285044 !important; }
+[data-theme="dark"] .border-emerald-100,
+[data-theme="dark"] .border-emerald-200,
+[data-theme="dark"] .border-emerald-300,
+[data-theme="dark"] .border-emerald-500,
+[data-theme="dark"] .border-emerald-700,
+[data-theme="dark"] [class*="border-emerald-200/"] { border-color: #3F806A !important; }
+[data-theme="dark"] .text-emerald-600,
+[data-theme="dark"] .text-emerald-700,
+[data-theme="dark"] .text-emerald-800,
+[data-theme="dark"] .text-emerald-900,
+[data-theme="dark"] .text-emerald-950 { color: #8DE0BE !important; }
+
+[data-theme="dark"] .bg-blue-50,
+[data-theme="dark"] .bg-sky-50,
+[data-theme="dark"] .bg-indigo-50,
+[data-theme="dark"] [class*="bg-blue-50/"],
+[data-theme="dark"] [class*="bg-sky-50/"],
+[data-theme="dark"] [class*="bg-indigo-50/"] { background-color: #263A52 !important; }
+[data-theme="dark"] .bg-blue-100 { background-color: #304B6A !important; }
+[data-theme="dark"] .bg-sky-100 { background-color: #304B6A !important; }
+[data-theme="dark"] .border-blue-100,
+[data-theme="dark"] .border-blue-200,
+[data-theme="dark"] .border-blue-700,
+[data-theme="dark"] .border-sky-200,
+[data-theme="dark"] .border-sky-300,
+[data-theme="dark"] .border-indigo-100,
+[data-theme="dark"] [class*="border-blue-200/"],
+[data-theme="dark"] [class*="border-sky-200/"] { border-color: #4E7198 !important; }
+[data-theme="dark"] .text-blue-600,
+[data-theme="dark"] .text-blue-700,
+[data-theme="dark"] .text-blue-800,
+[data-theme="dark"] .text-blue-900,
+[data-theme="dark"] .text-blue-950,
+[data-theme="dark"] .text-sky-700,
+[data-theme="dark"] .text-sky-800,
+[data-theme="dark"] .text-sky-900,
+[data-theme="dark"] .text-sky-950,
+[data-theme="dark"] .text-indigo-700,
+[data-theme="dark"] .text-indigo-800,
+[data-theme="dark"] .text-indigo-900,
+[data-theme="dark"] .text-indigo-950 { color: #A9D1FF !important; }
+
+[data-theme="dark"] .bg-fuchsia-50,
+[data-theme="dark"] [class*="bg-fuchsia-50/"] { background-color: #44304B !important; }
+[data-theme="dark"] .bg-fuchsia-100,
+[data-theme="dark"] [class*="bg-fuchsia-100/"] { background-color: #573B60 !important; }
+[data-theme="dark"] .border-fuchsia-200,
+[data-theme="dark"] .border-fuchsia-300,
+[data-theme="dark"] [class*="border-fuchsia-200/"] { border-color: #805B8D !important; }
+[data-theme="dark"] .text-fuchsia-800,
+[data-theme="dark"] .text-fuchsia-900,
+[data-theme="dark"] .text-fuchsia-950 { color: #E9B8F3 !important; }
+[data-theme="dark"] [class~="bg-panel/92"] { background-color: rgb(48 57 70 / 92%) !important; }
+[data-theme="dark"] .shadow-card { box-shadow: 0 2px 8px rgb(0 0 0 / 24%), 0 0 0 1px var(--border); }
+[data-theme="dark"] .bg-background,
+[data-theme="dark"] .bg-canvas { background-color: var(--background) !important; }
+[data-theme="dark"] .bg-surface,
+[data-theme="dark"] .bg-panel { background-color: var(--surface) !important; }
+[data-theme="dark"] .bg-surfaceSecondary,
+[data-theme="dark"] .bg-panelLight { background-color: var(--surface-secondary) !important; }
+[data-theme="dark"] .border-border,
+[data-theme="dark"] .border-panelBorder { border-color: var(--border) !important; }
+[data-theme="dark"] .text-textPrimary,
+[data-theme="dark"] .text-ink { color: var(--text-primary) !important; }
+[data-theme="dark"] .text-textSecondary,
+[data-theme="dark"] .text-muted { color: var(--text-secondary) !important; }
+[data-theme="dark"] .text-textMuted,
+[data-theme="dark"] .text-mutedDark { color: var(--text-muted) !important; }
+
+@media print {
+  html, body, #root { color-scheme: light !important; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .brand-float { animation: none; }

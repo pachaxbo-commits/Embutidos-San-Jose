@@ -5,6 +5,13 @@ import './index.css'
 import { Capacitor } from '@capacitor/core'
 import { initializePrinting } from './services/printing/printerBootstrap'
 
+// Apply the saved palette before React mounts to avoid a light/dark flash.
+try {
+  document.documentElement.dataset.theme = localStorage.getItem('san-jose:theme:v1') === 'dark' ? 'dark' : 'light'
+} catch {
+  document.documentElement.dataset.theme = 'light'
+}
+
 // Registra los adaptadores de impresion reales y los perfiles guardados.
 initializePrinting()
 

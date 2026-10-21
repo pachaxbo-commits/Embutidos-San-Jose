@@ -119,10 +119,19 @@ export async function submitOperation<T>(
       }).catch((error) => {
         writeError = error;
         rejectWrite?.(error);
-        localStorage.setItem(
-          "pachax_dist_sync_error",
-          `No se pudo enviar la operación: ${error.message}`,
-        );
+        const failure = error as Error & { code?: string };
+        const message = failure.code === 'permission-denied'
+          ? 'Firebase rechazó la creación de la operación por permisos. No se confirmó; revisa su estado antes de volver a registrarla.'
+          : `No se pudo confirmar la creación de la operación. Revisa su estado antes de volver a registrarla. ${failure.message}`;
+        try {
+          localStorage.setItem("pachax_dist_sync_error", JSON.stringify({
+            message,
+            operationType: type,
+            operationId: id,
+            occurredAt: new Date().toISOString(),
+            ...(failure.code ? { errorCode: failure.code } : {}),
+          }));
+        } catch { /* storage is optional; the rejected promise still reports the cause */ }
         window.dispatchEvent(new Event("distribution-operation-error"));
       });
     }

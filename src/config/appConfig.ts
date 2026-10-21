@@ -25,6 +25,11 @@ export interface AppTheme {
   accentSoft: string
   background: string
   surface: string
+  surfaceSecondary?: string
+  border?: string
+  textPrimary?: string
+  textSecondary?: string
+  textMuted?: string
 }
 
 export const SAN_JOSE_APP_CONFIG = {
@@ -55,7 +60,8 @@ export const SAN_JOSE_APP_CONFIG = {
   currencySymbol: 'Bs',
   theme: {
     primary: '#C1121F', primaryHover: '#9D0E19', primarySoft: '#FDECEE',
-    accent: '#F2B705', accentSoft: '#FFF6DA', background: '#FAF7F2', surface: '#FFFFFF',
+    accent: '#F2B705', accentSoft: '#FFF6DA', background: '#E9EDF2', surface: '#FFFFFF',
+    surfaceSecondary: '#F1F4F7', border: '#D4DCE5', textPrimary: '#172033', textSecondary: '#475569', textMuted: '#64748B',
   } satisfies AppTheme,
 }
 

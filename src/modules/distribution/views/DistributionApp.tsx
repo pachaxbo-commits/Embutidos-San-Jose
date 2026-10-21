@@ -13,6 +13,7 @@ import {
   Grid3x3,
   Home,
   LogOut,
+  Moon,
   Receipt,
   ShoppingCart,
   Truck,
@@ -25,11 +26,12 @@ import {
   Printer,
   Settings2,
   RefreshCw,
+  Sun,
   FileText,
 } from 'lucide-react'
 import { getVisibleModules, SAN_JOSE_APP_CONFIG, type ModuleId } from '../../../config/appConfig'
 import { hasPermission } from '../../../services/permissionService'
-import { applyAppTheme } from '../../../lib/appTheme'
+import { applyAppTheme, getSavedAppTheme, saveAppTheme, type AppThemeMode } from '../../../lib/appTheme'
 import { BottomNav, type BottomNavItem } from '../../../components/ui/BottomNav'
 import { Modal } from '../../../components/ui/Modal'
 import { DiagnosticReportsModal } from '../../../components/DiagnosticReportsModal'
@@ -130,13 +132,14 @@ export function DistributionApp({
   onOpenPrinterSettings: () => void
 }) {
   const shiftStorageKey = `sanjose_warehouse_shift_${toDayKey(new Date())}`
+  const [themeMode, setThemeMode] = useState<AppThemeMode>(() => getSavedAppTheme())
   const [warehouseResponsible, setWarehouseResponsible] = useState(() => localStorage.getItem('sanjose_warehouse_responsible') || '')
   const [needsWarehouseShift, setNeedsWarehouseShift] = useState(() => role === 'warehouse' && localStorage.getItem(shiftStorageKey) !== 'ok')
   const [shiftError, setShiftError] = useState('')
   const [savingShift, setSavingShift] = useState(false)
   useEffect(() => {
-    applyAppTheme(SAN_JOSE_APP_CONFIG.theme)
-  }, [])
+    applyAppTheme(SAN_JOSE_APP_CONFIG.theme, themeMode)
+  }, [themeMode])
 
   const can = useMemo(() => (permission: Permission) => hasPermission(role, permission), [role])
 
@@ -304,6 +307,20 @@ export function DistributionApp({
           <div className="flex shrink-0 items-center gap-2">
             <span className="sm:hidden"><SyncStatusPill state={syncState} compact /></span>
             <span className="hidden sm:inline-flex"><SyncStatusPill state={syncState} /></span>
+            <button
+              type="button"
+              onClick={() => {
+                const nextTheme: AppThemeMode = themeMode === 'dark' ? 'light' : 'dark'
+                saveAppTheme(nextTheme)
+                setThemeMode(nextTheme)
+              }}
+              aria-label={themeMode === 'dark' ? 'Activar tema claro' : 'Activar tema oscuro'}
+              aria-pressed={themeMode === 'dark'}
+              title={themeMode === 'dark' ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"
+            >
+              {themeMode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
             <button type="button" onClick={() => setIsDiagnosticsOpen(true)} aria-label="Consultar diagnóstico de errores" title="Diagnóstico de errores" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"><Bug size={16} /></button>
             {rejectedOperationCount > 0 && <span title="Revisa las alertas para ver el motivo de las operaciones rechazadas." className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-black text-rose-800"><AlertTriangle size={12} />{rejectedOperationCount} rechazadas</span>}
             <button
@@ -359,7 +376,18 @@ export function DistributionApp({
 
         <main className="min-w-0 flex-1 pb-bottom-nav">
           {data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}
-          {syncState.lastError && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{syncState.lastError} <button className="ml-2 underline" onClick={dismissSyncError}>Entendido</button></p>}
+          {syncState.lastError && <section role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+            <p className="font-semibold">{syncState.lastError}</p>
+            {syncState.lastErrorDetails?.legacy ? (
+              <p className="mt-1 text-xs">Este aviso fue guardado por una versión anterior y no conserva tipo, identificador ni hora. Por sí solo no permite saber si fue un error actual o antiguo; revisa las operaciones pendientes/rechazadas antes de repetir cualquier acción.</p>
+            ) : syncState.lastErrorDetails && <p className="mt-1 break-words text-xs">
+              Operación: {syncState.lastErrorDetails.operationType || 'no identificada'}
+              {syncState.lastErrorDetails.operationId ? ` · ID ${syncState.lastErrorDetails.operationId}` : ''}
+              {syncState.lastErrorDetails.occurredAt ? ` · ${new Date(syncState.lastErrorDetails.occurredAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}` : ''}
+              {syncState.lastErrorDetails.errorCode ? ` · código ${syncState.lastErrorDetails.errorCode}` : ''}
+            </p>}
+            <button className="mt-1 underline" onClick={dismissSyncError}>Cerrar aviso (no elimina operaciones)</button>
+          </section>}
           {data.operations.filter(o => o.status === 'queued').length > 0 && <p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o => o.status === 'queued').length}. Se guardaron en el dispositivo y se enviarán al recuperar conexión. No vuelvas a registrarlas.</p>}
           {data.operations.filter(o => o.status === 'rejected' && !o.acknowledged).map(o => {
             const payload = o.payload as { customerId?: string; customerName?: string; receivable?: { customerName?: string }; lotId?: string; productId?: string; lotCode?: string }
