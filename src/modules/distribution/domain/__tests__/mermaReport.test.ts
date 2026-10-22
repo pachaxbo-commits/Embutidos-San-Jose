@@ -1,5 +1,5 @@
 import { computeMermaReport } from '../mermaReport.ts'
-import type { DistClosure, DistProduct, DistRoute, DistSale, DistStockMovement } from '../../types.ts'
+import type { DistClosure, DistLot, DistProduct, DistRoute, DistSale, DistStockMovement } from '../../types.ts'
 
 const product: DistProduct = { id: 'p', name: 'Viena granel', category: 'Embutidos', unitType: 'kg', referencePrice: 10, active: true, sortOrder: 1, restaurantId: 'sanjose', createdAt: '2026-01-01T00:00:00.000Z' }
 const routes: DistRoute[] = [
@@ -82,4 +82,56 @@ const mixedLotCostSale = sale('sale-mixed-cost', { allocations: [
   { lotId: 'lot-2', lotCode: 'LOT-2', expiresOn: '2026-12-31', quantity: 1.1, productionCost: 6 },
 ] })
 expect(computeMermaReport([movement('sale-mixed-cost', 'sale', 2.1, { refId: 'sale-mixed-cost' })], [product], routes, [], { dayKeys: ['2026-10-19'] }, [], [mixedLotCostSale]).rows[0]?.lossCost, null, 'No estima costo cuando las asignaciones tienen costos distintos')
+
+const closureForReconciliation = (dispatchId: string, returnMerma: number, expectedReturn = 10.2): DistClosure => ({
+  ...closure, id: `closure-${dispatchId}`, dispatchId, dayKey: '2026-10-19', status: 'closed',
+  products: [{ productId: 'p', productName: product.name, unitType: 'kg', initialDispatch: expectedReturn - 0.2, additions: 0.2, totalLoaded: expectedReturn, sold: 0, expectedReturn, actualReturn: expectedReturn - returnMerma, returnMerma, physicalReturn: expectedReturn, variance: 0 }],
+})
+const lots: DistLot[] = [
+  { id: 'pending-lot', restaurantId: 'sanjose', productId: 'p', productName: product.name, unitType: 'kg', lotCode: 'SOBRANTE POR REVISAR', manufacturedOn: '', expiresOn: '', productionCost: null, quantities: { central: 0.05 }, quarantined: true, createdAt: '', createdBy: 'admin' },
+  { id: 'resolved-lot', restaurantId: 'sanjose', productId: 'p', productName: product.name, unitType: 'kg', lotCode: 'LOT-R', manufacturedOn: '', expiresOn: '', productionCost: 5, quantities: { central: 0 }, quarantined: false, createdAt: '', createdBy: 'admin', quarantineResolvedAt: '2026-10-20T12:00:00.000Z', quarantineResolution: 'released_existing_lot' },
+]
+const fullReturnReport = computeMermaReport([
+  movement('sent-merma', 'dispatch', 10.2, { routeId: 'domingo-real', refId: 'dispatch-full', dispatchMerma: 0.2, normalQuantity: 10 }),
+  movement('returned-merma', 'return_merma', 0.2, { routeId: 'domingo-real', dispatchId: 'dispatch-full' }),
+], [product], routes, [closureForReconciliation('dispatch-full', 0.2)], { dayKeys: ['2026-10-19'] })
+expect(fullReturnReport.consolidated.dispatchMermaSent.kg, 0.2, '10 normal + 0.2 merma contabiliza solo el componente merma enviado')
+expect(fullReturnReport.consolidated.recoverableMermaRecordedAtWarehouse.kg, 0.2, 'Merma recuperable registrada por almacén')
+expect(fullReturnReport.consolidated.recoverableMermaReturnedToStock.kg, 0.2, 'Merma confirmada en stock se cuenta una sola vez')
+expect(fullReturnReport.consolidated.unreturnedNewMermaPending.kg, 0, 'Retorno idéntico deja cero merma pendiente')
+expect(fullReturnReport.consolidated.byDispatchProduct[0]?.physicalReturn, 10.2, 'Conciliación conserva el total físico recibido')
+
+const partialReturnReport = computeMermaReport([
+  movement('sent-partial', 'dispatch', 10.2, { routeId: 'domingo-real', refId: 'dispatch-partial', dispatchMerma: 0.2, normalQuantity: 10 }),
+  movement('returned-partial', 'return_merma', 0.1, { routeId: 'domingo-real', dispatchId: 'dispatch-partial' }),
+], [product], routes, [closureForReconciliation('dispatch-partial', 0.1)], { dayKeys: ['2026-10-19'] })
+expect(partialReturnReport.consolidated.unreturnedNewMermaPending.kg, 0.1, 'Merma nueva parcialmente retornada queda pendiente, no pérdida')
+expect(partialReturnReport.consolidated.confirmedUnfit.kg, 0, 'No convierte la merma restante en producto no apto')
+
+const legacyPendingReport = computeMermaReport([
+  movement('legacy-waste', 'dispatch_waste', 0.2, { routeId: 'domingo-real', dispatchId: 'legacy-dispatch', lossCost: 3 }),
+  movement('legacy-return', 'return_merma', 0.08, { routeId: 'domingo-real', dispatchId: 'legacy-dispatch' }),
+], [product], routes, [closureForReconciliation('legacy-dispatch', 0.08)], { dayKeys: ['2026-10-19'] })
+expect(legacyPendingReport.consolidated.legacyDispatchWastePending.kg, 0.2, 'dispatch_waste histórico no se reinterpreta por proximidad')
+expect(legacyPendingReport.consolidated.legacyDispatchWasteCost.amount, 3, 'Costo histórico asociado se conserva aparte y en Bs')
+expect(legacyPendingReport.consolidated.legacyWasteReturnDifferenceCandidate.kg, 0.12, 'Diferencia histórica se informa solo como cálculo aritmético no validado')
+expect(legacyPendingReport.consolidated.byDispatchProduct[0]?.recoverableMermaRecordedAtWarehouse, 0.08, 'El filtro legacy conserva contexto de recepción vinculada')
+expect(legacyPendingReport.consolidated.unreturnedNewMermaPending.kg, 0, 'No compensa legacy waste con return_merma sin prueba de vínculo semántico')
+
+const overageReport = computeMermaReport([
+  movement('over-pending', 'overage', 0.05, { routeId: 'domingo-real', dispatchId: 'dispatch-over', lotId: 'pending-lot' }),
+  movement('over-resolved', 'overage', 0.03, { routeId: 'domingo-real', dispatchId: 'dispatch-over-2', lotId: 'resolved-lot' }),
+], [product], routes, [], { dayKeys: ['2026-10-19'] }, [], [], lots)
+expect(overageReport.consolidated.overagePendingReview.kg, 0.05, 'Cuarentena sin resolver se separa')
+expect(overageReport.consolidated.overageResolved.kg, 0.03, 'Cuarentena resuelta se separa')
+expect(overageReport.consolidated.overageStatusUnknown.kg, 0, 'Lotes vinculados permiten estado determinable')
+expect(overageReport.consolidated.byDispatchProduct.length, 2, 'Múltiples productos/despachos no colisionan por dispatchId')
+
+const skuTwo: DistProduct = { ...product, id: 'sku-two', name: 'Viena económica' }
+const separateSkuReport = computeMermaReport([
+  movement('same-dispatch-p1', 'dispatch', 10.2, { productId: 'p', routeId: 'domingo-real', refId: 'same-dispatch', dispatchMerma: 0.2, normalQuantity: 10 }),
+  movement('same-dispatch-p2', 'dispatch', 4.1, { productId: 'sku-two', productName: skuTwo.name, routeId: 'domingo-real', refId: 'same-dispatch', dispatchMerma: 0.1, normalQuantity: 4 }),
+], [product, skuTwo], routes, [], { dayKeys: ['2026-10-19'] })
+expect(separateSkuReport.consolidated.byDispatchProduct.length, 2, 'SKU distintos permanecen separados dentro del mismo despacho')
+expect(separateSkuReport.consolidated.dispatchMermaSent.kg, 0.3, 'Consolidado agrega cantidades por unidad, sin colisión SKU')
 console.log('PASS mermaReport.test.ts')
