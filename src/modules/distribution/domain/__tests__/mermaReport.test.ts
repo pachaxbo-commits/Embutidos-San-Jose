@@ -106,6 +106,16 @@ expect(fullReturnReport.byMonth[0]?.returnMermaStockConfirmed, 0.2, 'Acumulado m
 expect(fullReturnReport.consolidated.unreturnedNewMermaPending.kg, 0, 'Retorno idéntico deja cero merma pendiente')
 expect(fullReturnReport.consolidated.byDispatchProduct[0]?.physicalReturn, 10.2, 'Conciliación conserva el total físico recibido')
 
+const salesSettledMerma = computeMermaReport([
+  movement('settlement-dispatch', 'dispatch', 90.1, { routeId: 'domingo-real', refId: 'dispatch-settlement', dispatchMerma: 2.1, normalQuantity: 88 }),
+  movement('settlement-return', 'return_merma', 0.08, { routeId: 'domingo-real', dispatchId: 'dispatch-settlement', centralDelta: 0.08 }),
+  movement('settlement-sale', 'dispatch_merma_sale', 2.02, { routeId: 'domingo-real', dispatchId: 'dispatch-settlement', routeDelta: -2.02, centralDelta: 0, costOfSales: 20.2 }),
+], [product], routes, [closureForReconciliation('dispatch-settlement', 0.08, 4.08)], { dayKeys: ['2026-10-19'] })
+expect(salesSettledMerma.totals.dispatch_merma_in_sales.kg, 2.02, 'Merma adicional conciliada con ventas se separa del envío y de las pérdidas')
+expect(salesSettledMerma.consolidated.dispatchMermaIncludedInSales.kg, 2.02, 'Resumen consolida la cantidad comercial solo una vez')
+expect(salesSettledMerma.consolidated.unreturnedNewMermaPending.kg, 0, 'No queda diferencia cuando envío = recuperado + venta física')
+expect(salesSettledMerma.rows.find(row => row.id === 'settlement-sale')?.commercialCost, 20.2, 'Costo de la merma comercial se informa como costo de venta, no pérdida')
+
 const partialReturnReport = computeMermaReport([
   movement('sent-partial', 'dispatch', 10.2, { routeId: 'domingo-real', refId: 'dispatch-partial', dispatchMerma: 0.2, normalQuantity: 10 }),
   movement('returned-partial', 'return_merma', 0.1, { routeId: 'domingo-real', dispatchId: 'dispatch-partial', centralDelta: 0.1 }),

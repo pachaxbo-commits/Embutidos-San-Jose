@@ -27,6 +27,7 @@ export type StockMovementType =
   | 'adjustment' // ajuste manual de almacen
   | 'dispatch_correction' // correccion auditada de despacho o aumento
   | 'dispatch_waste' // merma descontada al despachar productos al peso
+  | 'dispatch_merma_sale' // merma adicional físicamente entregada dentro de ventas; su costo forma parte del COGS, no es pérdida
   | 'return_waste' // merma confirmada por almacén al recibir una ruta
   | 'return_waste_unassigned' // pérdida recibida sin lote de origen trazable
   | 'courtesy' // producto entregado gratuitamente
@@ -150,6 +151,8 @@ export interface DistStockMovement extends DistBaseDoc {
   /** Desglose informativo de carga física; no representa pérdida. */
   normalQuantity?: number
   dispatchMerma?: number
+  /** Costo histórico de la merma adicional conciliada como salida física dentro de ventas. */
+  costOfSales?: number | null
   chargedQuantity?: number
   excessWeightQuantity?: number
   centralDelta: number
@@ -515,6 +518,12 @@ export interface DistClosureProductRow {
   sold: number
   courtesy?: number
   expectedReturn: number
+  normalExpectedReturn?: number
+  dispatchMermaSent?: number
+  dispatchMermaIncludedInSales?: number
+  dispatchMermaReconciliationStatus?: 'included_in_sales' | 'reconciled_with_unfit' | 'returned' | 'pending_review'
+  dispatchMermaSaleCost?: number | null
+  dispatchMermaSaleMovementId?: string
   /** Cantidad total declarada por el distribuidor; no es necesariamente producto apto. */
   declaredReturn?: number
   declaredReturnNormal?: number

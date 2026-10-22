@@ -1,7 +1,7 @@
 import { matchesRoute, toDayKey } from './engine.ts'
 import type { DistClosure, DistDispatch, DistLot, DistProduct, DistRoute, DistSale, DistStockMovement, UnitType } from '../types.ts'
 
-export type MermaReportKind = 'dispatch_merma' | 'dispatch_waste' | 'return_merma' | 'unfit' | 'shortage' | 'overage' | 'admin_sale_excess'
+export type MermaReportKind = 'dispatch_merma' | 'dispatch_merma_in_sales' | 'dispatch_waste' | 'return_merma' | 'unfit' | 'shortage' | 'overage' | 'admin_sale_excess'
 export type MermaReviewState = 'reintegrated_stock' | 'recorded_not_reintegrated' | 'quarantine_released' | 'quarantine_discarded' | 'quarantine_rectified' | 'quarantine_resolution_unknown' | 'confirmed_loss' | 'physical_difference' | 'pending_review' | 'informational'
 export interface MermaQuantities { kg: number; package: number; unit: number }
 
@@ -9,11 +9,13 @@ export interface MermaDispatchReconciliationRow {
   dispatchId: string; dayKey: string; routeId: string; routeName: string; distributorUid: string; distributorName: string
   productId: string; productName: string; unitType: UnitType; expectedReturn: number | null; physicalReturn: number | null
   dispatchMermaSent: number; recoverableMermaRecordedAtWarehouse: number; recoverableMermaReturnedToStock: number; recoverableMermaStockGap: number
+  dispatchMermaIncludedInSales: number
   legacyDispatchWastePending: number; legacyWasteReturnDifferenceCandidate: number; unreturnedNewMermaPending: number; shortage: number; overage: number
 }
 
 export interface MermaConsolidatedSummary {
   dispatchMermaSent: MermaQuantities; recoverableMermaRecordedAtWarehouse: MermaQuantities
+  dispatchMermaIncludedInSales: MermaQuantities
   recoverableMermaReturnedToStock: MermaQuantities; recoverableMermaStockGap: MermaQuantities; unreturnedNewMermaPending: MermaQuantities
   legacyDispatchWastePending: MermaQuantities; legacyDispatchWasteCost: { amount: number | null; complete: boolean }
   legacyWasteReturnDifferenceCandidate: MermaQuantities
@@ -49,6 +51,7 @@ export interface MermaReportRow {
   note: string
   reason: string
   lossCost: number | null
+  commercialCost: number | null
   quarantineResolution?: DistLot['quarantineResolution']
   quarantineResolvedAt?: string
   quarantineResolvedByName?: string
@@ -69,17 +72,18 @@ export interface MermaReportFilters {
 
 export interface MermaReportResult {
   rows: MermaReportRow[]
-  byProduct: Array<{ productId: string; productName: string; unitType: UnitType; dispatchMerma: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
-  byRoute: Array<{ routeId: string; routeName: string; unitType: UnitType; dispatchMerma: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
-  byDate: Array<{ dayKey: string; unitType: UnitType; dispatchMerma: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
-  byWeek: Array<{ periodKey: string; unitType: UnitType; dispatchMerma: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
-  byMonth: Array<{ periodKey: string; unitType: UnitType; dispatchMerma: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
+  byProduct: Array<{ productId: string; productName: string; unitType: UnitType; dispatchMerma: number; dispatchMermaIncludedInSales: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
+  byRoute: Array<{ routeId: string; routeName: string; unitType: UnitType; dispatchMerma: number; dispatchMermaIncludedInSales: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
+  byDate: Array<{ dayKey: string; unitType: UnitType; dispatchMerma: number; dispatchMermaIncludedInSales: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
+  byWeek: Array<{ periodKey: string; unitType: UnitType; dispatchMerma: number; dispatchMermaIncludedInSales: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
+  byMonth: Array<{ periodKey: string; unitType: UnitType; dispatchMerma: number; dispatchMermaIncludedInSales: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>
   totals: Record<MermaReportKind, { kg: number; package: number; unit: number }>
   consolidated: MermaConsolidatedSummary
 }
 
 const labels: Record<MermaReportKind, string> = {
   dispatch_merma: 'Merma adicional recuperable en despacho',
+  dispatch_merma_in_sales: 'Merma adicional enviada dentro de ventas',
   dispatch_waste: 'Merma histórica registrada al despachar · pendiente de validar',
   return_merma: 'Merma recuperable al retorno',
   unfit: 'Producto no apto / pérdida',
@@ -94,6 +98,7 @@ function roundQuantity(value: number, unitType: UnitType): number {
 }
 
 function kindForMovement(movement: DistStockMovement): MermaReportKind | null {
+  if (movement.type === 'dispatch_merma_sale') return 'dispatch_merma_in_sales'
   if ((movement.type === 'dispatch' || movement.type === 'dispatch_addition') && Number(movement.dispatchMerma) > 0) return 'dispatch_merma'
   if (movement.type === 'dispatch_waste') return 'dispatch_waste'
   if (movement.type === 'return_merma') return 'return_merma'
@@ -188,6 +193,7 @@ export function computeMermaReport(
       distributorUid: linkedSale?.sellerUid || closure?.distributorUid || dispatch?.distributorUid || '', distributorName: linkedSale?.sellerName || closure?.distributorName || dispatch?.distributorName || movement.responsibleName || 'No disponible',
       lotCode: movement.lotCode || '', note: movement.note || '', reason: (movement as DistStockMovement & { reason?: string }).reason || '',
       lossCost: kind === 'admin_sale_excess' ? excessCost : kind === 'unfit' || kind === 'shortage' || kind === 'dispatch_waste' ? (typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost) ? movement.lossCost : null) : null,
+      commercialCost: kind === 'dispatch_merma_in_sales' && typeof movement.costOfSales === 'number' && Number.isFinite(movement.costOfSales) ? movement.costOfSales : null,
       quarantineResolution: linkedLot?.quarantineResolution,
       quarantineResolvedAt: linkedLot?.quarantineResolvedAt,
       quarantineResolvedByName: linkedLot?.quarantineResolvedByName,
@@ -197,7 +203,7 @@ export function computeMermaReport(
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 
   const totals: MermaReportResult['totals'] = {
-    dispatch_merma: { kg: 0, package: 0, unit: 0 }, dispatch_waste: { kg: 0, package: 0, unit: 0 },
+    dispatch_merma: { kg: 0, package: 0, unit: 0 }, dispatch_merma_in_sales: { kg: 0, package: 0, unit: 0 }, dispatch_waste: { kg: 0, package: 0, unit: 0 },
     return_merma: { kg: 0, package: 0, unit: 0 }, unfit: { kg: 0, package: 0, unit: 0 }, shortage: { kg: 0, package: 0, unit: 0 }, overage: { kg: 0, package: 0, unit: 0 }, admin_sale_excess: { kg: 0, package: 0, unit: 0 },
   }
   const byProductMap = new Map<string, MermaReportResult['byProduct'][number]>()
@@ -205,18 +211,18 @@ export function computeMermaReport(
   const byDateMap = new Map<string, MermaReportResult['byDate'][number]>()
   for (const row of rows) {
     totals[row.kind][row.unitType] = roundQuantity(totals[row.kind][row.unitType] + row.quantity, row.unitType)
-    const product = byProductMap.get(row.productId) || { productId: row.productId, productName: row.productName, unitType: row.unitType, dispatchMerma: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 }
-    const productKey = row.kind === 'dispatch_merma' ? 'dispatchMerma' : row.kind === 'dispatch_waste' ? 'dispatchWaste' : row.kind === 'return_merma' ? 'returnMerma' : row.kind === 'admin_sale_excess' ? 'adminSaleExcess' : row.kind
+    const product = byProductMap.get(row.productId) || { productId: row.productId, productName: row.productName, unitType: row.unitType, dispatchMerma: 0, dispatchMermaIncludedInSales: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 }
+    const productKey = row.kind === 'dispatch_merma' ? 'dispatchMerma' : row.kind === 'dispatch_merma_in_sales' ? 'dispatchMermaIncludedInSales' : row.kind === 'dispatch_waste' ? 'dispatchWaste' : row.kind === 'return_merma' ? 'returnMerma' : row.kind === 'admin_sale_excess' ? 'adminSaleExcess' : row.kind
     product[productKey] = roundQuantity(product[productKey] + row.quantity, row.unitType)
     if (row.kind === 'return_merma' && row.reviewState === 'reintegrated_stock') product.returnMermaStockConfirmed = roundQuantity(product.returnMermaStockConfirmed + row.quantity, row.unitType)
     byProductMap.set(row.productId, product)
     const routeKey = `${row.routeId}__${row.unitType}`
-    const route = byRouteMap.get(routeKey) || { routeId: row.routeId, routeName: row.routeName, unitType: row.unitType, dispatchMerma: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 }
+    const route = byRouteMap.get(routeKey) || { routeId: row.routeId, routeName: row.routeName, unitType: row.unitType, dispatchMerma: 0, dispatchMermaIncludedInSales: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 }
     route[productKey] = roundQuantity(route[productKey] + row.quantity, row.unitType)
     if (row.kind === 'return_merma' && row.reviewState === 'reintegrated_stock') route.returnMermaStockConfirmed = roundQuantity(route.returnMermaStockConfirmed + row.quantity, row.unitType)
     byRouteMap.set(routeKey, route)
     const dateKey = `${row.dayKey}__${row.unitType}`
-    const date = byDateMap.get(dateKey) || { dayKey: row.dayKey, unitType: row.unitType, dispatchMerma: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 }
+    const date = byDateMap.get(dateKey) || { dayKey: row.dayKey, unitType: row.unitType, dispatchMerma: 0, dispatchMermaIncludedInSales: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 }
     date[productKey] = roundQuantity(date[productKey] + row.quantity, row.unitType)
     if (row.kind === 'return_merma' && row.reviewState === 'reintegrated_stock') date.returnMermaStockConfirmed = roundQuantity(date.returnMermaStockConfirmed + row.quantity, row.unitType)
     byDateMap.set(dateKey, date)
@@ -251,15 +257,15 @@ function weekKey(dayKey: string): string {
   return `${year}-S${String(week).padStart(2, '0')}`
 }
 
-function aggregateDates<T extends { dayKey: string; unitType: UnitType; dispatchMerma: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>(
+function aggregateDates<T extends { dayKey: string; unitType: UnitType; dispatchMerma: number; dispatchMermaIncludedInSales: number; dispatchWaste: number; returnMerma: number; returnMermaStockConfirmed: number; unfit: number; shortage: number; overage: number; adminSaleExcess: number }>(
   dates: T[], keyForDay: (dayKey: string) => string,
 ): Array<Omit<T, 'dayKey'> & { periodKey: string }> {
   const grouped = new Map<string, Omit<T, 'dayKey'> & { periodKey: string }>()
   for (const row of dates) {
     const periodKey = keyForDay(row.dayKey)
     const key = `${periodKey}__${row.unitType}`
-    const current = grouped.get(key) || { periodKey, unitType: row.unitType, dispatchMerma: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 } as Omit<T, 'dayKey'> & { periodKey: string }
-    for (const field of ['dispatchMerma', 'dispatchWaste', 'returnMerma', 'returnMermaStockConfirmed', 'unfit', 'shortage', 'overage', 'adminSaleExcess'] as const) {
+    const current = grouped.get(key) || { periodKey, unitType: row.unitType, dispatchMerma: 0, dispatchMermaIncludedInSales: 0, dispatchWaste: 0, returnMerma: 0, returnMermaStockConfirmed: 0, unfit: 0, shortage: 0, overage: 0, adminSaleExcess: 0 } as Omit<T, 'dayKey'> & { periodKey: string }
+    for (const field of ['dispatchMerma', 'dispatchMermaIncludedInSales', 'dispatchWaste', 'returnMerma', 'returnMermaStockConfirmed', 'unfit', 'shortage', 'overage', 'adminSaleExcess'] as const) {
       current[field] = roundQuantity(current[field] + row[field], row.unitType)
     }
     grouped.set(key, current)
@@ -269,7 +275,7 @@ function aggregateDates<T extends { dayKey: string; unitType: UnitType; dispatch
 
 function consolidateMermaReport(rows: MermaReportRow[], closures: DistClosure[], filters: MermaReportFilters, lots: DistLot[]): MermaConsolidatedSummary {
   const summary: MermaConsolidatedSummary = {
-    dispatchMermaSent: emptyQuantities(), recoverableMermaRecordedAtWarehouse: emptyQuantities(), recoverableMermaReturnedToStock: emptyQuantities(), recoverableMermaStockGap: emptyQuantities(),
+    dispatchMermaSent: emptyQuantities(), dispatchMermaIncludedInSales: emptyQuantities(), recoverableMermaRecordedAtWarehouse: emptyQuantities(), recoverableMermaReturnedToStock: emptyQuantities(), recoverableMermaStockGap: emptyQuantities(),
     unreturnedNewMermaPending: emptyQuantities(), legacyDispatchWastePending: emptyQuantities(), legacyDispatchWasteCost: { amount: 0, complete: true }, legacyWasteReturnDifferenceCandidate: emptyQuantities(),
     confirmedUnfit: emptyQuantities(), confirmedUnfitCost: { amount: 0, complete: true }, shortage: emptyQuantities(),
     overagePendingReview: emptyQuantities(), overageResolved: emptyQuantities(), overageReleasedToSellable: emptyQuantities(),
@@ -286,7 +292,7 @@ function consolidateMermaReport(rows: MermaReportRow[], closures: DistClosure[],
       dispatchId, dayKey: seed.dayKey || '', routeId: seed.routeId || '', routeName: seed.routeName || 'Ruta no disponible',
       distributorUid: seed.distributorUid || '', distributorName: seed.distributorName || 'No disponible',
       productId: seed.productId || '', productName: seed.productName || 'Producto', unitType: seed.unitType || 'kg',
-      expectedReturn: null, physicalReturn: null, dispatchMermaSent: 0, recoverableMermaRecordedAtWarehouse: 0,
+      expectedReturn: null, physicalReturn: null, dispatchMermaSent: 0, dispatchMermaIncludedInSales: 0, recoverableMermaRecordedAtWarehouse: 0,
       recoverableMermaReturnedToStock: 0, recoverableMermaStockGap: 0, legacyDispatchWastePending: 0, legacyWasteReturnDifferenceCandidate: 0, unreturnedNewMermaPending: 0, shortage: 0, overage: 0,
     }
     dispatchRows.set(key, created)
@@ -319,9 +325,13 @@ function consolidateMermaReport(rows: MermaReportRow[], closures: DistClosure[],
       }
     }
 
-    if (!row.dispatchId || !['dispatch_merma', 'dispatch_waste', 'return_merma', 'shortage', 'overage'].includes(row.kind)) continue
+    if (!row.dispatchId || !['dispatch_merma', 'dispatch_merma_in_sales', 'dispatch_waste', 'return_merma', 'shortage', 'overage'].includes(row.kind)) continue
     const target = getDispatchRow(row.dispatchId, row)
     if (row.kind === 'dispatch_merma') target.dispatchMermaSent = roundQuantity(target.dispatchMermaSent + row.quantity, row.unitType)
+    if (row.kind === 'dispatch_merma_in_sales') {
+      target.dispatchMermaIncludedInSales = roundQuantity(target.dispatchMermaIncludedInSales + row.quantity, row.unitType)
+      addQuantity(summary.dispatchMermaIncludedInSales, row.unitType, row.quantity)
+    }
     if (row.kind === 'dispatch_waste') target.legacyDispatchWastePending = roundQuantity(target.legacyDispatchWastePending + row.quantity, row.unitType)
     if (row.kind === 'return_merma' && row.reviewState === 'reintegrated_stock') target.recoverableMermaReturnedToStock = roundQuantity(target.recoverableMermaReturnedToStock + row.quantity, row.unitType)
     if (row.kind === 'shortage') target.shortage = roundQuantity(target.shortage + row.quantity, row.unitType)
@@ -359,7 +369,7 @@ function consolidateMermaReport(rows: MermaReportRow[], closures: DistClosure[],
     if (row.recoverableMermaStockGap > 0) addQuantity(summary.recoverableMermaStockGap, row.unitType, row.recoverableMermaStockGap)
     // This is only an unreconciled comparison: the unreturned portion may have
     // been sold or otherwise moved. It is never labeled or costed as a loss.
-    row.unreturnedNewMermaPending = roundQuantity(Math.max(0, row.dispatchMermaSent - row.recoverableMermaRecordedAtWarehouse), row.unitType)
+    row.unreturnedNewMermaPending = roundQuantity(Math.max(0, row.dispatchMermaSent - row.recoverableMermaRecordedAtWarehouse - row.dispatchMermaIncludedInSales), row.unitType)
     if (row.unreturnedNewMermaPending > 0) addQuantity(summary.unreturnedNewMermaPending, row.unitType, row.unreturnedNewMermaPending)
     row.legacyWasteReturnDifferenceCandidate = roundQuantity(Math.max(0, row.legacyDispatchWastePending - row.recoverableMermaRecordedAtWarehouse), row.unitType)
     if (row.legacyWasteReturnDifferenceCandidate > 0) addQuantity(summary.legacyWasteReturnDifferenceCandidate, row.unitType, row.legacyWasteReturnDifferenceCandidate)

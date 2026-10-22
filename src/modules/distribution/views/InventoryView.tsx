@@ -26,7 +26,7 @@ import { QuarantineView } from './QuarantineView'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
-  dispatch_addition: 'Aumento de despacho', dispatch_correction: 'Corrección de despacho',
+  dispatch_addition: 'Aumento de despacho', dispatch_correction: 'Corrección de despacho', dispatch_merma_sale: 'Merma adicional enviada dentro de ventas',
   sale: 'Venta', adjustment: 'Disminución por ajuste', return: 'Devolución recibida',
   shortage: 'Faltante', overage: 'Sobrante', exchange: 'Cambio de producto',
   return_merma: 'Merma recuperable al retorno', return_waste: 'Producto no apto al recibir retorno',

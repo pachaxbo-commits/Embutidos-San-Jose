@@ -101,7 +101,7 @@ export function computeOperatingResult(
     'forma de pago': expense.paymentMethod === 'cash' ? 'Efectivo' : expense.paymentMethod === 'transfer' ? 'QR / transferencia' : 'Otro',
     monto: expense.amount,
   }))
-  const saleRows = report.allLineDetails.filter((line) => !line.isClaimRelated).map((line) => ({
+  const saleRows = report.allLineDetails.filter((line) => !line.isClaimRelated && !line.isDispatchMermaCost).map((line) => ({
     fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, cliente: line.customerName,
     origen: displayOrigin(undefined, line.routeName), responsable: line.sellerName, monto: line.saleBs,
   }))
@@ -111,7 +111,7 @@ export function computeOperatingResult(
   const movementTypeLabel: Record<DistStockMovement['type'], string> = {
     intake: 'Ingreso de inventario', dispatch: 'Despacho', dispatch_addition: 'Aumento de despacho', sale: 'Venta',
     sale_correction: 'Corrección de venta', return: 'Retorno', adjustment: 'Ajuste de inventario',
-    dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', return_waste: 'Merma al retorno',
+    dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', dispatch_merma_sale: 'Merma adicional dentro de ventas', return_waste: 'Merma al retorno',
     return_merma: 'Merma recuperable al retorno', return_waste_unassigned: 'Pérdida sin lote de origen identificado',
     courtesy: 'Cortesía', shortage: 'Faltante', overage: 'Sobrante',
     quarantine_release: 'Liberación auditada de cuarentena', quarantine_discard: 'Descarte auditado de cuarentena',

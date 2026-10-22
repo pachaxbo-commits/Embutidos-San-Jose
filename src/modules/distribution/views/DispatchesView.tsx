@@ -51,6 +51,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [draftLines, setDraftLines] = useState<DraftLine[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [confirmingLoadType, setConfirmingLoadType] = useState<'dispatch' | 'addition' | null>(null)
   const [search, setSearch] = useState('')
   const [isProductPickerOpen, setIsProductPickerOpen] = useState(false)
   const [isDistributorPickerOpen, setIsDistributorPickerOpen] = useState(false)
@@ -474,6 +475,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     setDraftLines([])
     setError(null)
     setSearch('')
+    setConfirmingLoadType(null)
   }
 
   const lotLocation = effectiveWarehouse === 'central' ? 'central' : `warehouse__${effectiveWarehouse}`
@@ -544,7 +546,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     return lines
   }
 
-  const submitDispatch = async () => {
+  const submitDispatch = async (confirmed = false) => {
     if (isSubmitting) return
     setError(null)
 
@@ -571,6 +573,11 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     const distributor = distributors.find((member) => member.uid === distributorUid)
     const route = data.routes.find((item) => item.id === routeId)
 
+    if (!confirmed) {
+      setConfirmingLoadType('dispatch')
+      return
+    }
+
     setIsSubmitting(true)
     try {
       await confirmDispatch({
@@ -586,6 +593,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       })
       localStorage.setItem('sanjose_warehouse_responsible', warehouseResponsibleName.trim())
       setIsNewOpen(false)
+      setConfirmingLoadType(null)
       resetDraft()
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo confirmar el despacho.')
@@ -594,7 +602,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     }
   }
 
-  const submitAddition = async () => {
+  const submitAddition = async (confirmed = false) => {
     if (!additionTarget || isSubmitting) return
     setError(null)
 
@@ -612,6 +620,11 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       return
     }
 
+    if (!confirmed) {
+      setConfirmingLoadType('addition')
+      return
+    }
+
     setIsSubmitting(true)
     try {
       await addDispatchLoad({
@@ -623,6 +636,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         operationId: newOperationId('add'),
       })
       setAdditionTarget(null)
+      setConfirmingLoadType(null)
       resetDraft()
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo registrar el aumento.')
@@ -649,7 +663,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
             <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Disponible: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p></div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
             <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
             {product.unitType === 'kg' && (
-              <Field label="Merma adicional (kg)" hint="Cantidad adicional que también se entrega físicamente al distribuidor.">
+              <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Se envía físicamente con la carga. No es pérdida del almacén ni se cobra por separado.">
                 <NumberInput
                   aria-label={`Merma adicional de ${product.name}`}
                   value={line.dispatchMerma ?? ''}
@@ -753,7 +767,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                         {(() => {
                           const w = (dispatch.lines || []).filter(l => l.productId === productId).reduce((n, l) => n + (l.waste || 0), 0);
                           const merma = [...(dispatch.lines || []), ...(dispatch.additions || []).filter(add => !add.voided).flatMap(add => add.quantityByProduct)].filter(line => line.productId === productId).reduce((n, line) => n + (line.dispatchMerma || 0), 0)
-                          return `${merma > 0 ? ` · Merma adicional: ${formatQty(merma, totals.unitType)}` : ''}${w > 0 ? ` · Pérdida registrada en almacén: ${formatQty(w, totals.unitType)}` : ''}`;
+                          return `${merma > 0 ? ` · Merma adicional enviada dentro de las bolsas: ${formatQty(merma, totals.unitType)}` : ''}${w > 0 ? ` · Pérdida real en Almacén registrada: ${formatQty(w, totals.unitType)}` : ''}`;
                         })()}
                       </p>
                     </div>
@@ -1006,17 +1020,13 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
       <Modal
         isOpen={isNewOpen}
-        onClose={() => setIsNewOpen(false)}
-        title="Nuevo despacho"
+        onClose={() => { setIsNewOpen(false); setConfirmingLoadType(null) }}
+        title={confirmingLoadType === 'dispatch' ? 'Confirmar carga física' : 'Nuevo despacho'}
         subtitle="Descuenta almacen central y carga la ruta"
         size="lg"
-        footer={
-          <PrimaryButton full disabled={isSubmitting} onClick={() => void submitDispatch()}>
-            {isSubmitting ? 'Confirmando...' : 'Confirmar despacho'}
-          </PrimaryButton>
-        }
+        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitDispatch()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
       >
-        <div className="grid gap-3">
+        {confirmingLoadType === 'dispatch' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p><p className="text-sm font-bold text-slate-700">{selectedDistributor?.displayName || 'Distribuidor'} · {data.routes.find(route => route.id === routeId)?.name || 'Ruta'}</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : <div className="grid gap-3">
           <Field label="Almacen de origen"><ChoiceButton disabled={session.role === 'warehouse'} placeholder="Selecciona almacén" label={warehouseId === 'central' ? 'Almacén central' : data.warehouses.find(w => w.id === warehouseId)?.name} onClick={() => setIsWarehousePickerOpen(true)} /></Field>
           <Field label="Distribuidor" required hint="Al elegirlo se toma su ruta asignada.">
             <ChoiceButton placeholder="Selecciona distribuidor" label={selectedDistributor?.displayName} description={selectedDistributor?.routeId ? data.routes.find(route => route.id === selectedDistributor.routeId)?.name ?? 'Ruta de registro anterior' : undefined} onClick={() => setIsDistributorPickerOpen(true)} />
@@ -1036,22 +1046,18 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           )}
 
           {lineEditor}
-        </div>
+        </div>}
       </Modal>
 
       <Modal
         isOpen={Boolean(additionTarget)}
-        onClose={() => setAdditionTarget(null)}
-        title="Aumento de carga"
+        onClose={() => { setAdditionTarget(null); setConfirmingLoadType(null) }}
+        title={confirmingLoadType === 'addition' ? 'Confirmar aumento de carga' : 'Aumento de carga'}
         subtitle={additionTarget ? `${additionTarget.routeName} · ${additionTarget.distributorName}` : ''}
         size="lg"
-        footer={
-          <PrimaryButton full disabled={isSubmitting} onClick={() => void submitAddition()}>
-            {isSubmitting ? 'Guardando...' : 'Registrar aumento'}
-          </PrimaryButton>
-        }
+        footer={confirmingLoadType === 'addition' ? <div className="grid w-full grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitAddition()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
       >
-        {lineEditor}
+        {confirmingLoadType === 'addition' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades adicionales que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : lineEditor}
       </Modal>
 
       <ChoiceModal isOpen={isWarehousePickerOpen} onClose={() => setIsWarehousePickerOpen(false)} title="Almacén de origen" options={[{ value: 'central', label: 'Almacén central' }, ...data.warehouses.filter(w => w.active).map(w => ({ value: w.id, label: w.name }))]} selectedValue={warehouseId} onSelect={value => { setWarehouseId(value); setDraftLines([]) }} />
@@ -1396,7 +1402,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                         </div>
                       </div>
 
-                      {line.unitType === 'kg' && <Field label="Merma adicional incluida (kg)" hint="Parte de la carga física que el distribuidor lleva separada como merma."><NumberInput value={initialMermaDrafts[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.01} max={curVal} onChange={event => setInitialMermaDrafts(current => ({ ...current, [line.productId]: Math.max(0, round2(Number(event.target.value) || 0)) }))} /></Field>}
+                      {line.unitType === 'kg' && <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Parte física de la carga; no es pérdida real del almacén."><NumberInput value={initialMermaDrafts[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.01} max={curVal} onChange={event => setInitialMermaDrafts(current => ({ ...current, [line.productId]: Math.max(0, round2(Number(event.target.value) || 0)) }))} /></Field>}
                       {totalSold > 0 && curVal < totalSold && (
                         <p className="mt-1.5 flex items-center gap-1 text-[10px] font-extrabold text-rose-600">
                           <AlertTriangle size={12} /> No se puede reducir por debajo de lo vendido ({formatQty(totalSold, line.unitType)})
@@ -1547,7 +1553,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                                         )}
                                       </div>
                                     </div>
-                                    {line.unitType === 'kg' && <Field label="Merma adicional incluida (kg)" hint="Parte de la carga física que el distribuidor lleva separada como merma."><NumberInput value={additionMermaDrafts[addition.id]?.[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.01} max={curVal} onChange={event => setAdditionMermaDrafts(current => ({ ...current, [addition.id]: { ...(current[addition.id] || {}), [line.productId]: Math.max(0, round2(Number(event.target.value) || 0)) } }))} /></Field>}
+                                    {line.unitType === 'kg' && <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Parte física de la carga; no es pérdida real del almacén."><NumberInput value={additionMermaDrafts[addition.id]?.[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.01} max={curVal} onChange={event => setAdditionMermaDrafts(current => ({ ...current, [addition.id]: { ...(current[addition.id] || {}), [line.productId]: Math.max(0, round2(Number(event.target.value) || 0)) } }))} /></Field>}
                                     {totalSold > 0 && curVal < totalSold && (
                                       <p className="mt-1 text-[10px] font-bold text-amber-700">
                                         Total vendido registrado en la ruta: {formatQty(totalSold, line.unitType)}

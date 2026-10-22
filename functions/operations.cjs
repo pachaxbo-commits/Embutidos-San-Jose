@@ -2392,12 +2392,15 @@ async function closure(o, p) {
   if (p.mode === "warehouse") {
     o.owns(warehouse);
     check(!previous.warehouseClosedBy, "El retorno ya se confirmó.");
+    const activeDispatchLines = [
+      ...d.lines,
+      ...(d.additions || []).filter((addition) => !addition.voided && !addition.voidedAt)
+        .flatMap((addition) => addition.quantityByProduct || []),
+    ];
+    const activeSales = sales.filter((sale) => !sale.voidedAt && !sale.pendingConfirmation);
     const ids = [
       ...new Set(
-        [
-          ...d.lines,
-          ...(d.additions || []).flatMap((a) => a.quantityByProduct),
-        ].map((l) => l.productId),
+        activeDispatchLines.map((line) => line.productId),
       ),
     ];
     const rows = [];
@@ -2451,8 +2454,45 @@ async function closure(o, p) {
         ? 0
         : quantityRound(Math.min(recoverableMerma, Math.max(0, expected - normalApt)));
       const wasteFromRoute = quantityRound(Math.min(waste, Math.max(0, expected - normalApt - recoverableFromRoute)));
-      const overage = quantityRound(Math.max(0, received - expected));
-      const shortage = quantityRound(Math.max(0, expected - received));
+      const productDispatchLines = activeDispatchLines.filter((line) => line.productId === pid);
+      const normalLoaded = quantityRound(productDispatchLines.reduce((sum, line) => {
+        const merma = Number(line.dispatchMerma) || 0;
+        return sum + (Number.isFinite(Number(line.normalQuantity))
+          ? Number(line.normalQuantity)
+          : Math.max(0, (Number(line.quantity) || 0) - merma));
+      }, 0));
+      const dispatchMermaSent = quantityRound(productDispatchLines.reduce((sum, line) => sum + (Number(line.dispatchMerma) || 0), 0));
+      const productSales = activeSales.flatMap((sale) => (sale.lines || []).map((line) => ({ ...line, saleKind: sale.saleKind })));
+      const nominalSold = quantityRound(productSales.filter((line) => line.saleKind !== "courtesy" && line.productId === pid)
+        .reduce((sum, line) => sum + (Number(line.quantity) || 0), 0));
+      const courtesySold = quantityRound(productSales.filter((line) => line.saleKind === "courtesy" && line.productId === pid)
+        .reduce((sum, line) => sum + (Number(line.quantity) || 0), 0));
+      const expectedNormalReturn = quantityRound(normalLoaded - nominalSold - courtesySold);
+      const precisionTolerance = precision === 3 ? 0.001 : 0.01;
+      // Merma adicional solo se concilia con ventas cuando el saldo transaccional
+      // de ruta, las ventas efectivas y el retorno normal coinciden exactamente.
+      // El producto no apto se descuenta explícitamente del componente adicional;
+      // cualquier diferencia no demostrada queda pendiente y no se imputa a ventas.
+      const canSettleDispatchMerma = !legacySemantics && e.p.unitType === "kg"
+        && dispatchMermaSent > 0 && nominalSold > 0
+        && expectedNormalReturn >= 0
+        && Math.abs(expected - (expectedNormalReturn + dispatchMermaSent)) <= precisionTolerance
+        && Math.abs(actual - expectedNormalReturn) <= precisionTolerance
+        && recoverableMerma + waste <= dispatchMermaSent + precisionTolerance;
+      const allDispatchMermaReturned = !legacySemantics && e.p.unitType === "kg"
+        && dispatchMermaSent > 0 && waste === 0
+        && Math.abs(expected - (expectedNormalReturn + dispatchMermaSent)) <= precisionTolerance
+        && Math.abs(actual - expectedNormalReturn) <= precisionTolerance
+        && Math.abs(recoverableMerma - dispatchMermaSent) <= precisionTolerance;
+      const dispatchMermaIncludedInSales = canSettleDispatchMerma
+        ? quantityRound(Math.max(0, dispatchMermaSent - recoverableMerma - waste))
+        : 0;
+      const adjustedExpected = quantityRound(expected - dispatchMermaIncludedInSales);
+      const overage = quantityRound(Math.max(0, received - adjustedExpected));
+      const shortage = quantityRound(Math.max(0, adjustedExpected - received));
+      check(!(dispatchMermaSent > 0 && !canSettleDispatchMerma && !allDispatchMermaReturned
+        && (shortage > precisionTolerance || overage > precisionTolerance)),
+      "No se puede confirmar esta recepción: la merma adicional enviada no coincide con las ventas y el retorno normal. Revisa las cantidades físicas y las ventas antes de guardar.");
       // Solo se mueven desde ruta cantidades con saldo y lote comprobables.
       // En el modelo nuevo, normal y merma recuperable se conservan como stock;
       // lo no apto se descuenta como pérdida, nunca vuelve al almacén vendible.
@@ -2481,6 +2521,23 @@ async function closure(o, p) {
           allocations: recoverableMermaParts,
           dispatchId: d.id,
           note: "Merma operativa recuperable; vuelve al stock vendible en sus lotes originales.",
+        }, precision);
+      }
+      let dispatchMermaSaleMovementId;
+      let dispatchMermaSaleCost = null;
+      if (dispatchMermaIncludedInSales > 0) {
+        const soldMermaParts = await o.take(pid, route, dispatchMermaIncludedInSales, { allowExpired: true, precision });
+        const costKnown = soldMermaParts.length > 0 && soldMermaParts.every((allocation) => allocation.productionCost !== null);
+        dispatchMermaSaleCost = costKnown
+          ? round(soldMermaParts.reduce((sum, allocation) => sum + allocation.quantity * allocation.productionCost, 0))
+          : null;
+        dispatchMermaSaleMovementId = o.ledger(pid, dispatchMermaIncludedInSales, route, null, "dispatch_merma_sale", {
+          allocations: soldMermaParts,
+          dispatchId: d.id,
+          costOfSales: dispatchMermaSaleCost,
+          dispatchMermaSent,
+          recoverableMermaReturned: recoverableMerma,
+          note: "Parte de la merma adicional enviada que salió dentro de ventas registradas; costo incluido una sola vez en costo de venta, no es pérdida.",
         }, precision);
       }
       if (waste > 0) {
@@ -2517,7 +2574,7 @@ async function closure(o, p) {
           dispatchId: d.id,
         }, precision);
       }
-      const sellableOverage = legacySemantics ? overage : quantityRound(Math.max(0, actual + recoverableMerma - expected));
+      const sellableOverage = legacySemantics ? overage : quantityRound(Math.max(0, actual + recoverableMerma - adjustedExpected));
       if (sellableOverage > 0) {
         const lotId = `${o.id}__surplus_${pid}`;
         e.lots.push({
@@ -2548,7 +2605,7 @@ async function closure(o, p) {
       const initial = d.lines
           .filter((l) => l.productId === pid)
           .reduce((s, l) => s + l.quantity, 0),
-        additions = (d.additions || [])
+        additions = (d.additions || []).filter((addition) => !addition.voided && !addition.voidedAt)
           .flatMap((a) => a.quantityByProduct)
           .filter((l) => l.productId === pid)
           .reduce((s, l) => s + l.quantity, 0);
@@ -2560,18 +2617,26 @@ async function closure(o, p) {
         additions,
         totalLoaded: round(initial + additions),
         sold: round(
-          sales
+          activeSales
             .filter((s) => s.saleKind !== "courtesy")
             .flatMap((s) => s.lines)
             .filter((l) => l.productId === pid)
             .reduce((s, l) => s + l.quantity, 0),
         ),
-        courtesy: round(sales
+        courtesy: round(activeSales
           .filter((s) => s.saleKind === "courtesy")
           .flatMap((s) => s.lines)
           .filter((l) => l.productId === pid)
           .reduce((sum, line) => sum + line.quantity, 0)),
-        expectedReturn: expected,
+        expectedReturn: adjustedExpected,
+        ...(dispatchMermaSent > 0 ? {
+          normalExpectedReturn: expectedNormalReturn,
+          dispatchMermaSent,
+          dispatchMermaIncludedInSales,
+          dispatchMermaReconciliationStatus: dispatchMermaIncludedInSales > 0 ? "included_in_sales" : allDispatchMermaReturned ? "returned" : canSettleDispatchMerma ? "reconciled_with_unfit" : "pending_review",
+          ...(dispatchMermaSaleCost !== null ? { dispatchMermaSaleCost } : {}),
+          ...(dispatchMermaSaleMovementId ? { dispatchMermaSaleMovementId } : {}),
+        } : {}),
         ...(Number.isFinite(Number(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn)) ? { declaredReturn: round((previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn) + (previous.declaredReturnMermas?.[pid] ?? previousProduct?.declaredReturnMerma ?? 0)), declaredReturnNormal: round(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn), declaredReturnMerma: round(previous.declaredReturnMermas?.[pid] ?? previousProduct?.declaredReturnMerma ?? 0) } : {}),
         physicalReturn: received,
         actualReturn: legacySemantics ? normalApt : actual,
@@ -3079,7 +3144,7 @@ handlers.reopen = async (o, p) => {
     const movementsById = new Map();
     for (const operation of closureOperations) {
       for (const movement of await o.query("distStockMovements", "refId", operation.id)) {
-        if (["return", "return_merma", "return_waste", "return_waste_unassigned", "shortage", "overage"].includes(movement.type)) movementsById.set(movement.id, movement);
+        if (["return", "return_merma", "return_waste", "return_waste_unassigned", "shortage", "overage", "dispatch_merma_sale"].includes(movement.type)) movementsById.set(movement.id, movement);
       }
     }
     const movements = [...movementsById.values()].filter((movement) => !reversed.has(movement.id) && !movement.reversedAt);
@@ -3114,6 +3179,15 @@ handlers.reopen = async (o, p) => {
         for (const part of allocations) {
           const lot = e.lots.find((item) => item.id === part.lotId);
           check(lot, "No se puede reabrir: falta un lote original de la ruta.");
+          lot.quantities[route] = round((lot.quantities[route] || 0) + part.quantity);
+        }
+        o.move(e, route, movement.quantity);
+      } else if (movement.type === "dispatch_merma_sale") {
+        const allocations = movement.allocations || [];
+        check(allocations.length > 0, "No se puede reabrir: faltan lotes de la merma adicional conciliada con ventas.");
+        for (const part of allocations) {
+          const lot = e.lots.find((item) => item.id === part.lotId);
+          check(lot, "No se puede reabrir: falta un lote de la merma adicional conciliada.");
           lot.quantities[route] = round((lot.quantities[route] || 0) + part.quantity);
         }
         o.move(e, route, movement.quantity);

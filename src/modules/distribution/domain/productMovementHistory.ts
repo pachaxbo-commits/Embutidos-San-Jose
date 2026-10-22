@@ -3,7 +3,7 @@ import type { DistStockMovement } from '../types.ts'
 export type ProductMovementFilter = 'all' | 'losses' | 'differences' | 'dispatchReturns' | 'intakesAdjustments'
 
 const recoverableOrLoss = new Set(['return_merma', 'return_waste', 'return_waste_unassigned', 'dispatch_waste', 'quarantine_discard'])
-const dispatches = new Set(['dispatch', 'dispatch_addition', 'dispatch_correction'])
+const dispatches = new Set(['dispatch', 'dispatch_addition', 'dispatch_correction', 'dispatch_merma_sale'])
 const returns = new Set(['return', 'return_merma', 'return_waste', 'return_waste_unassigned'])
 const intakeAdjustment = new Set(['intake', 'adjustment', 'transfer', 'sale', 'sale_correction', 'courtesy', 'quarantine_release'])
 

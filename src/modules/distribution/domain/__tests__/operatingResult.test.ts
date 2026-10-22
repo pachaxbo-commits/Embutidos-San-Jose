@@ -43,6 +43,13 @@ const dispatchMermaMovement = movement({ id: 'dispatch-merma', type: 'dispatch',
 const withDispatchMerma = computeOperatingResult([], [], [], [dispatchMermaMovement], ['2026-10-10'])
 equal(withDispatchMerma.losses, 0, 'la merma adicional entregada físicamente a ruta no se cuenta como pérdida')
 equal(withDispatchMerma.operatingResult, 0, 'dispatchMerma no reduce el resultado operativo')
+const commercialMermaCost = computeOperatingResult(
+  [sale({ id: 'commercial-merma-sale', operationId: 'commercial-merma-sale', routeId: 'route-a', lines: [{ productId: 'p1', productNameSnapshot: 'Chorizo', unitType: 'kg', quantity: 84, actualUnitPrice: 10, subtotal: 840, costTotal: 840 }] })],
+  [], [], [movement({ id: 'commercial-merma-cost', type: 'dispatch_merma_sale', quantity: 2.02, dispatchId: 'dispatch-commercial', costOfSales: 20.2, routeDelta: -2.02, lossCost: null })], ['2026-10-10'],
+)
+equal(commercialMermaCost.costOfSales, 860.2, 'el costo del peso adicional completa una vez el costo físico vendido')
+equal(commercialMermaCost.losses, 0, 'el costo comercial no se registra como pérdida operativa')
+equal(commercialMermaCost.report.items[0]?.quantity, 84, 'el peso adicional agregado no inventa peso cobrado ni cantidad de venta')
 const quarantineDiscard = movement({ id: 'quarantine-discard', type: 'quarantine_discard', lossCost: 5 })
 const withQuarantineDiscard = computeOperatingResult([], [], [], [quarantineDiscard], ['2026-10-10'])
 equal(withQuarantineDiscard.losses, 0, 'el descarte de cuarentena conserva el costo auditado pero no altera fórmulas históricas de Resultado')

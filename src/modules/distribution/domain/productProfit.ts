@@ -30,6 +30,7 @@ export interface ProductProfitLineDetail {
   isClaimRelated: boolean
   claimKind?: 'return' | 'exchange'
   claimReason?: string
+  isDispatchMermaCost?: boolean
 }
 
 export interface ProductProfitSummaryItem {
@@ -276,6 +277,41 @@ export function computeProductProfitReport(
     }
   }
 
+  // Merma adicional que salió físicamente dentro de ventas: no tiene un
+  // ingreso adicional, pero su costo histórico completa el COGS una sola vez.
+  // Nunca se incorpora al acumulado de pérdidas operativas.
+  for (const movement of movements) {
+    if (movement.type !== 'dispatch_merma_sale' || movement.reversedAt || movement.pendingConfirmation) continue
+    const dayKey = movement.dayKey || toDayKey(movement.createdAt)
+    if (dayKeys.length > 0 && !dayKeys.includes(dayKey)) continue
+    if (routeFilter && !matchesRoute(movement.routeId, routeFilter)) continue
+    const cost = typeof movement.costOfSales === 'number' && Number.isFinite(movement.costOfSales)
+      ? round2(movement.costOfSales)
+      : null
+    lineDetails.push({
+      saleId: movement.dispatchId || movement.refId || movement.id,
+      createdAt: movement.createdAt,
+      dayKey,
+      voucherCode: movement.dispatchId || movement.id,
+      customerName: 'Merma adicional conciliada dentro de ventas',
+      sellerName: movement.responsibleName || '',
+      routeName: movement.routeId || '',
+      productId: movement.productId,
+      productName: movement.productName,
+      presentation: '',
+      unitType: movement.unitType,
+      quantity: 0,
+      actualUnitPrice: 0,
+      saleBs: 0,
+      costBs: cost,
+      profitBs: cost === null ? null : round2(-cost),
+      marginPct: null,
+      isCorrected: false,
+      isClaimRelated: false,
+      isDispatchMermaCost: true,
+    })
+  }
+
   // 3. Agrupación por producto
   const productMap = new Map<string, {
     productName: string
@@ -314,7 +350,7 @@ export function computeProductProfitReport(
 
     if (detail.isClaimRelated) {
       entry.claimsCount++
-    } else {
+    } else if (!detail.isDispatchMermaCost) {
       entry.saleLinesCount++
     }
 
@@ -459,7 +495,7 @@ export function computeProductProfitReport(
         marginPct: dayProdMargin,
         unitCostBs: dp.quantity > 0 && dayProdCost !== null ? round2(dayProdCost / dp.quantity) : null,
         costKnown: dp.costKnown,
-        saleLinesCount: dp.lineDetails.filter((l) => !l.isClaimRelated).length,
+        saleLinesCount: dp.lineDetails.filter((l) => !l.isClaimRelated && !l.isDispatchMermaCost).length,
         claimsCount: dp.lineDetails.filter((l) => l.isClaimRelated).length,
         lineDetails: dp.lineDetails,
       })
