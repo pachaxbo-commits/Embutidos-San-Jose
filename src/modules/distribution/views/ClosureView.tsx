@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, FileText, History, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BadgeCheck, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, Clock3, FileText, History, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
 import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
@@ -15,6 +15,7 @@ import { ClosureRectificationAudit } from './ClosureRectificationAudit'
 import { getProductPresentation } from '../domain/productPresentation'
 import { calculateDeclaredReturnTotal, calculatePhysicalReturnBreakdown, calculateReturnBreakdown, calculateReturnDeclarationDifference, parseReturnQuantityInput, validateReturnDeclarationInput, validateReturnQuantity } from '../domain/returnReconciliation'
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
+import { boliviaDayKey, buildClosureQueue, closureQueueCounts, filterClosureQueue, filterClosureQueueForRole, type ClosureQueueFilter } from '../domain/closureQueue'
 import { closureHistoryOwnerKey, closureOperationalDayKey, filterClosureHistory, visibleClosureHistory } from '../domain/closureHistory'
 import { RangePicker, describeRange, formatDayKey, type RangePreset } from './RangePicker'
 import { recordDiagnosticEvent, setDiagnosticClosureContext } from '../../../lib/errorDiagnostics'
@@ -74,12 +75,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [reopenPreserveFinancialSnapshot, setReopenPreserveFinancialSnapshot] = useState(false)
   const [isReopening, setIsReopening] = useState(false)
   const todayKey = toDayKey(new Date())
+  const queueTodayKey = boliviaDayKey(new Date().toISOString())
   const [adminDayKey, setAdminDayKey] = useState(todayKey)
   const [adminDeclaredCash, setAdminDeclaredCash] = useState('')
   const [adminNote, setAdminNote] = useState('')
   const [confirmingAdminClosure, setConfirmingAdminClosure] = useState(false)
   const [closureTab, setClosureTab] = useState<'routes' | 'admin'>(availableDispatches.length === 0 && session.role === 'admin' ? 'admin' : 'routes')
   const [closureViewMode, setClosureViewMode] = useState<'current' | 'history'>('current')
+  const [closureQueueFilter, setClosureQueueFilter] = useState<ClosureQueueFilter>('all')
   const [historyDayKeys, setHistoryDayKeys] = useState<string[]>([todayKey])
   const [historyPreset, setHistoryPreset] = useState<RangePreset>('today')
   const [historyOwnerFilter, setHistoryOwnerFilter] = useState('')
@@ -166,6 +169,49 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const setDeclaredCash = (value: string) => setCashDrafts(current => ({ ...current, [dispatchKey]: value }))
   const setReturns = (updater: (current: Record<string, string>) => Record<string, string>) => setReturnDrafts(current => ({ ...current, [dispatchKey]: updater(current[dispatchKey] ?? savedReturns) }))
   const reviewedReceiptIds = new Set(receiptReviewedByDispatch[dispatchKey] || [])
+  const closureQueue = filterClosureQueueForRole(
+    buildClosureQueue(availableDispatches, data.closures, receiptReviewedByDispatch, queueTodayKey),
+    session.role,
+    session.warehouseId,
+  )
+  const closureQueueSummary = closureQueueCounts(closureQueue)
+  const visibleClosureQueue = filterClosureQueue(closureQueue, closureQueueFilter)
+  const closureQueueStatuses = {
+    undeclared: {
+      label: 'Sin declarar',
+      className: 'border-slate-200 bg-slate-50 text-slate-800',
+      badgeClassName: 'bg-slate-200 text-slate-700',
+      message: () => 'Aún no existe una declaración del distribuidor.',
+      Icon: Clock3,
+    },
+    awaiting_warehouse: {
+      label: 'Esperando Almacén',
+      className: 'border-amber-300 bg-amber-50 text-amber-950 ring-1 ring-amber-100',
+      badgeClassName: 'bg-amber-200 text-amber-950',
+      message: (item: typeof closureQueue[number]) => `${item.closure?.distributorName || item.dispatch?.distributorName || 'El distribuidor'} ya declaró su retorno — esperando revisión de Almacén.`,
+      Icon: Clock3,
+    },
+    warehouse_confirmed: {
+      label: 'Recepción confirmada',
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-950',
+      badgeClassName: 'bg-emerald-100 text-emerald-900',
+      message: () => 'Almacén confirmó la recepción; está pendiente el cierre administrativo.',
+      Icon: BadgeCheck,
+    },
+    closed: {
+      label: 'Cierre finalizado',
+      className: 'border-emerald-200 bg-white text-emerald-950',
+      badgeClassName: 'bg-emerald-100 text-emerald-900',
+      message: () => 'Administración completó el cierre de esta ruta.',
+      Icon: CheckCircle2,
+    },
+  } satisfies Record<typeof closureQueue[number]['stage'], {
+    label: string
+    className: string
+    badgeClassName: string
+    message: (item: typeof closureQueue[number]) => string
+    Icon: typeof Clock3
+  }>
 
   // Las suscripciones anteriores pueden seguir vivas durante un render al cambiar
   // de ruta. Nunca conciliar un despacho con ventas/caja de otro despacho.
@@ -837,6 +883,76 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     </div>
   )
 
+  const closureQueuePanel = (session.role === 'admin' || session.role === 'warehouse') && (
+    <SectionCard title="Estado de cierres de ruta">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-2.5"><p className="text-[10px] font-bold uppercase text-amber-900">Esperando Almacén</p><p className="mt-0.5 text-xl font-black tabular-nums text-amber-950">{closureQueueSummary.awaitingWarehouse}</p></div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5"><p className="text-[10px] font-bold uppercase text-slate-600">Sin declarar</p><p className="mt-0.5 text-xl font-black tabular-nums text-slate-800">{closureQueueSummary.undeclared}</p></div>
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5"><p className="text-[10px] font-bold uppercase text-emerald-800">Recepción confirmada</p><p className="mt-0.5 text-xl font-black tabular-nums text-emerald-950">{closureQueueSummary.warehouseConfirmed}</p></div>
+        <div className="rounded-xl border border-emerald-200 bg-white p-2.5"><p className="text-[10px] font-bold uppercase text-emerald-800">Cierre finalizado hoy</p><p className="mt-0.5 text-xl font-black tabular-nums text-emerald-950">{closureQueueSummary.closed}</p></div>
+        <div className="rounded-xl border border-sky-200 bg-sky-50 p-2.5"><p className="text-[10px] font-bold uppercase text-sky-800">En revisión aquí</p><p className="mt-0.5 text-xl font-black tabular-nums text-sky-950">{closureQueueSummary.reviewingHere}</p></div>
+        <div className="rounded-xl border border-orange-200 bg-orange-50 p-2.5"><p className="text-[10px] font-bold uppercase text-orange-800">Con diferencias</p><p className="mt-0.5 text-xl font-black tabular-nums text-orange-950">{closureQueueSummary.differences}</p></div>
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-slate-500">Los estados principales provienen del cierre guardado. “En revisión aquí” solo refleja productos revisados en esta sesión y dispositivo; no es un estado compartido.</p>
+      <div className="mt-3 flex flex-wrap gap-2" aria-label="Filtrar cierres por estado">
+        {([
+          ['all', 'Todos'],
+          ['awaiting_warehouse', 'Esperando Almacén'],
+          ['undeclared', 'Sin declarar'],
+          ['warehouse_confirmed', 'Recepción confirmada'],
+          ['closed', 'Finalizados hoy'],
+          ['reviewing_here', 'En revisión aquí'],
+          ['differences', 'Con diferencias'],
+        ] as [ClosureQueueFilter, string][]).map(([filter, label]) => (
+          <button
+            key={filter}
+            type="button"
+            aria-pressed={closureQueueFilter === filter}
+            onClick={() => setClosureQueueFilter(filter)}
+            className={`min-h-10 rounded-full border px-3 text-xs font-bold transition-colors ${closureQueueFilter === filter ? 'border-[var(--primary)] bg-[var(--primary)] text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+          >{label}</button>
+        ))}
+      </div>
+      <div className="mt-3 grid gap-2">
+        {visibleClosureQueue.length === 0 ? <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-4 text-center text-sm font-semibold text-slate-600">No hay rutas con este estado.</p> : visibleClosureQueue.map(item => {
+          const status = closureQueueStatuses[item.stage]
+          const StatusIcon = status.Icon
+          const declarationAt = item.closure?.returnDeclaredAt
+          const warehouseAt = item.closure?.warehouseClosedAt
+          const closedAt = item.closure?.closedAt
+          const itemDispatch = item.dispatch
+          const active = Boolean(itemDispatch && itemDispatch.id === dispatch?.id)
+          return (
+            <article key={item.closure?.id || itemDispatch?.id} className={`min-w-0 rounded-2xl border p-3 ${status.className} ${active ? 'ring-2 ring-[var(--primary)] ring-offset-1' : ''}`}>
+              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong className="break-words text-sm">{item.closure?.distributorName || itemDispatch?.distributorName || 'Distribuidor'}</strong>
+                    <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[10px] font-black uppercase ${status.badgeClassName}`}><StatusIcon size={12} />{status.label}</span>
+                  </div>
+                  <p className="mt-0.5 break-words text-xs font-semibold">Ruta: {item.closure?.routeName || itemDispatch?.routeName || 'Ruta registrada'}</p>
+                  <p className="mt-2 break-words text-sm font-extrabold leading-relaxed">{status.message(item)}</p>
+                  {item.reviewStartedHere && <span className="mt-2 inline-flex rounded-full bg-sky-100 px-2.5 py-1 text-[10px] font-black uppercase text-sky-900"><ClipboardCheck size={12} className="mr-1" />En revisión aquí · {item.reviewedProductCount}/{item.totalProductCount}</span>}
+                  {item.hasPhysicalDifferences && <span className="mt-2 mr-1 inline-flex rounded-full bg-orange-100 px-2.5 py-1 text-[10px] font-black uppercase text-orange-900"><AlertTriangle size={12} className="mr-1" />Diferencias físicas</span>}
+                  {item.hasCashDifference && <span className="mt-2 mr-1 inline-flex rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-black uppercase text-rose-900"><AlertTriangle size={12} className="mr-1" />Diferencia de caja</span>}
+                  {item.hasMerma && <span className="mt-2 mr-1 inline-flex rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-black uppercase text-violet-900">Merma registrada</span>}
+                  {item.isReopened && <span className="mt-2 mr-1 inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black uppercase text-amber-900">Reabierto</span>}
+                </div>
+                <div className="shrink-0 text-left text-[11px] font-semibold sm:text-right">
+                  {item.closure?.dayKey && <span className="block">Jornada: {formatDayKey(item.closure.dayKey)}</span>}
+                  {declarationAt ? <span className="block">Declarado: {new Date(declarationAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}</span> : item.stage === 'undeclared' && <span className="block">Sin declaración registrada</span>}
+                  {warehouseAt && <span className="mt-0.5 block">Almacén confirmó: {new Date(warehouseAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}</span>}
+                  {closedAt && <span className="mt-0.5 block">Cierre: {new Date(closedAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}</span>}
+                  {itemDispatch && <button type="button" onClick={() => setSelectedDispatchId(itemDispatch.id)} aria-current={active ? 'true' : undefined} className="mt-2 min-h-10 rounded-xl border border-current/20 bg-white/70 px-3 text-xs font-bold text-[var(--primary)] hover:bg-white">{active ? 'Ruta seleccionada' : 'Abrir recepción'}</button>}
+                </div>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </SectionCard>
+  )
+
   const reopenHistoryModal = (
     <Modal
       isOpen={Boolean(reopenHistoryTarget)}
@@ -1021,8 +1137,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }
 
     return (
-      <Screen title="Cierre de ruta">
+      <Screen title="Cierre y arqueo de caja" subtitle={session.role === 'warehouse' ? `Almacén · ${data.warehouses.find(item => item.id === (session.warehouseId || 'central'))?.name || 'Central'}` : 'Cierres de ruta'}>
         {closureNavigationControls}
+        {closureQueue.length > 0 && closureQueuePanel}
         {justClosedRouteName && (
           <div className="flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 mb-3">
             <CheckCircle2 size={20} className="shrink-0 text-emerald-600" />
@@ -1037,10 +1154,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             Para cerrar tu ruta, primero declaras cuánto producto devuelves. Almacén cuenta y confirma físicamente esa devolución; después se habilita el cierre final del efectivo.
           </p>
         )}
-        <EmptyBlock
+        {closureQueue.length === 0 && <EmptyBlock
           title="No hay rutas abiertas"
           description={isDistributor ? 'El arqueo se habilita cuando Almacén registra una carga abierta para tu usuario.' : 'El arqueo se hace sobre un despacho abierto. Registra un despacho primero.'}
-        />
+        />}
         {historyOwnerModal}
         {reopenHistoryModal}
         {reopenModal}
@@ -1063,6 +1180,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             <span className="text-xs font-bold">Ruta "{justClosedRouteName}" cerrada exitosamente.</span>
           </div>
         )}
+        {closureQueue.length > 0 && closureQueuePanel}
         {availableDispatches.length > 1 && (
           <Field label="Ruta a cerrar">
             <ChoiceButton label={`${dispatch.routeName} · ${dispatch.distributorName}`} placeholder="Selecciona despacho" onClick={() => setIsDispatchOpen(true)} />
