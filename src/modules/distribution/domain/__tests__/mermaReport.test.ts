@@ -17,7 +17,7 @@ function movement(id: string, type: DistStockMovement['type'], quantity: number,
 const data = [
   movement('d-merma', 'dispatch', 82.5, { routeId: 'domingo-real', dispatchMerma: 2.5, normalQuantity: 80, refId: 'dispatch-d' }),
   movement('d-old-waste', 'dispatch_waste', 0.2, { routeId: 'domingo-real', lossCost: 3 }),
-  movement('ret-merma', 'return_merma', 0.08, { routeId: 'domingo-real', dispatchId: 'dispatch-d' }),
+  movement('ret-merma', 'return_merma', 0.08, { routeId: 'domingo-real', dispatchId: 'dispatch-d', centralDelta: 0.08 }),
   movement('unfit', 'return_waste', 0.1, { routeId: 'domingo-real', dispatchId: 'dispatch-d', lossCost: null, reason: 'Deteriorado' } as Partial<DistStockMovement>),
   movement('short', 'shortage', 0.235, { routeId: 'domingo-real', dispatchId: 'dispatch-d', lossCost: 10 }),
   movement('over', 'overage', 0.05, { routeId: 'domingo-real', dispatchId: 'dispatch-d' }),
@@ -90,27 +90,32 @@ const closureForReconciliation = (dispatchId: string, returnMerma: number, expec
 const lots: DistLot[] = [
   { id: 'pending-lot', restaurantId: 'sanjose', productId: 'p', productName: product.name, unitType: 'kg', lotCode: 'SOBRANTE POR REVISAR', manufacturedOn: '', expiresOn: '', productionCost: null, quantities: { central: 0.05 }, quarantined: true, createdAt: '', createdBy: 'admin' },
   { id: 'resolved-lot', restaurantId: 'sanjose', productId: 'p', productName: product.name, unitType: 'kg', lotCode: 'LOT-R', manufacturedOn: '', expiresOn: '', productionCost: 5, quantities: { central: 0 }, quarantined: false, createdAt: '', createdBy: 'admin', quarantineResolvedAt: '2026-10-20T12:00:00.000Z', quarantineResolution: 'released_existing_lot' },
+  { id: 'discarded-lot', restaurantId: 'sanjose', productId: 'p', productName: product.name, unitType: 'kg', lotCode: 'LOT-D', manufacturedOn: '', expiresOn: '', productionCost: 5, quantities: { central: 0 }, quarantined: false, createdAt: '', createdBy: 'admin', quarantineResolvedAt: '2026-10-20T13:00:00.000Z', quarantineResolution: 'discarded' },
 ]
 const fullReturnReport = computeMermaReport([
   movement('sent-merma', 'dispatch', 10.2, { routeId: 'domingo-real', refId: 'dispatch-full', dispatchMerma: 0.2, normalQuantity: 10 }),
-  movement('returned-merma', 'return_merma', 0.2, { routeId: 'domingo-real', dispatchId: 'dispatch-full' }),
+  movement('returned-merma', 'return_merma', 0.2, { routeId: 'domingo-real', dispatchId: 'dispatch-full', centralDelta: 0.2 }),
 ], [product], routes, [closureForReconciliation('dispatch-full', 0.2)], { dayKeys: ['2026-10-19'] })
 expect(fullReturnReport.consolidated.dispatchMermaSent.kg, 0.2, '10 normal + 0.2 merma contabiliza solo el componente merma enviado')
 expect(fullReturnReport.consolidated.recoverableMermaRecordedAtWarehouse.kg, 0.2, 'Merma recuperable registrada por almacén')
 expect(fullReturnReport.consolidated.recoverableMermaReturnedToStock.kg, 0.2, 'Merma confirmada en stock se cuenta una sola vez')
+expect(fullReturnReport.byProduct[0]?.returnMermaStockConfirmed, 0.2, 'Acumulado por producto solo incluye reintegro confirmado')
+expect(fullReturnReport.byDate[0]?.returnMermaStockConfirmed, 0.2, 'Acumulado por fecha distingue reintegro confirmado')
+expect(fullReturnReport.byWeek[0]?.returnMermaStockConfirmed, 0.2, 'Acumulado semanal conserva la distinción')
+expect(fullReturnReport.byMonth[0]?.returnMermaStockConfirmed, 0.2, 'Acumulado mensual conserva la distinción')
 expect(fullReturnReport.consolidated.unreturnedNewMermaPending.kg, 0, 'Retorno idéntico deja cero merma pendiente')
 expect(fullReturnReport.consolidated.byDispatchProduct[0]?.physicalReturn, 10.2, 'Conciliación conserva el total físico recibido')
 
 const partialReturnReport = computeMermaReport([
   movement('sent-partial', 'dispatch', 10.2, { routeId: 'domingo-real', refId: 'dispatch-partial', dispatchMerma: 0.2, normalQuantity: 10 }),
-  movement('returned-partial', 'return_merma', 0.1, { routeId: 'domingo-real', dispatchId: 'dispatch-partial' }),
+  movement('returned-partial', 'return_merma', 0.1, { routeId: 'domingo-real', dispatchId: 'dispatch-partial', centralDelta: 0.1 }),
 ], [product], routes, [closureForReconciliation('dispatch-partial', 0.1)], { dayKeys: ['2026-10-19'] })
 expect(partialReturnReport.consolidated.unreturnedNewMermaPending.kg, 0.1, 'Merma nueva parcialmente retornada queda pendiente, no pérdida')
 expect(partialReturnReport.consolidated.confirmedUnfit.kg, 0, 'No convierte la merma restante en producto no apto')
 
 const legacyPendingReport = computeMermaReport([
   movement('legacy-waste', 'dispatch_waste', 0.2, { routeId: 'domingo-real', dispatchId: 'legacy-dispatch', lossCost: 3 }),
-  movement('legacy-return', 'return_merma', 0.08, { routeId: 'domingo-real', dispatchId: 'legacy-dispatch' }),
+  movement('legacy-return', 'return_merma', 0.08, { routeId: 'domingo-real', dispatchId: 'legacy-dispatch', centralDelta: 0.08 }),
 ], [product], routes, [closureForReconciliation('legacy-dispatch', 0.08)], { dayKeys: ['2026-10-19'] })
 expect(legacyPendingReport.consolidated.legacyDispatchWastePending.kg, 0.2, 'dispatch_waste histórico no se reinterpreta por proximidad')
 expect(legacyPendingReport.consolidated.legacyDispatchWasteCost.amount, 3, 'Costo histórico asociado se conserva aparte y en Bs')
@@ -121,11 +126,35 @@ expect(legacyPendingReport.consolidated.unreturnedNewMermaPending.kg, 0, 'No com
 const overageReport = computeMermaReport([
   movement('over-pending', 'overage', 0.05, { routeId: 'domingo-real', dispatchId: 'dispatch-over', lotId: 'pending-lot' }),
   movement('over-resolved', 'overage', 0.03, { routeId: 'domingo-real', dispatchId: 'dispatch-over-2', lotId: 'resolved-lot' }),
+  movement('over-discarded', 'overage', 0.02, { routeId: 'domingo-real', dispatchId: 'dispatch-over-3', lotId: 'discarded-lot' }),
 ], [product], routes, [], { dayKeys: ['2026-10-19'] }, [], [], lots)
 expect(overageReport.consolidated.overagePendingReview.kg, 0.05, 'Cuarentena sin resolver se separa')
-expect(overageReport.consolidated.overageResolved.kg, 0.03, 'Cuarentena resuelta se separa')
+expect(overageReport.consolidated.overageResolved.kg, 0.05, 'Cuarentena resuelta se separa')
+expect(overageReport.consolidated.overageReleasedToSellable.kg, 0.03, 'Solo liberaciones se clasifican como lotes vendibles')
+expect(overageReport.consolidated.overageDiscarded.kg, 0.02, 'Descarte no se confunde con recuperación')
 expect(overageReport.consolidated.overageStatusUnknown.kg, 0, 'Lotes vinculados permiten estado determinable')
-expect(overageReport.consolidated.byDispatchProduct.length, 2, 'Múltiples productos/despachos no colisionan por dispatchId')
+expect(overageReport.rows.find(row => row.id === 'over-resolved')?.reviewState, 'quarantine_released', 'Sobrante liberado no se etiqueta como return_merma')
+expect(overageReport.rows.find(row => row.id === 'over-discarded')?.reviewState, 'quarantine_discarded', 'Sobrante descartado queda explícito')
+expect(overageReport.consolidated.byDispatchProduct.length, 3, 'Múltiples productos/despachos no colisionan por dispatchId')
+
+const unconfirmedReturn = computeMermaReport([
+  movement('return-no-central-entry', 'return_merma', 0.28, { routeId: 'domingo-real', dispatchId: 'return-unconfirmed', centralDelta: 0 }),
+], [product], routes, [closureForReconciliation('return-unconfirmed', 0.28)], { dayKeys: ['2026-10-19'] })
+expect(unconfirmedReturn.consolidated.recoverableMermaRecordedAtWarehouse.kg, 0.28, 'Conserva cuánto declaró recibir Almacén')
+expect(unconfirmedReturn.consolidated.recoverableMermaReturnedToStock.kg, 0, 'No llama reintegrado al stock sin delta central positivo')
+expect(unconfirmedReturn.consolidated.recoverableMermaStockGap.kg, 0.28, 'Diferencia de reintegro queda pendiente, no como pérdida')
+expect(unconfirmedReturn.rows[0]?.reviewState, 'recorded_not_reintegrated', 'Movimiento sin entrada central no se etiqueta como recuperado')
+expect(unconfirmedReturn.byProduct[0]?.returnMermaStockConfirmed, 0, 'Agrupación por producto no incluye retorno sin delta central')
+
+const hugoOverageLot: DistLot = { ...lots[1]!, id: 'hugo-overage', lotCode: 'SOBRANTE POR REVISAR', quantities: { central: 0 }, quarantined: true, quarantineResolvedAt: '2026-10-22T14:30:16.488Z', quarantineResolution: 'released_existing_lot', quarantineResolvedQuantity: 0.28, quarantineDestinationLotCode: '171026', quarantineResolvedByName: 'Administración San José' }
+const hugoClosure: DistClosure = { ...closureForReconciliation('hugo-dispatch', 0.28, 9), id: 'hugo-closure', routeId: 'route-norte', routeName: 'Zona Norte', distributorUid: 'hugo', distributorName: 'Hugo Herbas', products: [{ productId: 'p', productName: product.name, unitType: 'kg', initialDispatch: 9, additions: 0, totalLoaded: 9, sold: 0, expectedReturn: 9, actualReturn: 9, returnMerma: 0.28, physicalReturn: 9.28, variance: 0.28 }] }
+const hugoReport = computeMermaReport([
+  movement('hugo-overage-movement', 'overage', 0.28, { routeId: 'route-norte', dispatchId: 'hugo-dispatch', lotId: 'hugo-overage' }),
+], [product], routes, [hugoClosure], { dayKeys: ['2026-10-19'] }, [], [], [hugoOverageLot])
+expect(hugoReport.consolidated.recoverableMermaRecordedAtWarehouse.kg, 0.28, 'Caso Hugo conserva recepción anotada')
+expect(hugoReport.consolidated.recoverableMermaReturnedToStock.kg, 0, 'Caso Hugo no inventa movimiento return_merma')
+expect(hugoReport.consolidated.overageReleasedToSellable.kg, 0.28, 'Caso Hugo informa por separado sobrante luego liberado')
+expect(hugoReport.rows[0]?.reviewState, 'quarantine_released', 'Caso Hugo muestra la resolución real de cuarentena')
 
 const skuTwo: DistProduct = { ...product, id: 'sku-two', name: 'Viena económica' }
 const separateSkuReport = computeMermaReport([
