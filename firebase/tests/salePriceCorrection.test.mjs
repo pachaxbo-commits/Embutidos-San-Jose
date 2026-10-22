@@ -42,7 +42,7 @@ try {
   await root.collection('members').doc(admin).set({ role: 'admin', active: true, displayName: 'Administración QA' })
   await root.collection('members').doc(seller).set({ role: 'distributor', active: true, routeId: route, displayName: 'Hugo QA' })
   await root.collection('distCustomers').doc(customer).set({ id: customer, restaurantId: 'sanjose', name: 'Cliente QA', identityNumber: '9999001', customerCode: '9999001', active: true })
-  const ids = Object.fromEntries(['a', 'b', 'delete', 'central', 'credit', 'void', 'paidVoid', 'closedVoid'].map(key => [key, `${prefix}-${key}`]))
+  const ids = Object.fromEntries(['a', 'b', 'delete', 'central', 'excess', 'credit', 'void', 'paidVoid', 'closedVoid'].map(key => [key, `${prefix}-${key}`]))
   for (const id of Object.values(ids)) await root.collection('distProducts').doc(id).set({ id, restaurantId: 'sanjose', name: id, unitType: 'kg', active: true, referencePrice: 30, productionCost: 20 })
   const today = dayKey(new Date())
   const intake = await command(admin, 'intake', { note: 'QA', lines: [
@@ -51,6 +51,7 @@ try {
     { productId: ids.b, quantity: 30, lotCode: 'B1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.delete, quantity: 100, lotCode: 'D1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.central, quantity: 100, lotCode: 'C1', manufacturedOn: today, expiresOn: '2099-01-01' },
+    { productId: ids.excess, quantity: 100, lotCode: 'E1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.credit, quantity: 100, lotCode: 'CR1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.void, quantity: 100, lotCode: 'V1', manufacturedOn: today, expiresOn: '2099-01-01' },
     { productId: ids.paidVoid, quantity: 100, lotCode: 'PV1', manufacturedOn: today, expiresOn: '2099-01-01' },
@@ -94,6 +95,36 @@ try {
   const centralSale = await command(admin, 'sale', { sourceLocation: 'centralWarehouse', lines: [{ productId: ids.central, quantity: 70, actualUnitPrice: 30 }], ...payment(2100) })
   await command(admin, 'editSale', correction(centralSale.id, [{ productId: ids.central, quantity: 20, actualUnitPrice: 30 }], 600))
   pass((await read('distBalances', `central__${ids.central}`)).quantity === 80, 'venta administrativa devuelve 50 al almacén central')
+
+  const excessSale = await command(admin, 'sale', { sourceLocation: 'centralWarehouse', lines: [{ productId: ids.excess, quantity: 2, physicalQuantity: 2.1, actualUnitPrice: 30 }], ...payment(60) })
+  const afterExcessSale = (await read('distBalances', `central__${ids.excess}`)).quantity
+  pass(afterExcessSale === 97.9, 'venta administrativa 2 kg cobrados y 2.1 kg físicos descuenta solo el peso físico')
+  const excessPriceOnly = await command(admin, 'editSale', correction(excessSale.id, [{ productId: ids.excess, quantity: 2, actualUnitPrice: 35 }], 70))
+  const afterExcessPrice = await read('distSales', excessSale.id)
+  pass((await read('distBalances', `central__${ids.excess}`)).quantity === afterExcessSale, 'edición solo de precio conserva el stock físico con excedente')
+  pass(afterExcessPrice.effectiveSnapshot.lines[0].physicalQuantity === 2.1 && excessPriceOnly.result.stockDeltas[0].quantity === 0, 'edición solo de precio conserva peso físico y excedente en auditoría')
+
+  const ambiguousExcessEdit = await command(admin, 'editSale', correction(excessSale.id, [{ productId: ids.excess, quantity: 1.9, actualUnitPrice: 35 }], 66.5), 'rejected')
+  pass(/indica expresamente el nuevo peso físico/i.test(ambiguousExcessEdit.error), 'cambio cobrado con excedente previo exige peso físico explícito')
+  pass((await read('distBalances', `central__${ids.excess}`)).quantity === afterExcessSale, 'rechazo de corrección ambigua no altera stock')
+
+  const preciseEdit = await command(admin, 'editSale', correction(excessSale.id, [{ productId: ids.excess, quantity: 1.125, physicalQuantity: 2.075, actualUnitPrice: 35 }], 39.375))
+  const preciseSale = await read('distSales', excessSale.id)
+  pass(preciseSale.effectiveSnapshot.lines[0].quantity === 1.125 && preciseSale.effectiveSnapshot.lines[0].physicalQuantity === 2.075, 'corrección administrativa conserva precisión de tres decimales')
+  const afterPreciseEditBalance = (await read('distBalances', `central__${ids.excess}`)).quantity
+  pass(Math.abs(preciseEdit.result.stockDeltas[0].quantity + 0.025) < 1e-9 && Math.abs(afterPreciseEditBalance - 97.925) < 1e-9, 'corrección física de 2.1 a 2.075 devuelve exactamente 0.025 kg')
+  await processCommand(db, root.collection('distOperations').doc(preciseEdit.id))
+  pass((await read('distBalances', `central__${ids.excess}`)).quantity === afterPreciseEditBalance, 'reintento de la misma operación de corrección no duplica stock')
+
+  const ambiguousNormalSale = await command(admin, 'sale', { sourceLocation: 'centralWarehouse', lines: [{ productId: ids.excess, quantity: 1, actualUnitPrice: 30 }], ...payment(30) })
+  const beforeNormalQtyEdit = (await read('distBalances', `central__${ids.excess}`)).quantity
+  await command(admin, 'editSale', correction(ambiguousNormalSale.id, [{ productId: ids.excess, quantity: 0.5, actualUnitPrice: 30 }], 15))
+  pass((await read('distBalances', `central__${ids.excess}`)).quantity === beforeNormalQtyEdit + 0.5, 'venta normal sin excedente reduce cobro y devuelve la diferencia física automáticamente')
+
+  const preciseSaleForStock = await command(admin, 'sale', { sourceLocation: 'centralWarehouse', lines: [{ productId: ids.excess, quantity: 1, actualUnitPrice: 30 }], ...payment(30) })
+  const beforeInsufficientPhysical = (await read('distBalances', `central__${ids.excess}`)).quantity
+  await command(admin, 'editSale', correction(preciseSaleForStock.id, [{ productId: ids.excess, quantity: 1, physicalQuantity: 200, actualUnitPrice: 30 }], 30), 'rejected')
+  pass((await read('distBalances', `central__${ids.excess}`)).quantity === beforeInsufficientPhysical, 'peso físico corregido sin stock suficiente se rechaza sin alterar inventario')
 
   const creditSale = await command(seller, 'sale', { sourceLocation: 'route', routeId: route, routeName: 'Ruta Hugo QA', dispatchId: dispatch.id, customerId: customer, lines: [{ productId: ids.credit, quantity: 10, actualUnitPrice: 30 }], ...payment(300, 'credit') })
   await command(seller, 'editSale', correction(creditSale.id, [{ productId: ids.credit, quantity: 10, actualUnitPrice: 40 }], 400, 'credit'))

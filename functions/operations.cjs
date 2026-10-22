@@ -199,7 +199,7 @@ class Operation {
   async take(pid, loc, quantity, { allowExpired = false, lotId, allocationsRequested, precision: requestedPrecision } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
-    const amountPrecision = requestedPrecision ?? 2;
+    const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
     quantity = this.amount(quantity, e.p, false, amountPrecision);
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
@@ -1639,8 +1639,11 @@ async function editSale(o, p) {
       previousByProduct.set(line.productId, { ...line, allocations: [...line.allocations] });
       continue;
     }
-    const quantity = round(existing.quantity + line.quantity);
-    const physicalQuantity = round(Number(existing.physicalQuantity ?? existing.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0)) + Number(line.physicalQuantity ?? line.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0)));
+    const precision = line.unitType === "kg" ? 3 : 2;
+    const quantity = roundAt(existing.quantity + line.quantity, precision);
+    const existingPhysical = Number(existing.physicalQuantity ?? (existing.allocations.length ? existing.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0) : existing.quantity));
+    const linePhysical = Number(line.physicalQuantity ?? (line.allocations.length ? line.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0) : line.quantity));
+    const physicalQuantity = roundAt(existingPhysical + linePhysical, precision);
     const subtotal = round(existing.subtotal + line.subtotal);
     previousByProduct.set(line.productId, {
       ...existing,
@@ -1656,14 +1659,33 @@ async function editSale(o, p) {
   const lines = [];
   for (const input of p.lines) {
     const product = await o.product(input.productId);
-    const quantity = o.amount(input.quantity, product);
+    const precision = quantityPrecision(product);
+    const requestedQuantity = Number(input.quantity);
+    check(Number.isFinite(requestedQuantity) && Math.abs(requestedQuantity - roundAt(requestedQuantity, precision)) < 1e-9, `La cantidad de ${product.name} supera la precisión permitida.`);
+    const quantity = o.amount(requestedQuantity, product, false, precision);
     const previousLine = previousByProduct.get(product.id);
-    const previousPhysical = previousLine ? Number(previousLine.physicalQuantity ?? previousLine.quantity) : quantity;
-    const physicalQuantity = o.member.role === "admin" && product.unitType === "kg"
-      ? o.amount(Number(input.physicalQuantity ?? Math.max(quantity, previousPhysical)), product, false, quantityPrecision(product))
+    const previousPhysical = previousLine
+      ? Number(previousLine.physicalQuantity ?? (previousLine.allocations?.length ? previousLine.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0) : previousLine.quantity))
       : quantity;
+    const previousCharged = previousLine ? Number(previousLine.quantity) : quantity;
+    const previousHadExcess = previousPhysical > previousCharged + 1e-9;
+    const chargedQuantityChanged = Math.abs(quantity - previousCharged) > 1e-9;
+    const hasExplicitPhysicalQuantity = input.physicalQuantity !== undefined && input.physicalQuantity !== null;
+    if (o.member.role === "admin" && product.unitType === "kg" && previousHadExcess && chargedQuantityChanged && !hasExplicitPhysicalQuantity) {
+      check(false, `La venta de ${product.name} tenía un excedente físico. Indica expresamente el nuevo peso físico para corregirla.`);
+    }
+    const requestedPhysicalQuantity = o.member.role === "admin" && product.unitType === "kg"
+      ? hasExplicitPhysicalQuantity
+        ? Number(input.physicalQuantity)
+        : previousLine && !chargedQuantityChanged
+          ? previousPhysical
+          : quantity
+      : quantity;
+    check(Number.isFinite(requestedPhysicalQuantity) && Math.abs(requestedPhysicalQuantity - roundAt(requestedPhysicalQuantity, precision)) < 1e-9, `El peso físico de ${product.name} supera la precisión permitida.`);
+    const physicalQuantity = o.amount(requestedPhysicalQuantity, product, false, precision);
     check(physicalQuantity >= quantity, "El peso entregado no puede ser menor que la cantidad cobrada.");
     check(o.member.role === "admin" || input.physicalQuantity == null || Number(input.physicalQuantity) === quantity, "Solo Administración puede registrar un peso entregado distinto.");
+    check(product.unitType === "kg" || !hasExplicitPhysicalQuantity || Number(input.physicalQuantity) === quantity, "El peso físico distinto solo aplica a productos por kg.");
     check(product.unitType === "kg" || physicalQuantity === quantity, "El peso entregado adicional solo aplica a productos por kg.");
     check(Number.isFinite(input.actualUnitPrice) && input.actualUnitPrice > 0, "Precio inválido.");
     let allocations = [];
@@ -1671,17 +1693,17 @@ async function editSale(o, p) {
       let retained = physicalQuantity;
       const returned = [];
       for (const allocation of previousLine.allocations) {
-        const keptQuantity = round(Math.min(retained, allocation.quantity));
+        const keptQuantity = roundAt(Math.min(retained, allocation.quantity), precision);
         if (keptQuantity > 0) allocations.push({ ...allocation, quantity: keptQuantity });
-        const returnedQuantity = round(allocation.quantity - keptQuantity);
+        const returnedQuantity = roundAt(allocation.quantity - keptQuantity, precision);
         if (returnedQuantity > 0) returned.push({ ...allocation, quantity: returnedQuantity });
-        retained = round(retained - keptQuantity);
+        retained = roundAt(retained - keptQuantity, precision);
       }
       if (returned.length) {
         await o.restore(product.id, loc, returned);
         restoredByProduct.set(product.id, returned);
       }
-      if (retained > 0) allocations.push(...await o.take(product.id, loc, retained));
+      if (retained > 0) allocations.push(...await o.take(product.id, loc, retained, { precision }));
     } else {
       allocations = await o.take(product.id, loc, physicalQuantity, { precision: quantityPrecision(product) });
     }
@@ -1698,8 +1720,12 @@ async function editSale(o, p) {
     }
   }
   const productIds = [...new Set([...previous.lines, ...lines].map(line => line.productId))];
-  const physicalOf = line => Number(line.physicalQuantity ?? line.allocations?.reduce((sum, row) => sum + Number(row.quantity || 0), 0) ?? line.quantity);
-  const stockDeltas = productIds.map(productId => ({ productId, quantity: round(lines.filter(line => line.productId === productId).reduce((sum, line) => sum + physicalOf(line), 0) - previous.lines.filter(line => line.productId === productId).reduce((sum, line) => sum + physicalOf(line), 0)), ...(restoredByProduct.has(productId) ? { allocations: restoredByProduct.get(productId) } : {}) }));
+  const physicalOf = line => Number(line.physicalQuantity ?? (line.allocations?.length ? line.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0) : line.quantity));
+  const stockDeltas = productIds.map(productId => {
+    const unitType = lines.find(line => line.productId === productId)?.unitType || previous.lines.find(line => line.productId === productId)?.unitType;
+    const precision = unitType === "kg" ? 3 : 2;
+    return { productId, quantity: roundAt(lines.filter(line => line.productId === productId).reduce((sum, line) => sum + physicalOf(line), 0) - previous.lines.filter(line => line.productId === productId).reduce((sum, line) => sum + physicalOf(line), 0), precision), ...(restoredByProduct.has(productId) ? { allocations: restoredByProduct.get(productId) } : {}) };
+  });
   for (const delta of stockDeltas) {
     if (delta.quantity > 0) o.ledger(delta.productId, delta.quantity, loc, null, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
     if (delta.quantity < 0) o.ledger(delta.productId, -delta.quantity, null, loc, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
@@ -1707,7 +1733,8 @@ async function editSale(o, p) {
   const total = isCourtesy ? 0 : round(lines.reduce((sum, line) => sum + line.subtotal, 0));
   const hasLineChange = lines.length !== previousByProduct.size || lines.some(line => {
     const before = previousByProduct.get(line.productId);
-    return !before || round(before.quantity) !== line.quantity || round(physicalOf(before)) !== physicalOf(line) || round(before.actualUnitPrice) !== line.actualUnitPrice;
+    const precision = line.unitType === "kg" ? 3 : 2;
+    return !before || roundAt(before.quantity, precision) !== line.quantity || roundAt(physicalOf(before), precision) !== physicalOf(line) || round(before.actualUnitPrice) !== line.actualUnitPrice;
   });
   const cashAmount = round(Number(p.cashAmount) || 0), qrAmount = round(Number(p.qrAmount) || 0), creditAmount = round(Number(p.creditAmount) || 0);
   if (isCourtesy) {

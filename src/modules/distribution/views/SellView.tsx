@@ -55,6 +55,23 @@ function roundSaleQuantity(value: number, unitType: UnitType): number {
   return Math.round((value + Number.EPSILON) * factor) / factor
 }
 
+function parseSaleQuantity(value: string, unitType: UnitType): number {
+  const normalized = value.trim().replace(',', '.')
+  const parsed = normalized ? Number(normalized) : 0
+  return Number.isFinite(parsed) ? roundSaleQuantity(parsed, unitType) : 0
+}
+
+function hasValidQuantityPrecision(value: string, unitType: UnitType): boolean {
+  const normalized = value.trim().replace(',', '.')
+  return unitType === 'kg'
+    ? /^\d+(?:\.\d{1,3})?$/.test(normalized)
+    : /^\d+$/.test(normalized)
+}
+
+function saleLinePhysicalQuantity(line: DistSaleLine): number {
+  return Number(line.physicalQuantity ?? (line.allocations?.length ? line.allocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0) : line.quantity))
+}
+
 const PAYMENT_OPTIONS: { value: PaymentKind; label: string }[] = [
   { value: 'cash', label: 'Efectivo' },
   { value: 'qr', label: 'QR' },
@@ -156,6 +173,8 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [historyKind, setHistoryKind] = useState<'all' | 'sale' | 'courtesy'>('all')
   const [correctionTarget, setCorrectionTarget] = useState<DistSale | null>(null)
   const [correctionQuantities, setCorrectionQuantities] = useState<Record<string, string>>({})
+  const [correctionPhysicalQuantities, setCorrectionPhysicalQuantities] = useState<Record<string, string>>({})
+  const [correctionPhysicalTouched, setCorrectionPhysicalTouched] = useState<Record<string, boolean>>({})
   const [correctionPrices, setCorrectionPrices] = useState<Record<string, string>>({})
   const [correctionReason, setCorrectionReason] = useState('')
   const [correctionSearch, setCorrectionSearch] = useState('')
@@ -503,7 +522,7 @@ export function SellView({ session, data }: DistributionViewProps) {
     for (const line of lines) {
       const existing = grouped.get(line.productId)
       if (!existing) {
-        grouped.set(line.productId, { ...line, allocations: [...(line.allocations || [])] })
+        grouped.set(line.productId, { ...line, physicalQuantity: saleLinePhysicalQuantity(line), allocations: [...(line.allocations || [])] })
         continue
       }
       const quantity = roundSaleQuantity(existing.quantity + line.quantity, line.unitType)
@@ -511,6 +530,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       grouped.set(line.productId, {
         ...existing,
         quantity,
+        physicalQuantity: roundSaleQuantity(saleLinePhysicalQuantity(existing) + saleLinePhysicalQuantity(line), line.unitType),
         subtotal,
         actualUnitPrice: round2(subtotal / quantity),
         allocations: [...(existing.allocations || []), ...(line.allocations || [])],
@@ -576,13 +596,37 @@ export function SellView({ session, data }: DistributionViewProps) {
     if (!correctionTarget) return []
     return data.products
       .map((product) => {
-        const qty = round2(Number(correctionQuantities[product.id]) || 0)
+        const qty = parseSaleQuantity(correctionQuantities[product.id] ?? '0', product.unitType)
         const originalLine = correctionOriginalByProduct.get(product.id)
+        const originalPhysicalQuantity = originalLine ? saleLinePhysicalQuantity(originalLine) : 0
+        const originalHadExcess = Boolean(originalLine && originalPhysicalQuantity > originalLine.quantity + 1e-9)
+        const quantityChanged = Boolean(originalLine && Math.abs(qty - originalLine.quantity) > 1e-9)
+        const physicalTouched = correctionPhysicalTouched[product.id] === true
+        const physicalRaw = correctionPhysicalQuantities[product.id] ?? String(originalPhysicalQuantity || qty)
+        const parsedPhysical = parseSaleQuantity(physicalRaw, product.unitType)
+        const physicalQuantity = session.role !== 'admin' || product.unitType !== 'kg'
+          ? qty
+          : physicalTouched
+            ? parsedPhysical
+            : originalLine && !quantityChanged
+              ? originalPhysicalQuantity
+              : originalHadExcess
+                ? originalPhysicalQuantity
+                : qty
         const priceRaw = correctionPrices[product.id] ?? String(originalLine?.actualUnitPrice ?? product.referencePrice)
         const price = Number(priceRaw)
         return {
           product,
           quantity: qty,
+          physicalQuantity,
+          physicalRaw,
+          physicalTouched,
+          originalPhysicalQuantity,
+          originalHadExcess,
+          quantityChanged,
+          physicalValid: Number.isFinite(Number(physicalRaw.trim().replace(',', '.'))) && hasValidQuantityPrecision(physicalRaw, product.unitType),
+          quantityValid: hasValidQuantityPrecision(correctionQuantities[product.id] ?? '0', product.unitType),
+          needsPhysicalConfirmation: Boolean(session.role === 'admin' && product.unitType === 'kg' && originalHadExcess && quantityChanged && !physicalTouched),
           unitPrice: price,
           priceRaw,
           priceValid: Number.isFinite(price) && price > 0,
@@ -592,7 +636,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         }
       })
       .filter((item) => item.quantity > 0)
-  }, [correctionTarget, correctionOriginalByProduct, correctionQuantities, correctionPrices, data.products])
+  }, [correctionTarget, correctionOriginalByProduct, correctionQuantities, correctionPhysicalQuantities, correctionPhysicalTouched, correctionPrices, data.products, session.role])
 
   const newCorrectionTotal = round2(correctionLines.reduce((sum, l) => sum + l.subtotal, 0))
 
@@ -627,6 +671,23 @@ export function SellView({ session, data }: DistributionViewProps) {
     const invalidPrice = correctionLines.find((line) => !line.priceValid)
     if (invalidPrice) {
       setError(`Indica un precio mayor a Bs 0 para ${invalidPrice.product.name}.`)
+      return false
+    }
+    const invalidQuantity = correctionLines.find((line) => !line.quantityValid)
+    if (invalidQuantity) {
+      setError(`Termina de escribir una cantidad válida de hasta ${invalidQuantity.product.unitType === 'kg' ? 'tres decimales' : 'unidades enteras'} para ${invalidQuantity.product.name}.`)
+      return false
+    }
+    const ambiguousPhysical = correctionLines.find((line) => line.needsPhysicalConfirmation)
+    if (ambiguousPhysical) {
+      setError(`${ambiguousPhysical.product.name} tenía un excedente físico. Confirma expresamente el nuevo peso físico entregado.`)
+      return false
+    }
+    const invalidPhysical = correctionLines.find((line) => session.role === 'admin' && line.product.unitType === 'kg' && (!line.physicalValid || line.physicalQuantity < line.quantity))
+    if (invalidPhysical) {
+      setError(!invalidPhysical.physicalValid
+        ? `Completa el peso físico de ${invalidPhysical.product.name} con hasta tres decimales.`
+        : `El peso físico de ${invalidPhysical.product.name} no puede ser menor que la cantidad cobrada.`)
       return false
     }
 
@@ -675,6 +736,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       correctionLines.some(
         (line) =>
           Math.abs(line.quantity - line.originalQuantity) > 0.001 ||
+          Math.abs(line.physicalQuantity - line.originalPhysicalQuantity) > 0.001 ||
           Math.abs(line.unitPrice - line.originalPrice) > 0.001,
       )
     if (!hasLineChange && !hasPaymentChange) {
@@ -683,12 +745,12 @@ export function SellView({ session, data }: DistributionViewProps) {
     }
 
     for (const line of correctionLines) {
-      const increase = round2(line.quantity - line.originalQuantity)
+      const increase = roundSaleQuantity(line.physicalQuantity - line.originalPhysicalQuantity, line.product.unitType)
       if (increase > 0) {
         const stock = availableStock.get(line.product.id) ?? 0
         if (increase > stock) {
           setError(
-            `Stock insuficiente en tu camión para ${line.product.name}. Aumentas +${formatQty(increase, line.product.unitType)}, pero solo hay ${formatQty(stock, line.product.unitType)} disponibles.`,
+            `Stock insuficiente ${isDistributor ? 'en tu camión' : 'en almacén central'} para ${line.product.name}. Aumentas +${formatQty(increase, line.product.unitType)}, pero solo hay ${formatQty(stock, line.product.unitType)} disponibles.`,
           )
           return false
         }
@@ -716,6 +778,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       referenceUnitPrice: correctionOriginalByProduct.get(item.product.id)?.referenceUnitPrice ?? item.product.referencePrice,
       isPromotional: Math.abs(item.unitPrice - (correctionOriginalByProduct.get(item.product.id)?.referenceUnitPrice ?? item.product.referencePrice)) > 0.001,
       subtotal: item.subtotal,
+      ...(session.role === 'admin' && item.product.unitType === 'kg' ? { physicalQuantity: item.physicalQuantity } : {}),
     }))
 
     const { cash: cashAmount, qr: qrAmount, credit: creditAmount } = parsedCorrectionPayments
@@ -1330,16 +1393,23 @@ export function SellView({ session, data }: DistributionViewProps) {
                         const effective = sale.effectiveSnapshot ?? sale
                         const currentLines = effective.lines ?? []
                         const init: Record<string, string> = {}
+                        const physicalInit: Record<string, string> = {}
+                        const physicalTouchedInit: Record<string, boolean> = {}
                         const priceInit: Record<string, string> = {}
                         const subtotalInit: Record<string, number> = {}
                         currentLines.forEach((l) => {
-                          const quantity = round2((Number(init[l.productId]) || 0) + l.quantity)
+                          const quantity = roundSaleQuantity((Number(init[l.productId]) || 0) + l.quantity, l.unitType)
+                          const physicalQuantity = roundSaleQuantity((Number(physicalInit[l.productId]) || 0) + saleLinePhysicalQuantity(l), l.unitType)
                           const subtotal = round2((subtotalInit[l.productId] || 0) + l.subtotal)
                           init[l.productId] = String(quantity)
+                          physicalInit[l.productId] = String(physicalQuantity)
+                          physicalTouchedInit[l.productId] = false
                           subtotalInit[l.productId] = subtotal
                           priceInit[l.productId] = String(round2(subtotal / quantity))
                         })
                         setCorrectionQuantities(init)
+                        setCorrectionPhysicalQuantities(physicalInit)
+                        setCorrectionPhysicalTouched(physicalTouchedInit)
                         setCorrectionPrices(priceInit)
                         const effectiveKind = (effective.paymentKind ?? 'cash') as PaymentKind
                         setCorrectionPaymentKind(effectiveKind)
@@ -1449,7 +1519,9 @@ export function SellView({ session, data }: DistributionViewProps) {
       >
         <div className="grid gap-3">
           <p className="rounded-2xl border border-amber-200 bg-amber-50 p-2.5 text-xs font-semibold text-amber-900">
-            Solo se muestran los productos asignados al despacho de tu ruta. Puedes aumentar, reducir o poner en 0 para quitar productos. Toda modificación queda registrada en el historial de auditoría.
+            {session.role === 'admin'
+              ? 'Administración puede corregir la cantidad cobrada y, para productos por kg, el peso físico realmente entregado. Toda modificación queda registrada en el historial de auditoría.'
+              : 'Solo se muestran los productos asignados al despacho de tu ruta. Puedes aumentar, reducir o poner en 0 para quitar productos. Toda modificación queda registrada en el historial de auditoría.'}
           </p>
 
           <div className="relative">
@@ -1467,15 +1539,19 @@ export function SellView({ session, data }: DistributionViewProps) {
               const originalLine = correctionOriginalByProduct.get(product.id)
               const originalQty = originalLine ? originalLine.quantity : 0
               const currentVal = correctionQuantities[product.id] ?? '0'
-              const currentNum = round2(Number(currentVal) || 0)
+              const currentNum = parseSaleQuantity(currentVal, product.unitType)
+              const correctionLine = correctionLines.find((line) => line.product.id === product.id)
+              const physicalDisplayValue = correctionLine?.physicalTouched
+                ? correctionLine.physicalRaw
+                : String(correctionLine?.physicalQuantity ?? currentNum)
               const originalPrice = originalLine?.actualUnitPrice ?? product.referencePrice
               const priceVal = correctionPrices[product.id] ?? String(originalPrice)
               const unitPrice = Number(priceVal)
               const validPrice = Number.isFinite(unitPrice) && unitPrice > 0
               const stock = availableStock.get(product.id) ?? 0
-              const step = product.unitType === 'kg' ? 0.1 : 1
-              const increase = round2(Math.max(0, currentNum - originalQty))
-              const isOverStock = isDistributor && increase > stock
+              const step = product.unitType === 'kg' ? 0.001 : 1
+              const increase = roundSaleQuantity(Math.max(0, (correctionLine?.physicalQuantity ?? currentNum) - (correctionLine?.originalPhysicalQuantity ?? originalQty)), product.unitType)
+              const isOverStock = increase > stock
 
               return (
                 <div
@@ -1508,10 +1584,15 @@ export function SellView({ session, data }: DistributionViewProps) {
                           </p>
                         )}
                         <p className="mt-0.5 text-[10px] font-bold text-slate-600">
-                          Cantidad actual: {formatQty(originalQty, product.unitType)} · Precio actual registrado: {formatBs(originalPrice)}
+                          Cantidad cobrada actual: {formatQty(originalQty, product.unitType)} · Precio actual registrado: {formatBs(originalPrice)}
                         </p>
+                        {session.role === 'admin' && product.unitType === 'kg' && (correctionLine?.originalHadExcess || correctionLine?.physicalQuantity !== correctionLine?.quantity) && (
+                          <p className="mt-0.5 text-[10px] font-bold text-amber-800">
+                            Entrega física original: {formatQty(correctionLine?.originalPhysicalQuantity ?? originalQty, 'kg')} · excedente sin cobro: {formatQty(Math.max(0, (correctionLine?.originalPhysicalQuantity ?? originalQty) - originalQty), 'kg')}
+                          </p>
+                        )}
                         <p className={`text-[10px] font-bold ${isOverStock ? 'text-rose-700' : 'text-slate-500'}`}>
-                          Disponible en ruta: {formatQty(stock, product.unitType)}
+                          Disponible {isDistributor ? 'en ruta' : 'en almacén central'}: {formatQty(stock, product.unitType)}
                           {increase > 0 && ` (+${formatQty(increase, product.unitType)} adicionales)`}
                         </p>
                         {originalQty > 0 && currentNum === 0 && (
@@ -1569,6 +1650,30 @@ export function SellView({ session, data }: DistributionViewProps) {
                         </p>
                       )}
                     </div>
+                    {session.role === 'admin' && product.unitType === 'kg' && currentNum > 0 && (
+                      <div className="w-full min-w-0">
+                        <label className="mb-1 block text-[10px] font-black uppercase text-slate-600">Peso físico entregado (kg)</label>
+                        <NumberInput
+                          min={0}
+                          step={0.001}
+                          value={physicalDisplayValue}
+                          aria-label={`Peso físico entregado corregido de ${product.name}`}
+                          onChange={(e) => {
+                            setCorrectionPhysicalQuantities((values) => ({ ...values, [product.id]: e.target.value }))
+                            setCorrectionPhysicalTouched((values) => ({ ...values, [product.id]: true }))
+                          }}
+                          className={`h-10 w-full text-sm font-bold ${correctionLine?.physicalTouched && (!correctionLine.physicalValid || correctionLine.physicalQuantity < currentNum) ? 'border-rose-400' : ''}`}
+                        />
+                        <p className="mt-1 text-[10px] font-semibold text-slate-500">
+                          Cantidad cobrada: {formatQty(currentNum, 'kg')} · entrega física: {formatQty(correctionLine?.physicalQuantity ?? currentNum, 'kg')} · excedente sin cobro: {formatQty(Math.max(0, (correctionLine?.physicalQuantity ?? currentNum) - currentNum), 'kg')}
+                        </p>
+                        {correctionLine?.needsPhysicalConfirmation && (
+                          <p className="mt-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">
+                            Esta venta tenía excedente. Confirma el nuevo peso físico entregado antes de guardar.
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <button
                       type="button"
                       aria-label={`Reducir cantidad de ${product.name}`}
@@ -1576,7 +1681,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                       onClick={() =>
                         setCorrectionQuantities((c) => ({
                           ...c,
-                          [product.id]: String(Math.max(0, round2(currentNum - step))),
+                          [product.id]: String(Math.max(0, roundSaleQuantity(currentNum - step, product.unitType))),
                         }))
                       }
                       className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 disabled:opacity-30"
@@ -1606,7 +1711,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                       onClick={() =>
                         setCorrectionQuantities((c) => ({
                           ...c,
-                          [product.id]: String(round2(currentNum + step)),
+                          [product.id]: String(roundSaleQuantity(currentNum + step, product.unitType)),
                         }))
                       }
                       className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-white hover:bg-slate-800"
@@ -1803,8 +1908,13 @@ export function SellView({ session, data }: DistributionViewProps) {
                   <div key={line.product.id} className="rounded-2xl border border-slate-200 bg-white p-3">
                     <p className="font-black text-slate-900">{line.product.name}</p>
                     <p className={quantityChanged ? 'mt-1 font-bold text-amber-800' : 'mt-1 text-slate-600'}>
-                      Cantidad: {formatQty(line.originalQuantity, line.product.unitType)} → {formatQty(line.quantity, line.product.unitType)}
+                      Cantidad cobrada: {formatQty(line.originalQuantity, line.product.unitType)} → {formatQty(line.quantity, line.product.unitType)}
                     </p>
+                    {session.role === 'admin' && line.product.unitType === 'kg' && (
+                      <p className="font-semibold text-slate-700">
+                        Peso físico: {formatQty(line.originalPhysicalQuantity, 'kg')} → {formatQty(line.physicalQuantity, 'kg')} · excedente: {formatQty(Math.max(0, line.physicalQuantity - line.quantity), 'kg')}
+                      </p>
+                    )}
                     <p className={priceChanged ? 'font-bold text-amber-800' : 'text-slate-600'}>
                       Precio: {formatBs(line.originalPrice)} → {formatBs(line.unitPrice)}
                     </p>
