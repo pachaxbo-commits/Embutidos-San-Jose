@@ -1194,7 +1194,17 @@ async function sale(o, p) {
       Number.isFinite(actualUnitPrice) && actualUnitPrice > 0,
       "Precio inválido.",
     );
-    const allocations = await o.take(l.productId, loc, l.quantity);
+    const chargedQuantity = o.amount(Number(l.quantity), product, false, quantityPrecision(product));
+    const physicalQuantity = o.member.role === "admin" && product.unitType === "kg"
+      ? o.amount(Number(l.physicalQuantity ?? chargedQuantity), product, false, quantityPrecision(product))
+      : chargedQuantity;
+    check(physicalQuantity >= chargedQuantity, "El peso entregado no puede ser menor que la cantidad cobrada.");
+    check(o.member.role === "admin" || l.physicalQuantity == null || Number(l.physicalQuantity) === chargedQuantity, "Solo Administración puede registrar un peso entregado distinto.");
+    check(product.unitType === "kg" || physicalQuantity === chargedQuantity, "El peso entregado adicional solo aplica a productos por kg.");
+    check(product.unitType === "kg" || l.physicalQuantity == null || Number(l.physicalQuantity) === chargedQuantity, "El peso físico adicional solo aplica a productos por kg.");
+    check(Number.isFinite(Number(l.quantity)) && Number(l.quantity) > 0, "La cantidad cobrada es inválida.");
+    const excessWeightQuantity = roundAt(physicalQuantity - chargedQuantity, quantityPrecision(product));
+    const allocations = await o.take(l.productId, loc, physicalQuantity, { precision: quantityPrecision(product) });
     const known = allocations.every((a) => a.productionCost !== null);
     lines.push({
       productId: l.productId,
@@ -1203,6 +1213,7 @@ async function sale(o, p) {
       descriptionSnapshot: product.description || "",
       unitType: product.unitType,
       quantity: l.quantity,
+      ...(physicalQuantity !== chargedQuantity ? { physicalQuantity, excessWeightQuantity } : {}),
       actualUnitPrice: round(actualUnitPrice),
       referenceUnitPrice: round(product.referencePrice),
       isPromotional: promotional,
@@ -1215,8 +1226,9 @@ async function sale(o, p) {
           )
         : null,
     });
-    o.ledger(l.productId, l.quantity, loc, null, isCourtesy ? "courtesy" : "sale", {
+    o.ledger(l.productId, physicalQuantity, loc, null, isCourtesy ? "courtesy" : "sale", {
       allocations,
+      ...(excessWeightQuantity > 0 ? { chargedQuantity, excessWeightQuantity, note: `Excedente de peso entregado: ${excessWeightQuantity} kg` } : {}),
       ...(isCourtesy ? { courtesyReason: p.courtesyReason.trim(), lossCost: known ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null } : {}),
     });
   }
@@ -1628,10 +1640,12 @@ async function editSale(o, p) {
       continue;
     }
     const quantity = round(existing.quantity + line.quantity);
+    const physicalQuantity = round(Number(existing.physicalQuantity ?? existing.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0)) + Number(line.physicalQuantity ?? line.allocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0)));
     const subtotal = round(existing.subtotal + line.subtotal);
     previousByProduct.set(line.productId, {
       ...existing,
       quantity,
+      physicalQuantity,
       subtotal,
       actualUnitPrice: round(subtotal / quantity || existing.actualUnitPrice),
       allocations: [...existing.allocations, ...line.allocations],
@@ -1643,11 +1657,18 @@ async function editSale(o, p) {
   for (const input of p.lines) {
     const product = await o.product(input.productId);
     const quantity = o.amount(input.quantity, product);
-    check(Number.isFinite(input.actualUnitPrice) && input.actualUnitPrice > 0, "Precio inválido.");
     const previousLine = previousByProduct.get(product.id);
+    const previousPhysical = previousLine ? Number(previousLine.physicalQuantity ?? previousLine.quantity) : quantity;
+    const physicalQuantity = o.member.role === "admin" && product.unitType === "kg"
+      ? o.amount(Number(input.physicalQuantity ?? Math.max(quantity, previousPhysical)), product, false, quantityPrecision(product))
+      : quantity;
+    check(physicalQuantity >= quantity, "El peso entregado no puede ser menor que la cantidad cobrada.");
+    check(o.member.role === "admin" || input.physicalQuantity == null || Number(input.physicalQuantity) === quantity, "Solo Administración puede registrar un peso entregado distinto.");
+    check(product.unitType === "kg" || physicalQuantity === quantity, "El peso entregado adicional solo aplica a productos por kg.");
+    check(Number.isFinite(input.actualUnitPrice) && input.actualUnitPrice > 0, "Precio inválido.");
     let allocations = [];
     if (previousLine) {
-      let retained = quantity;
+      let retained = physicalQuantity;
       const returned = [];
       for (const allocation of previousLine.allocations) {
         const keptQuantity = round(Math.min(retained, allocation.quantity));
@@ -1662,13 +1683,13 @@ async function editSale(o, p) {
       }
       if (retained > 0) allocations.push(...await o.take(product.id, loc, retained));
     } else {
-      allocations = await o.take(product.id, loc, quantity);
+      allocations = await o.take(product.id, loc, physicalQuantity, { precision: quantityPrecision(product) });
     }
     const referenceUnitPrice = round(previousLine?.referenceUnitPrice ?? product.referencePrice);
     const promotional = round(input.actualUnitPrice) !== referenceUnitPrice;
     check(o.member.role === "admin" || !promotional || input.isPromotional === true, "Marca la venta como promocional para modificar el precio.");
     const lineSubtotal = isCourtesy ? 0 : round(quantity * input.actualUnitPrice);
-    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice, isPromotional: isCourtesy ? false : promotional, subtotal: lineSubtotal, ...(isCourtesy ? { referenceSubtotal: round(quantity * referenceUnitPrice) } : {}), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
+    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, ...(physicalQuantity !== quantity ? { physicalQuantity, excessWeightQuantity: roundAt(physicalQuantity - quantity, quantityPrecision(product)) } : {}), unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice, isPromotional: isCourtesy ? false : promotional, subtotal: lineSubtotal, ...(isCourtesy ? { referenceSubtotal: round(quantity * referenceUnitPrice) } : {}), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
   }
   for (const previousLine of previousByProduct.values()) {
     if (!requestedProductIds.has(previousLine.productId)) {
@@ -1677,7 +1698,8 @@ async function editSale(o, p) {
     }
   }
   const productIds = [...new Set([...previous.lines, ...lines].map(line => line.productId))];
-  const stockDeltas = productIds.map(productId => ({ productId, quantity: round(lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0) - previous.lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0)), ...(restoredByProduct.has(productId) ? { allocations: restoredByProduct.get(productId) } : {}) }));
+  const physicalOf = line => Number(line.physicalQuantity ?? line.allocations?.reduce((sum, row) => sum + Number(row.quantity || 0), 0) ?? line.quantity);
+  const stockDeltas = productIds.map(productId => ({ productId, quantity: round(lines.filter(line => line.productId === productId).reduce((sum, line) => sum + physicalOf(line), 0) - previous.lines.filter(line => line.productId === productId).reduce((sum, line) => sum + physicalOf(line), 0)), ...(restoredByProduct.has(productId) ? { allocations: restoredByProduct.get(productId) } : {}) }));
   for (const delta of stockDeltas) {
     if (delta.quantity > 0) o.ledger(delta.productId, delta.quantity, loc, null, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
     if (delta.quantity < 0) o.ledger(delta.productId, -delta.quantity, null, loc, "sale_correction", { note: p.reason.trim(), saleId: sale.id });
@@ -1685,7 +1707,7 @@ async function editSale(o, p) {
   const total = isCourtesy ? 0 : round(lines.reduce((sum, line) => sum + line.subtotal, 0));
   const hasLineChange = lines.length !== previousByProduct.size || lines.some(line => {
     const before = previousByProduct.get(line.productId);
-    return !before || round(before.quantity) !== line.quantity || round(before.actualUnitPrice) !== line.actualUnitPrice;
+    return !before || round(before.quantity) !== line.quantity || round(physicalOf(before)) !== physicalOf(line) || round(before.actualUnitPrice) !== line.actualUnitPrice;
   });
   const cashAmount = round(Number(p.cashAmount) || 0), qrAmount = round(Number(p.qrAmount) || 0), creditAmount = round(Number(p.creditAmount) || 0);
   if (isCourtesy) {
@@ -1743,7 +1765,7 @@ async function voidSale(o, p) {
   for (const line of previous.lines) {
     await o.restore(line.productId, loc, line.allocations);
     const current = returnedByProduct.get(line.productId) || { quantity: 0, allocations: [] };
-    current.quantity = round(current.quantity + line.quantity);
+    current.quantity = round(current.quantity + line.allocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0));
     current.allocations.push(...line.allocations);
     returnedByProduct.set(line.productId, current);
   }

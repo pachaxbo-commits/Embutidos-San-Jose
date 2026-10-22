@@ -14,10 +14,15 @@ import {
   onSnapshot,
   query,
   where,
+  orderBy,
+  limit,
+  startAfter,
+  documentId,
   writeBatch,
   type DocumentData,
   type Firestore,
   type Query,
+  type QueryConstraint,
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
@@ -633,6 +638,39 @@ export async function loadCustomerCreditStatementData(customerId: string, distri
   }))).filter((sale): sale is DistSale => sale !== null)
 
   return { receivables, collections, sales }
+}
+
+export interface ProductMovementCursor { createdAt: string; id: string }
+
+/** Consulta del servidor paginada para el Kardex, independiente del rango que mantiene el store en vivo. */
+export async function loadProductMovementPage(productId: string, cursor: ProductMovementCursor | null, pageSize = 100): Promise<{
+  movements: DistStockMovement[]
+  nextCursor: ProductMovementCursor | null
+  hasMore: boolean
+}> {
+  const context = await getContext()
+  const constraints: QueryConstraint[] = [where('productId', '==', productId), orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc')]
+  if (cursor) constraints.push(startAfter(cursor.createdAt, cursor.id))
+  constraints.push(limit(pageSize + 1))
+  const snapshot = await getDocsFromServer(query(collectionRef(context, DIST_COLLECTIONS.movements), ...constraints))
+  const pageDocs = snapshot.docs.slice(0, pageSize)
+  const last = pageDocs.at(-1)
+  return {
+    movements: pageDocs.map((entry) => ({ id: entry.id, ...entry.data() }) as DistStockMovement),
+    nextCursor: last ? { createdAt: String(last.data().createdAt || ''), id: last.id } : cursor,
+    hasMore: snapshot.docs.length > pageSize,
+  }
+}
+
+/** Saldo físico guardado en Firestore (no una proyección optimista del store). */
+export async function loadProductLocationBalance(productId: string, selectedLocation: string): Promise<number | null> {
+  const context = await getContext()
+  if (selectedLocation === 'all') return null
+  const ref = docRef(context, DIST_COLLECTIONS.balances, `${selectedLocation}__${productId}`)
+  const snapshot = await getDocFromServer(ref)
+  if (!snapshot.exists()) return 0
+  const quantity = Number(snapshot.data().quantity)
+  return Number.isFinite(quantity) ? quantity : null
 }
 
 /** Historial inmutable de ajustes de cartera: solo Administración lo consulta. */

@@ -50,6 +50,8 @@ equal(statement.currentDebts.length, 2, 'solo deudas vigentes del cliente, de di
 equal(statement.currentDebts[0].route, 'Zona Norte', 'ruta Norte preservada')
 equal(statement.currentDebts[1].route, 'Zona Sud', 'ruta Sud preservada')
 equal(statement.currentDebts[1].products, 'Saldo anterior registrado; no corresponde a productos de una venta.', 'saldo anterior sin productos inventados')
+equal(statement.pendingProducts.length, 1, 'productos agrupados solo desde créditos con saldo')
+equal(statement.pendingProducts[0].quantity, 2.5, 'cantidad histórica de producto pendiente sin atribuir abonos al producto')
 equal(statement.paidDebts.length, 1, 'deuda pagada separada de la cartera pendiente')
 equal(statement.voidedDebts.length, 1, 'deuda anulada separada y no vigente')
 equal(statement.outstandingTotal, 110, 'saldo pendiente suma solo deudas abiertas')

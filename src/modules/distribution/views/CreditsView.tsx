@@ -13,12 +13,13 @@ import {
   computeCreditPortfolioByRoute,
   allocateCreditBySubtotal,
   getRouteDisplayName,
+  resolveCreditProducts,
   type CustomerCreditRouteView,
 } from '../domain/creditRoutes'
 import { CreditProducts } from './CreditProducts'
-import { KpiCard, PrimaryButton, SecondaryButton, formatBs } from './shared'
+import { KpiCard, PrimaryButton, SecondaryButton, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
-import type { DistCollection, DistReceivable, DistReceivableLineAdjustment, DistSaleLine } from '../types'
+import type { DistCollection, DistReceivable, DistReceivableLineAdjustment, DistSaleLine, UnitType } from '../types'
 import { printCollectionReceipt, printLargeCollectionReceipt, shareCollectionReceipt } from '../data/distributionReceiptService'
 import { customerStatementFilename } from '../domain/customerCreditStatement'
 
@@ -96,6 +97,23 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   }, [data.customers, customerPickerSearch])
 
   const salesById = useMemo(() => new Map(data.sales.map((s) => [s.id, s])), [data.sales])
+
+  const pendingProductSummary = useMemo(() => {
+    if (!selected) return []
+    const summary = new Map<string, { name: string; presentation: string; unitType: string; quantity: number }>()
+    for (const receivable of selected.allReceivables) {
+      const isVoid = Boolean(receivable.voided || receivable.status === 'VOID' || receivable.voidedAt || receivable.voidReason || (receivable as unknown as Record<string, unknown>).isVoid || receivable.note?.toLowerCase().includes('anulad'))
+      if (isVoid || receivable.sourceType === 'opening_balance' || Number(receivable.balance) <= 0) continue
+      const sale = salesById.get(receivable.saleId || '')
+      for (const line of resolveCreditProducts(receivable, sale).lines) {
+        const presentation = line.presentationSnapshot || ''
+        const key = `${line.productId}__${presentation}__${line.unitType}`
+        const existing = summary.get(key)
+        summary.set(key, { name: line.productNameSnapshot || 'Producto histórico', presentation, unitType: line.unitType, quantity: round2((existing?.quantity || 0) + Number(line.quantity || 0)) })
+      }
+    }
+    return [...summary.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [selected, salesById])
 
   const creditLineDetails = (receivable: DistReceivable): DistReceivableLineAdjustment[] => {
     if (receivable.adjustedSaleLines?.length) return receivable.adjustedSaleLines
@@ -752,6 +770,12 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                 )}
               </div>
             )}
+
+            {selected.totalBalance > 0 && <section className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-3">
+              <h3 className="text-[10px] font-black uppercase tracking-wide text-indigo-900">Productos en créditos pendientes</h3>
+              <p className="mt-1 text-[10px] leading-relaxed text-indigo-800">Son las cantidades originales de ventas que aún conservan saldo. Los abonos se aplican a la deuda completa; no se atribuye el saldo a un producto específico.</p>
+              {pendingProductSummary.length ? <div className="mt-2 grid gap-1.5 sm:grid-cols-2">{pendingProductSummary.map((item) => <div key={`${item.name}-${item.presentation}-${item.unitType}`} className="flex min-w-0 items-center justify-between gap-2 rounded-xl bg-white px-2.5 py-2 text-xs"><span className="min-w-0 break-words font-bold text-slate-800">{item.name}{item.presentation ? ` · ${item.presentation}` : ''}</span><strong className="shrink-0 tabular-nums text-indigo-900">{formatQty(item.quantity, item.unitType as UnitType)}</strong></div>)}</div> : <p className="mt-2 text-xs font-semibold text-slate-600">Los saldos pendientes no tienen detalle de productos recuperable.</p>}
+            </section>}
 
             {selected.totalBalance > 0 && session.can('dist.collection.create') && (
               <button

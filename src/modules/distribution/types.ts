@@ -150,6 +150,8 @@ export interface DistStockMovement extends DistBaseDoc {
   /** Desglose informativo de carga física; no representa pérdida. */
   normalQuantity?: number
   dispatchMerma?: number
+  chargedQuantity?: number
+  excessWeightQuantity?: number
   centralDelta: number
   routeDelta: number
   fromLocation?: string
@@ -269,6 +271,10 @@ export interface DistSaleLine {
   descriptionSnapshot?: string
   quantity: number
   unitType: UnitType
+  /** En ventas de Administración por kg: cantidad realmente entregada; el cobro usa quantity. */
+  physicalQuantity?: number
+  /** Diferencia entregada sin cobro; no es merma de retorno ni pérdida. */
+  excessWeightQuantity?: number
   /** Precio realmente aplicado, congelado historicamente */
   actualUnitPrice: number
   /** Precio oficial vigente al vender; permite auditar descuentos promocionales. */

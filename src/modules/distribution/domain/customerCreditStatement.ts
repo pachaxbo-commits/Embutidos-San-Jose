@@ -31,6 +31,7 @@ export interface CustomerCreditStatement {
   customerCode: string
   issuedAt: string
   currentDebts: CustomerCreditStatementRow[]
+  pendingProducts: Array<{ productId: string; productName: string; presentation: string; unitType: string; quantity: number }>
   paidDebts: CustomerCreditStatementRow[]
   voidedDebts: CustomerCreditStatementRow[]
   payments: Array<{
@@ -161,11 +162,27 @@ export function buildCustomerCreditStatement(input: CustomerCreditStatementInput
     !openingBalance(row) && !row.saleLines?.length && !row.adjustedSaleLines?.length && !input.salesById.has(row.saleId || ''),
   ).length
   const currentNonVoided = valid.filter((row) => Number(row.balance) > 0)
+  const pendingProductMap = new Map<string, CustomerCreditStatement['pendingProducts'][number]>()
+  for (const receivable of currentNonVoided.filter((row) => !openingBalance(row))) {
+    const sale = input.salesById.get(receivable.saleId || '')
+    for (const line of resolveCreditProducts(receivable, sale).lines) {
+      const key = `${line.productId}__${line.presentationSnapshot || ''}__${line.unitType}`
+      const current = pendingProductMap.get(key)
+      pendingProductMap.set(key, {
+        productId: line.productId,
+        productName: line.productNameSnapshot || 'Producto histórico',
+        presentation: line.presentationSnapshot || '',
+        unitType: line.unitType,
+        quantity: round2((current?.quantity || 0) + (Number(line.quantity) || 0)),
+      })
+    }
+  }
   return {
     customerName: input.customer.name,
     customerCode: input.customer.customerCode || input.customer.identityNumber || 'No registrado',
     issuedAt: (input.emittedAt || new Date()).toLocaleString('es-BO', { timeZone: 'America/La_Paz' }),
     currentDebts,
+    pendingProducts: [...pendingProductMap.values()].sort((a, b) => a.productName.localeCompare(b.productName)),
     paidDebts,
     voidedDebts,
     payments: paymentRows,

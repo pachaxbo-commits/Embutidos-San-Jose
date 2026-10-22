@@ -87,7 +87,15 @@ try {
  const transfer=await command(admin,'transfer',{from:'central',to:wh,line:{productId:pid,quantity:4},note:'QA'})
  ok(transfer.result.allocations[0].lotCode==='PRIMERO','FEFO prioriza el vencimiento más próximo')
  const dispatch=await command(warehouse,'dispatch',{warehouseId:wh,routeId:route,routeName:'QA ruta',distributorUid:seller,distributorName:'QA vendedor',lines:[{productId:pid,quantity:3}]})
+ const adminPhysicalSale=await command(admin,'sale',{sourceLocation:'centralWarehouse',routeId:'administracion',routeName:'Administración',lines:[{productId:pid,quantity:1,physicalQuantity:1.125,actualUnitPrice:10}],cashAmount:10,qrAmount:0,creditAmount:0,paymentKind:'cash'})
+ const physicalSaleLine=adminPhysicalSale.result.lines[0],physicalSaleMovement=(await root.collection('distStockMovements').where('refId','==',adminPhysicalSale.id).get()).docs.map(row=>row.data()).find(row=>row.type==='sale')
+ ok(physicalSaleLine.quantity===1&&physicalSaleLine.physicalQuantity===1.125&&physicalSaleLine.excessWeightQuantity===0.125&&physicalSaleLine.subtotal===10,'venta de Administración cobra 1 kg y registra 1.125 kg entregados físicamente')
+ ok(physicalSaleMovement.quantity===1.125&&physicalSaleMovement.chargedQuantity===1&&physicalSaleMovement.excessWeightQuantity===0.125&&(await read('distBalances',`central__${pid}`)).quantity===9.875,'Kardex y stock descuentan el peso físico sin aumentar el importe cobrado')
+ const physicalSaleCorrection=await command(admin,'editSale',{saleId:adminPhysicalSale.id,reason:'Ajuste del peso cobrado',lines:[{productId:pid,quantity:1.05,actualUnitPrice:10}],paymentKind:'cash',cashAmount:10.5,qrAmount:0,creditAmount:0})
+ const correctedPhysicalSale=await read('distSales',adminPhysicalSale.id)
+ ok(correctedPhysicalSale.effectiveSnapshot.lines[0].quantity===1.05&&correctedPhysicalSale.effectiveSnapshot.lines[0].physicalQuantity===1.125&&(await read('distBalances',`central__${pid}`)).quantity===9.875&&physicalSaleCorrection.status==='confirmed','corrección de venta preserva la cantidad física entregada y no duplica stock')
  const base={sourceLocation:'route',routeId:route,routeName:'QA ruta',dispatchId:dispatch.id,customerId:cust,lines:[{productId:pid,quantity:2,actualUnitPrice:10}],cashAmount:0,qrAmount:0,creditAmount:20,paymentKind:'credit'}
+ await command(seller,'sale',{...base,lines:[{productId:pid,quantity:1,physicalQuantity:1.1,actualUnitPrice:10}],creditAmount:10},'rejected');checks++
  await command(seller,'sale',{...base,lines:[{productId:pid,quantity:2,actualUnitPrice:9}],creditAmount:18},'rejected');checks++
  const promotional=await command(seller,'sale',{...base,lines:[{productId:pid,quantity:0.5,actualUnitPrice:9,isPromotional:true}],creditAmount:4.5})
  ok(promotional.result.lines[0].isPromotional===true&&promotional.result.lines[0].referenceUnitPrice===10,'venta promocional conserva precio oficial y precio aplicado')

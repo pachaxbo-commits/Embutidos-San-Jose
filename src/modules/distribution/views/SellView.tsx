@@ -49,6 +49,12 @@ interface CartLine extends DistSaleLine {
   lineId: string
 }
 
+function roundSaleQuantity(value: number, unitType: UnitType): number {
+  const precision = unitType === 'kg' ? 3 : 2
+  const factor = 10 ** precision
+  return Math.round((value + Number.EPSILON) * factor) / factor
+}
+
 const PAYMENT_OPTIONS: { value: PaymentKind; label: string }[] = [
   { value: 'cash', label: 'Efectivo' },
   { value: 'qr', label: 'QR' },
@@ -119,6 +125,7 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [cart, setCart] = useState<CartLine[]>([])
   const [editingProduct, setEditingProduct] = useState<DistProduct | null>(null)
   const [quantity, setQuantity] = useState('0')
+  const [physicalQuantity, setPhysicalQuantity] = useState('0')
   const [unitPrice, setUnitPrice] = useState('0')
   const [isPromotional, setIsPromotional] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
@@ -173,13 +180,13 @@ export function SellView({ session, data }: DistributionViewProps) {
       const cur = totals.get(line.productId)
       totals.set(line.productId, {
         name: line.productNameSnapshot,
-        qty: round2((cur?.qty ?? 0) + line.quantity),
+        qty: roundSaleQuantity((cur?.qty ?? 0) + (line.physicalQuantity ?? line.quantity), line.unitType),
         unitType: line.unitType,
       })
     }
     for (const [productId, entry] of totals) {
-      const stock = round2(availableStock.get(productId) ?? 0)
-      if (isDistributor && entry.qty > stock) {
+      const stock = roundSaleQuantity(availableStock.get(productId) ?? 0, entry.unitType)
+      if (entry.qty > stock) {
         return {
           isValid: false,
           productId,
@@ -187,7 +194,7 @@ export function SellView({ session, data }: DistributionViewProps) {
           requested: entry.qty,
           available: stock,
           unitType: entry.unitType,
-          message: `Stock insuficiente en tu ruta para ${entry.name}: disponible ${formatQty(stock, entry.unitType)}, solicitado ${formatQty(entry.qty, entry.unitType)}.`,
+          message: `Stock insuficiente ${isDistributor ? 'en tu ruta' : 'en almacén central'} para ${entry.name}: disponible ${formatQty(stock, entry.unitType)}, necesario para entregar ${formatQty(entry.qty, entry.unitType)}.`,
         }
       }
     }
@@ -243,13 +250,15 @@ export function SellView({ session, data }: DistributionViewProps) {
     setError(null)
     setEditingProduct(product)
     setQuantity('0')
+    setPhysicalQuantity('0')
     setUnitPrice(String(product.referencePrice))
     setIsPromotional(false)
   }
 
   const addToCart = () => {
     if (!editingProduct) return
-    const qty = round2(Number(quantity))
+    const qty = roundSaleQuantity(Number(quantity), editingProduct.unitType)
+    const physicalQty = !isDistributor && editingProduct.unitType === 'kg' ? roundSaleQuantity(Number(physicalQuantity), editingProduct.unitType) : qty
     const price = round2(Number(unitPrice))
     if (!(qty > 0)) {
       setError('La cantidad debe ser mayor a cero.')
@@ -259,15 +268,19 @@ export function SellView({ session, data }: DistributionViewProps) {
       setError('El precio debe ser mayor a cero.')
       return
     }
+    if (!Number.isFinite(physicalQty) || physicalQty < qty) {
+      setError('El peso entregado debe ser igual o mayor que la cantidad cobrada.')
+      return
+    }
 
     const currentStock = round2(availableStock.get(editingProduct.id) ?? 0)
     const existingInCart = cart
       .filter((l) => l.productId === editingProduct.id)
-      .reduce((sum, l) => sum + l.quantity, 0)
-    const totalRequested = round2(existingInCart + qty)
-    if (isDistributor && totalRequested > currentStock) {
+      .reduce((sum, l) => sum + (l.physicalQuantity ?? l.quantity), 0)
+    const totalRequested = roundSaleQuantity(existingInCart + physicalQty, editingProduct.unitType)
+    if (totalRequested > currentStock) {
       setError(
-        `Stock insuficiente en tu ruta. Disponible: ${formatQty(currentStock, editingProduct.unitType)}, solicitado en total: ${formatQty(totalRequested, editingProduct.unitType)}.`,
+        `Stock insuficiente ${isDistributor ? 'en tu ruta' : 'en almacén central'}. Disponible: ${formatQty(currentStock, editingProduct.unitType)}, necesario para entregar: ${formatQty(totalRequested, editingProduct.unitType)}.`,
       )
       return
     }
@@ -281,6 +294,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         presentationSnapshot: getProductPresentation(editingProduct),
         descriptionSnapshot: editingProduct.description || '',
         quantity: qty,
+        ...(physicalQty > qty ? { physicalQuantity: physicalQty, excessWeightQuantity: roundSaleQuantity(physicalQty - qty, editingProduct.unitType) } : {}),
         unitType: editingProduct.unitType,
         actualUnitPrice: price,
         referenceUnitPrice: editingProduct.referencePrice,
@@ -411,7 +425,7 @@ export function SellView({ session, data }: DistributionViewProps) {
       cart.map((line) => ({
         productId: line.productId,
         productName: line.productNameSnapshot,
-        quantity: line.quantity,
+        quantity: line.physicalQuantity ?? line.quantity,
         unitType: line.unitType,
       })),
       availableStock,
@@ -438,7 +452,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         customerId: customerId || undefined,
         customerName: selectedCustomer?.name,
         customerCode: selectedCustomer?.customerCode || selectedCustomer?.identityNumber,
-        lines: cart.map(line => ({ productId: line.productId, productNameSnapshot: line.productNameSnapshot, presentationSnapshot: line.presentationSnapshot, descriptionSnapshot: line.descriptionSnapshot, quantity: line.quantity, unitType: line.unitType, actualUnitPrice: isCourtesy ? (line.referenceUnitPrice || line.actualUnitPrice) : line.actualUnitPrice, referenceUnitPrice: line.referenceUnitPrice, isPromotional: isCourtesy ? false : line.isPromotional, subtotal: isCourtesy ? 0 : line.subtotal, ...(isCourtesy ? { referenceSubtotal: round2(line.quantity * (line.referenceUnitPrice || line.actualUnitPrice)) } : {}) })),
+        lines: cart.map(line => ({ productId: line.productId, productNameSnapshot: line.productNameSnapshot, presentationSnapshot: line.presentationSnapshot, descriptionSnapshot: line.descriptionSnapshot, quantity: line.quantity, ...(line.physicalQuantity !== undefined ? { physicalQuantity: line.physicalQuantity } : {}), unitType: line.unitType, actualUnitPrice: isCourtesy ? (line.referenceUnitPrice || line.actualUnitPrice) : line.actualUnitPrice, referenceUnitPrice: line.referenceUnitPrice, isPromotional: isCourtesy ? false : line.isPromotional, subtotal: isCourtesy ? 0 : line.subtotal, ...(isCourtesy ? { referenceSubtotal: round2(line.quantity * (line.referenceUnitPrice || line.actualUnitPrice)) } : {}) })),
         total,
         paymentKind: isCourtesy ? 'cash' : paymentKind || 'cash',
         cashAmount: split.cashAmount,
@@ -492,7 +506,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         grouped.set(line.productId, { ...line, allocations: [...(line.allocations || [])] })
         continue
       }
-      const quantity = round2(existing.quantity + line.quantity)
+      const quantity = roundSaleQuantity(existing.quantity + line.quantity, line.unitType)
       const subtotal = round2(existing.subtotal + line.subtotal)
       grouped.set(line.productId, {
         ...existing,
@@ -868,11 +882,12 @@ export function SellView({ session, data }: DistributionViewProps) {
         subtitle={editingProduct?.presentation}
         footer={
           (() => {
-            const editingStock = editingProduct ? round2(availableStock.get(editingProduct.id) ?? 0) : 0
-            const requestedQty = round2(Number(quantity) || 0)
-            const existingInCart = editingProduct ? cart.filter(l => l.productId === editingProduct.id).reduce((sum, l) => sum + l.quantity, 0) : 0
-            const totalRequested = round2(existingInCart + requestedQty)
-            const isEditingOverStock = isDistributor && totalRequested > editingStock
+            const editingStock = editingProduct ? roundSaleQuantity(availableStock.get(editingProduct.id) ?? 0, editingProduct.unitType) : 0
+            const requestedQty = roundSaleQuantity(Number(quantity) || 0, editingProduct?.unitType ?? 'unit')
+            const existingInCart = editingProduct ? cart.filter(l => l.productId === editingProduct.id).reduce((sum, l) => sum + (l.physicalQuantity ?? l.quantity), 0) : 0
+            const deliveredQty = session.role === 'admin' && editingProduct?.unitType === 'kg' ? roundSaleQuantity(Number(physicalQuantity) || 0, editingProduct.unitType) : requestedQty
+            const totalRequested = roundSaleQuantity(existingInCart + deliveredQty, editingProduct?.unitType ?? 'unit')
+            const isEditingOverStock = totalRequested > editingStock
             return (
               <PrimaryButton full disabled={isEditingOverStock || !(requestedQty > 0)} onClick={addToCart}>
                 <Plus size={16} /> Agregar {formatBs(round2(requestedQty * Number(unitPrice)))}
@@ -882,11 +897,12 @@ export function SellView({ session, data }: DistributionViewProps) {
         }
       >
         {(() => {
-          const editingStock = editingProduct ? round2(availableStock.get(editingProduct.id) ?? 0) : 0
-          const requestedQty = round2(Number(quantity) || 0)
-          const existingInCart = editingProduct ? cart.filter(l => l.productId === editingProduct.id).reduce((sum, l) => sum + l.quantity, 0) : 0
-          const totalRequested = round2(existingInCart + requestedQty)
-          const isEditingOverStock = isDistributor && totalRequested > editingStock
+          const editingStock = editingProduct ? roundSaleQuantity(availableStock.get(editingProduct.id) ?? 0, editingProduct.unitType) : 0
+          const requestedQty = roundSaleQuantity(Number(quantity) || 0, editingProduct?.unitType ?? 'unit')
+          const existingInCart = editingProduct ? cart.filter(l => l.productId === editingProduct.id).reduce((sum, l) => sum + (l.physicalQuantity ?? l.quantity), 0) : 0
+          const deliveredQty = session.role === 'admin' && editingProduct?.unitType === 'kg' ? roundSaleQuantity(Number(physicalQuantity) || 0, editingProduct.unitType) : requestedQty
+          const totalRequested = roundSaleQuantity(existingInCart + deliveredQty, editingProduct?.unitType ?? 'unit')
+          const isEditingOverStock = totalRequested > editingStock
 
           return (
             <div className="grid gap-3">
@@ -896,7 +912,7 @@ export function SellView({ session, data }: DistributionViewProps) {
                   <div>
                     <p className="font-black text-rose-900">Stock insuficiente</p>
                     <p className="text-[11px] text-rose-700">
-                      Disponible en tu ruta: {formatQty(editingStock, editingProduct?.unitType ?? 'unit')}.
+                      Disponible {isDistributor ? 'en tu ruta' : 'en almacén central'}: {formatQty(editingStock, editingProduct?.unitType ?? 'unit')}.
                       {existingInCart > 0 && ` Ya tienes ${formatQty(existingInCart, editingProduct?.unitType ?? 'unit')} en carrito.`}
                       {' '}Máximo disponible: {formatQty(editingStock, editingProduct?.unitType ?? 'unit')}.
                     </p>
@@ -904,16 +920,22 @@ export function SellView({ session, data }: DistributionViewProps) {
                 </div>
               )}
               <Field
-                label={editingProduct?.unitType === 'kg' ? 'Cantidad (kg)' : 'Cantidad'}
-                hint={`Disponible en tu ruta: ${formatQty(editingStock, editingProduct?.unitType ?? 'unit')}`}
+                label={session.role === 'admin' && editingProduct?.unitType === 'kg' ? 'Cantidad a cobrar (kg)' : editingProduct?.unitType === 'kg' ? 'Cantidad (kg)' : 'Cantidad'}
+                hint={`Disponible ${isDistributor ? 'en tu ruta' : 'en almacén central'}: ${formatQty(editingStock, editingProduct?.unitType ?? 'unit')}`}
               >
                 <NumberInput
                   value={quantity}
                   min={0}
-                  step={editingProduct?.unitType === 'kg' ? 0.1 : 1}
-                  onChange={(event) => setQuantity(event.target.value)}
+                  step={editingProduct?.unitType === 'kg' ? 0.001 : 1}
+                  onChange={(event) => {
+                    const next = event.target.value
+                    const previous = quantity
+                    setQuantity(next)
+                    if (physicalQuantity === previous || !physicalQuantity) setPhysicalQuantity(next)
+                  }}
                 />
               </Field>
+              {session.role === 'admin' && editingProduct?.unitType === 'kg' && <Field label="Peso entregado físicamente (kg)" hint="El importe se calcula con la cantidad a cobrar; el stock se descuenta con el peso físico entregado."><NumberInput value={physicalQuantity} min={0} step={0.001} inputMode="decimal" onChange={(event) => setPhysicalQuantity(event.target.value)} /></Field>}
               <Field
                 label={editingProduct?.unitType === 'kg' ? 'Precio por kilo (Bs)' : 'Precio unitario (Bs)'}
                 hint={isDistributor ? (isPromotional ? 'Precio promocional: quedará destacado y se conservará el precio original.' : 'Precio oficial definido por Administración.') : 'Administración puede modificar el precio.'}
@@ -925,9 +947,10 @@ export function SellView({ session, data }: DistributionViewProps) {
               {/* En granel el calculo tiene que estar a la vista: se pesa y se cobra. */}
               <div className="flex items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
                 <span className="text-[11px] font-bold text-slate-500">
-                  {round2(Number(quantity) || 0)}
-                  {editingProduct?.unitType === 'kg' ? ' kg' : editingProduct?.unitType === 'package' ? ' paq' : ' u'} ×{' '}
+                  {roundSaleQuantity(Number(quantity) || 0, editingProduct?.unitType ?? 'unit')}
+                  {editingProduct?.unitType === 'kg' ? ' kg cobrados' : editingProduct?.unitType === 'package' ? ' paq' : ' u'} ×{' '}
                   {formatBs(round2(Number(unitPrice) || 0))}
+                  {session.role === 'admin' && editingProduct?.unitType === 'kg' && roundSaleQuantity(Number(physicalQuantity) || 0, 'kg') !== roundSaleQuantity(Number(quantity) || 0, 'kg') ? <span className="block font-black text-amber-800">Entrega: {formatQty(Number(physicalQuantity) || 0, 'kg')} · excedente sin cobro {formatQty(Math.max(0, (Number(physicalQuantity) || 0) - (Number(quantity) || 0)), 'kg')}</span> : null}
                 </span>
                 <span className="text-base font-black tabular-nums text-slate-900">
                   {formatBs(round2((Number(quantity) || 0) * (Number(unitPrice) || 0)))}
@@ -984,7 +1007,8 @@ export function SellView({ session, data }: DistributionViewProps) {
           <div className="grid gap-1.5">
             {cart.map((line) => {
               const lineStock = round2(availableStock.get(line.productId) ?? 0)
-              const isOver = isDistributor && line.quantity > lineStock
+              const physicalQty = line.physicalQuantity ?? line.quantity
+              const isOver = physicalQty > lineStock
               return (
                 <div
                   key={line.lineId}
@@ -1002,10 +1026,11 @@ export function SellView({ session, data }: DistributionViewProps) {
                     <p className="text-[11px] font-semibold text-slate-500">
                       {formatQty(line.quantity, line.unitType)} × {saleMode === 'courtesy' ? `precio referencial ${formatBs(line.referenceUnitPrice || line.actualUnitPrice)}` : formatBs(line.actualUnitPrice)}
                     </p>
+                    {line.physicalQuantity !== undefined && line.physicalQuantity > line.quantity && <p className="text-[11px] font-bold text-amber-800">Entregado: {formatQty(line.physicalQuantity, line.unitType)} · excedente no cobrado: {formatQty(line.excessWeightQuantity || 0, line.unitType)}</p>}
                     {isOver && (
                       <p className="mt-1 flex items-center gap-1 text-[10px] font-black text-rose-700">
                         <AlertTriangle size={12} className="shrink-0" />
-                        <span>Stock insuficiente: máximo {formatQty(lineStock, line.unitType)} en tu ruta</span>
+                        <span>Stock insuficiente: disponible {formatQty(lineStock, line.unitType)} {isDistributor ? 'en tu ruta' : 'en almacén central'}</span>
                       </p>
                     )}
                     {line.isPromotional && (

@@ -615,12 +615,12 @@ export function reportSheets(
     {
       id: 'salesKardex',
       name: "Kardex de ventas",
-      headers: ["Fecha y hora", "Producto", "Presentación", "Cliente", "Vendedor", "Ruta", "Cantidad", "Unidad", "Precio (Bs)", "Importe (Bs)", "Comprobante"],
+      headers: ["Fecha y hora", "Producto", "Presentación", "Cliente", "Vendedor", "Ruta", "Cantidad cobrada", "Peso físico entregado", "Excedente sin cobro", "Unidad", "Precio (Bs)", "Importe (Bs)", "Comprobante"],
       rows: [
         ...lines.slice().sort((a, b) => a.productNameSnapshot.localeCompare(b.productNameSnapshot) || a.sale.createdAt.localeCompare(b.sale.createdAt)).map(l => [
-          reportDateTime(l.sale.createdAt), l.productNameSnapshot, l.presentationSnapshot || "", l.sale.customerName || "Contado", reportPersonName(l.sale.sellerName), reportRecordName(l.sale.routeName, "Ruta registrada"), l.quantity, reportUnitLabel(l.unitType), l.actualUnitPrice, l.subtotal, reportReceiptNumber(l.sale.id),
+          reportDateTime(l.sale.createdAt), l.productNameSnapshot, l.presentationSnapshot || "", l.sale.customerName || "Contado", reportPersonName(l.sale.sellerName), reportRecordName(l.sale.routeName, "Ruta registrada"), l.quantity, l.physicalQuantity ?? l.quantity, l.excessWeightQuantity ?? 0, reportUnitLabel(l.unitType), l.actualUnitPrice, l.subtotal, reportReceiptNumber(l.sale.id),
         ] as Cell[]),
-        ["TOTAL", "", "", "", "", "", "", "", "", round2(lines.reduce((sum, line) => sum + line.subtotal, 0)), ""],
+        ["TOTAL", "", "", "", "", "", "", "", "", "", "", round2(lines.reduce((sum, line) => sum + line.subtotal, 0)), ""],
       ],
       meta: { lines },
     },
@@ -2068,6 +2068,7 @@ export async function exportCustomerCreditStatement(
         ['Alcance', statement.scopeLabel, null],
         ['Emitido', statement.issuedAt, null],
         ['Cartera vigente', `${statement.currentDebts.length} deudas activas`, null],
+        ['Productos relacionados con créditos pendientes', `${statement.pendingProducts.length} productos · las cantidades corresponden a las ventas originales con saldo`, null],
         ['Saldo anterior registrado (incluido en cartera vigente)', 'Identificado por separado dentro del detalle', statement.openingBalance],
         ['Abonos históricos mostrados (no se suman nuevamente a la deuda)', `${statement.payments.length} cobros · efectivo ${statement.paymentCashTotal.toFixed(2)} · QR ${statement.paymentQrTotal.toFixed(2)}`, statement.paymentTotal],
         ['Saldo pendiente total', 'Deudas vigentes únicamente; excluye saldadas y anuladas', statement.outstandingTotal],
@@ -2081,6 +2082,14 @@ export async function exportCustomerCreditStatement(
       rows: [
         ...debtRows(statement.currentDebts),
         ['TOTAL PENDIENTE', '', '', '', '', null, null, null, statement.outstandingTotal, ''],
+      ],
+    },
+    {
+      name: 'Productos pendientes',
+      headers: ['Producto', 'Presentación', 'Cantidad histórica asociada', 'Unidad', 'Nota'],
+      rows: [
+        ...statement.pendingProducts.map((row) => [row.productName, row.presentation, row.quantity, row.unitType, 'Venta a crédito con saldo; no asigna abonos a un producto específico'] as Cell[]),
+        ...(statement.pendingProducts.length ? [] : [['Sin productos de créditos pendientes identificables', '', null, '', 'Los saldos anteriores no tienen productos asociados'] as Cell[]]),
       ],
     },
     {

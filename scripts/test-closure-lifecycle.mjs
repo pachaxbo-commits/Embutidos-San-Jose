@@ -64,7 +64,9 @@ try {
   assert.equal(normalizeClosure(rawDraft).status, 'draft')
   assert.deepEqual(normalizeClosure(rawDraft).products, [])
   assert.equal(normalizeClosure(rawDraft).declaredReturnMermas['viena-qa'], 0.08)
-  await render('distributor', { openDispatches: [dispatch] })
+  const distributorText = await render('distributor', { openDispatches: [dispatch] })
+  assert.doesNotMatch(distributorText, /Merma de retorno|Producto no apto/i, 'el formulario activo del distribuidor no expone controles/etiquetas de merma')
+  assert.ok([...container.querySelectorAll('label')].some(label => /CANTIDAD QUE DEVUELVES/i.test(label.textContent)), 'distribuidor conserva únicamente el campo de cantidad normal')
   const draft = normalizeClosure(rawDraft)
   // La lista histórica jamás debe evaluar products de una declaración parcial.
   await render('admin', { openDispatches: [dispatch], closures: [rawDraft] })
