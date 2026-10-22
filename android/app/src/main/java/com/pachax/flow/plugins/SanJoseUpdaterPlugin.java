@@ -53,9 +53,9 @@ public class SanJoseUpdaterPlugin extends Plugin {
     @PluginMethod
     public void getInstalledVersion(PluginCall call) {
         try {
-            call.resolve(versionResult(getInstalledPackageInfo()));
+            call.resolve(versionResult(getInstalledPackageInfo(), "aplicación instalada"));
         } catch (Exception error) {
-            call.reject("No se pudo comprobar la versión instalada.", error);
+            call.reject("No se pudo comprobar la versión instalada: " + safeMessage(error), error);
         }
     }
 
@@ -219,19 +219,21 @@ public class SanJoseUpdaterPlugin extends Plugin {
                 }
 
                 PackageInfo archive = getArchivePackageInfo(apk);
-                if (archive == null || !EXPECTED_PACKAGE.equals(archive.packageName)) throw new SecurityException("La APK pertenece a otra aplicación.");
+                if (archive == null) throw new SecurityException("Android no pudo leer el paquete de la APK descargada; el archivo puede estar dañado o incompleto.");
+                if (!EXPECTED_PACKAGE.equals(archive.packageName)) throw new SecurityException("La APK descargada pertenece a otro paquete.");
                 long archiveVersion = versionCode(archive);
-                long installedVersion = versionCode(getInstalledPackageInfo());
+                PackageInfo installed = getInstalledPackageInfo();
+                long installedVersion = versionCode(installed);
                 if (archiveVersion != expectedVersionCode || archiveVersion <= installedVersion) throw new SecurityException("La versión descargada no puede actualizar esta instalación.");
 
-                String archiveCertificate = certificateSha256(archive);
-                String installedCertificate = certificateSha256(getInstalledPackageInfo());
+                String archiveCertificate = certificateSha256(archive, "APK descargada");
+                String installedCertificate = certificateSha256(installed, "aplicación instalada");
                 if (!MessageDigest.isEqual(archiveCertificate.getBytes(), installedCertificate.getBytes())) {
-                    throw new SecurityException("La APK no está firmada con el certificado autorizado.");
+                    throw new SecurityException("La firma de la APK descargada no coincide con la firma de la aplicación instalada.");
                 }
 
                 verifiedApk = apk;
-                JSObject result = versionResult(archive);
+                JSObject result = versionResult(archive, "APK descargada");
                 result.put("filePath", apk.getAbsolutePath());
                 result.put("sha256", actualSha256);
                 result.put("verified", true);
@@ -321,13 +323,20 @@ public class SanJoseUpdaterPlugin extends Plugin {
     private PackageInfo getInstalledPackageInfo() throws PackageManager.NameNotFoundException {
         PackageManager manager = getContext().getPackageManager();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            return manager.getPackageInfo(getContext().getPackageName(), PackageManager.GET_SIGNING_CERTIFICATES);
+            // Algunos Android/OEM omiten signingInfo. Solicitar también el campo
+            // legado habilita fallback sin aceptar firmas ausentes ni relajar la validación.
+            return manager.getPackageInfo(
+                getContext().getPackageName(),
+                PackageManager.GET_SIGNING_CERTIFICATES | PackageManager.GET_SIGNATURES
+            );
         }
         return manager.getPackageInfo(getContext().getPackageName(), PackageManager.GET_SIGNATURES);
     }
 
     private PackageInfo getArchivePackageInfo(File apk) {
-        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+            ? PackageManager.GET_SIGNING_CERTIFICATES | PackageManager.GET_SIGNATURES
+            : PackageManager.GET_SIGNATURES;
         return getContext().getPackageManager().getPackageArchiveInfo(apk.getAbsolutePath(), flags);
     }
 
@@ -337,20 +346,26 @@ public class SanJoseUpdaterPlugin extends Plugin {
     }
 
     @SuppressWarnings("deprecation")
-    private Signature firstSignature(PackageInfo info) {
+    private byte[] certificateBytes(PackageInfo info, String source) {
+        Signature signingInfoSignature = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && info.signingInfo != null) {
             Signature[] signatures = info.signingInfo.hasMultipleSigners()
                 ? info.signingInfo.getApkContentsSigners()
                 : info.signingInfo.getSigningCertificateHistory();
-            return signatures != null && signatures.length > 0 ? signatures[0] : null;
+            if (signatures != null && signatures.length > 0) signingInfoSignature = signatures[0];
         }
-        return info.signatures != null && info.signatures.length > 0 ? info.signatures[0] : null;
+        Signature legacySignature = info.signatures != null && info.signatures.length > 0
+            ? info.signatures[0] : null;
+        return UpdaterCertificateReader.selectCertificate(
+            signingInfoSignature == null ? null : signingInfoSignature.toByteArray(),
+            legacySignature == null ? null : legacySignature.toByteArray(),
+            source
+        );
     }
 
-    private String certificateSha256(PackageInfo info) throws Exception {
-        Signature signature = firstSignature(info);
-        if (signature == null) throw new SecurityException("La APK no contiene un certificado verificable.");
-        return hex(MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()));
+    private String certificateSha256(PackageInfo info, String source) throws Exception {
+        byte[] certificate = certificateBytes(info, source);
+        return hex(MessageDigest.getInstance("SHA-256").digest(certificate));
     }
 
     private String sha256(File file) throws Exception {
@@ -369,12 +384,12 @@ public class SanJoseUpdaterPlugin extends Plugin {
         return result.toString();
     }
 
-    private JSObject versionResult(PackageInfo info) throws Exception {
+    private JSObject versionResult(PackageInfo info, String certificateSource) throws Exception {
         JSObject result = new JSObject();
         result.put("packageName", info.packageName);
         result.put("versionCode", versionCode(info));
         result.put("versionName", info.versionName == null ? "" : info.versionName);
-        result.put("certificateSha256", certificateSha256(info));
+        result.put("certificateSha256", certificateSha256(info, certificateSource));
         return result;
     }
 

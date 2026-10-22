@@ -145,6 +145,10 @@ No sobrescribir una APK publicada con otro contenido bajo el mismo nombre. Prepa
 7. Se abre el instalador oficial; el usuario confirma. No existe instalación silenciosa.
 8. Desde 1.4.0, Android instala encima de la app y conserva datos locales. La migración inicial desde 1.3.2 es la única excepción porque cambia la firma.
 
+### Actualización manual inicial si falla el lector antiguo de certificados
+
+Algunas versiones antiguas del actualizador pueden no obtener el certificado aunque la APK oficial esté correctamente firmada. Si la verificación OTA falla por ese motivo, no repitas descargas ni desinstales la aplicación. Solicita la APK release vigente desde el canal oficial de San José y actualízala manualmente encima de la instalación existente. La nueva versión incluye un lector compatible que consulta `SigningInfo` y usa el campo legado como fallback, pero sigue rechazando certificados ausentes o distintos. Después de esa actualización manual, las siguientes versiones podrán usar el flujo OTA normal. Si Android también rechaza la instalación manual, detente y contacta a Administración; no desinstales ni instales una APK de otro origen.
+
 Si Play Protect muestra una revisión, se debe dejar que termine. Nunca desactivarlo ni intentar evitarlo.
 
 Con operaciones pendientes de sincronización, la interfaz impide comenzar la descarga y recomienda terminar la sincronización. Incluso una actualización obligatoria puede posponerse mientras existan operaciones pendientes.
