@@ -12,6 +12,7 @@ const {initializeApp}=require('firebase-admin/app'),{getFirestore}=require('fire
 const {processCommand,dayKey}=require('./operations.cjs');
 const origins=require('./origin-traceability.cjs');
 const {accountingMermaRectification}=require('../scripts/lib/accounting-merma-rectification.cjs');
+const {fingerprint}=require('../scripts/lib/accounting-merma-utils.cjs');
 const db=getFirestore(initializeApp({projectId:'demo-pachax-audit'},'origin-tests'));
 const root=db.doc('restaurants/sanjose'),ref=(c,id)=>root.collection(c).doc(id),get=async(c,id)=>(await ref(c,id).get()).data();
 const today=dayKey(),prefix='origin-'+Date.now();
@@ -49,7 +50,12 @@ try{
  assert((await accountingMermaRectification(db,f.input)).dryRun);
  await assert.rejects(accountingMermaRectification(db,f.input,{execute:true,backup(){throw Error('backup failure');}}),/backup failure/);
  assert.equal((await get('distBalances',f.loc+'__'+f.pid)).quantity,3);
- await accountingMermaRectification(db,f.input,{execute:true,backup(){}});
+ let privateBeforeHash;
+ await accountingMermaRectification(db,f.input,{execute:true,backup(proof){privateBeforeHash=fingerprint(proof.before);}});
+ const persistedAudit=await get('distOperations',f.input.operationId);
+ assert.equal(persistedAudit.privateEvidenceHash,privateBeforeHash,'persisted fingerprint must match the verified pre-write private backup');
+ assert.equal(persistedAudit.auditBefore.rows[0].lots.find(l=>l.id===f.C).quantities[f.loc],0,'stored before-image must not become the mutated after-image');
+ assert.equal(origins.pending(persistedAudit.auditBefore.rows[0].lots.find(l=>l.id===f.C),f.loc),0,'pre-write reserve must remain unchanged in audit');
  assert.deepEqual(await get('distBalances','central__'+f.pid),central);assert.equal((await get('distLots',f.C)).quantities.central,5);
  assert.equal((await get('distBalances',f.loc+'__'+f.pid)).quantity,3.2);assert.equal(origins.pending(await get('distLots',f.C),f.loc),.2);
  assert((await accountingMermaRectification(db,f.input,{execute:true,backup(){throw Error('no second backup');}})).alreadyApplied);

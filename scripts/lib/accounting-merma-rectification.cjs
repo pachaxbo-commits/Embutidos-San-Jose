@@ -66,7 +66,10 @@ async function accountingMermaRectification(db, input, { execute = false, backup
     if (!execute) return { ...result, dryRun: true, before };
     // Full evidence is backed up privately. Store only before-images of the
     // documents this operation can affect, avoiding Firestore's 1 MiB limit.
-    const auditBefore = { dispatch, source, closure, sales, corrections, additions, rows: rows.map(r => ({ target: r.target, central: r.central, route: r.route, loss: r.loss, accounting: r.accounting, remaining: r.remaining, notices: r.notices, lots: r.lots.filter(l => r.accounting.some(a => a.lotId === l.id)) })) };
+    // Freeze before-images and their fingerprint before applying in-memory lot
+    // changes. The private backup and persisted audit must describe one state.
+    const privateEvidenceHash = fingerprint(before);
+    const auditBefore = structuredClone({ dispatch, source, closure, sales, corrections, additions, rows: rows.map(r => ({ target: r.target, central: r.central, route: r.route, loss: r.loss, accounting: r.accounting, remaining: r.remaining, notices: r.notices, lots: r.lots.filter(l => r.accounting.some(a => a.lotId === l.id)) })) });
     check(Buffer.byteLength(JSON.stringify(auditBefore)) < 850000, 'Affected-document audit too large; stop for scoped review');
     check(rows.reduce((n, r) => n + r.remaining.length + r.notices.length + 5, 0) < 400, 'Too many writes for one atomic maintenance operation');
     await backup({ input, hash, before, result });
@@ -96,7 +99,7 @@ async function accountingMermaRectification(db, input, { execute = false, backup
       tx.create(ref('distStockMovements', exceptionId), { id: exceptionId, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 2, type: documented ? 'traceability_notice' : 'dispatch', productId: target.productId, productName: row.product.name, unitType: 'kg', quantity: documented ? 0 : target.quantity, normalQuantity: 0, dispatchMerma: documented ? 0 : target.quantity, centralDelta: documented ? 0 : -target.quantity, routeDelta: row.routeIncrease, fromLocation: documented ? '' : wh, toLocation: documented ? '' : loc, routeId: dispatch.routeId, dispatchId: dispatch.id, refId: dispatch.id, dayKey: dispatch.dayKey, createdAt: now, createdBy: input.actor, allocations: documented ? [] : row.accounting, originReferences: line.originReferences, traceabilityStatus: 'physical_origin_pending', traceabilitySourceMovementId: loss.id, documentedMovementIds: documented ? [loss.replacedByMovementId, ...row.notices.map(n => n.subjectMovementId)] : [], sourceMovementId: loss.id, historicalLossCostNeutralized: row.neutralizedLossCost, note: origin.note + ' ' + input.reason });
     }
     tx.set(ref('distDispatches', dispatch.id), next);
-    tx.create(ref('distOperations', input.operationId), { id: input.operationId, restaurantId: 'sanjose', status: 'confirmed', type: 'audited_accounting_merma_reference', createdBy: input.actor, createdAt: now, requestHash: hash, payload: input, result, auditBefore, privateEvidenceHash: fingerprint(before) });
+    tx.create(ref('distOperations', input.operationId), { id: input.operationId, restaurantId: 'sanjose', status: 'confirmed', type: 'audited_accounting_merma_reference', createdBy: input.actor, createdAt: now, requestHash: hash, payload: input, result, auditBefore, privateEvidenceHash });
     return { ...result, alreadyApplied: false };
   }, { readOnly: !execute });
 }
