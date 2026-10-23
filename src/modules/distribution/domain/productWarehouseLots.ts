@@ -1,12 +1,14 @@
 import { roundStockQuantity } from './stockAvailability.ts'
+import { originPendingQuantity } from './originTraceability.ts'
 import type { DistBalance, DistLot, UnitType } from '../types.ts'
 
-export type WarehouseLotStatus = 'Disponible' | 'Disponible · trazabilidad incompleta' | 'Vencido' | 'Cuarentena'
+export type WarehouseLotStatus = 'Disponible' | 'Disponible · trazabilidad incompleta' | 'Disponible parcialmente · origen pendiente' | 'Reservado · origen pendiente' | 'Vencido' | 'Cuarentena'
 
 export interface WarehouseLotRow {
   lot: DistLot
   physical: number
   available: number
+  originPending: number
   status: WarehouseLotStatus
   hasFractionalCountQuantity: boolean
 }
@@ -29,13 +31,16 @@ export function productWarehouseLotRows(
         ? 'Cuarentena'
         : expired
           ? 'Vencido'
+          : originPendingQuantity(lot, location) > 0
+            ? originPendingQuantity(lot, location) >= physical ? 'Reservado · origen pendiente' : 'Disponible parcialmente · origen pendiente'
           : traceIncomplete
             ? 'Disponible · trazabilidad incompleta'
             : 'Disponible'
       return {
         lot,
         physical,
-        available: status.startsWith('Disponible') ? physical : 0,
+        available: status.startsWith('Disponible') ? Math.max(0, physical - originPendingQuantity(lot, location)) : 0,
+        originPending: originPendingQuantity(lot, location),
         status,
         // Keep anomalous historical values visible as stored; never round a
         // fractional package/unit count into a fabricated integer.

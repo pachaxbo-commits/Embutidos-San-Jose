@@ -40,6 +40,7 @@ export interface ClosureReturnSummary {
   nonSellable: number
   returnsToSellableStock: number
   quarantinedSellableOverage: number
+  originPendingReceived: number
 }
 
 export function closureReturnSummary(row: DistClosureProductRow): ClosureReturnSummary {
@@ -48,13 +49,16 @@ export function closureReturnSummary(row: DistClosureProductRow): ClosureReturnS
   const normal = roundQuantity(Math.max(0, Number(row.actualReturn) || 0))
   const recoverableMerma = roundQuantity(Math.max(0, Number(row.returnMerma) || 0))
   const totalApto = roundQuantity(normal + recoverableMerma)
-  const returnsToSellableStock = roundQuantity(Math.min(Math.max(0, Number(row.expectedReturn) || 0), totalApto))
+  const originPendingReceived = roundQuantity(Math.max(0, Number(row.originPendingReceived) || 0))
+  const recognized = Math.min(Math.max(0, Number(row.expectedReturn) || 0), totalApto)
+  const returnsToSellableStock = roundQuantity(Math.max(0, recognized - originPendingReceived))
   return {
     normal,
     recoverableMerma,
     totalApto,
     nonSellable: Math.max(0, Number(row.returnWaste) || 0),
     returnsToSellableStock,
-    quarantinedSellableOverage: roundQuantity(Math.max(0, totalApto - returnsToSellableStock)),
+    quarantinedSellableOverage: roundQuantity(Math.max(0, totalApto - recognized)),
+    originPendingReceived,
   }
 }

@@ -17,6 +17,7 @@ export type SourceLocation = 'route' | 'centralWarehouse'
 export type StockLocationKind = 'central' | 'route'
 
 export type StockMovementType =
+  | 'traceability_notice' // incidencia documental; efecto físico y económico cero
   | 'intake' // ingreso a almacen central
   | 'dispatch' // salida a ruta
   | 'dispatch_addition' // aumento de carga sobre despacho abierto
@@ -138,6 +139,9 @@ export interface DistAdjustmentRequest extends DistBaseDoc {
 
 /** Ledger auditable; las reaperturas agregan metadata de reversión sin borrar el movimiento. */
 export interface DistStockMovement extends DistBaseDoc {
+  originReferences?: OriginReference[]
+  traceabilityStatus?: 'physical_origin_pending'
+  documentedMovementIds?: string[]
   responsibleName?: string
   responsibleRole?: 'admin' | 'warehouse' | 'distributor'
   lotCode?: string
@@ -206,6 +210,7 @@ export interface DistDispatchLine {
 }
 
 export interface DistLotAllocation {
+  originReferences?: OriginReference[]
   lotId: string
   lotCode: string
   expiresOn: string
@@ -511,6 +516,8 @@ export interface DistExpenseCategory extends DistBaseDoc {
 }
 
 export interface DistClosureProductRow {
+  originReferences?: OriginReference[]
+  originPendingReceived?: number
   productId: string
   productName: string
   unitType: UnitType
@@ -654,6 +661,7 @@ export interface DistQrVerification {
 }
 
 export interface DistLot {
+ pendingOrigins?: Record<string, OriginReference[]>;
  id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;
  quantities: Record<string, number>; quarantined?: boolean; legacy?: boolean; createdAt: string; createdBy: string;
@@ -662,6 +670,11 @@ export interface DistLot {
  quarantineResolutionReason?: string; quarantineResolvedQuantity?: number; quarantineResolvedLocation?: string;
  quarantineOriginalLotCode?: string;
  quarantineDestinationLotId?: string; quarantineDestinationLotCode?: string; quarantineLossCost?: number | null;
+}
+export interface OriginReference {
+ historicalUnitCost?: number | null;
+ exceptionId: string; accountingLotId: string; sourceMovementId: string;
+ physicalOriginConfirmed: false; basis: 'original_accounting_debit_only'; quantity: number;
 }
 export interface DistTransfer { id: string; fromWarehouseId: string; toWarehouseId: string; line: DistDispatchLine; createdAt: string; createdBy: string; responsibleName?: string; note?: string }
 export interface DistClaim { id: string; kind: 'exchange'|'return'; saleId: string; sellerUid?: string; sellerName?: string; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName: string;quantity: number;unitType: UnitType;total: number} | null }

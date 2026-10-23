@@ -54,3 +54,7 @@ equal(anomalousPackageRows[0].physical, 3.6, 'no se redondea silenciosamente la 
 equal(anomalousPackageRows[0].hasFractionalCountQuantity, true, 'cantidad fraccionaria se señala para revisión')
 
 console.log('PASS: lotes por almacén/producto, cuarentena, vencidos, sin trazabilidad, cantidades cero, precision y discrepancias visibles.')
+const origin = { exceptionId: 'synthetic-exception', accountingLotId: 'mixed', sourceMovementId: 'loss', physicalOriginConfirmed: false, basis: 'original_accounting_debit_only', quantity: 0.2 }
+const reserved = productWarehouseLotRows('p1', 'kg', [lot('mixed', 1.2, { pendingOrigins: { central: [origin] } }), lot('all-pending', 0.2, { pendingOrigins: { central: [{ ...origin, accountingLotId: 'all-pending' }] } })], 'central', '2026-10-20')
+equal(reserved.find(r => r.lot.id === 'mixed')?.available, 1, 'solo la cantidad pendiente se reserva')
+equal(reserved.find(r => r.lot.id === 'all-pending')?.status, 'Reservado · origen pendiente', 'sin etiqueta disponible cuando todo está reservado')

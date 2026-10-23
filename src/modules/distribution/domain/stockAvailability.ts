@@ -1,4 +1,5 @@
 import type { DistBalance, DistLot, UnitType } from '../types.ts'
+import { originPendingQuantity } from './originTraceability.ts'
 
 export const roundStockQuantity = (value: number, unitType: UnitType): number => {
   const precision = unitType === 'kg' ? 1000 : 100
@@ -18,14 +19,16 @@ export function stockAvailability(
   const unavailable = roundStockQuantity(Math.max(0, physical - available), unitType)
   let quarantine = 0
   let expired = 0
+  let originPending = 0
   for (const lot of lots) {
     if (lot.productId !== balance?.productId) continue
     const quantity = Math.max(0, Number(lot.quantities?.[location]) || 0)
     if (lot.quarantined) quarantine += quantity
     else if (lot.expiresOn && lot.expiresOn < today) expired += quantity
+    else if (!location.startsWith('route__')) originPending += originPendingQuantity(lot, location)
   }
   quarantine = roundStockQuantity(Math.min(unavailable, quarantine), unitType)
   expired = roundStockQuantity(Math.min(Math.max(0, unavailable - quarantine), expired), unitType)
   const other = roundStockQuantity(Math.max(0, unavailable - quarantine - expired), unitType)
-  return { physical, available, unavailable, quarantine, expired, other }
+  return { physical, available, unavailable, quarantine, expired, other, ...(originPending > 0 ? { originPending: roundStockQuantity(originPending, unitType) } : {}) }
 }

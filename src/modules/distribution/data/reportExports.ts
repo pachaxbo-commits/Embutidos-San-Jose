@@ -4,6 +4,7 @@ import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
 import { matchesRoute, round2, toDayKey } from "../domain/engine";
 import { roundStockQuantity } from "../domain/stockAvailability";
+import { originPendingQuantity } from '../domain/originTraceability';
 import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio } from "../domain/creditRoutes";
 import {
   aggregateCustomerPurchases,
@@ -228,7 +229,7 @@ export function currentStockSheets(
               (1000 * 3600 * 24),
           )
         : null;
-      const status = lot.quarantined
+      const status = originPendingQuantity(lot, location) > 0 ? `Origen físico pendiente: ${originPendingQuantity(lot, location)}; referencia contable, no lote certificado` : lot.quarantined
         ? "En cuarentena"
         : expired
           ? "Vencido"

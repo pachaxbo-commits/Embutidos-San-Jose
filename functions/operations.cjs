@@ -1,5 +1,6 @@
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const expensePresetRegistry = require("./expense-presets.json");
+const origins = require('./origin-traceability.cjs');
 const expenseCategoryDefaults = expensePresetRegistry.defaults;
 const round = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const roundAt = (n, precision = 2) => Math.round((Number(n) + Number.EPSILON) * (10 ** precision)) / (10 ** precision);
@@ -201,6 +202,8 @@ class Operation {
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
     quantity = this.amount(quantity, e.p, false, amountPrecision);
+    const allowPendingOrigin = loc.startsWith('route__');
+    const usable = lot => roundAt((lot.quantities?.[loc] || 0) - (allowPendingOrigin ? 0 : origins.pending(lot, loc)), precision);
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
       const seen = new Set();
@@ -212,21 +215,18 @@ class Operation {
         const lot = e.lots.find((row) => row.id === part.lotId);
         check(lot && lot.productId === pid, "El lote no pertenece al producto seleccionado.");
         check(allowExpired || (!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= this.today)), "El lote está vencido o en cuarentena.");
-        check(roundAt(lot.quantities?.[loc] || 0, precision) >= requestedQuantity, `El lote ${lot.lotCode || lot.id} no tiene cantidad suficiente.`);
+        check(usable(lot) >= requestedQuantity, `El lote ${lot.lotCode || lot.id} no tiene cantidad identificada suficiente; revisa reservas de origen.`);
         return { lot, quantity: requestedQuantity };
       });
       check(Math.abs(roundAt(requested.reduce((sum, part) => sum + part.quantity, 0), precision) - quantity) < 1 / (10 ** precision), "La distribución por lotes debe coincidir con la cantidad total.");
-      const allocations = requested.map(({ lot, quantity: requestedQuantity }) => {
-        lot.quantities[loc] = roundAt(lot.quantities[loc] - requestedQuantity, precision);
-        return { lotId: lot.id, lotCode: lot.lotCode, expiresOn: lot.expiresOn, quantity: requestedQuantity, productionCost: lot.productionCost ?? null };
-      });
+      const allocations = requested.flatMap(({ lot, quantity: requestedQuantity }) => origins.take(lot, loc, requestedQuantity, allowPendingOrigin));
       this.move(e, loc, -quantity, precision);
       return allocations;
     }
     const lots = e.lots
       .filter(
         (l) =>
-          (l.quantities?.[loc] || 0) > 0 &&
+          usable(l) > 0 &&
           (!lotId || l.id === lotId) &&
           (allowExpired ||
             (!l.quarantined && (!l.expiresOn || l.expiresOn >= this.today))),
@@ -237,23 +237,16 @@ class Operation {
           a.id.localeCompare(b.id),
       );
     check(
-      roundAt(lots.reduce((s, l) => s + (l.quantities[loc] || 0), 0), precision) >= quantity,
+      roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
       `Stock apto insuficiente de ${e.p.name}. Revisa lotes vencidos o cantidades.`,
     );
     let remaining = quantity;
     const allocations = [];
     for (const l of lots) {
       if (remaining <= 0) break;
-      const q = roundAt(Math.min(remaining, l.quantities[loc]), precision);
-      l.quantities[loc] = roundAt(l.quantities[loc] - q, precision);
+      const q = roundAt(Math.min(remaining, usable(l)), precision);
       remaining = roundAt(remaining - q, precision);
-      allocations.push({
-        lotId: l.id,
-        lotCode: l.lotCode,
-        expiresOn: l.expiresOn,
-        quantity: q,
-        productionCost: l.productionCost ?? null,
-      });
+      allocations.push(...origins.take(l, loc, q, allowPendingOrigin));
     }
     this.move(e, loc, -quantity, precision);
     return allocations;
@@ -265,7 +258,7 @@ class Operation {
     const parts = await this.take(pid, from, q, options);
     for (const a of parts) {
       const l = e.lots.find((x) => x.id === a.lotId);
-      l.quantities[to] = roundAt((l.quantities[to] || 0) + a.quantity, precision);
+      origins.restore(l, to, a);
     }
     this.move(e, to, q, precision);
     return parts;
@@ -276,9 +269,27 @@ class Operation {
     for (const part of allocations || []) {
       const lot = e.lots.find(item => item.id === part.lotId);
       check(lot, "No se encontró el lote original de la venta.");
-      lot.quantities[loc] = roundAt((lot.quantities[loc] || 0) + part.quantity, precision);
+      origins.restore(lot, loc, part);
       this.move(e, loc, part.quantity, precision);
     }
+  }
+  async withDocumentedOrigins(sale, previous) {
+    const result = structuredClone(previous);
+    const applied = new Set(previous.originDocumentationIds || []);
+    const notices = await this.query('distLotHistory', 'subjectSaleId', sale.id);
+    for (const notice of notices.filter(n => n.action === 'sale_origin_exception')) {
+      if (applied.has(notice.id)) continue;
+      let remaining = notice.allocation.quantity;
+      for (const line of result.lines || []) for (const allocation of line.allocations || []) {
+        if (allocation.lotId !== notice.allocation.lotId || remaining <= 0) continue;
+        const amount = roundAt(Math.min(remaining, allocation.quantity - origins.refsQuantity(allocation)), 3);
+        if (amount > 0) { allocation.originReferences = [...(allocation.originReferences || []), ...origins.slice(notice.allocation, 0, amount).originReferences]; remaining = roundAt(remaining - amount, 3); }
+      }
+      check(remaining === 0, 'La excepción documental de esta venta requiere revisión administrativa.');
+      applied.add(notice.id);
+    }
+    result.originDocumentationIds = [...applied];
+    return result;
   }
   ledger(pid, q, from, to, type, extra = {}, requestedPrecision) {
     const e = this.stock.get(pid);
@@ -313,6 +324,7 @@ class Operation {
       responsibleName: this.responsibleName(),
       responsibleRole: this.member.role,
       ...extra,
+      ...(origins.references(extra.allocations).length ? { originReferences: origins.references(extra.allocations), traceabilityStatus: 'physical_origin_pending', note: `${extra.note || ''} ${origins.note}`.trim() } : {}),
     });
     return id;
   }
@@ -617,7 +629,7 @@ function splitAllocationsByAmounts(allocations, amounts) {
       }
       check(groupIndex < amounts.length, "No se pudieron distribuir los lotes del retorno.");
       const part = roundAt(Math.min(quantity, remaining), 3);
-      if (part > 0) groups[groupIndex].push({ ...allocation, quantity: part });
+      if (part > 0) groups[groupIndex].push(origins.slice(allocation, roundAt(allocation.quantity - quantity, 3), part));
       quantity = roundAt(quantity - part, 3);
       remaining = roundAt(remaining - part, 3);
     }
@@ -645,15 +657,12 @@ async function revertLineStock(o, d, line, returnQty, reason) {
       const alloc = line.allocations[i];
       const takeBack = roundAt(Math.min(remainingReturn, alloc.quantity), precision);
       if (takeBack <= 0) continue;
-      alloc.quantity = roundAt(alloc.quantity - takeBack, precision);
+      const returnedAllocation = origins.slice(alloc, roundAt(alloc.quantity - takeBack, precision), takeBack);
+      const retainedAllocation = origins.slice(alloc, 0, roundAt(alloc.quantity - takeBack, precision));
+      delete alloc.originReferences;
+      Object.assign(alloc, retainedAllocation);
       remainingReturn = roundAt(remainingReturn - takeBack, precision);
-      allocationsReturned.push({
-        lotId: alloc.lotId,
-        lotCode: alloc.lotCode,
-        expiresOn: alloc.expiresOn,
-        quantity: takeBack,
-        productionCost: alloc.productionCost ?? null,
-      });
+      allocationsReturned.push(returnedAllocation);
     }
     line.allocations = line.allocations.filter((a) => a.quantity > 0.0001);
   } else {
@@ -674,11 +683,8 @@ async function revertLineStock(o, d, line, returnQty, reason) {
       lot,
       `No se encontró el lote ${part.lotCode || part.lotId} en el inventario.`,
     );
-    lot.quantities[warehouse] = roundAt(
-      (lot.quantities[warehouse] || 0) + part.quantity,
-      precision,
-    );
-    lot.quantities[route] = roundAt((lot.quantities[route] || 0) - part.quantity, precision);
+    origins.remove(lot, route, part);
+    origins.restore(lot, warehouse, part);
   }
 
   o.move(e, warehouse, returnQty);
@@ -1633,7 +1639,7 @@ async function editSale(o, p) {
   const dispatch = sale.dispatchId ? await o.read("distDispatches", sale.dispatchId) : null;
   check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. Usa un flujo administrativo posterior al cierre.");
   const isCourtesy = sale.saleKind === "courtesy" || sale.effectiveSnapshot?.saleKind === "courtesy";
-  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount, saleKind: sale.saleKind || "sale" };
+  const previous = await o.withDocumentedOrigins(sale, sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount, saleKind: sale.saleKind || "sale" });
   const claims = await o.query("distClaims", "saleId", sale.id);
   check(claims.length === 0, "La venta tiene cambios o devoluciones y requiere revisión administrativa especializada.");
   check(Array.isArray(p.lines) && p.lines.length, "La venta debe conservar al menos un producto.");
@@ -1706,9 +1712,9 @@ async function editSale(o, p) {
       const returned = [];
       for (const allocation of previousLine.allocations) {
         const keptQuantity = roundAt(Math.min(retained, allocation.quantity), precision);
-        if (keptQuantity > 0) allocations.push({ ...allocation, quantity: keptQuantity });
+        if (keptQuantity > 0) allocations.push(origins.slice(allocation, 0, keptQuantity));
         const returnedQuantity = roundAt(allocation.quantity - keptQuantity, precision);
-        if (returnedQuantity > 0) returned.push({ ...allocation, quantity: returnedQuantity });
+        if (returnedQuantity > 0) returned.push(origins.slice(allocation, keptQuantity, returnedQuantity));
         retained = roundAt(retained - keptQuantity, precision);
       }
       if (returned.length) {
@@ -1770,7 +1776,7 @@ async function editSale(o, p) {
   if (creditAmount > 0) o.put("distReceivables", sale.id, { ...(receivable || { id: sale.id, ...o.base(), saleId: sale.id, sourceType: "sale", customerId: sale.customerId, customerName: sale.customerName, customerCode: sale.customerCode, routeId: sale.routeId, distributorUid: sale.sellerUid, distributorName: sale.sellerName, paidAmount: 0 }), saleLines: lines, originalAmount: creditAmount, balance: round(creditAmount - alreadyPaid), status: creditAmount === alreadyPaid ? "PAID" : alreadyPaid > 0 ? "PARTIAL" : "OPEN" });
   else if (receivable) o.put("distReceivables", sale.id, { ...receivable, originalAmount: 0, balance: 0, status: "PAID", saleLines: lines });
   const revision = Number(sale.revision || 0) + 1;
-  const corrected = { lines, total, paymentKind: isCourtesy ? "cash" : p.paymentKind, cashAmount, qrAmount, creditAmount, saleKind: isCourtesy ? "courtesy" : "sale" };
+  const corrected = { lines, total, paymentKind: isCourtesy ? "cash" : p.paymentKind, cashAmount, qrAmount, creditAmount, saleKind: isCourtesy ? "courtesy" : "sale", originDocumentationIds: previous.originDocumentationIds || [] };
   const correction = { id: o.id, ...o.base(), saleId: sale.id, sellerUid: sale.sellerUid, revision, reason: p.reason.trim(), original: previous, corrected, stockDeltas, moneyDelta: round(total - previous.total), creditDelta: round(creditAmount - previous.creditAmount), correctedByName: o.member.displayName || o.actor };
   o.put("distSaleCorrections", o.id, correction);
   o.put("distSales", sale.id, { ...sale, effectiveSnapshot: corrected, latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(), revision });
@@ -1793,7 +1799,7 @@ async function voidSale(o, p) {
   }
   const claims = await o.query("distClaims", "saleId", sale.id);
   check(claims.length === 0, "La venta tiene cambios o devoluciones y requiere revisión administrativa especializada.");
-  const previous = sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount, saleKind: sale.saleKind || "sale" };
+  const previous = await o.withDocumentedOrigins(sale, sale.effectiveSnapshot || { lines: sale.lines, total: sale.total, paymentKind: sale.paymentKind, cashAmount: sale.cashAmount, qrAmount: sale.qrAmount, creditAmount: sale.creditAmount, saleKind: sale.saleKind || "sale" });
   check(Array.isArray(previous.lines) && previous.lines.length > 0, "La venta no tiene productos activos para anular.");
   check(previous.lines.every(line => Array.isArray(line.allocations) && line.allocations.length > 0), "Esta venta histórica no tiene lotes auditables y requiere revisión administrativa.");
   const receivable = await o.read("distReceivables", sale.id);
@@ -2521,7 +2527,7 @@ async function closure(o, p) {
       for (const a of [...returnParts, ...recoverableMermaParts]) {
         const lot = e.lots.find((x) => x.id === a.lotId);
         check(lot, "No se encontró el lote del producto retornado.");
-        lot.quantities[warehouse] = quantityRound((lot.quantities[warehouse] || 0) + a.quantity);
+        origins.restore(lot, warehouse, a);
       }
       if (normalApt > 0) {
         o.move(e, warehouse, normalApt, precision);
@@ -2532,7 +2538,7 @@ async function closure(o, p) {
         o.ledger(pid, recoverableFromRoute, route, warehouse, "return_merma", {
           allocations: recoverableMermaParts,
           dispatchId: d.id,
-          note: "Merma operativa recuperable; vuelve al stock vendible en sus lotes originales.",
+          note: "Merma operativa recibida; solo queda disponible la cantidad con origen identificado.",
         }, precision);
       }
       let dispatchMermaSaleMovementId;
@@ -2651,6 +2657,8 @@ async function closure(o, p) {
         } : {}),
         ...(Number.isFinite(Number(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn)) ? { declaredReturn: round((previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn) + (previous.declaredReturnMermas?.[pid] ?? previousProduct?.declaredReturnMerma ?? 0)), declaredReturnNormal: round(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn), declaredReturnMerma: round(previous.declaredReturnMermas?.[pid] ?? previousProduct?.declaredReturnMerma ?? 0) } : {}),
         physicalReturn: received,
+        originReferences: origins.references(receivedParts),
+        originPendingReceived: quantityRound(origins.references(receivedParts).reduce((sum, part) => sum + part.quantity, 0)),
         actualReturn: legacySemantics ? normalApt : actual,
         ...(hasRecoverableMerma ? { returnMerma: recoverableMerma } : {}),
         returnWaste: waste,
@@ -2777,22 +2785,21 @@ async function claim(o, p) {
     const dispatch = s.dispatchId ? await o.read("distDispatches", s.dispatchId) : null;
     check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. Requiere revisión de administración.");
   }
-  const effectiveSale = s.effectiveSnapshot
-    ? { ...s, ...s.effectiveSnapshot }
-    : s;
+  const effectiveSale = { ...s, ...await o.withDocumentedOrigins(s, s.effectiveSnapshot || s) };
   const orig = effectiveSale.lines.filter((l) => l.productId === p.productId);
+  const sourceOriginReferences = orig.flatMap(l => origins.references(l.allocations));
   check(orig.length, "El producto no pertenece a esta venta.");
   const product = await o.read("distProducts", p.productId);
   check(product, "Producto inexistente.");
-  const q = o.amount(p.quantity, product);
+  const q = o.amount(p.quantity, product, false, quantityPrecision(product));
   const past = await o.query("distClaims", "saleId", s.id);
   check(
-    round(
+    roundAt(
       q +
         past
           .filter((c) => c.productId === p.productId)
-          .reduce((n, c) => n + c.quantity, 0),
-    ) <= round(orig.reduce((n, l) => n + l.quantity, 0)),
+          .reduce((n, c) => n + c.quantity, 0), quantityPrecision(product),
+    ) <= roundAt(orig.reduce((n, l) => n + l.quantity, 0), quantityPrecision(product)),
     "La cantidad supera lo vendido o ya fue devuelta.",
   );
   const originalUnit = orig[0].actualUnitPrice;
@@ -2857,6 +2864,7 @@ async function claim(o, p) {
     productName: product.name,
     unitType: product.unitType,
     lotCode: p.originalLotCode || "DEVOLUCIÓN DE CLIENTE",
+    ...(sourceOriginReferences.length ? { sourceOriginReferences, sourceSaleId: s.id } : {}),
     manufacturedOn: "",
     expiresOn: "",
     productionCost: null,
@@ -2870,7 +2878,8 @@ async function claim(o, p) {
   o.ledger(product.id, q, null, loc, "customer_return", {
     lotId,
     quarantined: true,
-    note: p.reason,
+    note: p.reason + (sourceOriginReferences.length ? ' Venta con referencia contable de origen pendiente; la devolución queda en cuarentena sin atribuirle lote físico.' : ''),
+    ...(sourceOriginReferences.length ? { sourceOriginReferences, traceabilityStatus: 'physical_origin_pending', sourceSaleId: s.id } : {}),
   });
   const c = {
     id: o.id,
@@ -2908,6 +2917,7 @@ async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);
   check(lot, "No existe el lote.");
+  check(!Object.keys(lot.pendingOrigins || {}).some(loc => origins.pending(lot, loc) > 0), 'Este lote contiene cantidades con origen pendiente; no se puede cambiar su identidad ni costo sin conciliar la excepción.');
   check(
     p.lotCode?.trim() &&
       validDate(p.manufacturedOn) &&
@@ -3176,9 +3186,9 @@ handlers.reopen = async (o, p) => {
         check(allocations.length > 0, "No se puede reabrir: faltan lotes del retorno confirmado.");
         for (const part of allocations) {
           const lot = e.lots.find((item) => item.id === part.lotId);
-          check(lot && round(lot.quantities?.[warehouse] || 0) >= part.quantity, "No se puede reabrir: el lote retornado ya no está disponible en almacén.");
-          lot.quantities[warehouse] = round(lot.quantities[warehouse] - part.quantity);
-          lot.quantities[route] = round((lot.quantities[route] || 0) + part.quantity);
+          check(lot, "No se puede reabrir: falta el lote retornado.");
+          origins.remove(lot, warehouse, part);
+          origins.restore(lot, route, part);
         }
         o.move(e, warehouse, -movement.quantity);
         o.move(e, route, movement.quantity);
@@ -3191,7 +3201,7 @@ handlers.reopen = async (o, p) => {
         for (const part of allocations) {
           const lot = e.lots.find((item) => item.id === part.lotId);
           check(lot, "No se puede reabrir: falta un lote original de la ruta.");
-          lot.quantities[route] = round((lot.quantities[route] || 0) + part.quantity);
+          origins.restore(lot, route, part);
         }
         o.move(e, route, movement.quantity);
       } else if (movement.type === "dispatch_merma_sale") {
@@ -3200,7 +3210,7 @@ handlers.reopen = async (o, p) => {
         for (const part of allocations) {
           const lot = e.lots.find((item) => item.id === part.lotId);
           check(lot, "No se puede reabrir: falta un lote de la merma adicional conciliada.");
-          lot.quantities[route] = round((lot.quantities[route] || 0) + part.quantity);
+          origins.restore(lot, route, part);
         }
         o.move(e, route, movement.quantity);
       } else {

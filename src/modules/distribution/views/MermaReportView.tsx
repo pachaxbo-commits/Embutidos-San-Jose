@@ -22,6 +22,7 @@ const quantityText = (values: { kg: number; package: number; unit: number }) =>
 
 function escapeHtml(value: string) { return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] || char) }
 function reviewStateLabel(state: string, destinationLotCode?: string) {
+  if (state === 'origin_pending') return 'Recibido físicamente; reserva parcial por origen pendiente. No todo está disponible para venta.'
   if (state === 'reintegrated_stock') return 'Reintegro al stock central confirmado'
   if (state === 'recorded_not_reintegrated') return 'Sin reintegro al stock central confirmado'
   if (state === 'quarantine_released') return `Cuarentena liberada a venta${destinationLotCode ? ` · lote ${destinationLotCode}` : ''}`

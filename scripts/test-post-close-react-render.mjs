@@ -104,8 +104,11 @@ const makeSession = (role) => ({
 })
 const render = async (role, data) => {
   const previousErrorCount = consoleErrors.length
+  // A Firestore collection snapshot contains one document per ID; simulate
+  // updates by replacing the previous version, not duplicating the same key.
+  const snapshotData = { ...data, ...(data.closures ? { closures: [...new Map(data.closures.map(closure => [closure.id, closure])).values()] } : {}) }
   await act(async () => root.render(React.createElement(ErrorBoundary, null,
-    React.createElement(ClosureView, { session: makeSession(role), data: { ...emptyData, ...data } }),
+    React.createElement(ClosureView, { session: makeSession(role), data: { ...emptyData, ...snapshotData } }),
   )))
   const newBoundaryError = consoleErrors.slice(previousErrorCount).find((args) => String(args[0]).includes('ErrorBoundary caught error'))
   assert.equal(newBoundaryError, undefined, `ErrorBoundary atrapó durante render ${role}`)
@@ -188,7 +191,8 @@ try {
   await click('Sí, cerrar ruta')
   const routeBClosed = globalThis.__postCloseSaves.at(-1).closure
   await render('admin', { openDispatches: [], closures: [...warehouseDoneRoutes, routeAClosed, routeBClosed] })
-  assert.match(container.textContent || '', /No hay rutas abiertas/)
+  assert.match(container.textContent || '', /Ruta cerrada correctamente \(Ruta B\)/)
+  assert.doesNotMatch(container.textContent || '', /Ruta a cerrar/)
   assert.equal(globalThis.__postCloseSaves.length, 4, 'cuatro confirmaciones UI generan cuatro operaciones únicas')
 
   // Un borrador declarado puede pasar a warehouse_done sin duplicar la confirmación.
@@ -199,6 +203,8 @@ try {
   await click('Registrar recepción')
   await click('Guardar recepción')
   await click('Guardar retorno de almacén')
+  assert.equal(globalThis.__postCloseSaves.length, 4, 'la recepción requiere confirmar antes de guardar una operación')
+  await click('Confirmar recepción')
   assert.equal(globalThis.__postCloseSaves.at(-1)?.closure.status, 'warehouse_done')
   const warehouseDone = globalThis.__postCloseSaves.at(-1).closure
   await render('warehouse', { openDispatches: [hugo], closures: [warehouseDone] })

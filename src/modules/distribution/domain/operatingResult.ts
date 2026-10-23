@@ -109,6 +109,7 @@ export function computeOperatingResult(
     tipo: claim.kind === 'return' ? 'Devolución' : 'Cambio', cliente: claim.customerName,
     origen: displayOrigin(claim.routeId, scopedSales.find((sale) => sale.id === claim.saleId)?.routeName), monto: claim.revenueDelta }))
   const movementTypeLabel: Record<DistStockMovement['type'], string> = {
+    traceability_notice: 'Origen físico pendiente (incidencia documental sin efecto económico)',
     intake: 'Ingreso de inventario', dispatch: 'Despacho', dispatch_addition: 'Aumento de despacho', sale: 'Venta',
     sale_correction: 'Corrección de venta', return: 'Retorno', adjustment: 'Ajuste de inventario',
     dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', dispatch_merma_sale: 'Merma adicional dentro de ventas', return_waste: 'Merma al retorno',

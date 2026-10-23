@@ -1,4 +1,5 @@
 import { centralBalanceId, toDayKey } from './engine.ts'
+import { originPendingQuantity } from './originTraceability.ts'
 import type { DistBalance, DistCollection, DistExpense, DistLot, DistReceivable, DistSale } from '../types.ts'
 import type { PendingOperation } from '../data/operationQueue.ts'
 
@@ -40,8 +41,8 @@ export function projectBalances(balances: DistBalance[], pendingSales: DistSale[
       : b.id === centralBalanceId(b.productId))
       .flatMap(s => s.lines).filter(line => line.productId === b.productId).reduce((n, line) => n + line.quantity, 0)
     const location = b.locationKind === 'route' ? `route__${b.routeId}` : (b.warehouseId && b.warehouseId !== 'central' ? `warehouse__${b.warehouseId}` : 'central')
-    const unavailable = lots.filter(l => l.productId === b.productId && (l.quarantined || (l.expiresOn && l.expiresOn < today)))
-      .reduce((n, l) => n + (l.quantities[location] || 0), 0)
+    const unavailable = lots.filter(l => l.productId === b.productId)
+      .reduce((n, l) => n + (l.quarantined || (l.expiresOn && l.expiresOn < today) ? (l.quantities[location] || 0) : location.startsWith('route__') ? 0 : originPendingQuantity(l, location)), 0)
     return { ...b, quantity: Math.max(0, b.quantity - pendingQty), availableQuantity: Math.max(0, b.quantity - pendingQty - unavailable) }
   })
 }
