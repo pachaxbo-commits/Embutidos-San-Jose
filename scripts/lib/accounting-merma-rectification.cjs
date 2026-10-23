@@ -1,5 +1,5 @@
 // Offline maintenance adapter. No invocation, endpoint, migration or production hook.
-const { fingerprint, q, bs } = require('./mixed-merma-lot-plan.cjs');
+const { fingerprint, q, bs } = require('./accounting-merma-utils.cjs');
 const origin = require('../../functions/origin-traceability.cjs');
 const check = (v, message) => { if (!v) throw Error(message); };
 const safeId = value => typeof value === 'string' && value.length > 0 && value.length < 180 && !value.includes('/') && !/^\.{1,2}$/.test(value);

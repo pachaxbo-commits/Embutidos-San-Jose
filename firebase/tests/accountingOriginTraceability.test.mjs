@@ -68,6 +68,7 @@ try{
  assert.match(movementOriginNote(receiptMoves.find(m=>m.type==='return')),/Referencia contable/);
  pass('partial reception, FEFO/mixed lot splitting, zero fictitious surplus; only uncertain returned amount reserved');
  const denied=await run('sale',{sourceLocation:'centralWarehouse',routeId:'administracion',customerId:'qa-customer',customerName:'QA',paymentKind:'cash',cashAmount:543,lines:[{productId:f.pid,quantity:18.1,actualUnitPrice:30}]},'rejected');assert(denied.error);
+ assert.match(denied.error,/origen pendiente/,'legacy clients receive a clear server rejection without needing new payload fields');
  const good=await run('sale',{sourceLocation:'centralWarehouse',routeId:'administracion',customerId:'qa-customer',customerName:'QA',paymentKind:'cash',cashAmount:30,lines:[{productId:f.pid,quantity:1,actualUnitPrice:30,allocationsRequested:[{lotId:f.C,quantity:1}]}]});
  assert.equal(origins.pending(await get('distLots',f.C),'central'),.2);
  await run('voidSale',{saleId:good.id,reason:'Synthetic void after reception'});

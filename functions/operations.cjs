@@ -238,7 +238,7 @@ class Operation {
       );
     check(
       roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
-      `Stock apto insuficiente de ${e.p.name}. Revisa lotes vencidos o cantidades.`,
+      `Stock disponible insuficiente de ${e.p.name}. Revisa cantidades, vencimientos y reservas por origen pendiente; esas reservas no se pueden vender ni despachar.`,
     );
     let remaining = quantity;
     const allocations = [];
