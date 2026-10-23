@@ -11,6 +11,8 @@
       "**/node_modules/**"
     ],
     "headers": [
+      { "source": "**", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
+      { "source": "/assets/**", "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }] },
       {
         "source": "/updates/san-jose/update.json",
         "headers": [

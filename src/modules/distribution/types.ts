@@ -142,6 +142,7 @@ export interface DistStockMovement extends DistBaseDoc {
   responsibleRole?: 'admin' | 'warehouse' | 'distributor'
   lotCode?: string
   lossCost?: number | null
+  lossClassification?: 'confirmed_physical_loss'
   type: StockMovementType
   productId: string
   productName: string
@@ -196,6 +197,7 @@ export interface DistDispatchLine {
   dispatchMermaAllocations?: DistLotAllocation[]
   quantity: number
   waste?: number
+  warehouseLoss?: { quantity: number; reason: string; confirmation: 'CONFIRMAR_PERDIDA_REAL' }
   wasteCost?: number | null
   wasteAllocations?: DistLotAllocation[]
   /** Selección explícita solicitada por el operador; el servidor vuelve a validarla. */

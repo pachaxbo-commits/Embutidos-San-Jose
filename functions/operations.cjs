@@ -432,6 +432,18 @@ async function dispatch(o, p, addition = false) {
   const warehouseResponsibleName = p.warehouseResponsibleName?.trim() || o.member.displayName || o.actor;
   const linesByProduct = new Map();
   for (const l of p.lines) {
+    // Legacy "waste" did not distinguish bag overweight from a physical loss.
+    // Reject it before touching stock; ordinary legacy loads remain compatible.
+    check(l.waste === undefined || Number(l.waste) === 0,
+      "Actualiza la aplicación antes de despachar: la merma dentro de las bolsas debe registrarse como merma adicional enviada. No se guardó el despacho. Para una pérdida real de Almacén usa su confirmación específica.");
+    const warehouseLoss = l.warehouseLoss;
+    const waste = warehouseLoss ? round(Number(warehouseLoss.quantity)) : 0;
+    const wasteReason = String(warehouseLoss?.reason || "").trim();
+    if (warehouseLoss) {
+      check(warehouseLoss.confirmation === "CONFIRMAR_PERDIDA_REAL" && wasteReason.length >= 3,
+        "Confirma explícitamente la pérdida real de Almacén e indica el motivo. La merma enviada dentro de las bolsas no es pérdida.");
+      check(Number.isFinite(waste) && waste > 0, "Indica una cantidad válida para la pérdida real de Almacén.");
+    }
     // Versiones antiguas envían lotId o líneas repetidas; 1.4.13 envía una
     // línea por producto con allocationsRequested. El documento efectivo se
     // normaliza siempre a una sola línea por producto.
@@ -448,7 +460,6 @@ async function dispatch(o, p, addition = false) {
       check(Number.isFinite(physicalQuantity) && physicalQuantity > 0 && Number.isFinite(dispatchMerma) && dispatchMerma >= 0 && Number.isFinite(normalQuantity) && normalQuantity >= 0,
         "Revisa la cantidad normal y la merma adicional del despacho.");
       check(round(normalQuantity + dispatchMerma) === physicalQuantity, "El total físico debe ser igual a la cantidad normal más la merma adicional.");
-      check(!(Number(l.waste) > 0), "La merma adicional entregada a ruta no puede registrarse también como pérdida de almacén.");
     }
     const allocations = await o.moveStock(l.productId, from, to, physicalQuantity, options);
     const effective = linesByProduct.get(l.productId) || { productId: l.productId, productName: product.name, unitType: product.unitType, quantity: 0, normalQuantity: 0, dispatchMerma: 0, allocations: [], dispatchMermaAllocations: [] };
@@ -468,9 +479,8 @@ async function dispatch(o, p, addition = false) {
         else effective.dispatchMermaAllocations.push({ ...allocation });
       }
     }
-    const waste = round(Number(l.waste) || 0);
     if (waste > 0) {
-      check(product.unitType === "kg", "Las mermas de despacho solo aplican a productos a granel / peso (kg).");
+      check(product.unitType === "kg", "La pérdida de despacho solo aplica a productos por kg.");
       const wasteAllocations = await o.take(l.productId, from, waste);
       const wasteCost = wasteAllocations.every((a) => a.productionCost !== null)
         ? round(wasteAllocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
@@ -478,13 +488,15 @@ async function dispatch(o, p, addition = false) {
       effective.waste = round((effective.waste || 0) + waste);
       effective.wasteCost = wasteCost;
       effective.wasteAllocations = wasteAllocations;
+      effective.warehouseLoss = { quantity: waste, reason: wasteReason, confirmation: "CONFIRMAR_PERDIDA_REAL" };
       o.ledger(
         l.productId,
         waste,
         from,
         null,
         "dispatch_waste",
-        { refId: current?.id || o.id, allocations: wasteAllocations, lossCost: wasteCost, note: "Merma registrada al despachar" },
+        { refId: current?.id || o.id, dispatchId: current?.id || o.id, allocations: wasteAllocations, lossCost: wasteCost,
+          lossClassification: "confirmed_physical_loss", reason: wasteReason, note: "Pérdida física real de Almacén confirmada expresamente al despachar" },
       );
     }
     linesByProduct.set(l.productId, effective);

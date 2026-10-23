@@ -1,4 +1,4 @@
-import type { jsPDF } from 'jspdf'
+import { jsPDF, autoTable } from '../../../lib/documentLibraries.ts'
 import type { DistributionData } from '../state/useDistributionStore.ts'
 import type { DistStockMovement, UnitType } from '../types.ts'
 import { toDayKey } from './engine.ts'
@@ -240,10 +240,6 @@ export async function generateTodayIntakesPdfBytes(
     throw new Error('No hay ingresos de inventario confirmados para el periodo seleccionado.')
   }
 
-  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
-    import('jspdf'),
-    import('jspdf-autotable'),
-  ])
 
   const pdf = new jsPDF({ orientation: 'landscape', format: 'letter' })
   const pageWidth = pdf.internal.pageSize.getWidth()

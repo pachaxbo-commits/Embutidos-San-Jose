@@ -1,4 +1,5 @@
 import { PrintEngineService } from '../../../services/printing/printEngineService'
+import { jsPDF, autoTable } from '../../../lib/documentLibraries'
 import { getActiveReceiptPrinter } from '../../../services/printing/printerBootstrap'
 import type { PrintJobPayload } from '../../../types/printing'
 import type { DistClosure, DistDispatch, DistProduct, DistQuote } from '../types'
@@ -151,10 +152,6 @@ export function getMailtoUrl(subject: string, body: string): string {
 }
 
 export async function generateDispatchPdf(dispatch: DistDispatch, products: DistProduct[] = []) {
-  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
-    import('jspdf'),
-    import('jspdf-autotable'),
-  ])
 
   const doc = new jsPDF({ orientation: 'portrait', format: 'letter' })
   const pageWidth = doc.internal.pageSize.getWidth()
@@ -488,10 +485,6 @@ export async function printOperationalSheet(title: string, subtitle: string, row
 
 export async function generateClosurePdf(closure: DistClosure) {
   closure = closureRectificationView(closure, closure.rectificationView || 'corrected')
-  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
-    import('jspdf'),
-    import('jspdf-autotable'),
-  ])
 
   const doc = new jsPDF({ orientation: 'landscape', format: 'letter' })
   const pageWidth = doc.internal.pageSize.getWidth()

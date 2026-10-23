@@ -29,7 +29,16 @@ interface DraftLine {
   productId: string
   quantity: string
   dispatchMerma?: string
+  warehouseLoss?: string
+  warehouseLossReason?: string
+  warehouseLossConfirmed?: boolean
   allocations: Array<{ id: string; lotId: string; quantity: string }>
+}
+
+function WarehouseLossConfirmation({ lines }: { lines: DistDispatchLine[] }) {
+  const losses = lines.filter(line => line.warehouseLoss)
+  if (!losses.length) return null
+  return <div className="grid min-w-0 gap-1 rounded-xl border border-rose-300 bg-rose-50 p-3 text-xs text-rose-950"><strong>Además, estás confirmando pérdidas reales en Almacén:</strong>{losses.map(line => <p key={line.productId} className="break-words">{line.productName}: <b>{formatQty(line.warehouseLoss!.quantity, line.unitType)}</b> · {line.warehouseLoss!.reason}</p>)}<p>Estas cantidades se descartan; no forman parte de la carga a la ruta.</p></div>
 }
 
 /**
@@ -540,10 +549,16 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         normalQuantity: quantity,
         dispatchMerma,
         quantity: round2(quantity + dispatchMerma),
+        ...(Number(draft.warehouseLoss) > 0 ? { warehouseLoss: { quantity: round2(Number(draft.warehouseLoss)), reason: draft.warehouseLossReason?.trim() || '', confirmation: 'CONFIRMAR_PERDIDA_REAL' as const } } : {}),
         allocationsRequested: draft.allocations.map(part => ({ lotId: part.lotId, quantity: round2(Number(part.quantity)) })),
       })
     }
     return lines
+  }
+
+  const validateWarehouseLoss = () => {
+    const invalid = draftLines.find(line => line.warehouseLoss && (!Number.isFinite(Number(line.warehouseLoss)) || Number(line.warehouseLoss) < 0 || (Number(line.warehouseLoss) > 0 && (!line.warehouseLossConfirmed || (line.warehouseLossReason?.trim().length || 0) < 3))))
+    return invalid ? 'Revisa la pérdida real de Almacén: indica su motivo y confirma que ese producto se descartó y no viaja dentro de las bolsas.' : null
   }
 
   const submitDispatch = async (confirmed = false) => {
@@ -564,7 +579,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     const lotError = validateLotAssignments(); if (lotError) { setError(lotError); return }
     if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
-    const stockError = validateStockAvailability(lines, central)
+    const lossError = validateWarehouseLoss(); if (lossError) { setError(lossError); return }
+    const stockError = validateStockAvailability(lines.map(line => ({ ...line, quantity: line.quantity + (line.warehouseLoss?.quantity || 0) })), central)
     if (stockError) {
       setError(stockError)
       return
@@ -614,7 +630,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     const lotError = validateLotAssignments(); if (lotError) { setError(lotError); return }
     if (!warehouseResponsibleName.trim()) { setError('Indica el encargado de almacén del turno.'); return }
 
-    const stockError = validateStockAvailability(lines, central)
+    const lossError = validateWarehouseLoss(); if (lossError) { setError(lossError); return }
+    const stockError = validateStockAvailability(lines.map(line => ({ ...line, quantity: line.quantity + (line.warehouseLoss?.quantity || 0) })), central)
     if (stockError) {
       setError(stockError)
       return
@@ -675,6 +692,15 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               </Field>
             )}
             <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-extrabold text-emerald-900">TOTAL FÍSICO CARGADO: {formatQty(total, product.unitType)}<span className="mt-1 block text-xs font-semibold">La merma adicional también se entrega físicamente al distribuidor.</span></p>
+            {product.unitType === 'kg' && <details className="min-w-0 rounded-xl border border-rose-200 bg-rose-50 p-3">
+              <summary className="cursor-pointer text-xs font-bold text-rose-900">Registrar una pérdida real en Almacén (opcional)</summary>
+              <div className="mt-3 grid min-w-0 gap-3">
+                <p className="text-xs text-rose-900">Solo producto realmente descartado. Esta cantidad sale de la existencia del almacén, no se carga a la ruta y su costo se registra como pérdida.</p>
+                <Field label="Pérdida real en Almacén (kg)"><NumberInput aria-label={`Pérdida real de ${product.name}`} value={line.warehouseLoss || ''} min={0} step={0.01} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLoss: event.target.value, warehouseLossConfirmed: false } : item))} /></Field>
+                <Field label="Motivo de la pérdida real"><TextArea value={line.warehouseLossReason || ''} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLossReason: event.target.value, warehouseLossConfirmed: false } : item))} /></Field>
+                {Number(line.warehouseLoss) > 0 && <label className="flex items-start gap-3 text-xs font-bold text-rose-900"><input type="checkbox" className="mt-1 h-5 w-5 shrink-0" checked={Boolean(line.warehouseLossConfirmed)} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLossConfirmed: event.target.checked } : item))} /><span>Confirmo que {formatQty(Number(line.warehouseLoss), product.unitType)} se descartó realmente en Almacén. No corresponde a merma adicional enviada dentro de las bolsas.</span></label>}
+              </div>
+            </details>}
             <div className="rounded-2xl border border-slate-200 bg-white p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-black text-slate-800">Lotes utilizados</p><button type="button" className="rounded-xl bg-slate-100 px-3 py-2 text-[11px] font-extrabold text-slate-700" onClick={() => distributeFefo(line)}>Distribuir por FEFO</button></div>
               <div className="grid gap-2">{line.allocations.map(part => <div key={part.id} className="grid gap-2 rounded-xl border border-slate-200 p-2 sm:grid-cols-[minmax(0,1fr)_110px_40px] sm:items-center"><SelectInput aria-label={`Lote de ${product.name}`} value={part.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, lotId: event.target.value } : entry) } : item))}><option value="">Selecciona lote</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · {formatQty(lot.quantities[lotLocation], product.unitType)} · vence {lot.expiresOn || 'sin fecha'}</option>)}</SelectInput><NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} /><button type="button" aria-label="Quitar lote" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.filter(entry => entry.id !== part.id) } : item))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></div>)}</div>
               <button type="button" className="mt-2 w-full rounded-xl border border-dashed border-[var(--primary)] px-3 py-2 text-xs font-extrabold text-[var(--primary)]" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: [...item.allocations, { id: newOperationId('lot'), lotId: '', quantity: '' }] } : item))}>+ Agregar otro lote</button>
@@ -767,7 +793,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                         {(() => {
                           const w = (dispatch.lines || []).filter(l => l.productId === productId).reduce((n, l) => n + (l.waste || 0), 0);
                           const merma = [...(dispatch.lines || []), ...(dispatch.additions || []).filter(add => !add.voided).flatMap(add => add.quantityByProduct)].filter(line => line.productId === productId).reduce((n, line) => n + (line.dispatchMerma || 0), 0)
-                          return `${merma > 0 ? ` · Merma adicional enviada dentro de las bolsas: ${formatQty(merma, totals.unitType)}` : ''}${w > 0 ? ` · Pérdida real en Almacén registrada: ${formatQty(w, totals.unitType)}` : ''}`;
+                          const confirmedLoss = (dispatch.lines || []).filter(l => l.productId === productId).every(l => !l.waste || l.warehouseLoss?.confirmation === 'CONFIRMAR_PERDIDA_REAL');
+                          return `${merma > 0 ? ` · Merma adicional enviada dentro de las bolsas: ${formatQty(merma, totals.unitType)}` : ''}${w > 0 ? ` · ${confirmedLoss ? 'Pérdida real confirmada en Almacén' : 'Registro como pérdida (pendiente de validar)'}: ${formatQty(w, totals.unitType)}` : ''}`;
                         })()}
                       </p>
                     </div>
@@ -1024,7 +1051,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         title={confirmingLoadType === 'dispatch' ? 'Confirmar carga física' : 'Nuevo despacho'}
         subtitle="Descuenta almacen central y carga la ruta"
         size="lg"
-        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitDispatch()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
+        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitDispatch()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
       >
         {confirmingLoadType === 'dispatch' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p><p className="text-sm font-bold text-slate-700">{selectedDistributor?.displayName || 'Distribuidor'} · {data.routes.find(route => route.id === routeId)?.name || 'Ruta'}</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : <div className="grid gap-3">
           <Field label="Almacen de origen"><ChoiceButton disabled={session.role === 'warehouse'} placeholder="Selecciona almacén" label={warehouseId === 'central' ? 'Almacén central' : data.warehouses.find(w => w.id === warehouseId)?.name} onClick={() => setIsWarehousePickerOpen(true)} /></Field>
@@ -1055,7 +1082,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         title={confirmingLoadType === 'addition' ? 'Confirmar aumento de carga' : 'Aumento de carga'}
         subtitle={additionTarget ? `${additionTarget.routeName} · ${additionTarget.distributorName}` : ''}
         size="lg"
-        footer={confirmingLoadType === 'addition' ? <div className="grid w-full grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitAddition()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
+        footer={confirmingLoadType === 'addition' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitAddition()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
       >
         {confirmingLoadType === 'addition' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades adicionales que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : lineEditor}
       </Modal>

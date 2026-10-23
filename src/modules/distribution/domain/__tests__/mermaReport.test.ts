@@ -173,4 +173,11 @@ const separateSkuReport = computeMermaReport([
 ], [product, skuTwo], routes, [], { dayKeys: ['2026-10-19'] })
 expect(separateSkuReport.consolidated.byDispatchProduct.length, 2, 'SKU distintos permanecen separados dentro del mismo despacho')
 expect(separateSkuReport.consolidated.dispatchMermaSent.kg, 0.3, 'Consolidado agrega cantidades por unidad, sin colisión SKU')
+const confirmedWarehouseLoss = computeMermaReport([
+  movement('explicit-warehouse-loss', 'dispatch_waste', 0.2, { lossCost: 2, lossClassification: 'confirmed_physical_loss' }),
+  movement('ambiguous-legacy-loss', 'dispatch_waste', 1.54, { lossCost: 53.21 }),
+], [product], routes, [], { dayKeys: ['2026-10-19'] })
+expect(confirmedWarehouseLoss.consolidated.confirmedUnfit.kg, 0.2, 'Solo la pérdida explícita es comprobada')
+expect(confirmedWarehouseLoss.consolidated.legacyDispatchWastePending.kg, 1.54, 'El histórico ambiguo conserva revisión pendiente')
+expect(confirmedWarehouseLoss.consolidated.confirmedUnfitCost.amount, 2, 'Costo real separado sin duplicarlo')
 console.log('PASS mermaReport.test.ts')

@@ -100,7 +100,7 @@ function roundQuantity(value: number, unitType: UnitType): number {
 function kindForMovement(movement: DistStockMovement): MermaReportKind | null {
   if (movement.type === 'dispatch_merma_sale') return 'dispatch_merma_in_sales'
   if ((movement.type === 'dispatch' || movement.type === 'dispatch_addition') && Number(movement.dispatchMerma) > 0) return 'dispatch_merma'
-  if (movement.type === 'dispatch_waste') return 'dispatch_waste'
+  if (movement.type === 'dispatch_waste') return movement.lossClassification === 'confirmed_physical_loss' ? 'unfit' : 'dispatch_waste'
   if (movement.type === 'return_merma') return 'return_merma'
   if (movement.type === 'return_waste' || movement.type === 'return_waste_unassigned') return 'unfit'
   if (movement.type === 'shortage') return 'shortage'
@@ -181,7 +181,7 @@ export function computeMermaReport(
                 : linkedLot?.quarantineResolvedAt ? 'quarantine_resolution_unknown' : 'pending_review')
             : kind === 'dispatch_waste' ? 'pending_review' : 'informational'
     return [{
-      id: movement.id, dayKey, createdAt: movement.createdAt, kind, label: labels[kind],
+      id: movement.id, dayKey, createdAt: movement.createdAt, kind, label: movement.type === 'dispatch_waste' && movement.lossClassification === 'confirmed_physical_loss' ? 'Pérdida real confirmada en Almacén' : labels[kind],
       productId: movement.productId, productName: movement.productName || product?.name || 'Producto',
       unitType: movement.unitType || product?.unitType || 'unit', quantity: roundQuantity(quantity, movement.unitType || product?.unitType || 'unit'),
       physicalQuantity, normalQuantity: movement.normalQuantity, dispatchMerma: movement.dispatchMerma,

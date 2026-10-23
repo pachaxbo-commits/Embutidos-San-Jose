@@ -1,4 +1,4 @@
-import type { jsPDF } from "jspdf";
+import { jsPDF, autoTable, Workbook } from "../../../lib/documentLibraries.ts";
 import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
@@ -966,7 +966,6 @@ export async function exportExcel(
   description: string,
   filename = "SanJose-reportes.xlsx",
 ) {
-  const { Workbook } = await import("exceljs");
   const book = new Workbook();
   book.creator = "Embutidos San José";
 
@@ -1235,10 +1234,6 @@ export async function exportPdf(
   description: string,
   filename = "SanJose-reportes.pdf",
 ) {
-  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
-    import("jspdf"),
-    import("jspdf-autotable"),
-  ]);
 
   const pdf = new jsPDF({ orientation: "portrait", format: "letter" });
 
