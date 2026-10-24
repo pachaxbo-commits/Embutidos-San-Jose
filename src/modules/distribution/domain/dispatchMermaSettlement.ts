@@ -79,15 +79,13 @@ export function previewDispatchMermaSettlement(
     && recoverableMermaReturn >= 0 && unfitReturn >= 0
     && recoverableMermaReturn + unfitReturn <= dispatchMermaSent + 0.001)
   const eligible = eligibleStandard || eligibleAboveNormal
-  const additionalMermaIncludedInSales = eligibleAboveNormal && embeddedMermaInSalesConfirmed
+  const additionalMermaIncludedInSales = (eligibleAboveNormal || eligibleStandard) && embeddedMermaInSalesConfirmed
     ? kg(Math.max(0, physicalExpectedReturn - actualNormalReturn - recoverableMermaReturn - unfitReturn))
     : 0
-  const pendingPhysicalMerma = eligibleAboveNormal
+  const pendingPhysicalMerma = eligibleStandard || eligibleAboveNormal
     ? kg(Math.max(0, physicalExpectedReturn - actualNormalReturn - recoverableMermaReturn - unfitReturn - additionalMermaIncludedInSales))
     : 0
-  const includedInSales = eligibleStandard
-    ? kg(Math.max(0, dispatchMermaSent - recoverableMermaReturn - unfitReturn))
-    : kg(nominalMermaIncludedInSales + additionalMermaIncludedInSales)
+  const includedInSales = kg(nominalMermaIncludedInSales + additionalMermaIncludedInSales)
   return {
     normalLoaded,
     physicalLoaded: kg(normalLoaded + dispatchMermaSent),
@@ -97,9 +95,7 @@ export function previewDispatchMermaSettlement(
     additionalMermaIncludedInSales,
     pendingPhysicalMerma,
     includedInSales,
-    expectedPhysicalReturn: eligibleStandard
-      ? kg(normalExpectedReturn + recoverableMermaReturn + unfitReturn)
-      : kg(physicalExpectedReturn - additionalMermaIncludedInSales),
+    expectedPhysicalReturn: kg(physicalExpectedReturn - additionalMermaIncludedInSales),
     eligible,
     fullyReturned,
   }

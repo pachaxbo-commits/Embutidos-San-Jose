@@ -18,8 +18,12 @@ const assertEqual = (actual: unknown, expected: unknown, label: string) => {
 
 const example = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale', 84)], 'p', 4, 0.08, 0)
 assertEqual(example.eligible, true, 'Ejemplo autorizado puede conciliarse')
-assertEqual(example.includedInSales, 2.02, '88 + 2.10 / venta nominal 84 / retorno adicional .08')
-assertEqual(example.expectedPhysicalReturn, 4.08, 'Retorno físico esperado no duplica la merma')
+assertEqual(example.includedInSales, 0, 'El remanente no se atribuye a ventas sin confirmación de Almacén')
+assertEqual(example.pendingPhysicalMerma, 2.02, 'La merma no retornada ni justificada queda pendiente')
+assertEqual(example.expectedPhysicalReturn, 6.1, 'Retorno esperado conserva la merma pendiente hasta confirmar su destino')
+const exampleConfirmed = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale-confirmed', 84)], 'p', 4, 0.08, 0, true)
+assertEqual(exampleConfirmed.includedInSales, 2.02, 'Solo la confirmación física permite incluir el remanente en bolsas vendidas')
+assertEqual(exampleConfirmed.expectedPhysicalReturn, 4.08, 'Tras confirmar, el retorno físico no duplica la merma')
 
 const fullyReturned = previewDispatchMermaSettlement(dispatch(10, 0.2), [], 'p', 10, 0.2, 0)
 assertEqual(fullyReturned.eligible, true, 'Sin ventas se acepta cuando toda la merma fue recuperada')
@@ -35,12 +39,14 @@ const correctedSales = previewDispatchMermaSettlement(dispatch(88, 2.1), [
   sale('voided', 100, { voidedAt: '2026-10-22T14:00:00.000Z' }),
   sale('pending', 100, { pendingConfirmation: true }),
 ], 'p', 4, 0.08, 0)
-assertEqual(correctedSales.includedInSales, 2.02, 'Usa corrección vigente y excluye anulada/pendiente')
+assertEqual(correctedSales.includedInSales, 0, 'Usa corrección vigente, excluye anulada/pendiente y espera confirmación física')
+assertEqual(correctedSales.pendingPhysicalMerma, 2.02, 'El remanente de la venta corregida sigue pendiente sin confirmar bolsas')
 
 const unfit = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale', 84)], 'p', 4, 0.08, 0.1)
 assertEqual(unfit.eligible, true, 'No apto explícito se descuenta antes de conciliar el remanente')
-assertEqual(unfit.includedInSales, 1.92, 'No apto no se atribuye a venta')
-assertEqual(unfit.expectedPhysicalReturn, 4.18, 'Retorno esperado incluye el no apto físicamente recibido')
+assertEqual(unfit.includedInSales, 0, 'El no apto no se atribuye a venta y el remanente requiere confirmación')
+assertEqual(unfit.pendingPhysicalMerma, 1.92, 'El no apto retornado reduce el remanente, sin clasificarlo como venta')
+assertEqual(unfit.expectedPhysicalReturn, 6.1, 'Retorno esperado conserva el remanente pendiente')
 
 const tooMuchUnfit = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale', 84)], 'p', 4, 0.08, 2.1)
 assertEqual(tooMuchUnfit.eligible, false, 'No apto superior al saldo adicional no se concilia automáticamente')
@@ -64,6 +70,10 @@ assertEqual(lucianoConfirmed.expectedPhysicalReturn, 0, 'La confirmación explí
 const lucianoReturned = previewDispatchMermaSettlement(dispatch(76, 1.88), [sale('sale-77', 77)], 'p', 0, 0.88, 0)
 assertEqual(lucianoReturned.pendingPhysicalMerma, 0, 'Retorno recuperable de .88 kg concilia el remanente')
 assertEqual(lucianoReturned.additionalMermaIncludedInSales, 0, 'La merma retornada no se duplica como venta')
+
+const lucianoAfterVoid = previewDispatchMermaSettlement(dispatch(76, 1.88), [sale('sale-76', 76)], 'p', 0, 0, 0)
+assertEqual(lucianoAfterVoid.pendingPhysicalMerma, 1.88, 'Después de anular la venta adicional, todo el sobrepeso no retornado queda pendiente')
+assertEqual(lucianoAfterVoid.expectedPhysicalReturn, 1.88, 'La anulación no oculta el saldo físico pendiente del despacho')
 
 const courtesyOverNormal = previewDispatchMermaSettlement(dispatch(76, 1.88), [
   sale('sale-75', 75), sale('courtesy-2', 2, { saleKind: 'courtesy', cashAmount: 0, creditAmount: 0, total: 0 }),

@@ -32,8 +32,9 @@ const vite = await createServer({
       if (id !== '\0mock-closure-repository') return null
       return `
         export const declareRouteReturn = async (...args) => { globalThis.__declarationCalls.push(args) }
+        export const newOperationId = () => 'operation-closure-qa-' + (++globalThis.__operationIdCounter)
         export const reopenClosure = async () => {}
-        export const saveClosure = async () => {}
+        export const saveClosure = async (...args) => { globalThis.__saveClosureCalls += 1; globalThis.__saveClosureArgs.push(args); return globalThis.__saveClosureImpl(...args) }
         export const setClosureVarianceReviewed = async () => {}
         export const subscribeSales = (_days, _route, onData) => { onData([]); return () => {} }
         export const subscribeCollections = (_days, _route, onData) => { onData([]); return () => {} }
@@ -44,6 +45,10 @@ const vite = await createServer({
 })
 const { ClosureView } = await vite.ssrLoadModule('/src/modules/distribution/views/ClosureView.tsx')
 globalThis.__declarationCalls = []
+globalThis.__saveClosureImpl = async () => {}
+globalThis.__saveClosureCalls = 0
+globalThis.__saveClosureArgs = []
+globalThis.__operationIdCounter = 0
 const container = document.getElementById('app')
 let root = createRoot(container)
 const dayKey = new Date().toISOString().slice(0, 10)
@@ -142,6 +147,7 @@ try {
   }
   const warehouseSession = { ...session, uid: 'warehouse-qa', userName: 'Almacén QA', role: 'warehouse', routeId: undefined }
   root = createRoot(container)
+  globalThis.__saveClosureCalls = 0
   await act(async () => root.render(React.createElement(ClosureView, { session: warehouseSession, data: warehouseData })))
   assert.match(container.textContent, /Declarado por distribuidor: 21 kg normal/, 'almacén distingue la declaración simple')
   const jamonWarehouseCard = container.querySelector('[data-return-product="jamon"]')
@@ -163,6 +169,70 @@ try {
   assert.match(jamonWarehouseCard.textContent, /Merma recuperable registrada por Almacén: 0\.5 kg/, 'la merma se atribuye claramente a la recepción de almacén')
   assert.match(jamonWarehouseCard.textContent, /Diferencia entre normal declarado y recibido: 0 kg/, 'la merma recuperable no se presenta como diferencia o faltante del distribuidor')
   console.log('PASS: campo único, merma exclusiva de almacén, prefill normal, total físico y stock 21.5 kg')
+
+  await act(async () => root.unmount())
+  const rejectDispatch = {
+    ...warehouseDispatch,
+    id: 'dispatch-rejected-receipt-qa',
+    lines: [{ productId: 'jamon', productName: 'Jamón QA', unitType: 'kg', quantity: 2 }],
+  }
+  const rejectClosure = {
+    ...warehouseClosure,
+    id: `closure_${rejectDispatch.id}`,
+    dispatchId: rejectDispatch.id,
+    routeId: rejectDispatch.routeId,
+    declaredReturns: { jamon: 1 },
+  }
+  const rejectData = { ...warehouseData, openDispatches: [rejectDispatch], closures: [rejectClosure] }
+  root = createRoot(container)
+  globalThis.__saveClosureImpl = async () => { throw Object.assign(new Error('No se puede confirmar la recepción de Jamón QA: 1 kg sigue sin conciliar.'), { rejected: true }) }
+  await act(async () => root.render(React.createElement(ClosureView, { session: warehouseSession, data: rejectData })))
+  const rejectCard = container.querySelector('[data-return-product="jamon"]')
+  await act(async () => [...rejectCard.querySelectorAll('button')].find(button => button.textContent.includes('Registrar recepción')).click())
+  const rejectDialog = container.querySelector('[role="dialog"][aria-label="Registrar recepción"]')
+  const rejectInputs = rejectDialog.querySelectorAll('input')
+  await setInput(rejectInputs[0], '1')
+  await setInput(rejectInputs[1], '0')
+  await click('Guardar recepción')
+  await click('Guardar retorno de almacén')
+  const confirmationDialog = container.querySelector('[role="dialog"][aria-label="Confirmar recepción física"]')
+  assert.ok(confirmationDialog, 'la recepción abre confirmación antes de enviar')
+  await act(async () => [...confirmationDialog.querySelectorAll('button')].find(button => button.textContent.includes('Confirmar recepción')).click())
+  assert.match(confirmationDialog.textContent, /El servidor rechazó la recepción/, 'el rechazo del servidor se clasifica dentro del modal')
+  assert.match(confirmationDialog.textContent, /Jamón QA: 1 kg sigue sin conciliar/, 'el modal muestra el error exacto del producto y cantidad')
+  assert.ok(container.contains(confirmationDialog), 'el modal permanece abierto tras el rechazo para no perder el contexto')
+  assert.equal(globalThis.__saveClosureCalls, 1, 'un clic genera una sola solicitud')
+  await click('Volver a revisar Jamón QA')
+  assert.ok(container.querySelector('[role="dialog"][aria-label="Registrar recepción"]'), 'volver a revisar abre directamente el editor del producto afectado')
+  console.log('PASS: rechazo de servidor visible dentro del modal y sin reintento automático')
+
+  await act(async () => root.unmount())
+  root = createRoot(container)
+  globalThis.__saveClosureCalls = 0
+  globalThis.__saveClosureArgs = []
+  globalThis.__saveClosureImpl = async () => {
+    if (globalThis.__saveClosureCalls === 1) throw new Error('La operación sigue pendiente de confirmación. Revisa Operaciones pendientes antes de volver a registrarla.')
+    return 'closure-confirmed-qa'
+  }
+  await act(async () => root.render(React.createElement(ClosureView, { session: warehouseSession, data: rejectData })))
+  const uncertainCard = container.querySelector('[data-return-product="jamon"]')
+  await act(async () => [...uncertainCard.querySelectorAll('button')].find(button => button.textContent.includes('Registrar recepción')).click())
+  const uncertainDialog = container.querySelector('[role="dialog"][aria-label="Registrar recepción"]')
+  const uncertainInputs = uncertainDialog.querySelectorAll('input')
+  await setInput(uncertainInputs[0], '1')
+  await setInput(uncertainInputs[1], '0')
+  await click('Guardar recepción')
+  await click('Guardar retorno de almacén')
+  const pendingDialog = container.querySelector('[role="dialog"][aria-label="Confirmar recepción física"]')
+  await act(async () => [...pendingDialog.querySelectorAll('button')].find(button => button.textContent.includes('Confirmar recepción')).click())
+  assert.match(pendingDialog.textContent, /La operación sigue pendiente de confirmación/)
+  assert.ok([...pendingDialog.querySelectorAll('button')].some(button => button.textContent.trim() === 'Comprobar recepción'), 'estado incierto ofrece volver a comprobar la misma operación')
+  assert.ok([...pendingDialog.querySelectorAll('button')].find(button => button.textContent.includes('Volver a revisar')).disabled, 'no permite cambiar los datos mientras el resultado es incierto')
+  await click('Comprobar recepción')
+  assert.equal(globalThis.__saveClosureCalls, 2)
+  assert.equal(globalThis.__saveClosureArgs[0][1], globalThis.__saveClosureArgs[1][1], 'reintento incierto reutiliza el mismo operationId')
+  assert.equal(container.querySelector('[role="dialog"][aria-label="Confirmar recepción física"]'), null, 'al recibir confirmación, el modal se cierra')
+  console.log('PASS: resultado pendiente bloquea cambios y reintenta con el mismo operationId')
 } finally {
   await act(async () => root.unmount())
   await vite.close()

@@ -136,14 +136,21 @@ try {
   pass((await read('distBalances', `route__${settlementRoute}__${settlementProduct}`)).quantity === 6.1, 'venta nominal de 84 deja el saldo físico de ruta de 6.1 kg')
   const settlementClosureId = `closure_${settlementDispatch.id}`
   await command(settlementSeller, 'closure', { mode: 'declaration', dispatchId: settlementDispatch.id, declaredReturns: { [settlementProduct]: 4 }, declaredReturnMermas: {}, physicalCashDeclared: 3360 })
-  const warehouseSettlement = await command(warehouse, 'closure', {
+  const routeBeforeUnconfirmedReceipt = (await read('distBalances', `route__${settlementRoute}__${settlementProduct}`)).quantity
+  const unconfirmedStandardMerma = await command(warehouse, 'closure', {
     mode: 'warehouse', closure: { dispatchId: settlementDispatch.id, products: [{ productId: settlementProduct, actualReturn: 4, returnMerma: 0.08, returnWaste: 0, physicalReturn: 4.08 }] },
+    warehouseResponsibleName: 'QA almacén',
+  }, 'rejected')
+  pass(/Producto merma conciliable QA/.test(unconfirmedStandardMerma.error) && /2\.02 kg/.test(unconfirmedStandardMerma.error), 'rechazo estándar indica producto y cantidad de merma aún sin confirmar')
+  pass((await read('distBalances', `route__${settlementRoute}__${settlementProduct}`)).quantity === routeBeforeUnconfirmedReceipt && !(await read('distClosures', settlementClosureId))?.warehouseClosedBy, 'sin confirmación física el rechazo no modifica ruta ni confirma recepción')
+  const warehouseSettlement = await command(warehouse, 'closure', {
+    mode: 'warehouse', closure: { dispatchId: settlementDispatch.id, products: [{ productId: settlementProduct, actualReturn: 4, returnMerma: 0.08, returnWaste: 0, physicalReturn: 4.08, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'Almacén verificó el sobrepeso dentro de las bolsas vendidas.' }] },
     warehouseResponsibleName: 'QA almacén',
   })
   const settledClosure = await read('distClosures', settlementClosureId)
   const settledRow = settledClosure.products.find(row => row.productId === settlementProduct)
   pass(settledRow.expectedReturn === 4.08 && settledRow.shortage === 0 && settledRow.overage === 0, '88 + 2.10; vendió 84; retornó 4 + .08 produce 4.08 esperado sin diferencia')
-  pass(settledRow.normalExpectedReturn === 4 && settledRow.dispatchMermaSent === 2.1 && settledRow.dispatchMermaIncludedInSales === 2.02 && settledRow.dispatchMermaReconciliationStatus === 'included_in_sales', 'el cierre vincula 2.02 kg adicionales a la salida agregada de las ventas')
+  pass(settledRow.normalExpectedReturn === 4 && settledRow.dispatchMermaSent === 2.1 && settledRow.dispatchMermaIncludedInSales === 2.02 && settledRow.dispatchMermaEmbeddedInSalesConfirmed === true && settledRow.dispatchMermaEmbeddedInSalesQuantity === 2.02 && settledRow.dispatchMermaEmbeddedInSalesConfirmedBy === warehouse && settledRow.dispatchMermaEmbeddedInSalesReason?.includes('Almacén verificó') && settledRow.dispatchMermaReconciliationStatus === 'included_in_sales', 'el cierre conserva cantidad, responsable, motivo y conciliación confirmada')
   const settlementMovements = await root.collection('distStockMovements').where('dispatchId', '==', settlementDispatch.id).get()
   const mermaSaleMovements = settlementMovements.docs.map(row => row.data()).filter(row => row.type === 'dispatch_merma_sale' && !row.reversedAt)
   pass(mermaSaleMovements.length === 1 && mermaSaleMovements[0].quantity === 2.02 && mermaSaleMovements[0].routeDelta === -2.02 && mermaSaleMovements[0].centralDelta === 0, 'la conciliación comercial descuenta 2.02 kg de ruta una sola vez sin alterar central')
@@ -174,7 +181,7 @@ try {
     lines: [{ productId: unfitProduct, quantity: 84, actualUnitPrice: 40 }], paymentKind: 'cash', cashAmount: 3360, qrAmount: 0, creditAmount: 0,
   })
   await command(warehouse, 'closure', {
-    mode: 'warehouse', closure: { dispatchId: unfitDispatch.id, products: [{ productId: unfitProduct, actualReturn: 4, returnMerma: 0.08, returnWaste: 0.1, returnWasteReason: 'Producto deteriorado', physicalReturn: 4.18 }] },
+    mode: 'warehouse', closure: { dispatchId: unfitDispatch.id, products: [{ productId: unfitProduct, actualReturn: 4, returnMerma: 0.08, returnWaste: 0.1, returnWasteReason: 'Producto deteriorado', physicalReturn: 4.18, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'Almacén verificó el peso de las bolsas vendidas.' }] },
     warehouseResponsibleName: 'QA almacén',
   })
   const unfitClosure = await read('distClosures', `closure_${unfitDispatch.id}`)
@@ -198,7 +205,7 @@ try {
     mode: 'warehouse', closure: { dispatchId: pendingDispatch.id, products: [{ productId: pendingProduct, actualReturn: 10, returnMerma: 0, returnWaste: 0, physicalReturn: 10 }] },
     warehouseResponsibleName: 'QA almacén',
   }, 'rejected')
-  pass(rejectedReceipt.error.includes('merma adicional enviada'), 'sin ventas y con merma faltante el servidor comunica revisión pendiente')
+  pass(rejectedReceipt.error.includes('merma adicional siguen sin conciliar') && rejectedReceipt.error.includes('Producto diferencia pendiente QA') && rejectedReceipt.error.includes('0.2 kg'), 'sin ventas y con merma faltante el servidor identifica producto y cantidad pendiente')
   pass((await read('distBalances', `central__${pendingProduct}`)).quantity === pendingBefore.central && (await read('distBalances', `route__${pendingRoute}__${pendingProduct}`)).quantity === pendingBefore.route, 'recepción ambigua rechazada no modifica balances ni crea cuarentena artificial')
   pass(!(await read('distClosures', `closure_${pendingDispatch.id}`))?.warehouseClosedBy, 'recepción ambigua no marca warehouse_done')
 
@@ -307,7 +314,7 @@ try {
     mode: 'warehouse', closure: { dispatchId: mismatchDispatch.id, products: [{ productId: mismatchProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 0, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'No existe evidencia; probar rechazo de diferencia.' }] },
     warehouseResponsibleName: 'QA almacén',
   }, 'rejected')
-  pass(/saldo físico de la ruta no concilian/.test(rejectedFalseConfirmation.error) && !(await read('distClosures', `closure_${mismatchDispatch.id}`)), 'una diferencia de stock ajena a la merma no se puede declarar como peso vendido')
+  pass(/despacho, las ventas y el saldo físico de ruta no concilian/.test(rejectedFalseConfirmation.error) && !(await read('distClosures', `closure_${mismatchDispatch.id}`)), 'una diferencia de stock ajena a la merma no se puede declarar como peso vendido')
   pass((await read('distBalances', mismatchBalanceId)).quantity === 0.78 && !(await root.collection('distStockMovements').where('dispatchId', '==', mismatchDispatch.id).get()).docs.some(row => row.data().type === 'dispatch_merma_sale'), 'el rechazo de confirmación no crea movimientos ni altera el saldo discrepante')
 
   console.log(`\n${checks} pruebas de merma de despacho/retorno pasaron.`)

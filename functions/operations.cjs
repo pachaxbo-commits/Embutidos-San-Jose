@@ -2494,6 +2494,11 @@ async function closure(o, p) {
       const dispatchMermaRemainingAfterNominalSales = quantityRound(Math.max(0, dispatchMermaSent - nominalDispatchMermaInSales));
       const expectedPhysicalRouteBalance = quantityRound(Math.max(0, signedNormalExpectedReturn + dispatchMermaSent));
       const precisionTolerance = precision === 3 ? 0.001 : 0.01;
+      const unreturnedDispatchMerma = quantityRound(Math.max(
+        0,
+        dispatchMermaSent - nominalDispatchMermaInSales - recoverableMerma - waste,
+      ));
+      const embeddedMermaInSalesConfirmed = returnRow?.dispatchMermaEmbeddedInSalesConfirmed === true;
       // Merma adicional solo se concilia con ventas cuando el saldo transaccional
       // de ruta, las ventas efectivas y el retorno normal coinciden exactamente.
       // El producto no apto se descuenta explícitamente del componente adicional;
@@ -2503,8 +2508,8 @@ async function closure(o, p) {
         && signedNormalExpectedReturn >= 0
         && Math.abs(expected - (expectedNormalReturn + dispatchMermaSent)) <= precisionTolerance
         && Math.abs(actual - expectedNormalReturn) <= precisionTolerance
-        && recoverableMerma + waste <= dispatchMermaSent + precisionTolerance;
-      const embeddedMermaInSalesConfirmed = returnRow?.dispatchMermaEmbeddedInSalesConfirmed === true;
+        && recoverableMerma + waste <= dispatchMermaSent + precisionTolerance
+        && (unreturnedDispatchMerma <= precisionTolerance || embeddedMermaInSalesConfirmed);
       const canSettleAboveNormalSales = !legacySemantics && e.p.unitType === "kg"
         && dispatchMermaSent > 0 && nominalSold > normalLoaded
         && courtesySold === 0 && signedNormalExpectedReturn < 0
@@ -2514,11 +2519,11 @@ async function closure(o, p) {
         && Math.abs(actual) <= precisionTolerance
         && recoverableMerma + waste <= dispatchMermaRemainingAfterNominalSales + precisionTolerance;
       const dispatchMermaEmbeddedInSalesReason = String(returnRow?.dispatchMermaEmbeddedInSalesReason || "").trim();
-      if (embeddedMermaInSalesConfirmed) {
-        check(canSettleAboveNormalSales,
-          "No se puede confirmar peso adicional dentro de ventas: las ventas, el despacho y el saldo físico de la ruta no concilian.");
+      if (embeddedMermaInSalesConfirmed && (unreturnedDispatchMerma > precisionTolerance || canSettleAboveNormalSales)) {
+        check(canSettleAboveNormalSales || canSettleStandardDispatchMerma,
+          `No se puede confirmar peso adicional dentro de ventas para ${e.p.name || pid}: el despacho, las ventas y el saldo físico de ruta no concilian.`);
         check(dispatchMermaEmbeddedInSalesReason.length >= 8,
-          "Describe qué comprobó Almacén antes de confirmar el peso adicional dentro de ventas.");
+          `Describe qué comprobó Almacén sobre ${e.p.name || pid} antes de confirmar el peso adicional dentro de ventas.`);
       }
       const allDispatchMermaReturned = !legacySemantics && e.p.unitType === "kg"
         && dispatchMermaSent > 0 && waste === 0
@@ -2534,8 +2539,11 @@ async function closure(o, p) {
         ))
         : 0;
       const dispatchMermaIncludedInSales = canSettleStandardDispatchMerma
-        ? quantityRound(Math.max(0, dispatchMermaSent - recoverableMerma - waste))
+        ? quantityRound(nominalDispatchMermaInSales + (embeddedMermaInSalesConfirmed ? unreturnedDispatchMerma : 0))
         : quantityRound(nominalDispatchMermaInSales + additionalEmbeddedMerma);
+      const confirmedEmbeddedMermaQuantity = embeddedMermaInSalesConfirmed
+        ? quantityRound(canSettleAboveNormalSales ? additionalEmbeddedMerma : canSettleStandardDispatchMerma ? unreturnedDispatchMerma : 0)
+        : 0;
       // Para ventas por encima de la carga normal, la cantidad nominal ya
       // redujo el saldo de ruta. Solo se resta aquí el sobrepeso adicional
       // que Almacén confirma expresamente como incluido en bolsas vendidas.
@@ -2544,7 +2552,7 @@ async function closure(o, p) {
       const shortage = quantityRound(Math.max(0, adjustedExpected - received));
       check(!(dispatchMermaSent > 0 && !canSettleDispatchMerma && !allDispatchMermaReturned
         && (shortage > precisionTolerance || overage > precisionTolerance)),
-      "No se puede confirmar esta recepción: la merma adicional enviada no coincide con las ventas y el retorno normal. Revisa las cantidades físicas y las ventas antes de guardar.");
+      `No se puede confirmar la recepción de ${e.p.name || pid}: ${quantityRound(Math.max(shortage, overage))} ${e.p.unitType === "kg" ? "kg" : "unidades"} de merma adicional siguen sin conciliar con el retorno físico y las ventas. Confirma únicamente si Almacén verificó que salieron dentro de las bolsas vendidas; si no, la diferencia debe revisarse como faltante.`);
       // Solo se mueven desde ruta cantidades con saldo y lote comprobables.
       // En el modelo nuevo, normal y merma recuperable se conservan como stock;
       // lo no apto se descuenta como pérdida, nunca vuelve al almacén vendible.
@@ -2592,9 +2600,9 @@ async function closure(o, p) {
           costOfSales: dispatchMermaSaleCost,
           dispatchMermaSent,
           recoverableMermaReturned: recoverableMerma,
-          note: canSettleAboveNormalSales
-            ? `Sobrepeso físico adicional confirmado por Almacén como incluido en bolsas ya vendidas; la cantidad cobrada sobre la carga normal ya estaba descontada por la venta. Comprobación: ${dispatchMermaEmbeddedInSalesReason}. Costo de venta no duplicado como pérdida.`
-            : "Parte de la merma adicional enviada que salió dentro de ventas registradas; costo incluido una sola vez en costo de venta, no es pérdida.",
+          note: embeddedMermaInSalesConfirmed
+            ? `Sobrepeso físico adicional confirmado por Almacén como incluido en bolsas ya vendidas; no se cobró como kilos nominales adicionales. Comprobación: ${dispatchMermaEmbeddedInSalesReason}. Costo incluido una sola vez en costo físico de venta, no es pérdida.`
+            : "Parte de la merma adicional enviada ya cobrada nominalmente dentro de ventas superiores a la carga normal; costo incluido una sola vez en costo de venta, no es pérdida.",
         }, precision);
       }
       if (waste > 0) {
@@ -2691,9 +2699,9 @@ async function closure(o, p) {
           dispatchMermaSent,
           dispatchMermaIncludedInSales,
           dispatchMermaNominallySold: nominalDispatchMermaInSales,
-          dispatchMermaEmbeddedInSalesConfirmed: canSettleAboveNormalSales && embeddedMermaInSalesConfirmed,
-          dispatchMermaEmbeddedInSalesQuantity: additionalEmbeddedMerma,
-          ...(canSettleAboveNormalSales && embeddedMermaInSalesConfirmed ? {
+          dispatchMermaEmbeddedInSalesConfirmed: embeddedMermaInSalesConfirmed && confirmedEmbeddedMermaQuantity > 0,
+          dispatchMermaEmbeddedInSalesQuantity: confirmedEmbeddedMermaQuantity,
+          ...(embeddedMermaInSalesConfirmed && confirmedEmbeddedMermaQuantity > 0 ? {
             dispatchMermaEmbeddedInSalesConfirmedBy: o.actor,
             dispatchMermaEmbeddedInSalesConfirmedAt: o.now,
             dispatchMermaEmbeddedInSalesReason,

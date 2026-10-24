@@ -62,10 +62,13 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [embeddedMermaSalesReasonDrafts, setEmbeddedMermaSalesReasonDrafts] = useState<Record<string, Record<string, string>>>({})
   const [cashDrafts, setCashDrafts] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
+  const [receiptErrorKind, setReceiptErrorKind] = useState<'local' | 'server' | 'permission' | 'connection' | 'pending' | 'unknown' | null>(null)
+  const [closureSubmissionUncertain, setClosureSubmissionUncertain] = useState(false)
   const [returnInputIssue, setReturnInputIssue] = useState<{ productId: string; field: 'normal' | 'merma'; message: string } | null>(null)
   const returnCardRefs = useRef<Record<string, HTMLElement | null>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const isSubmittingRef = useRef(false)
+  const pendingClosureOperationRef = useRef<{ dispatchId: string; status: DistClosure['status']; operationId: string } | null>(null)
   const [justClosedRouteName, setJustClosedRouteName] = useState<string | null>(null)
   const [isDispatchOpen, setIsDispatchOpen] = useState(false)
   const [historyOpenId, setHistoryOpenId] = useState<string | null>(null)
@@ -309,6 +312,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     input?.focus({ preventScroll: true })
   }, [returnInputIssue])
   const receiptModalRow = productRows.find(row => row.productId === receiptModalProductId) ?? null
+  const receiptFailureProduct = error
+    ? productRows.find(row => error.includes(row.productName) || error.includes(row.productId)) ?? null
+    : null
   const receiptModalNormal = parseReturnQuantityInput(receiptModalDraft.normal) ?? 0
   const receiptModalMerma = parseReturnQuantityInput(receiptModalDraft.merma) ?? 0
   const receiptModalWaste = parseReturnQuantityInput(receiptModalDraft.waste) ?? 0
@@ -545,11 +551,17 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }
   }
 
+  const setReceiptError = (message: string, kind: NonNullable<typeof receiptErrorKind> = 'local') => {
+    setError(message)
+    setReceiptErrorKind(kind)
+  }
+
   const submit = async (status: DistClosure['status'], confirmed = false) => {
     if (!dispatch || isSubmittingRef.current) return
     isSubmittingRef.current = true
     setIsSubmitting(true)
     setError(null)
+    setReceiptErrorKind(null)
 
     const closure = buildClosureDoc(status)
     if (!closure) {
@@ -561,14 +573,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     if (status === 'warehouse_done') {
       const unreviewedCount = productRows.filter(row => !reviewedReceiptIds.has(row.productId)).length
       if (unreviewedCount > 0) {
-        setError(`Revisa la recepción de todos los productos. Faltan ${unreviewedCount}.`)
+        setReceiptError(`Revisa la recepción de todos los productos. Faltan ${unreviewedCount}.`)
         isSubmittingRef.current = false
         setIsSubmitting(false)
         return
       }
       const sinDeclarar = productRows.filter((row) => !isDeclared(row.productId))
       if (sinDeclarar.length > 0) {
-        setError(`Falta declarar el retorno de: ${sinDeclarar.map((row) => row.productName).join(', ')}.`)
+        setReceiptError(`Falta declarar el retorno de: ${sinDeclarar.map((row) => row.productName).join(', ')}.`)
         isSubmittingRef.current = false
         setIsSubmitting(false)
         return
@@ -576,7 +588,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }
 
     if (Object.values(parsedReturns).some(q => !Number.isFinite(q) || q < 0)) {
-      setError('No se permiten retornos negativos.')
+      setReceiptError('No se permiten retornos negativos.')
       isSubmittingRef.current = false
       setIsSubmitting(false)
       return
@@ -586,7 +598,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         [returns[row.productId] ?? '', recoverableMermas[row.productId] ?? '0', wastes[row.productId] ?? '0']
           .some(value => value.trim() !== '' && parseReturnQuantityInput(value) === null))
       if (incompleteQuantity) {
-        setError(`${incompleteQuantity.productName}: completa la cantidad decimal antes de confirmar.`)
+        setReceiptError(`${incompleteQuantity.productName}: completa la cantidad decimal antes de confirmar.`)
         isSubmittingRef.current = false
         setIsSubmitting(false)
         return
@@ -596,27 +608,27 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         || !validateReturnQuantity(row.unitType, parsedRecoverableMermas[row.productId] || 0)
         || !validateReturnQuantity(row.unitType, parsedWastes[row.productId] || 0))
       if (invalidQuantity) {
-        setError(`${invalidQuantity.productName}: paquetes y unidades requieren cantidades enteras; los kilogramos admiten decimales.`)
+        setReceiptError(`${invalidQuantity.productName}: paquetes y unidades requieren cantidades enteras; los kilogramos admiten decimales.`)
         isSubmittingRef.current = false
         setIsSubmitting(false)
         return
       }
       const missingReason = productRows.find(row => (parsedWastes[row.productId] || 0) > 0 && !wasteReasons[row.productId]?.trim())
       if (missingReason) {
-        setError(`Indica por qué ${missingReason.productName} no puede volver al stock vendible.`)
+        setReceiptError(`Indica por qué ${missingReason.productName} no puede volver al stock vendible.`)
         isSubmittingRef.current = false
         setIsSubmitting(false)
         return
       }
     }
     if (status === 'closed' && !returnsAlreadyApplied) {
-      setError('Almacén debe confirmar primero el retorno físico.')
+      setReceiptError('Almacén debe confirmar primero el retorno físico.')
       isSubmittingRef.current = false
       setIsSubmitting(false)
       return
     }
     if (status === 'closed' && (declaredCash.trim() === '' || !Number.isFinite(Number(declaredCash)) || Number(declaredCash) < 0)) {
-      setError('Ingresa el efectivo físico declarado antes de cerrar la ruta.')
+      setReceiptError('Ingresa el efectivo físico declarado antes de cerrar la ruta.')
       isSubmittingRef.current = false
       setIsSubmitting(false)
       return
@@ -631,11 +643,17 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
     let diagnosticOperationId = ''
     try {
-      const operationId = newOperationId('closure')
+      const pendingOperation = pendingClosureOperationRef.current
+      const operationId = pendingOperation?.dispatchId === dispatch.id && pendingOperation.status === status
+        ? pendingOperation.operationId
+        : newOperationId('closure')
+      pendingClosureOperationRef.current = { dispatchId: dispatch.id, status, operationId }
       diagnosticOperationId = operationId
       setDiagnosticClosureContext({ dispatchId: dispatch.id, closureId: closure.id, operationId, dayKey: closure.dayKey, dispatchStatus: 'open', closureStatus: status, confirmation: 'queued' })
       recordDiagnosticEvent('operation_sent', status, { dispatchId: dispatch.id, closureId: closure.id, operationId, operationStatus: 'queued' })
       await saveClosure({ closure, applyStockReturn: status === 'warehouse_done' && !returnsAlreadyApplied }, operationId)
+      if (pendingClosureOperationRef.current?.operationId === operationId) pendingClosureOperationRef.current = null
+      setClosureSubmissionUncertain(false)
       if (status === 'warehouse_done') setConfirmingWarehouseReception(false)
       setDiagnosticClosureContext({ dispatchId: dispatch.id, closureId: closure.id, operationId, dayKey: closure.dayKey, dispatchStatus: status === 'closed' ? 'closed' : 'open', closureStatus: status, confirmation: 'confirmed' })
       recordDiagnosticEvent('confirmation_received', status, { dispatchId: dispatch.id, closureId: closure.id, operationId, operationStatus: 'confirmed' })
@@ -644,9 +662,26 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       }
     } catch (submitError) {
       const rejected = Boolean((submitError as { rejected?: boolean }).rejected)
+      const code = String((submitError as { code?: string }).code || '')
+      const message = (submitError as Error).message || 'No se pudo guardar el cierre.'
+      const lowerMessage = message.toLowerCase()
+      const lowerCode = code.toLowerCase()
+      const kind = rejected
+        ? 'server'
+        : lowerCode.includes('permission-denied') || lowerMessage.includes('permission-denied') || lowerMessage.includes('permisos')
+          ? 'permission'
+          : lowerMessage.includes('pendiente de confirmación') || lowerMessage.includes('operaciones pendientes')
+            ? 'pending'
+            : lowerCode.includes('unavailable') || lowerCode.includes('network-request-failed') || lowerMessage.includes('conexión') || lowerMessage.includes('conectividad')
+              ? 'connection'
+              : 'unknown'
+      setClosureSubmissionUncertain(!rejected && kind !== 'permission')
       setDiagnosticClosureContext({ dispatchId: dispatch.id, closureId: closure.id, operationId: diagnosticOperationId, dayKey: closure.dayKey, dispatchStatus: 'open', closureStatus: status, confirmation: rejected ? 'rejected' : 'unknown' })
       recordDiagnosticEvent('confirmation_received', status, { dispatchId: dispatch.id, closureId: closure.id, operationId: diagnosticOperationId, operationStatus: rejected ? 'rejected' : 'unknown' })
-      setError((submitError as Error).message || 'No se pudo guardar el cierre.')
+      if (rejected || lowerCode.includes('permission-denied')) {
+        if (pendingClosureOperationRef.current?.operationId === diagnosticOperationId) pendingClosureOperationRef.current = null
+      }
+      setReceiptError(message, kind)
     } finally {
       isSubmittingRef.current = false
       setIsSubmitting(false)
@@ -1508,13 +1543,28 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       {adminClosureModal}
       <Modal
         isOpen={confirmingWarehouseReception}
-        onClose={() => setConfirmingWarehouseReception(false)}
+        onClose={() => { if (!isSubmitting && !closureSubmissionUncertain) setConfirmingWarehouseReception(false) }}
         title="Confirmar recepción física"
         subtitle={dispatch ? `${dispatch.routeName} · ${dispatch.distributorName}` : ''}
         size="lg"
-        footer={<div className="grid w-full grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingWarehouseReception(false)}>Volver a revisar</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submit('warehouse_done', true)}>{isSubmitting ? 'Guardando…' : 'Confirmar recepción'}</PrimaryButton></div>}
+        footer={<div className="grid w-full grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting || closureSubmissionUncertain} onClick={() => setConfirmingWarehouseReception(false)}>Volver a revisar</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submit('warehouse_done', true)}>{isSubmitting ? 'Comprobando…' : closureSubmissionUncertain ? 'Comprobar recepción' : 'Confirmar recepción'}</PrimaryButton></div>}
       >
-        <div className="grid gap-3"><p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm font-semibold text-indigo-950">Verifica las cantidades físicas antes de guardar. La merma adicional enviada dentro de las bolsas no es pérdida real del almacén.</p>{productRows.map(row => <article key={row.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{row.productName}</strong><p>Retorno normal: <b>{formatQty(parsedReturns[row.productId] || 0, row.unitType)}</b></p><p>Merma recuperable recibida: <b>{formatQty(parsedRecoverableMermas[row.productId] || 0, row.unitType)}</b></p>{(parsedWastes[row.productId] || 0) > 0 && <p className="text-rose-800">Pérdida real / no apto: <b>{formatQty(parsedWastes[row.productId], row.unitType)}</b> · {wasteReasons[row.productId]}</p>}<p className="font-black text-emerald-800">Total recibido físicamente: {formatQty((parsedReturns[row.productId] || 0) + (parsedRecoverableMermas[row.productId] || 0) + (parsedWastes[row.productId] || 0), row.unitType)}</p>{Number(row.dispatchMermaSent) > 0 && <p className="text-xs text-amber-900">Merma adicional enviada dentro de las bolsas: {formatQty(row.dispatchMermaSent || 0, row.unitType)} · {Number(row.dispatchMermaNominallySold) > 0 ? `${formatQty(row.dispatchMermaNominallySold || 0, row.unitType)} ya están descontados dentro de la venta nominal. ${row.dispatchMermaEmbeddedInSalesConfirmed ? `${formatQty(row.dispatchMermaEmbeddedInSalesQuantity || 0, row.unitType)} adicionales confirmados por Almacén dentro de bolsas vendidas.` : 'El resto no confirmado permanece como diferencia física.'}` : row.dispatchMermaReconciliationStatus === 'included_in_sales' ? `estimada dentro de ventas: ${formatQty(row.dispatchMermaIncludedInSales || 0, row.unitType)}; el servidor comprobará el saldo.` : row.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? 'conciliada con el no apto recibido y el saldo físico.' : row.dispatchMermaReconciliationStatus === 'returned' ? 'recibida completamente.' : 'diferencia pendiente de revisar; no se asigna a ventas automáticamente.'}</p>}<p className="text-xs text-slate-600">Diferencia física: faltante {formatQty(row.shortage || 0, row.unitType)} · sobrante {formatQty(row.overage || 0, row.unitType)}</p></article>)}</div>
+        <div className="grid gap-3">
+          <p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm font-semibold text-indigo-950">Verifica las cantidades físicas antes de guardar. La merma adicional enviada dentro de las bolsas no es pérdida real del almacén.</p>
+          {error && <div role="alert" className="grid gap-2 rounded-xl border border-rose-300 bg-rose-50 p-3 text-sm text-rose-950">
+            <p className="font-extrabold">{receiptErrorKind === 'server' ? 'El servidor rechazó la recepción' : receiptErrorKind === 'permission' ? 'Faltan permisos para confirmar' : receiptErrorKind === 'connection' ? 'Problema de conexión' : receiptErrorKind === 'pending' ? 'La operación sigue pendiente' : receiptErrorKind === 'local' ? 'Revisa los datos de recepción' : 'No se pudo confirmar la recepción'}</p>
+            <p className="break-words">{error}</p>
+            {(receiptErrorKind === 'pending' || receiptErrorKind === 'connection' || receiptErrorKind === 'unknown') && <p>Al volver a comprobar se reutilizará esta misma operación para evitar duplicados. Revisa su estado antes de intentar otra vez.</p>}
+            {receiptFailureProduct && <SecondaryButton onClick={() => {
+              setConfirmingWarehouseReception(false)
+              setReturnInputIssue({ productId: receiptFailureProduct.productId, field: 'normal', message: error })
+              openReceiptEditor(receiptFailureProduct.productId)
+              setError(null)
+              setReceiptErrorKind(null)
+            }}>Volver a revisar {receiptFailureProduct.productName}</SecondaryButton>}
+          </div>}
+          {productRows.map(row => <article key={row.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{row.productName}</strong><p>Retorno normal: <b>{formatQty(parsedReturns[row.productId] || 0, row.unitType)}</b></p><p>Merma recuperable recibida: <b>{formatQty(parsedRecoverableMermas[row.productId] || 0, row.unitType)}</b></p>{(parsedWastes[row.productId] || 0) > 0 && <p className="text-rose-800">Pérdida real / no apto: <b>{formatQty(parsedWastes[row.productId], row.unitType)}</b> · {wasteReasons[row.productId]}</p>}<p className="font-black text-emerald-800">Total recibido físicamente: {formatQty((parsedReturns[row.productId] || 0) + (parsedRecoverableMermas[row.productId] || 0) + (parsedWastes[row.productId] || 0), row.unitType)}</p>{Number(row.dispatchMermaSent) > 0 && <p className="text-xs text-amber-900">Merma adicional enviada dentro de las bolsas: {formatQty(row.dispatchMermaSent || 0, row.unitType)} · {Number(row.dispatchMermaNominallySold) > 0 ? `${formatQty(row.dispatchMermaNominallySold || 0, row.unitType)} ya están descontados dentro de la venta nominal. ${row.dispatchMermaEmbeddedInSalesConfirmed ? `${formatQty(row.dispatchMermaEmbeddedInSalesQuantity || 0, row.unitType)} adicionales confirmados por Almacén dentro de bolsas vendidas.` : 'El resto no confirmado permanece como diferencia física.'}` : row.dispatchMermaReconciliationStatus === 'included_in_sales' ? `estimada dentro de ventas: ${formatQty(row.dispatchMermaIncludedInSales || 0, row.unitType)}; el servidor comprobará el saldo.` : row.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? 'conciliada con el no apto recibido y el saldo físico.' : row.dispatchMermaReconciliationStatus === 'returned' ? 'recibida completamente.' : 'diferencia pendiente de revisar; no se asigna a ventas automáticamente.'}</p>}<p className="text-xs text-slate-600">Diferencia física: faltante {formatQty(row.shortage || 0, row.unitType)} · sobrante {formatQty(row.overage || 0, row.unitType)}</p></article>)}
+        </div>
       </Modal>
       <Modal
         isOpen={Boolean(receiptModalRow)}
@@ -1540,7 +1590,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
             {Number(receiptModalRow.dispatchMermaNominallySold) > 0 && <p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-950">{formatQty(Number(receiptModalRow.dispatchMermaNominallySold) || 0, receiptModalRow.unitType)} de la merma adicional ya están comprendidos en kilos nominales cobrados por ventas. Esos kilos ya fueron descontados por las ventas y no se volverán a descontar.</p>}
 
-            {receiptModalUnconfirmedPreview?.eligible && receiptModalUnconfirmedPreview.pendingPhysicalMerma > 0 && <div className="grid gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><label className="flex cursor-pointer items-start gap-3"><input className="mt-1 h-4 w-4 shrink-0 accent-amber-700" type="checkbox" checked={receiptEmbeddedMermaConfirmed} onChange={event => setEmbeddedMermaSalesDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.checked } }))} /><span><strong>Confirmo físicamente</strong> que {formatQty(receiptModalUnconfirmedPreview.pendingPhysicalMerma, receiptModalRow.unitType)} adicionales salieron dentro de bolsas correspondientes a ventas ya registradas, sin cobro adicional. El sistema descontará ese peso de la ruta una sola vez y lo incorporará al costo físico de venta. Si no lo puedes confirmar, déjalo sin marcar: quedará como faltante visible.</span></label>{receiptEmbeddedMermaConfirmed && <Field label="Qué comprobó Almacén" required hint="Se guardará junto al responsable y la fecha de confirmación."><TextInput value={embeddedMermaSalesReasonDrafts[dispatchKey]?.[receiptModalRow.productId] || ''} placeholder="Describe brevemente la comprobación física" onChange={event => setEmbeddedMermaSalesReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.value } }))} /></Field>}</div>}
+            {receiptModalUnconfirmedPreview?.eligible && receiptModalUnconfirmedPreview.pendingPhysicalMerma > 0 && <div className="grid gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><label className="flex cursor-pointer items-start gap-3"><input className="mt-1 h-4 w-4 shrink-0 accent-amber-700" type="checkbox" checked={receiptEmbeddedMermaConfirmed} onChange={event => setEmbeddedMermaSalesDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.checked } }))} /><span><strong>Confirmo físicamente</strong> que {formatQty(receiptModalUnconfirmedPreview.pendingPhysicalMerma, receiptModalRow.unitType)} adicionales salieron dentro de bolsas correspondientes a ventas ya registradas, sin cobro adicional. El servidor descontará ese peso de la ruta una sola vez y lo incluirá en el costo físico de venta. Si no lo puedes confirmar, déjalo sin marcar: la recepción seguirá pendiente y deberás revisar la diferencia física antes de confirmar.</span></label>{receiptEmbeddedMermaConfirmed && <Field label="Qué comprobó Almacén" required hint="Se guardará junto al responsable y la fecha de confirmación."><TextInput value={embeddedMermaSalesReasonDrafts[dispatchKey]?.[receiptModalRow.productId] || ''} placeholder="Describe brevemente la comprobación física" onChange={event => setEmbeddedMermaSalesReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.value } }))} /></Field>}</div>}
 
             <div className="grid min-w-0 gap-4">
               <div>
