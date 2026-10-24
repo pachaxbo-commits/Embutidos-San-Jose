@@ -29,6 +29,12 @@ if (filterClosureQueue(initialQueue, 'awaiting_warehouse').length !== 1 || filte
   throw new Error('Los filtros deben seguir los hitos persistidos del cierre.')
 }
 
+const delayedDispatch = { ...dispatch('delayed-open'), dayKey: '2026-10-21' }
+const delayedQueue = buildClosureQueue([delayedDispatch], [], {}, '2026-10-24')
+if (delayedQueue.length !== 1 || delayedQueue[0].dispatch?.dayKey !== '2026-10-21' || delayedQueue[0].stage !== 'undeclared') {
+  throw new Error('Un despacho abierto de días anteriores debe permanecer en la cola operativa con su jornada original.')
+}
+
 // El trabajo local no sustituye ni altera el estado compartido esperado por Almacén.
 const reviewedQueue = buildClosureQueue(dispatches, declarations, { ricardo: ['p1'] }, '2026-10-22')
 const ricardo = reviewedQueue[0]

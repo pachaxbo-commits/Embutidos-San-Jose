@@ -58,6 +58,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [receiptReviewedByDispatch, setReceiptReviewedByDispatch] = useState<Record<string, string[]>>({})
   const [receiptModalProductId, setReceiptModalProductId] = useState<string | null>(null)
   const [receiptModalDraft, setReceiptModalDraft] = useState({ normal: '', merma: '0', waste: '0', reason: '' })
+  const [embeddedMermaSalesDrafts, setEmbeddedMermaSalesDrafts] = useState<Record<string, Record<string, boolean>>>({})
+  const [embeddedMermaSalesReasonDrafts, setEmbeddedMermaSalesReasonDrafts] = useState<Record<string, Record<string, string>>>({})
   const [cashDrafts, setCashDrafts] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [returnInputIssue, setReturnInputIssue] = useState<{ productId: string; field: 'normal' | 'merma'; message: string } | null>(null)
@@ -227,7 +229,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const loaded = readyDispatch === dispatchKey
   useEffect(() => {
     if (!dispatchKey) return
-    const days = [dispatchDay, toDayKey(new Date())]
+    const days = [dispatchDay, boliviaDayKey(new Date().toISOString())]
     const ready = new Set<string>()
     const expected = session.role === 'warehouse' ? 1 : 3
     const mark = (key: string) => { ready.add(key); if (ready.size >= expected) setReadyDispatch(dispatchKey) }
@@ -258,7 +260,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const returnWaste = parsedWastes[row.productId] || 0
     const returnMerma = parsedRecoverableMermas[row.productId] || 0
     const mermaPreview = !isDistributor
-      ? previewDispatchMermaSettlement(dispatch, routeSales, row.productId, row.actualReturn, returnMerma, returnWaste)
+      ? previewDispatchMermaSettlement(dispatch, routeSales, row.productId, row.actualReturn, returnMerma, returnWaste,
+        embeddedMermaSalesDrafts[dispatchKey]?.[row.productId] === true)
       : null
     const expectedPhysicalReturn = mermaPreview?.eligible ? mermaPreview.expectedPhysicalReturn : row.expectedReturn
     const breakdown = isDistributor
@@ -273,8 +276,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       expectedReturn: expectedPhysicalReturn,
       ...(mermaPreview && mermaPreview.dispatchMermaSent > 0 ? {
         normalExpectedReturn: mermaPreview.normalExpectedReturn,
+        normalLoaded: mermaPreview.normalLoaded,
+        physicalLoaded: mermaPreview.physicalLoaded,
         dispatchMermaSent: mermaPreview.dispatchMermaSent,
         dispatchMermaIncludedInSales: mermaPreview.includedInSales,
+        dispatchMermaNominallySold: mermaPreview.nominalMermaIncludedInSales,
+        dispatchMermaEmbeddedInSalesConfirmed: embeddedMermaSalesDrafts[dispatchKey]?.[row.productId] === true,
+        dispatchMermaEmbeddedInSalesQuantity: mermaPreview.additionalMermaIncludedInSales,
+        dispatchMermaEmbeddedInSalesReason: embeddedMermaSalesReasonDrafts[dispatchKey]?.[row.productId] || '',
         dispatchMermaReconciliationStatus: mermaPreview.fullyReturned ? 'returned' as const : mermaPreview.eligible ? (mermaPreview.includedInSales > 0 ? 'included_in_sales' as const : 'reconciled_with_unfit' as const) : 'pending_review' as const,
       } : {}),
       declaredReturn,
@@ -303,12 +312,27 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const receiptModalNormal = parseReturnQuantityInput(receiptModalDraft.normal) ?? 0
   const receiptModalMerma = parseReturnQuantityInput(receiptModalDraft.merma) ?? 0
   const receiptModalWaste = parseReturnQuantityInput(receiptModalDraft.waste) ?? 0
+  const receiptEmbeddedMermaConfirmed = receiptModalRow
+    ? embeddedMermaSalesDrafts[dispatchKey]?.[receiptModalRow.productId] === true
+    : false
+  const receiptEmbeddedMermaReason = receiptModalRow
+    ? (embeddedMermaSalesReasonDrafts[dispatchKey]?.[receiptModalRow.productId] || '').trim()
+    : ''
+  const receiptModalMermaPreview = receiptModalRow && !isDistributor
+    ? previewDispatchMermaSettlement(dispatch, routeSales, receiptModalRow.productId, receiptModalNormal, receiptModalMerma, receiptModalWaste, receiptEmbeddedMermaConfirmed)
+    : null
+  const receiptModalUnconfirmedPreview = receiptModalRow && !isDistributor
+    ? previewDispatchMermaSettlement(dispatch, routeSales, receiptModalRow.productId, receiptModalNormal, receiptModalMerma, receiptModalWaste, false)
+    : null
   const receiptModalBreakdown = receiptModalRow
-    ? calculatePhysicalReturnBreakdown(receiptModalRow.expectedReturn, receiptModalNormal, receiptModalMerma, receiptModalWaste)
+    ? calculatePhysicalReturnBreakdown(receiptModalMermaPreview?.expectedPhysicalReturn ?? receiptModalRow.expectedReturn, receiptModalNormal, receiptModalMerma, receiptModalWaste)
     : null
 
   const openReceiptEditor = (productId: string) => {
     setReceiptModalProductId(productId)
+    setEmbeddedMermaSalesDrafts(current => current[dispatchKey]?.[productId]
+      ? current
+      : { ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [productId]: false } })
     setReceiptModalDraft({
       normal: returns[productId] ?? '',
       merma: recoverableMermas[productId] ?? '0',
@@ -332,11 +356,23 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       setError('Indica por qué el producto no puede volver al stock vendible.')
       return
     }
+    if (receiptEmbeddedMermaConfirmed && receiptEmbeddedMermaReason.length < 8) {
+      setError('Describe brevemente qué comprobó Almacén sobre el peso adicional dentro de las bolsas.')
+      return
+    }
     const pid = receiptModalRow.productId
     setReturnDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? returns), [pid]: receiptModalDraft.normal } }))
     setRecoverableMermaDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? recoverableMermas), [pid]: receiptModalDraft.merma } }))
     setWasteDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wastes), [pid]: receiptModalDraft.waste } }))
     setWasteReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wasteReasons), [pid]: receiptModalDraft.reason.trim() } }))
+    setEmbeddedMermaSalesDrafts(current => ({
+      ...current,
+      [dispatchKey]: { ...(current[dispatchKey] || {}), [pid]: receiptEmbeddedMermaConfirmed },
+    }))
+    setEmbeddedMermaSalesReasonDrafts(current => ({
+      ...current,
+      [dispatchKey]: { ...(current[dispatchKey] || {}), [pid]: receiptEmbeddedMermaConfirmed ? receiptEmbeddedMermaReason : '' },
+    }))
     setReceiptReviewedByDispatch(current => ({ ...current, [dispatchKey]: [...new Set([...(current[dispatchKey] || []), pid])] }))
     setError(null)
     setReceiptModalProductId(null)
@@ -476,7 +512,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       branchId: 'main',
       createdAt: existingClosure?.createdAt ?? now,
       createdBy: existingClosure?.createdBy ?? session.uid,
-      dayKey: existingClosure?.dayKey ?? toDayKey(now),
+      dayKey: dispatch.dayKey || existingClosure?.dayKey || boliviaDayKey(now),
       schemaVersion: 1,
       dispatchId: dispatch.id,
       warehouseId: dispatch.warehouseId || 'central',
@@ -942,6 +978,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
           const warehouseAt = item.closure?.warehouseClosedAt
           const closedAt = item.closure?.closedAt
           const itemDispatch = item.dispatch
+          const operationalDayKey = item.closure?.dayKey || itemDispatch?.dayKey || ''
+          const isPreviousOperationalDay = Boolean(operationalDayKey && operationalDayKey < boliviaDayKey(new Date().toISOString()))
           const active = Boolean(itemDispatch && itemDispatch.id === dispatch?.id)
           return (
             <article key={item.closure?.id || itemDispatch?.id} className={`min-w-0 rounded-2xl border p-3 ${status.className} ${active ? 'ring-2 ring-[var(--primary)] ring-offset-1' : ''}`}>
@@ -960,7 +998,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                   {item.isReopened && <span className="mt-2 mr-1 inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black uppercase text-amber-900">Reabierto</span>}
                 </div>
                 <div className="shrink-0 text-left text-[11px] font-semibold sm:text-right">
-                  {item.closure?.dayKey && <span className="block">Jornada: {formatDayKey(item.closure.dayKey)}</span>}
+                  {operationalDayKey && <span className="block">Jornada: {formatDayKey(operationalDayKey)}</span>}
+                  {isPreviousOperationalDay && item.stage !== 'closed' && <span className="mt-1 inline-flex rounded-full bg-orange-100 px-2 py-1 text-[10px] font-black uppercase text-orange-900">Pendiente de día anterior</span>}
                   {declarationAt ? <span className="block">Declarado: {new Date(declarationAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}</span> : item.stage === 'undeclared' && <span className="block">Sin declaración registrada</span>}
                   {warehouseAt && <span className="mt-0.5 block">Almacén confirmó: {new Date(warehouseAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}</span>}
                   {closedAt && <span className="mt-0.5 block">Cierre: {new Date(closedAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}</span>}
@@ -1243,7 +1282,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                     <div><dt className="text-[10px] font-semibold text-slate-500">Cortesía</dt><dd className="text-sm font-bold">{formatQty(row.courtesy || 0, row.unitType)}</dd></div>
                     <div><dt className="text-[10px] font-semibold text-slate-500">Aumentos</dt><dd className="text-sm font-bold">{formatQty(row.additions, row.unitType)}</dd></div>
                     <div><dt className="text-[10px] font-semibold text-slate-500">Debía retornar</dt><dd className="text-sm font-black text-indigo-700">{formatQty(row.expectedReturn, row.unitType)}</dd></div>
-                    {Number(row.dispatchMermaSent) > 0 && <div className="col-span-full rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-950"><strong>Merma adicional enviada dentro de las bolsas:</strong> {formatQty(row.dispatchMermaSent || 0, row.unitType)}.{row.dispatchMermaReconciliationStatus === 'included_in_sales' ? <> Se estima que {formatQty(row.dispatchMermaIncludedInSales || 0, row.unitType)} salió dentro de ventas; se comprobará con el saldo físico antes de guardar.</> : row.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? <> La merma adicional se concilia con lo recibido como no apto y el saldo físico; no se asigna esa parte a ventas.</> : row.dispatchMermaReconciliationStatus === 'returned' ? <> Toda la merma adicional está registrada como retorno físico; se conserva por separado del retorno normal.</> : <> La diferencia aún no coincide con ventas y retorno normal; no se asigna automáticamente a ventas.</>}</div>}
+                    {Number(row.dispatchMermaSent) > 0 && <div className="col-span-full rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-950"><strong>Carga física:</strong> {formatQty(row.normalLoaded || 0, row.unitType)} normal + {formatQty(row.dispatchMermaSent || 0, row.unitType)} de merma adicional = {formatQty(row.physicalLoaded || row.totalLoaded, row.unitType)}.{Number(row.dispatchMermaNominallySold) > 0 ? <> Las ventas nominales ya descontaron {formatQty(row.dispatchMermaNominallySold || 0, row.unitType)} sobre la carga normal. {row.dispatchMermaEmbeddedInSalesConfirmed ? <>Almacén confirmó {formatQty(row.dispatchMermaEmbeddedInSalesQuantity || 0, row.unitType)} adicionales dentro de bolsas vendidas. {row.dispatchMermaEmbeddedInSalesConfirmedBy && <>Por {row.dispatchMermaEmbeddedInSalesConfirmedBy}; {row.dispatchMermaEmbeddedInSalesConfirmedAt ? new Date(row.dispatchMermaEmbeddedInSalesConfirmedAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' }) : 'fecha no disponible'}.</>} {row.dispatchMermaEmbeddedInSalesReason && <>Motivo: {row.dispatchMermaEmbeddedInSalesReason}</>}</> : 'El peso adicional restante no se atribuye a ventas sin confirmación física de Almacén.'}</> : row.dispatchMermaReconciliationStatus === 'included_in_sales' ? <> Se estima que {formatQty(row.dispatchMermaIncludedInSales || 0, row.unitType)} salió dentro de ventas; se comprobará con el saldo físico antes de guardar.</> : row.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? <> La merma adicional se concilia con lo recibido como no apto y el saldo físico; no se asigna esa parte a ventas.</> : row.dispatchMermaReconciliationStatus === 'returned' ? <> Toda la merma adicional está registrada como retorno físico; se conserva por separado del retorno normal.</> : <> La diferencia aún no coincide con ventas y retorno normal; no se asigna automáticamente a ventas.</>}</div>}
                   </dl>
 
                   {isDistributor ? <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
@@ -1475,7 +1514,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         size="lg"
         footer={<div className="grid w-full grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingWarehouseReception(false)}>Volver a revisar</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submit('warehouse_done', true)}>{isSubmitting ? 'Guardando…' : 'Confirmar recepción'}</PrimaryButton></div>}
       >
-        <div className="grid gap-3"><p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm font-semibold text-indigo-950">Verifica las cantidades físicas antes de guardar. La merma adicional enviada dentro de las bolsas no es pérdida real del almacén.</p>{productRows.map(row => <article key={row.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{row.productName}</strong><p>Retorno normal: <b>{formatQty(parsedReturns[row.productId] || 0, row.unitType)}</b></p><p>Merma recuperable recibida: <b>{formatQty(parsedRecoverableMermas[row.productId] || 0, row.unitType)}</b></p>{(parsedWastes[row.productId] || 0) > 0 && <p className="text-rose-800">Pérdida real / no apto: <b>{formatQty(parsedWastes[row.productId], row.unitType)}</b> · {wasteReasons[row.productId]}</p>}<p className="font-black text-emerald-800">Total recibido físicamente: {formatQty((parsedReturns[row.productId] || 0) + (parsedRecoverableMermas[row.productId] || 0) + (parsedWastes[row.productId] || 0), row.unitType)}</p>{Number(row.dispatchMermaSent) > 0 && <p className="text-xs text-amber-900">Merma adicional enviada dentro de las bolsas: {formatQty(row.dispatchMermaSent || 0, row.unitType)} · {row.dispatchMermaReconciliationStatus === 'included_in_sales' ? `estimada dentro de ventas: ${formatQty(row.dispatchMermaIncludedInSales || 0, row.unitType)}; el servidor comprobará el saldo.` : row.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? 'conciliada con el no apto recibido y el saldo físico.' : row.dispatchMermaReconciliationStatus === 'returned' ? 'recibida completamente.' : 'diferencia pendiente de revisar; no se asigna a ventas automáticamente.'}</p>}<p className="text-xs text-slate-600">Diferencia física: faltante {formatQty(row.shortage || 0, row.unitType)} · sobrante {formatQty(row.overage || 0, row.unitType)}</p></article>)}</div>
+        <div className="grid gap-3"><p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm font-semibold text-indigo-950">Verifica las cantidades físicas antes de guardar. La merma adicional enviada dentro de las bolsas no es pérdida real del almacén.</p>{productRows.map(row => <article key={row.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{row.productName}</strong><p>Retorno normal: <b>{formatQty(parsedReturns[row.productId] || 0, row.unitType)}</b></p><p>Merma recuperable recibida: <b>{formatQty(parsedRecoverableMermas[row.productId] || 0, row.unitType)}</b></p>{(parsedWastes[row.productId] || 0) > 0 && <p className="text-rose-800">Pérdida real / no apto: <b>{formatQty(parsedWastes[row.productId], row.unitType)}</b> · {wasteReasons[row.productId]}</p>}<p className="font-black text-emerald-800">Total recibido físicamente: {formatQty((parsedReturns[row.productId] || 0) + (parsedRecoverableMermas[row.productId] || 0) + (parsedWastes[row.productId] || 0), row.unitType)}</p>{Number(row.dispatchMermaSent) > 0 && <p className="text-xs text-amber-900">Merma adicional enviada dentro de las bolsas: {formatQty(row.dispatchMermaSent || 0, row.unitType)} · {Number(row.dispatchMermaNominallySold) > 0 ? `${formatQty(row.dispatchMermaNominallySold || 0, row.unitType)} ya están descontados dentro de la venta nominal. ${row.dispatchMermaEmbeddedInSalesConfirmed ? `${formatQty(row.dispatchMermaEmbeddedInSalesQuantity || 0, row.unitType)} adicionales confirmados por Almacén dentro de bolsas vendidas.` : 'El resto no confirmado permanece como diferencia física.'}` : row.dispatchMermaReconciliationStatus === 'included_in_sales' ? `estimada dentro de ventas: ${formatQty(row.dispatchMermaIncludedInSales || 0, row.unitType)}; el servidor comprobará el saldo.` : row.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? 'conciliada con el no apto recibido y el saldo físico.' : row.dispatchMermaReconciliationStatus === 'returned' ? 'recibida completamente.' : 'diferencia pendiente de revisar; no se asigna a ventas automáticamente.'}</p>}<p className="text-xs text-slate-600">Diferencia física: faltante {formatQty(row.shortage || 0, row.unitType)} · sobrante {formatQty(row.overage || 0, row.unitType)}</p></article>)}</div>
       </Modal>
       <Modal
         isOpen={Boolean(receiptModalRow)}
@@ -1497,7 +1536,11 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               <div><p className="text-xs font-bold text-indigo-800">Declaración del distribuidor</p>{receiptModalRow.declaredReturnNormal === undefined ? <p className="mt-1 break-words text-xl font-black text-indigo-950">Sin registro</p> : <div className="mt-1 break-words text-sm font-bold text-indigo-950">{existingClosure?.returnDeclarationMode === 'normal_only' ? <p className="text-lg font-black">{formatQty(Number(receiptModalRow.declaredReturnNormal), receiptModalRow.unitType)} normal</p> : <><p>Normal: {formatQty(Number(receiptModalRow.declaredReturnNormal), receiptModalRow.unitType)}</p><p>Merma: {formatQty(Number(receiptModalRow.declaredReturnMerma || 0), receiptModalRow.unitType)}</p><p className="text-lg font-black">Total declarado: {formatQty(Number(receiptModalRow.declaredReturn), receiptModalRow.unitType)}</p></>}</div>}</div>
             </div>
 
-            {Number(receiptModalRow.dispatchMermaSent) > 0 && <p className={`rounded-xl border p-3 text-sm ${receiptModalRow.dispatchMermaReconciliationStatus === 'included_in_sales' || receiptModalRow.dispatchMermaReconciliationStatus === 'returned' || receiptModalRow.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? 'border-emerald-200 bg-emerald-50 text-emerald-950' : 'border-amber-200 bg-amber-50 text-amber-950'}`}><strong>Merma adicional enviada dentro de las bolsas:</strong> {formatQty(receiptModalRow.dispatchMermaSent || 0, receiptModalRow.unitType)}. {receiptModalRow.dispatchMermaReconciliationStatus === 'included_in_sales' ? <>La revisión estima que {formatQty(receiptModalRow.dispatchMermaIncludedInSales || 0, receiptModalRow.unitType)} salió dentro de ventas. Al guardar, el servidor volverá a verificar el saldo real.</> : receiptModalRow.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? <>El saldo concilia después de contar {formatQty(parsedWastes[receiptModalRow.productId] || 0, receiptModalRow.unitType)} como producto no apto. El servidor comprobará el saldo real antes de guardar.</> : receiptModalRow.dispatchMermaReconciliationStatus === 'returned' ? <>La merma adicional fue recibida completamente en el retorno.</> : <>Aún no se puede conciliar con las ventas y el retorno normal. No la asignaremos a ventas; revisa la diferencia física antes de confirmar.</>}</p>}
+            {Number(receiptModalRow.dispatchMermaSent) > 0 && <p className={`rounded-xl border p-3 text-sm ${receiptModalRow.dispatchMermaReconciliationStatus === 'included_in_sales' || receiptModalRow.dispatchMermaReconciliationStatus === 'returned' || receiptModalRow.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? 'border-emerald-200 bg-emerald-50 text-emerald-950' : 'border-amber-200 bg-amber-50 text-amber-950'}`}><strong>Carga física:</strong> {formatQty(receiptModalRow.normalLoaded || 0, receiptModalRow.unitType)} normal + {formatQty(receiptModalRow.dispatchMermaSent || 0, receiptModalRow.unitType)} merma adicional = {formatQty(receiptModalRow.physicalLoaded || receiptModalRow.totalLoaded, receiptModalRow.unitType)}. {Number(receiptModalRow.dispatchMermaNominallySold) > 0 ? <>Las ventas nominales ya descontaron {formatQty(receiptModalRow.dispatchMermaNominallySold || 0, receiptModalRow.unitType)} sobre la carga normal. El peso adicional restante solo se registra dentro de ventas si Almacén confirma físicamente que salió en esas bolsas; sin esa confirmación se conserva como faltante visible.</> : receiptModalRow.dispatchMermaReconciliationStatus === 'included_in_sales' ? <>La revisión estima que {formatQty(receiptModalRow.dispatchMermaIncludedInSales || 0, receiptModalRow.unitType)} salió dentro de ventas. Al guardar, el servidor volverá a verificar el saldo real.</> : receiptModalRow.dispatchMermaReconciliationStatus === 'reconciled_with_unfit' ? <>El saldo concilia después de contar {formatQty(parsedWastes[receiptModalRow.productId] || 0, receiptModalRow.unitType)} como producto no apto. El servidor comprobará el saldo real antes de guardar.</> : receiptModalRow.dispatchMermaReconciliationStatus === 'returned' ? <>La merma adicional fue recibida completamente en el retorno.</> : <>Aún no se puede conciliar con las ventas y el retorno normal. No la asignaremos a ventas; revisa la diferencia física antes de confirmar.</>}</p>}
+
+            {Number(receiptModalRow.dispatchMermaNominallySold) > 0 && <p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-950">{formatQty(Number(receiptModalRow.dispatchMermaNominallySold) || 0, receiptModalRow.unitType)} de la merma adicional ya están comprendidos en kilos nominales cobrados por ventas. Esos kilos ya fueron descontados por las ventas y no se volverán a descontar.</p>}
+
+            {receiptModalUnconfirmedPreview?.eligible && receiptModalUnconfirmedPreview.pendingPhysicalMerma > 0 && <div className="grid gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><label className="flex cursor-pointer items-start gap-3"><input className="mt-1 h-4 w-4 shrink-0 accent-amber-700" type="checkbox" checked={receiptEmbeddedMermaConfirmed} onChange={event => setEmbeddedMermaSalesDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.checked } }))} /><span><strong>Confirmo físicamente</strong> que {formatQty(receiptModalUnconfirmedPreview.pendingPhysicalMerma, receiptModalRow.unitType)} adicionales salieron dentro de bolsas correspondientes a ventas ya registradas, sin cobro adicional. El sistema descontará ese peso de la ruta una sola vez y lo incorporará al costo físico de venta. Si no lo puedes confirmar, déjalo sin marcar: quedará como faltante visible.</span></label>{receiptEmbeddedMermaConfirmed && <Field label="Qué comprobó Almacén" required hint="Se guardará junto al responsable y la fecha de confirmación."><TextInput value={embeddedMermaSalesReasonDrafts[dispatchKey]?.[receiptModalRow.productId] || ''} placeholder="Describe brevemente la comprobación física" onChange={event => setEmbeddedMermaSalesReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.value } }))} /></Field>}</div>}
 
             <div className="grid min-w-0 gap-4">
               <div>

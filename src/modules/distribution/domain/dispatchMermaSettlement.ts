@@ -1,8 +1,16 @@
 import type { DistDispatch, DistSale } from '../types.ts'
 
 export interface DispatchMermaSettlementPreview {
+  normalLoaded: number
+  physicalLoaded: number
   dispatchMermaSent: number
   normalExpectedReturn: number
+  /** Cantidad de merma ya descontada por las ventas nominales sobre la carga normal. */
+  nominalMermaIncludedInSales: number
+  /** Peso adicional no cobrado que almacén confirma que salió dentro de bolsas vendidas. */
+  additionalMermaIncludedInSales: number
+  /** Cantidad que aún requiere retorno, no apto o una confirmación física explícita. */
+  pendingPhysicalMerma: number
   includedInSales: number
   expectedPhysicalReturn: number
   eligible: boolean
@@ -22,6 +30,7 @@ export function previewDispatchMermaSettlement(
   actualNormalReturn: number,
   recoverableMermaReturn: number,
   unfitReturn: number,
+  embeddedMermaInSalesConfirmed = false,
 ): DispatchMermaSettlementPreview {
   const lines = dispatch
     ? [
@@ -48,25 +57,49 @@ export function previewDispatchMermaSettlement(
       else sold += Number(line.quantity) || 0
     }
   }
-  const normalExpectedReturn = kg(normalLoaded - sold - courtesy)
+  const signedNormalExpectedReturn = kg(normalLoaded - sold - courtesy)
+  const normalExpectedReturn = Math.max(0, signedNormalExpectedReturn)
+  const nominalMermaIncludedInSales = kg(Math.min(dispatchMermaSent, Math.max(0, sold - normalLoaded)))
+  const remainingMermaAfterNominalSales = kg(Math.max(0, dispatchMermaSent - nominalMermaIncludedInSales))
+  const physicalExpectedReturn = kg(Math.max(0, signedNormalExpectedReturn + dispatchMermaSent))
   const validInputs = [actualNormalReturn, recoverableMermaReturn, unfitReturn].every(Number.isFinite)
+  const aboveNormalCase = signedNormalExpectedReturn < 0
+  const eligibleAboveNormal = Boolean(dispatch && dispatchMermaSent > 0 && aboveNormalCase && sold > normalLoaded && courtesy === 0 && validInputs
+    && -signedNormalExpectedReturn <= dispatchMermaSent + 0.001
+    && Math.abs(kg(actualNormalReturn)) <= 0.001
+    && recoverableMermaReturn >= 0 && unfitReturn >= 0
+    && recoverableMermaReturn + unfitReturn <= remainingMermaAfterNominalSales + 0.001)
   const fullyReturned = Boolean(dispatch && dispatchMermaSent > 0 && validInputs && unfitReturn === 0
-    && normalExpectedReturn >= 0
+    && !aboveNormalCase
     && Math.abs(kg(actualNormalReturn) - normalExpectedReturn) <= 0.001
     && Math.abs(kg(recoverableMermaReturn) - dispatchMermaSent) <= 0.001)
-  const eligible = Boolean(dispatch && dispatchMermaSent > 0 && (sold > 0 || fullyReturned) && validInputs
-    && normalExpectedReturn >= 0
+  const eligibleStandard = Boolean(dispatch && dispatchMermaSent > 0 && (sold > 0 || fullyReturned) && validInputs
+    && !aboveNormalCase
     && Math.abs(kg(actualNormalReturn) - normalExpectedReturn) <= 0.001
     && recoverableMermaReturn >= 0 && unfitReturn >= 0
     && recoverableMermaReturn + unfitReturn <= dispatchMermaSent + 0.001)
-  const includedInSales = eligible ? kg(Math.max(0, dispatchMermaSent - recoverableMermaReturn - unfitReturn)) : 0
+  const eligible = eligibleStandard || eligibleAboveNormal
+  const additionalMermaIncludedInSales = eligibleAboveNormal && embeddedMermaInSalesConfirmed
+    ? kg(Math.max(0, physicalExpectedReturn - actualNormalReturn - recoverableMermaReturn - unfitReturn))
+    : 0
+  const pendingPhysicalMerma = eligibleAboveNormal
+    ? kg(Math.max(0, physicalExpectedReturn - actualNormalReturn - recoverableMermaReturn - unfitReturn - additionalMermaIncludedInSales))
+    : 0
+  const includedInSales = eligibleStandard
+    ? kg(Math.max(0, dispatchMermaSent - recoverableMermaReturn - unfitReturn))
+    : kg(nominalMermaIncludedInSales + additionalMermaIncludedInSales)
   return {
+    normalLoaded,
+    physicalLoaded: kg(normalLoaded + dispatchMermaSent),
     dispatchMermaSent,
     normalExpectedReturn,
+    nominalMermaIncludedInSales,
+    additionalMermaIncludedInSales,
+    pendingPhysicalMerma,
     includedInSales,
-    expectedPhysicalReturn: eligible
+    expectedPhysicalReturn: eligibleStandard
       ? kg(normalExpectedReturn + recoverableMermaReturn + unfitReturn)
-      : kg(normalExpectedReturn + dispatchMermaSent),
+      : kg(physicalExpectedReturn - additionalMermaIncludedInSales),
     eligible,
     fullyReturned,
   }

@@ -2485,27 +2485,61 @@ async function closure(o, p) {
         .reduce((sum, line) => sum + (Number(line.quantity) || 0), 0));
       const courtesySold = quantityRound(productSales.filter((line) => line.saleKind === "courtesy" && line.productId === pid)
         .reduce((sum, line) => sum + (Number(line.quantity) || 0), 0));
-      const expectedNormalReturn = quantityRound(normalLoaded - nominalSold - courtesySold);
+      const signedNormalExpectedReturn = quantityRound(normalLoaded - nominalSold - courtesySold);
+      const expectedNormalReturn = Math.max(0, signedNormalExpectedReturn);
+      // Si las ventas nominales superan la carga normal, esa parte ya fue
+      // descontada por los movimientos de venta. No volver a descontarla como
+      // dispatch_merma_sale ni permitir un retorno normal negativo.
+      const nominalDispatchMermaInSales = quantityRound(Math.min(dispatchMermaSent, Math.max(0, nominalSold - normalLoaded)));
+      const dispatchMermaRemainingAfterNominalSales = quantityRound(Math.max(0, dispatchMermaSent - nominalDispatchMermaInSales));
+      const expectedPhysicalRouteBalance = quantityRound(Math.max(0, signedNormalExpectedReturn + dispatchMermaSent));
       const precisionTolerance = precision === 3 ? 0.001 : 0.01;
       // Merma adicional solo se concilia con ventas cuando el saldo transaccional
       // de ruta, las ventas efectivas y el retorno normal coinciden exactamente.
       // El producto no apto se descuenta explícitamente del componente adicional;
       // cualquier diferencia no demostrada queda pendiente y no se imputa a ventas.
-      const canSettleDispatchMerma = !legacySemantics && e.p.unitType === "kg"
+      const canSettleStandardDispatchMerma = !legacySemantics && e.p.unitType === "kg"
         && dispatchMermaSent > 0 && nominalSold > 0
-        && expectedNormalReturn >= 0
+        && signedNormalExpectedReturn >= 0
         && Math.abs(expected - (expectedNormalReturn + dispatchMermaSent)) <= precisionTolerance
         && Math.abs(actual - expectedNormalReturn) <= precisionTolerance
         && recoverableMerma + waste <= dispatchMermaSent + precisionTolerance;
+      const embeddedMermaInSalesConfirmed = returnRow?.dispatchMermaEmbeddedInSalesConfirmed === true;
+      const canSettleAboveNormalSales = !legacySemantics && e.p.unitType === "kg"
+        && dispatchMermaSent > 0 && nominalSold > normalLoaded
+        && courtesySold === 0 && signedNormalExpectedReturn < 0
+        && -signedNormalExpectedReturn <= dispatchMermaSent + precisionTolerance
+        && nominalDispatchMermaInSales <= dispatchMermaSent + precisionTolerance
+        && Math.abs(expected - expectedPhysicalRouteBalance) <= precisionTolerance
+        && Math.abs(actual) <= precisionTolerance
+        && recoverableMerma + waste <= dispatchMermaRemainingAfterNominalSales + precisionTolerance;
+      const dispatchMermaEmbeddedInSalesReason = String(returnRow?.dispatchMermaEmbeddedInSalesReason || "").trim();
+      if (embeddedMermaInSalesConfirmed) {
+        check(canSettleAboveNormalSales,
+          "No se puede confirmar peso adicional dentro de ventas: las ventas, el despacho y el saldo físico de la ruta no concilian.");
+        check(dispatchMermaEmbeddedInSalesReason.length >= 8,
+          "Describe qué comprobó Almacén antes de confirmar el peso adicional dentro de ventas.");
+      }
       const allDispatchMermaReturned = !legacySemantics && e.p.unitType === "kg"
         && dispatchMermaSent > 0 && waste === 0
+        && signedNormalExpectedReturn >= 0
         && Math.abs(expected - (expectedNormalReturn + dispatchMermaSent)) <= precisionTolerance
         && Math.abs(actual - expectedNormalReturn) <= precisionTolerance
         && Math.abs(recoverableMerma - dispatchMermaSent) <= precisionTolerance;
-      const dispatchMermaIncludedInSales = canSettleDispatchMerma
-        ? quantityRound(Math.max(0, dispatchMermaSent - recoverableMerma - waste))
+      const canSettleDispatchMerma = canSettleStandardDispatchMerma || canSettleAboveNormalSales;
+      const additionalEmbeddedMerma = canSettleAboveNormalSales && embeddedMermaInSalesConfirmed
+        ? quantityRound(Math.min(
+          Math.max(0, expected - received),
+          Math.max(0, dispatchMermaRemainingAfterNominalSales - recoverableMerma - waste),
+        ))
         : 0;
-      const adjustedExpected = quantityRound(expected - dispatchMermaIncludedInSales);
+      const dispatchMermaIncludedInSales = canSettleStandardDispatchMerma
+        ? quantityRound(Math.max(0, dispatchMermaSent - recoverableMerma - waste))
+        : quantityRound(nominalDispatchMermaInSales + additionalEmbeddedMerma);
+      // Para ventas por encima de la carga normal, la cantidad nominal ya
+      // redujo el saldo de ruta. Solo se resta aquí el sobrepeso adicional
+      // que Almacén confirma expresamente como incluido en bolsas vendidas.
+      const adjustedExpected = quantityRound(expected - (canSettleAboveNormalSales ? additionalEmbeddedMerma : dispatchMermaIncludedInSales));
       const overage = quantityRound(Math.max(0, received - adjustedExpected));
       const shortage = quantityRound(Math.max(0, adjustedExpected - received));
       check(!(dispatchMermaSent > 0 && !canSettleDispatchMerma && !allDispatchMermaReturned
@@ -2543,19 +2577,24 @@ async function closure(o, p) {
       }
       let dispatchMermaSaleMovementId;
       let dispatchMermaSaleCost = null;
-      if (dispatchMermaIncludedInSales > 0) {
-        const soldMermaParts = await o.take(pid, route, dispatchMermaIncludedInSales, { allowExpired: true, precision });
+      const dispatchMermaSaleMovementQuantity = canSettleAboveNormalSales
+        ? additionalEmbeddedMerma
+        : dispatchMermaIncludedInSales;
+      if (dispatchMermaSaleMovementQuantity > 0) {
+        const soldMermaParts = await o.take(pid, route, dispatchMermaSaleMovementQuantity, { allowExpired: true, precision });
         const costKnown = soldMermaParts.length > 0 && soldMermaParts.every((allocation) => allocation.productionCost !== null);
         dispatchMermaSaleCost = costKnown
           ? round(soldMermaParts.reduce((sum, allocation) => sum + allocation.quantity * allocation.productionCost, 0))
           : null;
-        dispatchMermaSaleMovementId = o.ledger(pid, dispatchMermaIncludedInSales, route, null, "dispatch_merma_sale", {
+        dispatchMermaSaleMovementId = o.ledger(pid, dispatchMermaSaleMovementQuantity, route, null, "dispatch_merma_sale", {
           allocations: soldMermaParts,
           dispatchId: d.id,
           costOfSales: dispatchMermaSaleCost,
           dispatchMermaSent,
           recoverableMermaReturned: recoverableMerma,
-          note: "Parte de la merma adicional enviada que salió dentro de ventas registradas; costo incluido una sola vez en costo de venta, no es pérdida.",
+          note: canSettleAboveNormalSales
+            ? `Sobrepeso físico adicional confirmado por Almacén como incluido en bolsas ya vendidas; la cantidad cobrada sobre la carga normal ya estaba descontada por la venta. Comprobación: ${dispatchMermaEmbeddedInSalesReason}. Costo de venta no duplicado como pérdida.`
+            : "Parte de la merma adicional enviada que salió dentro de ventas registradas; costo incluido una sola vez en costo de venta, no es pérdida.",
         }, precision);
       }
       if (waste > 0) {
@@ -2651,6 +2690,14 @@ async function closure(o, p) {
           normalExpectedReturn: expectedNormalReturn,
           dispatchMermaSent,
           dispatchMermaIncludedInSales,
+          dispatchMermaNominallySold: nominalDispatchMermaInSales,
+          dispatchMermaEmbeddedInSalesConfirmed: canSettleAboveNormalSales && embeddedMermaInSalesConfirmed,
+          dispatchMermaEmbeddedInSalesQuantity: additionalEmbeddedMerma,
+          ...(canSettleAboveNormalSales && embeddedMermaInSalesConfirmed ? {
+            dispatchMermaEmbeddedInSalesConfirmedBy: o.actor,
+            dispatchMermaEmbeddedInSalesConfirmedAt: o.now,
+            dispatchMermaEmbeddedInSalesReason,
+          } : {}),
           dispatchMermaReconciliationStatus: dispatchMermaIncludedInSales > 0 ? "included_in_sales" : allDispatchMermaReturned ? "returned" : canSettleDispatchMerma ? "reconciled_with_unfit" : "pending_review",
           ...(dispatchMermaSaleCost !== null ? { dispatchMermaSaleCost } : {}),
           ...(dispatchMermaSaleMovementId ? { dispatchMermaSaleMovementId } : {}),
@@ -2676,6 +2723,8 @@ async function closure(o, p) {
       ...previous,
       id,
       ...o.base(),
+      dayKey: d.dayKey || previous.dayKey || o.today,
+      createdAt: previous.createdAt || d.createdAt || o.now,
       dispatchId: d.id,
       warehouseId: d.warehouseId || "central",
       routeId: d.routeId,

@@ -528,8 +528,18 @@ export interface DistClosureProductRow {
   courtesy?: number
   expectedReturn: number
   normalExpectedReturn?: number
+  normalLoaded?: number
+  physicalLoaded?: number
   dispatchMermaSent?: number
   dispatchMermaIncludedInSales?: number
+  /** Merma nominal ya descontada dentro de ventas que superan la carga normal. */
+  dispatchMermaNominallySold?: number
+  /** Confirmación de Almacén de sobrepeso adicional no cobrado dentro de bolsas vendidas. */
+  dispatchMermaEmbeddedInSalesConfirmed?: boolean
+  dispatchMermaEmbeddedInSalesQuantity?: number
+  dispatchMermaEmbeddedInSalesConfirmedBy?: string
+  dispatchMermaEmbeddedInSalesConfirmedAt?: string
+  dispatchMermaEmbeddedInSalesReason?: string
   dispatchMermaReconciliationStatus?: 'included_in_sales' | 'reconciled_with_unfit' | 'returned' | 'pending_review'
   dispatchMermaSaleCost?: number | null
   dispatchMermaSaleMovementId?: string
