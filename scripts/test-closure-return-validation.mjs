@@ -92,7 +92,7 @@ try {
   await act(async () => root.render(React.createElement(ClosureView, { session, data })))
   assert.equal(container.querySelectorAll('input[data-return-field="merma"]').length, 0, 'el distribuidor no recibe un campo para declarar merma')
   assert.match(container.textContent, /CANTIDAD QUE DEVUELVES/)
-  assert.match(container.textContent, /Almacén revisará y registrará la merma por separado/)
+  assert.match(container.textContent, /Almacén verificará físicamente la recepción/)
   for (const line of lines) {
     await setInput(inputFor(line.productId, 'normal'), line.productId === 'jamon' ? '1,' : '0')
   }

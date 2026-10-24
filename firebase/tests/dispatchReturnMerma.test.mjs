@@ -221,6 +221,95 @@ try {
   pass((await read('distBalances', `central__${shortageProduct}`)).quantity === 9.765, 'almacén recibe exactamente 1.765 kg sin redondearlo a 1.77')
   pass((await read('distLots', `${shortageIntake.id}__0`)).quantities.central === 9.765, 'el lote original conserva exactamente las milésimas recibidas')
 
+  const aboveNormalProduct = `${prefix}-above-normal-product`, aboveNormalSeller = `${prefix}-above-normal-seller`, aboveNormalRoute = `${prefix}-above-normal-route`
+  await root.collection('members').doc(aboveNormalSeller).set({ role: 'distributor', active: true, routeId: aboveNormalRoute, displayName: 'QA venta sobre carga normal' })
+  await root.collection('distProducts').doc(aboveNormalProduct).set({ id: aboveNormalProduct, restaurantId: 'sanjose', name: 'Viena sobre carga normal QA', unitType: 'kg', active: true, referencePrice: 45, productionCost: 18 })
+  const aboveNormalIntake = await command(admin, 'intake', { lines: [{ productId: aboveNormalProduct, quantity: 200, lotCode: 'LOTE-SOBRECARGA-QA', manufacturedOn: dayKey(new Date()), expiresOn: '2027-12-31', productionCost: 18 }], note: 'Prueba venta nominal mayor a carga normal' })
+  const aboveNormalDispatch = await command(warehouse, 'dispatch', {
+    warehouseId: wh, routeId: aboveNormalRoute, routeName: 'Ruta QA sobre carga normal', distributorUid: aboveNormalSeller, distributorName: 'QA venta sobre carga normal',
+    lines: [{ productId: aboveNormalProduct, quantity: 77.88, normalQuantity: 76, dispatchMerma: 1.88, allocationsRequested: [{ lotId: `${aboveNormalIntake.id}__0`, quantity: 77.88 }] }],
+  })
+  await root.collection('distDispatches').doc(aboveNormalDispatch.id).update({ dayKey: '2026-10-23' })
+  const aboveNormalSale = await command(aboveNormalSeller, 'sale', {
+    sourceLocation: 'route', dispatchId: aboveNormalDispatch.id, routeId: aboveNormalRoute, routeName: 'Ruta QA sobre carga normal',
+    lines: [{ productId: aboveNormalProduct, quantity: 77, actualUnitPrice: 45 }], paymentKind: 'cash', cashAmount: 3465, qrAmount: 0, creditAmount: 0,
+  })
+  const aboveNormalRouteBefore = (await read('distBalances', `route__${aboveNormalRoute}__${aboveNormalProduct}`)).quantity
+  pass(aboveNormalRouteBefore === 0.88, '76 normal + 1.88 merma - venta efectiva de 77 deja .88 kg físicos en ruta')
+  await command(aboveNormalSeller, 'sale', {
+    sourceLocation: 'route', dispatchId: aboveNormalDispatch.id, routeId: aboveNormalRoute, routeName: 'Ruta QA sobre carga normal',
+    lines: [{ productId: aboveNormalProduct, quantity: 1, actualUnitPrice: 45 }], paymentKind: 'cash', cashAmount: 45, qrAmount: 0, creditAmount: 0,
+  }, 'rejected')
+  pass((await read('distBalances', `route__${aboveNormalRoute}__${aboveNormalProduct}`)).quantity === 0.88, 'servidor rechaza una venta que superaría la carga física restante')
+  const aboveNormalClosureOperation = await command(warehouse, 'closure', {
+    mode: 'warehouse', closure: { dispatchId: aboveNormalDispatch.id, products: [{ productId: aboveNormalProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 0 }] },
+    warehouseResponsibleName: 'QA almacén',
+  })
+  const aboveNormalClosure = await read('distClosures', `closure_${aboveNormalDispatch.id}`)
+  const aboveNormalRow = aboveNormalClosure.products.find(row => row.productId === aboveNormalProduct)
+  const aboveNormalMovements = (await root.collection('distStockMovements').where('dispatchId', '==', aboveNormalDispatch.id).get()).docs.map(row => row.data())
+  pass(aboveNormalRow.normalExpectedReturn === 0 && aboveNormalRow.dispatchMermaNominallySold === 1, 'el kilo vendido por encima de los 76 normales se reconoce como ya descontado por la venta')
+  pass(aboveNormalRow.expectedReturn === 0.88 && aboveNormalRow.shortage === 0.88 && aboveNormalRow.overage === 0, 'sin confirmación adicional los .88 kg permanecen como faltante físico visible')
+  pass(aboveNormalMovements.filter(row => row.type === 'shortage' && !row.reversedAt).length === 1 && !aboveNormalMovements.some(row => row.type === 'dispatch_merma_sale' && !row.reversedAt), 'el faltante no se oculta ni se duplica como merma vendida')
+  pass(aboveNormalClosure.dayKey === '2026-10-23' && aboveNormalClosure.warehouseClosedAt, 'un despacho de jornada anterior conserva dayKey y registra aparte la fecha real de recepción')
+  await processCommand(db, root.collection('distOperations').doc(aboveNormalClosureOperation.id))
+  pass((await root.collection('distStockMovements').where('dispatchId', '==', aboveNormalDispatch.id).get()).docs.map(row => row.data()).filter(row => row.type === 'shortage' && !row.reversedAt).length === 1, 'reintento de recepción no duplica el faltante')
+
+  const confirmedProduct = `${prefix}-embedded-confirmed-product`, confirmedRoute = `${prefix}-embedded-confirmed-route`, confirmedSeller = `${prefix}-embedded-confirmed-seller`
+  await root.collection('members').doc(confirmedSeller).set({ role: 'distributor', active: true, routeId: confirmedRoute, displayName: 'QA sobrepeso confirmado' })
+  await root.collection('distProducts').doc(confirmedProduct).set({ id: confirmedProduct, restaurantId: 'sanjose', name: 'Viena sobrepeso confirmado QA', unitType: 'kg', active: true, referencePrice: 45, productionCost: 18 })
+  const confirmedIntake = await command(admin, 'intake', { lines: [{ productId: confirmedProduct, quantity: 200, lotCode: 'LOTE-SOBREPESO-CONFIRMADO-QA', manufacturedOn: dayKey(new Date()), expiresOn: '2027-12-31', productionCost: 18 }], note: 'Prueba de confirmación de sobrepeso físico' })
+  const confirmedDispatch = await command(warehouse, 'dispatch', {
+    warehouseId: wh, routeId: confirmedRoute, routeName: 'Ruta QA sobrepeso confirmado', distributorUid: confirmedSeller, distributorName: 'QA sobrepeso confirmado',
+    lines: [{ productId: confirmedProduct, quantity: 77.88, normalQuantity: 76, dispatchMerma: 1.88, allocationsRequested: [{ lotId: `${confirmedIntake.id}__0`, quantity: 77.88 }] }],
+  })
+  await command(confirmedSeller, 'sale', {
+    sourceLocation: 'route', dispatchId: confirmedDispatch.id, routeId: confirmedRoute, routeName: 'Ruta QA sobrepeso confirmado',
+    lines: [{ productId: confirmedProduct, quantity: 77, actualUnitPrice: 45 }], paymentKind: 'cash', cashAmount: 3465, qrAmount: 0, creditAmount: 0,
+  })
+  await command(warehouse, 'closure', {
+    mode: 'warehouse', closure: { dispatchId: confirmedDispatch.id, products: [{ productId: confirmedProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 0, dispatchMermaEmbeddedInSalesConfirmed: true }] },
+    warehouseResponsibleName: 'QA almacén',
+  }, 'rejected')
+  pass((await read('distBalances', `route__${confirmedRoute}__${confirmedProduct}`)).quantity === 0.88, 'confirmar sin motivo de comprobación se rechaza y no mueve stock')
+  const confirmedReceipt = await command(warehouse, 'closure', {
+    mode: 'warehouse', closure: { dispatchId: confirmedDispatch.id, products: [{ productId: confirmedProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 0, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'Almacén verificó el peso físico de las bolsas vendidas.' }] },
+    warehouseResponsibleName: 'QA almacén',
+  })
+  const confirmedClosure = await read('distClosures', `closure_${confirmedDispatch.id}`)
+  const confirmedRow = confirmedClosure.products.find(row => row.productId === confirmedProduct)
+  const confirmedMovements = (await root.collection('distStockMovements').where('dispatchId', '==', confirmedDispatch.id).get()).docs.map(row => row.data())
+  const confirmedMermaSale = confirmedMovements.find(row => row.type === 'dispatch_merma_sale' && !row.reversedAt)
+  pass(confirmedRow.dispatchMermaNominallySold === 1 && confirmedRow.dispatchMermaEmbeddedInSalesConfirmed === true && confirmedRow.dispatchMermaEmbeddedInSalesQuantity === 0.88, 'la confirmación de Almacén separa 1 kg nominal ya descontado de .88 kg físico adicional no cobrado')
+  pass(confirmedRow.dispatchMermaEmbeddedInSalesConfirmedBy === warehouse && confirmedRow.dispatchMermaEmbeddedInSalesConfirmedAt && confirmedRow.dispatchMermaEmbeddedInSalesReason === 'Almacén verificó el peso físico de las bolsas vendidas.', 'la excepción conserva responsable, hora y motivo de comprobación')
+  pass(confirmedRow.shortage === 0 && confirmedRow.expectedReturn === 0 && confirmedMermaSale?.quantity === 0.88, 'solo la confirmación física registra .88 kg en costo de venta y evita un sobrante/faltante ficticio')
+  pass(confirmedMermaSale?.costOfSales === 15.84 && (await read('distBalances', `route__${confirmedRoute}__${confirmedProduct}`)).quantity === 0, 'peso adicional confirmado se consume una vez con costo histórico y deja la ruta en cero')
+  pass((await read('distBalances', `central__${confirmedProduct}`)).quantity === 122.12, 'conciliación no vuelve a descontar el almacén central')
+  await processCommand(db, root.collection('distOperations').doc(confirmedReceipt.id))
+  pass((await root.collection('distStockMovements').where('dispatchId', '==', confirmedDispatch.id).get()).docs.map(row => row.data()).filter(row => row.type === 'dispatch_merma_sale' && !row.reversedAt).length === 1, 'reintentar la recepción confirmada no duplica la merma incluida en ventas')
+
+  const mismatchProduct = `${prefix}-over-normal-mismatch-product`, mismatchRoute = `${prefix}-over-normal-mismatch-route`, mismatchSeller = `${prefix}-over-normal-mismatch-seller`
+  await root.collection('members').doc(mismatchSeller).set({ role: 'distributor', active: true, routeId: mismatchRoute, displayName: 'QA diferencia ajena a merma' })
+  await root.collection('distProducts').doc(mismatchProduct).set({ id: mismatchProduct, restaurantId: 'sanjose', name: 'Viena diferencia física QA', unitType: 'kg', active: true, referencePrice: 45, productionCost: 18 })
+  const mismatchIntake = await command(admin, 'intake', { lines: [{ productId: mismatchProduct, quantity: 200, lotCode: 'LOTE-DIFERENCIA-QA', manufacturedOn: dayKey(new Date()), expiresOn: '2027-12-31', productionCost: 18 }], note: 'Prueba de diferencia física no atribuible a merma' })
+  const mismatchDispatch = await command(warehouse, 'dispatch', {
+    warehouseId: wh, routeId: mismatchRoute, routeName: 'Ruta QA diferencia física', distributorUid: mismatchSeller, distributorName: 'QA diferencia ajena a merma',
+    lines: [{ productId: mismatchProduct, quantity: 77.88, normalQuantity: 76, dispatchMerma: 1.88, allocationsRequested: [{ lotId: `${mismatchIntake.id}__0`, quantity: 77.88 }] }],
+  })
+  await command(mismatchSeller, 'sale', {
+    sourceLocation: 'route', dispatchId: mismatchDispatch.id, routeId: mismatchRoute, routeName: 'Ruta QA diferencia física',
+    lines: [{ productId: mismatchProduct, quantity: 77, actualUnitPrice: 45 }], paymentKind: 'cash', cashAmount: 3465, qrAmount: 0, creditAmount: 0,
+  })
+  const mismatchBalanceId = `route__${mismatchRoute}__${mismatchProduct}`
+  await root.collection('distBalances').doc(mismatchBalanceId).update({ quantity: 0.78 })
+  await root.collection('distLots').doc(`${mismatchIntake.id}__0`).update({ [`quantities.route__${mismatchRoute}`]: 0.78 })
+  const rejectedFalseConfirmation = await command(warehouse, 'closure', {
+    mode: 'warehouse', closure: { dispatchId: mismatchDispatch.id, products: [{ productId: mismatchProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 0, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'No existe evidencia; probar rechazo de diferencia.' }] },
+    warehouseResponsibleName: 'QA almacén',
+  }, 'rejected')
+  pass(/saldo físico de la ruta no concilian/.test(rejectedFalseConfirmation.error) && !(await read('distClosures', `closure_${mismatchDispatch.id}`)), 'una diferencia de stock ajena a la merma no se puede declarar como peso vendido')
+  pass((await read('distBalances', mismatchBalanceId)).quantity === 0.78 && !(await root.collection('distStockMovements').where('dispatchId', '==', mismatchDispatch.id).get()).docs.some(row => row.data().type === 'dispatch_merma_sale'), 'el rechazo de confirmación no crea movimientos ni altera el saldo discrepante')
+
   console.log(`\n${checks} pruebas de merma de despacho/retorno pasaron.`)
 } finally {
   await env.cleanup()

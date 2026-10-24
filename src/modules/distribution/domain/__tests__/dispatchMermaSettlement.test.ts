@@ -48,4 +48,29 @@ assertEqual(tooMuchUnfit.eligible, false, 'No apto superior al saldo adicional n
 const mismatch = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale', 84)], 'p', 4.01, 0.08, 0)
 assertEqual(mismatch.eligible, false, 'Retorno normal distinto deja la diferencia pendiente')
 
+const luciano = previewDispatchMermaSettlement(dispatch(76, 1.88), [sale('sale-77', 77)], 'p', 0, 0, 0)
+assertEqual(luciano.eligible, true, 'Venta nominal 1 kg sobre carga normal puede conciliar merma sin retorno normal negativo')
+assertEqual(luciano.normalExpectedReturn, 0, 'El retorno normal mínimo nunca se presenta como negativo')
+assertEqual(luciano.nominalMermaIncludedInSales, 1, 'El kilo nominal vendido sobre los 76 ya está descontado por la venta')
+assertEqual(luciano.additionalMermaIncludedInSales, 0, 'No presume que el .88 kg restante viajó dentro de bolsas vendidas')
+assertEqual(luciano.pendingPhysicalMerma, 0.88, 'El peso físico restante queda pendiente sin confirmación')
+assertEqual(luciano.expectedPhysicalReturn, 0.88, 'El saldo físico esperado tras 77 kg vendidos es .88 kg')
+
+const lucianoConfirmed = previewDispatchMermaSettlement(dispatch(76, 1.88), [sale('sale-77', 77)], 'p', 0, 0, 0, true)
+assertEqual(lucianoConfirmed.additionalMermaIncludedInSales, 0.88, 'Solo con confirmación física explícita se atribuye .88 kg adicional a bolsas vendidas')
+assertEqual(lucianoConfirmed.includedInSales, 1.88, 'La conciliación registra 1 kg nominal ya vendido + .88 kg sin cobro confirmado')
+assertEqual(lucianoConfirmed.expectedPhysicalReturn, 0, 'La confirmación explícita elimina únicamente el residuo físicamente verificado')
+
+const lucianoReturned = previewDispatchMermaSettlement(dispatch(76, 1.88), [sale('sale-77', 77)], 'p', 0, 0.88, 0)
+assertEqual(lucianoReturned.pendingPhysicalMerma, 0, 'Retorno recuperable de .88 kg concilia el remanente')
+assertEqual(lucianoReturned.additionalMermaIncludedInSales, 0, 'La merma retornada no se duplica como venta')
+
+const courtesyOverNormal = previewDispatchMermaSettlement(dispatch(76, 1.88), [
+  sale('sale-75', 75), sale('courtesy-2', 2, { saleKind: 'courtesy', cashAmount: 0, creditAmount: 0, total: 0 }),
+], 'p', 0, 0, 0, true)
+assertEqual(courtesyOverNormal.eligible, false, 'Una cortesía que cruza la carga normal no se etiqueta como venta de merma sin conciliación separada')
+
+const overPhysicalLoad = previewDispatchMermaSettlement(dispatch(76, 1.88), [sale('sale-78', 78)], 'p', 0, 0, 0)
+assertEqual(overPhysicalLoad.eligible, false, 'Ventas nominales que superan la carga física total no pueden conciliarse')
+
 console.log('PASS dispatchMermaSettlement.test.ts')
