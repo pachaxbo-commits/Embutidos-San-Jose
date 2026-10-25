@@ -63,6 +63,12 @@ La detección se basa en `versionCode`, no en comparar el texto de `versionName`
 
 Desde la raíz del proyecto:
 
+Antes de compilar en un worktree nuevo, instalar allí la configuración de producción
+autorizada (`.env`, ignorado por Git). `npm run build:android` y `npm run build`
+fallan si falta alguno de los seis valores Firebase, si apuntan a otro proyecto
+o al emulador, o si el bundle final omite esos valores. No publicar una APK
+construida desde un worktree que no tenga esa configuración.
+
 ```powershell
 npm ci
 npm run typecheck
