@@ -7,8 +7,9 @@ import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../com
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { toDayKey, round2 } from '../domain/engine'
 import { buildProvisionalCollectionSnapshot } from '../domain/provisionalCollection'
+import { creditPortfolioExportSheets } from '../domain/creditPortfolioReport'
 import { adjustReceivable, loadCustomerCreditStatementData, newOperationId, registerCollection, registerOpeningBalance, saveCustomer, setCreditOverride, voidReceivable } from '../data/distributionRepository'
-import { exportCustomerCreditStatement, exportExcel, exportPdf, reportSheets } from '../data/reportExports'
+import { exportCustomerCreditStatement, exportExcel, exportPdf } from '../data/reportExports'
 import {
   computeCreditPortfolioByRoute,
   allocateCreditBySubtotal,
@@ -235,25 +236,34 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       : customerCredits
   }, [customerCredits, search])
 
-  const grandTotalBalance = useMemo(() => {
-    return round2(
-      data.receivables
-        .filter((r) => !period.length || period.includes(r.dayKey || toDayKey(r.createdAt)))
-        .reduce((sum, r) => sum + (Number(r.balance) || 0), 0),
-    )
-  }, [data.receivables, period])
+  const grandTotalBalance = useMemo(() => computeCreditPortfolioByRoute({
+    receivables: data.receivables,
+    selectedRouteId: 'all',
+    routes: data.routes,
+    customers: data.customers,
+    salesById,
+    period,
+  }).totalOutstanding, [data.receivables, data.routes, data.customers, salesById, period])
 
   const exportCredits = async (kind: 'pdf' | 'excel') => {
     setExporting(true)
     setExportError('')
     try {
-      const days = period.length
-        ? period
-        : [...new Set(data.receivables.map((receivable) => receivable.dayKey || toDayKey(receivable.createdAt)))]
-      const sheet = reportSheets(data, days).find((item) => item.name === 'Créditos')!
-      const description = period.length ? `Créditos del periodo · ${period.join(' al ')}` : 'Cartera completa registrada'
-      if (kind === 'pdf') await exportPdf([sheet], description, 'SanJose-creditos.pdf')
-      else await exportExcel([sheet], description, 'SanJose-creditos.xlsx')
+      const generatedAt = new Date().toLocaleString('es-BO', { timeZone: 'America/La_Paz' })
+      const sheets = creditPortfolioExportSheets({
+        entries: filtered,
+        routeName: selectedRouteName,
+        period,
+        searchTerm: search,
+        generatedAt,
+      })
+      const scope = period.length
+        ? `saldo actual de créditos originados entre ${period[0]} y ${period.at(-1)}`
+        : 'cartera pendiente actual de todos los períodos'
+      const description = `${selectedRouteName} · ${scope}${search.trim() ? ` · búsqueda: ${search.trim()}` : ''} · generado ${generatedAt}`
+      const safeScope = `${selectedRouteId}-${period[0] || 'todo'}-${period.at(-1) || 'actual'}`.replace(/[^\p{L}\p{N}-]+/gu, '-')
+      if (kind === 'pdf') await exportPdf(sheets, description, `SanJose-creditos-${safeScope}.pdf`)
+      else await exportExcel(sheets, description, `SanJose-creditos-${safeScope}.xlsx`)
     } catch (exportFailure) {
       setExportError((exportFailure as Error).message)
     } finally {
@@ -518,6 +528,11 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         </div>
 
         <RangePicker dayKeys={period.length ? period : [toDayKey(new Date())]} onChange={setPeriod} />
+        <p className="-mt-1 text-[11px] leading-4 text-slate-500">
+          {period.length
+            ? 'El período selecciona la fecha de origen del crédito; los importes muestran el saldo pendiente actual de esas cuentas, no un saldo histórico al cierre del período.'
+            : 'Se muestra la cartera pendiente actual. Selecciona un período para consultar el saldo actual de los créditos originados en esas fechas.'}
+        </p>
         <button className="text-left text-sm font-bold text-[var(--primary)]" onClick={() => setPeriod([])}>
           {period.length ? 'Ver todos los créditos' : 'Mostrando todos los créditos'}
         </button>
@@ -533,6 +548,9 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             value={String(totalCustomersWithBalance)}
           />
         </div>
+        <p className="-mt-1 text-center text-[10px] leading-4 text-slate-500">
+          PDF y Excel incluirán los clientes visibles según ruta, período y búsqueda.
+        </p>
 
         <div className="grid grid-cols-2 gap-2">
           <SecondaryButton disabled={exporting} onClick={() => void exportCredits('pdf')}>
