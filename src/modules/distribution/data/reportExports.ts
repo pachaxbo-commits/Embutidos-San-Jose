@@ -5,7 +5,7 @@ import type { DistCustomer, DistSale, DistSaleLine } from "../types";
 import { matchesRoute, round2, toDayKey } from "../domain/engine";
 import { roundStockQuantity } from "../domain/stockAvailability";
 import { originPendingQuantity } from '../domain/originTraceability';
-import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio } from "../domain/creditRoutes";
+import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio, currentCustomerDisplayName } from "../domain/creditRoutes";
 import {
   aggregateCustomerPurchases,
   type CustomerPurchasesAggregation,
@@ -380,6 +380,7 @@ export function reportSheets(
   seller = "",
 ): ReportSheet[] {
   data = { ...data, closures: data.closures.map(normalizeClosure) };
+  const customersById = new Map(data.customers.map(customer => [customer.id, customer]));
   const attributionError = reportAttributionError(data, days, route, seller);
   if (attributionError) throw new Error(attributionError);
   const inScope = (r: {
@@ -698,7 +699,7 @@ export function reportSheets(
       rows: [
         ...credits.map((r) => [
         reportDateTime(r.createdAt),
-        r.customerName,
+        currentCustomerDisplayName(r.customerId, r.customerName, customersById),
         r.customerCode || "",
         (() => {
           const saleLines = r.saleLines?.length ? r.saleLines : data.sales.find((sale) => sale.id === r.saleId)?.effectiveSnapshot?.lines || data.sales.find((sale) => sale.id === r.saleId)?.lines || [];
@@ -736,7 +737,7 @@ export function reportSheets(
       rows: [
         ...collections.map((c) => [
         reportDateTime(c.createdAt),
-        c.customerName,
+        currentCustomerDisplayName(c.customerId, c.customerName, customersById),
         c.customerCode || "",
         reportPersonName(c.collectedByName),
         reportPaymentLabel(c.method),

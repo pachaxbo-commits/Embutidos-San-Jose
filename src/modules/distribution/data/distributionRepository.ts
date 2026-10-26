@@ -23,6 +23,7 @@ import {
   type Firestore,
   type Query,
   type QueryConstraint,
+  type QueryDocumentSnapshot,
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
@@ -44,6 +45,7 @@ import type {
   DistProduct,
   DistReceivable,
   DistReceivableAdjustment,
+  DistSaleCorrection,
   DistRoute,
   DistSale,
   DistSaleLine,
@@ -89,6 +91,7 @@ export const DIST_COLLECTIONS = {
   closures: 'distClosures',
   adjustmentRequests: 'distAdjustmentRequests',
   quotes: 'distQuotes',
+  saleCorrections: 'distSaleCorrections',
 } as const
 
 const SCHEMA_VERSION = 1
@@ -638,6 +641,58 @@ export async function loadCustomerCreditStatementData(customerId: string, distri
   }))).filter((sale): sale is DistSale => sale !== null)
 
   return { receivables, collections, sales }
+}
+
+/**
+ * Recupera por ID de cliente todo el historial disponible desde Firestore,
+ * página por página. No depende de los días que mantiene el store en vivo y
+ * no descarga ventas de otros clientes. Una consulta incompleta falla completa.
+ */
+export async function loadCustomerFullHistory(customer: Pick<DistCustomer, 'id' | 'name'>): Promise<{
+  sales: DistSale[]
+  saleCorrections: DistSaleCorrection[]
+  receivables: DistReceivable[]
+  collections: DistCollection[]
+  receivableAdjustments: DistReceivableAdjustment[]
+  unlinkedNameMatches: Array<{ id: string; createdAt: string; customerName?: string; routeName?: string; sellerName?: string; total?: number }>
+}> {
+  const context = await getContext()
+  const pageSize = 200
+  const readAll = async <T,>(collectionName: string, field: string, value: string | string[]): Promise<T[]> => {
+    const result: T[] = []
+    let cursor: QueryDocumentSnapshot<DocumentData> | null = null
+    while (true) {
+      const constraints: QueryConstraint[] = [where(field, Array.isArray(value) ? 'in' : '==', value), orderBy(documentId(), 'asc')]
+      if (cursor) constraints.push(startAfter(cursor))
+      constraints.push(limit(pageSize))
+      const snapshot = await getDocsFromServer(query(collectionRef(context, collectionName), ...constraints))
+      result.push(...snapshot.docs.map(entry => ({ id: entry.id, ...entry.data() }) as T))
+      if (snapshot.docs.length < pageSize) break
+      cursor = snapshot.docs[snapshot.docs.length - 1]
+    }
+    return result
+  }
+  const [sales, receivables, collections, receivableAdjustments] = await Promise.all([
+    readAll<DistSale>(DIST_COLLECTIONS.sales, 'customerId', customer.id),
+    readAll<DistReceivable>(DIST_COLLECTIONS.receivables, 'customerId', customer.id),
+    readAll<DistCollection>(DIST_COLLECTIONS.collections, 'customerId', customer.id),
+    readAll<DistReceivableAdjustment>(DIST_COLLECTIONS.receivableAdjustments, 'customerId', customer.id),
+  ])
+  const linkedSaleIds = new Set(sales.map(sale => sale.id))
+  // Legacy records may keep an earlier spelling of the same customer's name.
+  // Search name snapshots from this customer's linked debt/payment docs only
+  // to surface candidates; they are never silently assigned to the customer.
+  const nameAliases = [...new Set([customer.name, ...receivables.map(row => row.customerName), ...collections.map(row => row.customerName)].map(name => name?.trim()).filter((name): name is string => Boolean(name)))]
+  const nameChunks: string[][] = []
+  for (let index = 0; index < nameAliases.length; index += 30) nameChunks.push(nameAliases.slice(index, index + 30))
+  const nameMatchPages = await Promise.all(nameChunks.map(names => readAll<{ id: string; createdAt: string; customerId?: string; customerName?: string; routeName?: string; sellerName?: string; total?: number }>(DIST_COLLECTIONS.sales, 'customerName', names)))
+  const nameMatches = [...new Map(nameMatchPages.flat().filter(sale => !sale.customerId && !linkedSaleIds.has(sale.id)).map(sale => [sale.id, sale])).values()]
+  const saleIdList = [...linkedSaleIds]
+  const correctionChunks: string[][] = []
+  for (let index = 0; index < saleIdList.length; index += 30) correctionChunks.push(saleIdList.slice(index, index + 30))
+  const correctionsBySale = await Promise.all(correctionChunks.map(ids => readAll<DistSaleCorrection>(DIST_COLLECTIONS.saleCorrections, 'saleId', ids)))
+  const saleCorrections = correctionsBySale.flat().sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+  return { sales, saleCorrections, receivables, collections, receivableAdjustments, unlinkedNameMatches: nameMatches }
 }
 
 export interface ProductMovementCursor { createdAt: string; id: string }

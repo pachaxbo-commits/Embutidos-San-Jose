@@ -7,8 +7,9 @@ import { Field, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2 } from '../domain/engine'
+import { CustomerHistoryView } from './CustomerHistoryView'
 import { saveCustomer } from '../data/distributionRepository'
-import { PrimaryButton, formatBs } from './shared'
+import { PrimaryButton, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCustomer } from '../types'
 
@@ -35,6 +36,7 @@ export function CustomersView({ session, data }: DistributionViewProps) {
   const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest')
   const [selectedRouteFilter, setSelectedRouteFilter] = useState<string>('all')
   const [isRouteFilterOpen, setIsRouteFilterOpen] = useState(false)
+  const [historyCustomer, setHistoryCustomer] = useState<DistCustomer | null>(null)
 
   const activeRoutes = useMemo(() => data.routes.filter((r) => r.active !== false), [data.routes])
 
@@ -117,6 +119,8 @@ export function CustomersView({ session, data }: DistributionViewProps) {
     }
   }
 
+  if (historyCustomer) return <CustomerHistoryView key={historyCustomer.id} customer={historyCustomer} routes={data.routes} session={session} onBack={() => setHistoryCustomer(null)} />
+
   return (
     <Screen
       title="Clientes"
@@ -183,11 +187,9 @@ export function CustomersView({ session, data }: DistributionViewProps) {
                   ? 'Impulsación'
                   : data.routes.find((r) => r.id === customer.routeId)?.name || 'Sin ruta asignada'
               return (
-                <button
+                <article
                   key={customer.id}
-                  type="button"
-                  onClick={() => openEdit(customer)}
-                  className="flex w-full min-w-0 items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left"
+                  className="flex w-full min-w-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left"
                 >
                   {customer.photoDataUrl && <img src={customer.photoDataUrl} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover" />}
                   <div className="min-w-0">
@@ -199,12 +201,16 @@ export function CustomersView({ session, data }: DistributionViewProps) {
                       Ruta: {routeName}
                     </p>
                   </div>
-                  {balance > 0 && (
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {balance > 0 && (
                     <span className="shrink-0 rounded-full bg-[var(--primary-soft)] px-2 py-1 text-[11px] font-black text-[var(--primary)]">
                       {formatBs(balance)}
                     </span>
                   )}
-                </button>
+                    <SecondaryButton onClick={() => openEdit(customer)}>Editar</SecondaryButton>
+                    <PrimaryButton onClick={() => setHistoryCustomer(customer)}>Ver historial completo</PrimaryButton>
+                  </div>
+                </article>
               )
             })}
           </div>

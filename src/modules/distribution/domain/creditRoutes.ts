@@ -36,6 +36,22 @@ export interface CreditPortfolioResult {
   availableRoutes: RouteOption[]
 }
 
+/** Nombre vigente por identidad estable; el snapshot histórico queda como fallback. */
+export function currentCustomerDisplayName(customerId: string, historicalName: string | undefined, customersById: Map<string, DistCustomer>): string {
+  return customersById.get(customerId)?.name?.trim() || historicalName?.trim() || 'Cliente'
+}
+
+/** Busca por nombre vigente, CI/código o snapshots históricos de las deudas de esta identidad. */
+export function matchesCustomerCreditSearch(entry: CustomerCreditRouteView, term: string): boolean {
+  const normalized = term.trim().toLocaleLowerCase('es-BO')
+  if (!normalized) return true
+  const haystack = [entry.customerName, entry.customerCode, entry.identityNumber, ...entry.allReceivables.map(row => row.customerName)]
+    .filter(Boolean)
+    .join(' ')
+    .toLocaleLowerCase('es-BO')
+  return haystack.includes(normalized)
+}
+
 /** Reparte un crédito inicial entre productos según su subtotal, cerrando exactamente a centavos. */
 export function allocateCreditBySubtotal<T extends { subtotal: number }>(lines: T[], creditAmount: number): number[] {
   const targetCents = Math.round((Number(creditAmount) || 0) * 100)
@@ -274,7 +290,7 @@ export function computeCreditPortfolioByRoute({
     const r = item.receivable
     const cId = r.customerId
     const customer = customersById.get(cId)
-    const cName = r.customerName || customer?.name || 'Cliente'
+    const cName = currentCustomerDisplayName(cId, r.customerName || customer?.name, customersById)
 
     let entry = customerMap.get(cId)
     if (!entry) {

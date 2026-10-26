@@ -7,6 +7,7 @@ import { Modal } from '../../../components/ui/Modal'
 import { exportExcel, exportPdf, reportSheets } from '../data/reportExports'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { computeMoneySummary } from '../domain/engine'
+import { currentCustomerDisplayName } from '../domain/creditRoutes'
 import { KpiCard, SecondaryButton, formatBs } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection } from '../types'
@@ -17,6 +18,7 @@ import { printCollectionReceipt, printLargeCollectionReceipt, shareCollectionRec
  * financieros separados de las ventas.
  */
 export function CollectionsView({ session, data }: DistributionViewProps) {
+  const customersById = useMemo(() => new Map(data.customers.map(customer => [customer.id, customer])), [data.customers])
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
   const [selected, setSelected] = useState<DistCollection | null>(null)
@@ -58,7 +60,7 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
                 className="flex w-full min-w-0 flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3"
               >
                 <div className="min-w-0 flex-1 basis-full sm:basis-0">
-                  <p className="break-words text-xs font-extrabold text-slate-900">{collection.customerName}</p>
+                  <p className="break-words text-xs font-extrabold text-slate-900">{currentCustomerDisplayName(collection.customerId, collection.customerName, customersById)}</p>
                   {collection.pendingConfirmation && <p className="text-xs text-amber-700">Pendiente de confirmación</p>}
                   <CreditProducts saleId={data.receivables.find(r => r.id === collection.receivableId)?.saleId} lines={collection.saleLines?.length ? collection.saleLines : data.receivables.find(r => r.id === collection.receivableId)?.saleLines} />
                   <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">

@@ -13,6 +13,8 @@ import {
   computeCreditPortfolioByRoute,
   allocateCreditBySubtotal,
   getRouteDisplayName,
+  currentCustomerDisplayName,
+  matchesCustomerCreditSearch,
   resolveCreditProducts,
   type CustomerCreditRouteView,
 } from '../domain/creditRoutes'
@@ -30,6 +32,8 @@ import { customerStatementFilename } from '../domain/customerCreditStatement'
  * El servidor distribuye el pago FIFO entre las deudas activas del cliente.
  */
 export function CreditsView({ session, data }: DistributionViewProps) {
+  const customersById = useMemo(() => new Map(data.customers.map(customer => [customer.id, customer])), [data.customers])
+  const customerDisplayName = (customerId: string, historicalName?: string) => currentCustomerDisplayName(customerId, historicalName, customersById)
   const [period, setPeriod] = useState<string[]>([])
   const [search, setSearch] = useState('')
   const [selectedRouteId, setSelectedRouteId] = useState<string>('all')
@@ -227,13 +231,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
     return term
-      ? customerCredits.filter((entry) =>
-          [entry.customerName, entry.customerCode, entry.identityNumber]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-            .includes(term),
-        )
+      ? customerCredits.filter((entry) => matchesCustomerCreditSearch(entry, term))
       : customerCredits
   }, [customerCredits, search])
 
@@ -274,7 +272,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       const salesById = new Map([...data.sales, ...sources.sales].map((sale) => [sale.id, sale]))
       const customerForStatement = {
         id: entry.customerId,
-        name: customer?.name || entry.customerName,
+        name: currentCustomerDisplayName(entry.customerId, entry.customerName, customersById),
         identityNumber: customer?.identityNumber || entry.identityNumber,
         customerCode: customer?.customerCode || entry.customerCode,
       }
@@ -393,7 +391,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       const registered = await registerCollection({
         operationId: newOperationId('col'),
         customerId: collectCustomer.customerId,
-        customerName: collectCustomer.customerName,
+        customerName: customerDisplayName(collectCustomer.customerId, collectCustomer.customerName),
         receivable: oldestDebt,
         amount: value,
         method,
@@ -694,7 +692,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         isOpen={Boolean(statementCustomer)}
         onClose={() => { if (!statementExporting) { setStatementCustomer(null); setStatementError('') } }}
         title="Descargar estado de cuenta"
-        subtitle={statementCustomer?.customerName}
+        subtitle={statementCustomer ? customerDisplayName(statementCustomer.customerId, statementCustomer.customerName) : undefined}
         size="sm"
       >
         <div className="grid gap-3">
@@ -744,7 +742,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
       <Modal
         isOpen={Boolean(selected)}
         onClose={() => setSelected(null)}
-        title={selected?.customerName ?? ''}
+        title={selected ? customerDisplayName(selected.customerId, selected.customerName) : ''}
         subtitle={
           selected
             ? selectedRouteId !== 'all' && selectedRouteId
@@ -1006,7 +1004,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         isOpen={Boolean(editingReceivable)}
         onClose={() => setEditingReceivable(null)}
         title="Editar deuda"
-        subtitle={editingReceivable?.customerName}
+        subtitle={editingReceivable ? customerDisplayName(editingReceivable.customerId, editingReceivable.customerName) : undefined}
         size="lg"
         footer={<PrimaryButton full disabled={isSubmitting} onClick={() => void submitReceivableEdit()}>Guardar cambios</PrimaryButton>}
       >
@@ -1036,7 +1034,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         isOpen={Boolean(voidingReceivable)}
         onClose={() => { setVoidingReceivable(null); setVoidConfirmationStep(1) }}
         title={voidConfirmationStep === 1 ? 'Revisar anulación de deuda' : 'Confirmar eliminación'}
-        subtitle={voidingReceivable ? `${voidingReceivable.customerName} · ${formatBs(voidingReceivable.balance)}` : ''}
+        subtitle={voidingReceivable ? `${customerDisplayName(voidingReceivable.customerId, voidingReceivable.customerName)} · ${formatBs(voidingReceivable.balance)}` : ''}
         footer={voidConfirmationStep === 1
           ? <PrimaryButton full disabled={isSubmitting || !voidReason.trim() || Number(voidingReceivable?.paidAmount) > 0} onClick={() => setVoidConfirmationStep(2)}>Continuar a segunda confirmación</PrimaryButton>
           : <PrimaryButton full disabled={isSubmitting || voidPhrase !== 'ELIMINAR DEUDA'} onClick={() => void submitReceivableVoid()}>Confirmar eliminación</PrimaryButton>}
@@ -1052,7 +1050,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
           {Number(voidingReceivable.paidAmount) > 0 && <p className="text-xs font-bold text-rose-700">No puede anularse porque ya tiene pagos aplicados.</p>}
           <Field label="Motivo obligatorio" required><TextArea value={voidReason} onChange={(e) => setVoidReason(e.target.value)} /></Field>
           </> : <>
-          <div className="rounded-xl border-2 border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Última confirmación: se anulará la deuda de {voidingReceivable.customerName} por {formatBs(voidingReceivable.balance)}. La venta y el stock permanecerán sin cambios. Motivo: {voidReason}</div>
+          <div className="rounded-xl border-2 border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Última confirmación: se anulará la deuda de {customerDisplayName(voidingReceivable.customerId, voidingReceivable.customerName)} por {formatBs(voidingReceivable.balance)}. La venta y el stock permanecerán sin cambios. Motivo: {voidReason}</div>
           <Field label="Escribe exactamente: ELIMINAR DEUDA" required><TextInput value={voidPhrase} onChange={(e) => setVoidPhrase(e.target.value)} /></Field>
           </>}
           {error && <p role="alert" className="text-xs font-bold text-rose-700">{error}</p>}
@@ -1063,7 +1061,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         isOpen={Boolean(lastCollection)}
         onClose={() => setLastCollection(null)}
         title="Cobro registrado correctamente"
-        subtitle={lastCollection ? `${lastCollection.customerName} · ${formatBs(lastCollection.amount)}` : ''}
+        subtitle={lastCollection ? `${customerDisplayName(lastCollection.customerId, lastCollection.customerName)} · ${formatBs(lastCollection.amount)}` : ''}
         footer={
           <PrimaryButton full onClick={() => setLastCollection(null)}>
             Finalizar
@@ -1120,7 +1118,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
           }
         }}
         title="Registrar cobro de cliente"
-        subtitle={collectCustomer ? `${collectCustomer.customerName}` : ''}
+        subtitle={collectCustomer ? customerDisplayName(collectCustomer.customerId, collectCustomer.customerName) : ''}
         footer={
           <PrimaryButton full disabled={isSubmitting} onClick={requestCollectionConfirmation}>
             Cobrar
@@ -1239,7 +1237,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         {collectCustomer && (
           <div className="grid gap-3">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
-              <p className="font-extrabold text-slate-900">{collectCustomer.customerName}</p>
+              <p className="font-extrabold text-slate-900">{customerDisplayName(collectCustomer.customerId, collectCustomer.customerName)}</p>
               <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2">
                 <span className="font-semibold text-slate-600">Monto a cobrar:</span>
                 <span className="text-base font-black text-emerald-700 tabular-nums">
@@ -1540,7 +1538,7 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         isOpen={Boolean(overrideCustomer)}
         onClose={() => setOverrideCustomer(null)}
         title="Autorizar crédito temporal"
-        subtitle={overrideCustomer?.customerName}
+        subtitle={overrideCustomer ? customerDisplayName(overrideCustomer.customerId, overrideCustomer.customerName) : undefined}
         footer={
           <PrimaryButton
             full
