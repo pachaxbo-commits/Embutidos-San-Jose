@@ -28,6 +28,11 @@ const canonicalJson = value => JSON.stringify(value, (_key, item) => {
   return Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]));
 });
 const sha256 = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
+const integerShare = (total, offset, quantity, whole) => {
+  if (total === null || total === undefined) return null;
+  check(Number.isSafeInteger(total) && total >= 0 && Number.isSafeInteger(offset) && Number.isSafeInteger(quantity) && Number.isSafeInteger(whole) && whole > 0 && offset >= 0 && quantity >= 0 && offset + quantity <= whole, 'Asignación entera de peso o costo inválida.');
+  return Number((BigInt(total) * BigInt(offset + quantity) / BigInt(whole)) - (BigInt(total) * BigInt(offset) / BigInt(whole)));
+};
 function kgToGrams(value, label = 'El peso') {
   const text = typeof value === 'number' ? String(value) : String(value ?? '');
   check(/^\d+(?:\.\d{1,3})?$/.test(text), `${label} debe expresarse en kg con hasta tres decimales.`);
@@ -290,7 +295,117 @@ class Operation {
     check(b.quantity >= 0, "Stock insuficiente.");
     b.updatedAt = this.now;
   }
-  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents } = {}) {
+  processingLocationTotals(lot, loc) {
+    const segments = lot.processingByLocation?.[loc]?.segments;
+    check(Array.isArray(segments), `El lote derivado ${lot.lotCode || lot.id} no tiene asignación trazable para ${loc}.`);
+    return segments.reduce((total, segment) => ({
+      quantity: total.quantity + Number(segment.remainingQuantity || 0),
+      weightG: total.weightG + Number(segment.remainingWeightG || 0),
+      costCents: total.costCents === null || segment.remainingCostCents === null ? null : total.costCents + Number(segment.remainingCostCents || 0),
+    }), { quantity: 0, weightG: 0, costCents: 0 });
+  }
+  assertProcessingLocation(lot, loc) {
+    const totals = this.processingLocationTotals(lot, loc);
+    check(Number.isSafeInteger(totals.quantity) && totals.quantity === Number(lot.quantities?.[loc] || 0), `Los paquetes del lote derivado ${lot.lotCode || lot.id} no concilian con ${loc}.`);
+    check(Number.isSafeInteger(totals.weightG) && totals.weightG >= 0, 'Los gramos restantes del lote derivado no son válidos.');
+    check(new Set(lot.processingByLocation?.[loc]?.segments.map(segment => segment.segmentId)).size === lot.processingByLocation[loc].segments.length, 'El lote derivado contiene segmentos duplicados en una ubicación.');
+    const all = Object.entries(lot.processingByLocation || {}).reduce((total, [locationId, value]) => {
+      const rows = Array.isArray(value?.segments) ? value.segments : [];
+      return rows.reduce((sum, segment) => ({ quantity: sum.quantity + Number(segment.remainingQuantity || 0), weightG: sum.weightG + Number(segment.remainingWeightG || 0), costCents: sum.costCents === null || segment.remainingCostCents === null ? null : sum.costCents + Number(segment.remainingCostCents || 0) }), total);
+    }, { quantity: 0, weightG: 0, costCents: 0 });
+    const lotQuantity = Object.values(lot.quantities || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+    check(Number.isSafeInteger(all.quantity) && all.quantity === lotQuantity, 'La cantidad de paquetes por ubicación no concilia con el lote derivado.');
+    check(Number.isSafeInteger(all.weightG) && all.weightG === Number(lot.processingPhysicalWeightGRemaining), 'La asignación por ubicación no concilia con el peso físico restante del lote derivado.');
+    check(all.costCents === (lot.processingCostCentsRemaining ?? null), 'La asignación por ubicación no concilia con el costo restante del lote derivado.');
+    return totals;
+  }
+  processingMovementAllowed(lot, loc, options) {
+    if (!lot.processingCommercialBlocked) return true;
+    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true;
+    if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
+    if (origins.pending(lot, loc) > 0 || !lot.processingSourceAllocationBasis) return false;
+    const unavailable = lot.processingUnavailable?.[loc] || {};
+    if (Number(unavailable.courtesy || 0) + Number(unavailable.repackPending || 0) + Number(unavailable.reviewHold || 0) > 0) return false;
+    this.assertProcessingLocation(lot, loc);
+    return true;
+  }
+  takeProcessingAllocation(lot, loc, quantity, allocationOperationId) {
+    const totals = this.assertProcessingLocation(lot, loc);
+    check(Number.isSafeInteger(quantity) && quantity > 0 && quantity <= totals.quantity, 'La cantidad comercial del lote derivado no está disponible.');
+    const segments = lot.processingByLocation[loc].segments;
+    let remaining = quantity;
+    const allocations = [];
+    for (const segment of segments) {
+      if (!remaining) break;
+      const available = Number(segment.remainingQuantity || 0);
+      if (available <= 0) continue;
+      const count = Math.min(remaining, available);
+      const weightG = integerShare(segment.remainingWeightG, 0, count, available);
+      const costCents = integerShare(segment.remainingCostCents, 0, count, available);
+      const processingAllocation = {
+        segmentId: segment.segmentId,
+        batchId: segment.batchId,
+        destinationId: segment.destinationId,
+        sourceMovementId: segment.sourceMovementId,
+        quantity: count,
+        physicalWeightG: weightG,
+        costCents,
+        weightBasis: segment.weightBasis,
+        allocationMethod: 'documented_average',
+        physicalOriginConfirmed: false,
+        sourceLocation: loc,
+        allocationOperationId,
+      };
+      allocations.push(processingAllocation);
+      segment.remainingQuantity -= count;
+      segment.remainingWeightG -= weightG;
+      if (segment.remainingCostCents !== null) segment.remainingCostCents -= costCents;
+      remaining -= count;
+    }
+    check(remaining === 0, 'La asignación comercial del lote derivado quedó incompleta.');
+    lot.processingByLocation[loc].segments = segments.filter(segment => segment.remainingQuantity > 0);
+    lot.processingPhysicalWeightGRemaining -= allocations.reduce((sum, item) => sum + item.physicalWeightG, 0);
+    if (lot.processingCostCentsRemaining !== null) lot.processingCostCentsRemaining -= allocations.reduce((sum, item) => sum + item.costCents, 0);
+    const physicalWeightG = allocations.reduce((sum, item) => sum + item.physicalWeightG, 0);
+    const costCents = allocations.some(item => item.costCents === null) ? null : allocations.reduce((sum, item) => sum + item.costCents, 0);
+    check(Number.isSafeInteger(physicalWeightG) && physicalWeightG >= 0 && (costCents === null || Number.isSafeInteger(costCents) && costCents >= 0), 'El movimiento del lote derivado produjo una asignación de peso o costo inválida.');
+    return allocations;
+  }
+  restoreProcessingAllocation(lot, loc, allocation) {
+    const part = allocation.processingAllocation;
+    if (!part) return;
+    check(lot.processingCommercialBlocked && lot.processingDestinationKind === 'finished', 'No se puede restituir asignación de un destino de elaboración protegido.');
+    check(Number.isSafeInteger(part.quantity) && part.quantity > 0 && Number.isSafeInteger(part.physicalWeightG) && part.physicalWeightG >= 0 && (part.costCents === null || Number.isSafeInteger(part.costCents) && part.costCents >= 0) && part.segmentId && part.batchId === lot.processingBatchId, 'La asignación restituida del lote derivado no es válida.');
+    lot.processingByLocation ||= {};
+    const bucket = lot.processingByLocation[loc] || (lot.processingByLocation[loc] = { segments: [] });
+    const current = bucket.segments.find(segment => segment.segmentId === part.segmentId);
+    if (current) {
+      check(current.batchId === part.batchId && current.weightBasis === part.weightBasis && (current.remainingCostCents === null) === (part.costCents === null), 'La referencia de la asignación no coincide con el segmento existente.');
+      current.remainingQuantity += part.quantity;
+      current.remainingWeightG += part.physicalWeightG;
+      if (current.remainingCostCents !== null) current.remainingCostCents += part.costCents;
+    } else bucket.segments.push({ segmentId: part.segmentId, batchId: part.batchId, destinationId: part.destinationId, sourceMovementId: part.sourceMovementId, weightBasis: part.weightBasis, remainingQuantity: part.quantity, remainingWeightG: part.physicalWeightG, remainingCostCents: part.costCents });
+    lot.processingPhysicalWeightGRemaining += part.physicalWeightG;
+    if (lot.processingCostCentsRemaining !== null) lot.processingCostCentsRemaining += part.costCents;
+    this.assertProcessingLocation(lot, loc);
+  }
+  removeProcessingAllocation(lot, loc, allocation) {
+    const part = allocation.processingAllocation;
+    if (!part) return;
+    const totals = this.processingLocationTotals(lot, loc);
+    check(Number.isSafeInteger(part.quantity) && part.quantity > 0 && totals.quantity === Number(lot.quantities?.[loc] || 0) + part.quantity, 'La corrección intenta recuperar más paquetes derivados de los que quedan en la ubicación.');
+    const segments = lot.processingByLocation[loc].segments;
+    const segment = segments.find(item => item.segmentId === part.segmentId);
+    check(segment && segment.remainingQuantity >= part.quantity && segment.remainingWeightG >= part.physicalWeightG && (segment.remainingCostCents === null ? part.costCents === null : part.costCents !== null && segment.remainingCostCents >= part.costCents), 'La asignación original del lote derivado ya no está completa en la ruta; no se puede corregir el despacho.');
+    segment.remainingQuantity -= part.quantity;
+    segment.remainingWeightG -= part.physicalWeightG;
+    if (segment.remainingCostCents !== null) segment.remainingCostCents -= part.costCents;
+    lot.processingByLocation[loc].segments = segments.filter(item => item.remainingQuantity > 0);
+    lot.processingPhysicalWeightGRemaining -= part.physicalWeightG;
+    if (lot.processingCostCentsRemaining !== null) lot.processingCostCentsRemaining -= part.costCents;
+    this.assertProcessingLocation(lot, loc);
+  }
+  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
@@ -305,7 +420,8 @@ class Operation {
     const processingCourtesyAllowed = lot => {
       if (!lot.processingCommercialBlocked) return true;
       const proof = processingCourtesyReservation;
-      return Boolean(proof && proof.purpose === 'courtesy' && proof.location === loc && proof.lotId === lot.id && proof.batchId && proof.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy');
+      const courtesyAllowed = Boolean(proof && proof.purpose === 'courtesy' && proof.location === loc && proof.lotId === lot.id && proof.batchId && proof.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy');
+      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer });
     };
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
@@ -323,7 +439,21 @@ class Operation {
         return { lot, quantity: requestedQuantity };
       });
       check(Math.abs(roundAt(requested.reduce((sum, part) => sum + part.quantity, 0), precision) - quantity) < 1 / (10 ** precision), "La distribución por lotes debe coincidir con la cantidad total.");
-      const allocations = requested.flatMap(({ lot, quantity: requestedQuantity }) => origins.take(lot, loc, requestedQuantity, allowPendingOrigin));
+      const allocations = requested.flatMap(({ lot, quantity: requestedQuantity }) => {
+        if (lot.processingCommercialBlocked && !processingCourtesyReservation) {
+          const processingAllocations = this.takeProcessingAllocation(lot, loc, requestedQuantity, this.id);
+          const parts = origins.take(lot, loc, requestedQuantity, allowPendingOrigin);
+          check(parts.length === 1 && !parts[0].originReferences, 'El despacho del lote derivado requiere asignación de origen completa.');
+          let offset = 0;
+          return processingAllocations.map(processingAllocation => {
+            const allocation = origins.slice(parts[0], offset, processingAllocation.quantity);
+            allocation.processingAllocation = processingAllocation;
+            offset += processingAllocation.quantity;
+            return allocation;
+          });
+        }
+        return origins.take(lot, loc, requestedQuantity, allowPendingOrigin);
+      });
       this.move(e, loc, -quantity, precision);
       return allocations;
     }
@@ -351,6 +481,22 @@ class Operation {
       if (remaining <= 0) break;
       const q = roundAt(Math.min(remaining, usable(l)), precision);
       remaining = roundAt(remaining - q, precision);
+      if (l.processingCommercialBlocked) {
+        if (!processingCourtesyReservation) {
+          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
+          const processingAllocations = this.takeProcessingAllocation(l, loc, q, this.id);
+          const parts = origins.take(l, loc, q, allowPendingOrigin);
+          check(parts.length === 1 && !parts[0].originReferences, 'El despacho del lote derivado requiere asignación de origen completa.');
+          let offset = 0;
+          for (const processingAllocation of processingAllocations) {
+            const allocation = origins.slice(parts[0], offset, processingAllocation.quantity);
+            allocation.processingAllocation = processingAllocation;
+            allocations.push(allocation);
+            offset += processingAllocation.quantity;
+          }
+          continue;
+        }
+      }
       const parts = origins.take(l, loc, q, allowPendingOrigin);
       if (l.processingCommercialBlocked) {
         check(Number.isSafeInteger(processingPhysicalWeightG) && processingPhysicalWeightG > 0 && processingPhysicalWeightG <= Number(l.processingPhysicalWeightGRemaining), 'El peso físico asignado a la cortesía no concilia con el lote derivado.');
@@ -429,6 +575,7 @@ class Operation {
     for (const a of parts) {
       const l = e.lots.find((x) => x.id === a.lotId);
       origins.restore(l, to, a);
+      this.restoreProcessingAllocation(l, to, a);
     }
     this.move(e, to, q, precision);
     return parts;
@@ -440,6 +587,7 @@ class Operation {
       const lot = e.lots.find(item => item.id === part.lotId);
       check(lot, "No se encontró el lote original de la venta.");
       origins.restore(lot, loc, part);
+      this.restoreProcessingAllocation(lot, loc, part);
       this.move(e, loc, part.quantity, precision);
     }
   }
@@ -494,6 +642,12 @@ class Operation {
       responsibleName: this.responsibleName(),
       responsibleRole: this.member.role,
       ...extra,
+      ...(Array.isArray(extra.allocations) && extra.allocations.some(allocation => allocation.processingAllocation) ? (() => {
+        const parts = extra.allocations.filter(allocation => allocation.processingAllocation).map(allocation => allocation.processingAllocation);
+        const physicalWeightG = parts.reduce((sum, part) => sum + part.physicalWeightG, 0);
+        const costCents = parts.some(part => part.costCents === null) ? null : parts.reduce((sum, part) => sum + part.costCents, 0);
+        return { processingAllocations: parts, processingBatchIds: [...new Set(parts.map(part => part.batchId))], physicalWeightG, costCents, processingWeightBasis: [...new Set(parts.map(part => part.weightBasis))], processingAllocationMethod: 'documented_average_not_individual_measurement' };
+      })() : {}),
       ...(origins.references(extra.allocations).length ? { originReferences: origins.references(extra.allocations), traceabilityStatus: 'physical_origin_pending', note: `${extra.note || ''} ${origins.note}`.trim() } : {}),
     });
     return id;
@@ -562,7 +716,7 @@ async function transfer(o, p) {
       (await o.read("distWarehouses", p.to))?.active,
       "Almacén destino no disponible.",
     );
-  const parts = await o.moveStock(p.line.productId, from, to, p.line.quantity);
+  const parts = await o.moveStock(p.line.productId, from, to, p.line.quantity, { processingTransfer: true });
   const e = o.stock.get(p.line.productId);
   o.ledger(p.line.productId, p.line.quantity, from, to, "transfer", {
     allocations: parts,
@@ -645,12 +799,16 @@ async function dispatch(o, p, addition = false) {
         "Revisa la cantidad normal y la merma adicional del despacho.");
       check(round(normalQuantity + dispatchMerma) === physicalQuantity, "El total físico debe ser igual a la cantidad normal más la merma adicional.");
     }
-    const allocations = await o.moveStock(l.productId, from, to, physicalQuantity, options);
+    const allocations = await o.moveStock(l.productId, from, to, physicalQuantity, { ...options, processingDispatch: true });
     const effective = linesByProduct.get(l.productId) || { productId: l.productId, productName: product.name, unitType: product.unitType, quantity: 0, normalQuantity: 0, dispatchMerma: 0, allocations: [], dispatchMermaAllocations: [] };
     effective.quantity = round(effective.quantity + l.quantity);
     effective.normalQuantity = round((effective.normalQuantity || 0) + normalQuantity);
     effective.dispatchMerma = round((effective.dispatchMerma || 0) + dispatchMerma);
     for (const allocation of allocations) {
+      if (allocation.processingAllocation) {
+        effective.allocations.push({ ...allocation });
+        continue;
+      }
       const existing = effective.allocations.find((part) => part.lotId === allocation.lotId);
       if (existing) existing.quantity = round(existing.quantity + allocation.quantity);
       else effective.allocations.push({ ...allocation });
@@ -757,7 +915,8 @@ function normalizeDispatchLines(lines = []) {
       : source.lotId ? [{ lotId: source.lotId, lotCode: source.lotCode || "", expiresOn: source.expiresOn || "", quantity: source.quantity, productionCost: source.productionCost ?? null }] : [];
     for (const allocation of sourceAllocations) {
       const existing = current.allocations.find((part) => part.lotId === allocation.lotId);
-      if (existing) existing.quantity = round(existing.quantity + allocation.quantity);
+      if (allocation.processingAllocation) current.allocations.push({ ...allocation });
+      else if (existing) existing.quantity = round(existing.quantity + allocation.quantity);
       else current.allocations.push({ ...allocation });
     }
     byProduct.set(source.productId, current);
@@ -856,7 +1015,9 @@ async function revertLineStock(o, d, line, returnQty, reason) {
       `No se encontró el lote ${part.lotCode || part.lotId} en el inventario.`,
     );
     origins.remove(lot, route, part);
+    o.removeProcessingAllocation(lot, route, part);
     origins.restore(lot, warehouse, part);
+    o.restoreProcessingAllocation(lot, warehouse, part);
   }
 
   o.move(e, warehouse, returnQty);
@@ -1044,7 +1205,7 @@ async function correctDispatch(o, p) {
               warehouse,
               route,
               addQty,
-              { lotId: c.lotId || line.lotId },
+              { lotId: c.lotId || line.lotId, processingDispatch: true },
             );
           } else {
             allocationsAdded = await o.moveStock(
@@ -1052,6 +1213,7 @@ async function correctDispatch(o, p) {
               warehouse,
               route,
               addQty,
+              { processingDispatch: true },
             );
           }
         } catch (lotErr) {
@@ -1070,6 +1232,10 @@ async function correctDispatch(o, p) {
         line.quantity = newQty;
         line.allocations = line.allocations || [];
         for (const addAlloc of allocationsAdded) {
+          if (addAlloc.processingAllocation) {
+            line.allocations.push({ ...addAlloc });
+            continue;
+          }
           const existing = line.allocations.find((a) => a.lotId === addAlloc.lotId);
           if (existing) {
             existing.quantity = round(existing.quantity + addAlloc.quantity);
@@ -1216,7 +1382,7 @@ async function correctDispatch(o, p) {
                 warehouse,
                 route,
                 addQty,
-                { lotId: c.lotId || line.lotId },
+                { lotId: c.lotId || line.lotId, processingDispatch: true },
               );
             } else {
               allocationsAdded = await o.moveStock(
@@ -1224,6 +1390,7 @@ async function correctDispatch(o, p) {
                 warehouse,
                 route,
                 addQty,
+                { processingDispatch: true },
               );
             }
           } catch (lotErr) {
@@ -1242,6 +1409,10 @@ async function correctDispatch(o, p) {
           line.quantity = newQty;
           line.allocations = line.allocations || [];
           for (const addAlloc of allocationsAdded) {
+            if (addAlloc.processingAllocation) {
+              line.allocations.push({ ...addAlloc });
+              continue;
+            }
             const existing = line.allocations.find((a) => a.lotId === addAlloc.lotId);
             if (existing) {
               existing.quantity = round(existing.quantity + addAlloc.quantity);
@@ -3740,6 +3911,22 @@ handlers.confirmProcessingBatch = async (o, p) => {
       processingPhysicalWeightGRemaining: destination.netWeightG, processingCostCentsRemaining: costCents,
       processingSourceLotIds: destinationSourceAllocations[index].map(row => row.sourceLotId), processingSourceAllocations: destinationSourceAllocations[index], processingSourceAllocationBasis: 'batch_blend_accounting_allocation', processingCostTotalCents: costCents,
       ...(target.unitType === 'kg' ? {} : { processingPackageWeightLedger: { packageCount: destination.commercialQuantity, measuredNetWeightG: destination.netWeightG, consumedCount: 0, consumedWeightG: 0, nextPackageIndex: 0, weightBasis: destination.weightBasis } }),
+      ...(destination.kind === 'finished' && target.unitType !== 'kg' ? {
+        processingByLocation: {
+          [loc]: {
+            segments: [{
+              segmentId: `${batchId}:${destination.id}`,
+              batchId,
+              destinationId: destination.id,
+              sourceMovementId: '',
+              weightBasis: destination.weightBasis,
+              remainingQuantity: destination.commercialQuantity,
+              remainingWeightG: destination.netWeightG,
+              remainingCostCents: costCents,
+            }],
+          },
+        },
+      } : {}),
       ...(heldKey ? { processingUnavailable: { [loc]: { courtesy: heldKey === 'courtesy' ? destination.commercialQuantity : 0, repackPending: heldKey === 'repackPending' ? destination.commercialQuantity : 0, reviewHold: heldKey === 'reviewHold' ? destination.commercialQuantity : 0 } } } : {}),
       createdAt: o.now, createdBy: o.actor, branchId: 'main', dayKey: o.today, schemaVersion: 1,
     };
@@ -3768,6 +3955,10 @@ handlers.confirmProcessingBatch = async (o, p) => {
     o.move(targetEntry, loc, lot.quantities[loc], quantityPrecision(target));
     o.put('distLots', lotId, lot);
     const movementId = o.ledger(target.id, lot.quantities[loc], null, loc, 'processing_output', { batchId, lotId, lotCode: lot.lotCode, destinationId: destination.id, destinationKind: destination.kind, physicalWeightG: destination.netWeightG, commercialQuantity: lot.quantities[loc], costCents, costTotal: costCents === null ? null : costCents / 100, processingCommercialBlocked: true, sourceLotIds: lot.processingSourceLotIds, sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: lot.processingSourceAllocationBasis, note: destination.reason || '' }, quantityPrecision(target));
+    if (lot.processingByLocation?.[loc]?.segments?.length) {
+      lot.processingByLocation[loc].segments[0].sourceMovementId = movementId;
+      o.put('distLots', lotId, lot);
+    }
     movementIds.push(movementId);
     derivedLots.push({ lotId, productId: target.id, productName: target.name, destinationId: destination.id, destinationKind: destination.kind, lotCode: lot.lotCode, commercialQuantity: lot.quantities[loc], unitType: target.unitType, netWeightG: destination.netWeightG, costCents, sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: 'batch_blend_accounting_allocation', reservationId: reservationIds.find(id => id === `${lotId}__reservation`) || null, processingCommercialBlocked: true });
     const auditId = `processing_audit_${sha256(`${batchId}:${destination.id}`).slice(0, 40)}`;

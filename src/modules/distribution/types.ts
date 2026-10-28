@@ -151,9 +151,14 @@ export interface DistStockMovement extends DistBaseDoc {
   commercialQuantity?: number
   costCents?: number | null
   costTotal?: number | null
+  processingAllocations?: import('./domain/processing.ts').ProcessingMovementAllocation[]
+  processingBatchIds?: string[]
+  processingWeightBasis?: import('./domain/processing.ts').ProcessingWeightBasis[]
+  processingAllocationMethod?: 'documented_average_not_individual_measurement'
   processingCommercialBlocked?: boolean
   sourceLotIds?: string[]
   sourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[]
+  allocations?: DistLotAllocation[]
   sourceAllocationBasis?: 'batch_blend_accounting_allocation'
   originReferences?: OriginReference[]
   traceabilityStatus?: 'physical_origin_pending'
@@ -232,6 +237,7 @@ export interface DistLotAllocation {
   expiresOn: string
   quantity: number
   productionCost: number | null
+  processingAllocation?: import('./domain/processing.ts').ProcessingMovementAllocation
 }
 
 export interface DistDispatchAddition {
@@ -773,6 +779,8 @@ export interface DistLot {
  processingCostCentsRemaining?: number | null;
  processingCostTotalCents?: number | null;
  processingPackageWeightLedger?: import('./domain/processing.ts').PackageWeightLedger;
+ /** Per-location remaining package/gram/cost segments; absent on legacy derived lots and required for movement. */
+ processingByLocation?: Record<string, import('./domain/processing.ts').ProcessingLotLocationLedger>;
  processingSourceLotIds?: string[];
  processingSourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[];
  processingSourceAllocationBasis?: 'batch_blend_accounting_allocation';

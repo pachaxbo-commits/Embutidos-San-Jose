@@ -138,7 +138,7 @@ export function inventoryHistorySheet(
 
   return {
     name: "Historial de inventario",
-    headers: ["Fecha y hora", "Producto", "Movimiento", "Variación", "Unidad", "Origen", "Destino", "Responsable", "Observación"],
+    headers: ["Fecha y hora", "Producto", "Movimiento", "Variación", "Unidad", "Origen", "Destino", "Paquetes derivados", "Peso neto asignado (g)", "Costo histórico trasladado (Bs, informativo)", "Lote derivado", "Elaboración", "Responsable", "Observación"],
     rows: rows.map(({ movement, delta, responsible }) => [
       reportDateTime(movement.createdAt),
       reportRecordName(movement.productName, "Producto de registro anterior"),
@@ -147,6 +147,11 @@ export function inventoryHistorySheet(
       reportUnitLabel(movement.unitType),
       locationName(movement.fromLocation),
       locationName(movement.toLocation),
+      movement.processingAllocations?.reduce((sum, allocation) => sum + allocation.quantity, 0) ?? "",
+      movement.physicalWeightG ?? "",
+      movement.costCents == null ? "" : round2(movement.costCents / 100),
+      movement.allocations?.map(allocation => allocation.lotCode).filter(Boolean).join(", ") || "",
+      movement.processingBatchIds?.join(", ") || "",
       responsible,
       movement.note || "",
     ]),

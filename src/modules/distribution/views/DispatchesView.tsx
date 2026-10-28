@@ -52,7 +52,20 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [isNewOpen, setIsNewOpen] = useState(false)
   const [additionTarget, setAdditionTarget] = useState<DistDispatch | null>(null)
   const effectiveWarehouse = additionTarget?.warehouseId || warehouseId
-  const central = new Map(data.products.map(p => [p.id, data.balances.find(b => b.id === warehouseBalanceId(effectiveWarehouse, p.id))?.availableQuantity || 0]))
+  const lotLocation = effectiveWarehouse === 'central' ? 'central' : `warehouse__${effectiveWarehouse}`
+  const todayBolivia = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz' }).format(new Date())
+  const dispatchableDerived = new Map(data.products.map(product => [product.id, data.lots
+    .filter(lot => {
+      const held = lot.processingUnavailable?.[lotLocation]
+      const ledger = lot.processingByLocation?.[lotLocation]
+      return lot.productId === product.id && lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished'
+        && Array.isArray(ledger?.segments) && ledger.segments.length > 0
+        && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= todayBolivia)
+        && !Number(lot.pendingOrigins?.[lotLocation]?.reduce((sum, row) => sum + Number(row.quantity || 0), 0))
+        && !Number(held?.courtesy || 0) && !Number(held?.repackPending || 0) && !Number(held?.reviewHold || 0)
+    })
+    .reduce((sum, lot) => sum + Number(lot.quantities[lotLocation] || 0), 0)]))
+  const central = new Map(data.products.map(p => [p.id, (data.balances.find(b => b.id === warehouseBalanceId(effectiveWarehouse, p.id))?.availableQuantity || 0) + (dispatchableDerived.get(p.id) || 0)]))
   const [routeId, setRouteId] = useState('')
   const [distributorUid, setDistributorUid] = useState('')
   const [observation, setObservation] = useState('')
@@ -487,9 +500,17 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     setConfirmingLoadType(null)
   }
 
-  const lotLocation = effectiveWarehouse === 'central' ? 'central' : `warehouse__${effectiveWarehouse}`
   const eligibleLots = (productId: string) => data.lots
-    .filter(lot => lot.productId === productId && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= new Date().toLocaleDateString('en-CA')))
+    .filter(lot => {
+      const finishedTraceable = lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished'
+        && Array.isArray(lot.processingByLocation?.[lotLocation]?.segments) && lot.processingByLocation[lotLocation].segments.length > 0
+        && !Number(lot.pendingOrigins?.[lotLocation]?.reduce((sum, row) => sum + Number(row.quantity || 0), 0))
+        && !Number(lot.processingUnavailable?.[lotLocation]?.courtesy || 0)
+        && !Number(lot.processingUnavailable?.[lotLocation]?.repackPending || 0)
+        && !Number(lot.processingUnavailable?.[lotLocation]?.reviewHold || 0)
+      return lot.productId === productId && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= todayBolivia)
+        && (!lot.processingCommercialBlocked || finishedTraceable)
+    })
     .sort((a, b) => (a.expiresOn || '9999').localeCompare(b.expiresOn || '9999') || a.id.localeCompare(b.id))
 
   const distributeFefo = (draft: DraftLine) => {
@@ -677,7 +698,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           const total = round2(normal + merma)
           const complete = total > 0 && Math.abs(assigned - total) < 0.01
           return <div key={line.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Disponible: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p></div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
+            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Apto para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p>{dispatchableDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-indigo-700">Incluye sachets terminados con trazabilidad. La venta comercial sigue bloqueada.</p> : null}</div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
             <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
             {product.unitType === 'kg' && (
               <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Se envía físicamente con la carga. No es pérdida del almacén ni se cobra por separado.">

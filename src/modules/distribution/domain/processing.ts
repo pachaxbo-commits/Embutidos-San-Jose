@@ -94,6 +94,38 @@ export interface PackageWeightLedger {
   weightBasis: ProcessingWeightBasis
 }
 
+/** Remaining documented-average package assignment for one derived lot at one location. */
+export interface ProcessingLotLocationSegment {
+  segmentId: string
+  batchId: string
+  destinationId: string
+  sourceMovementId: string
+  weightBasis: ProcessingWeightBasis
+  remainingQuantity: number
+  remainingWeightG: number
+  remainingCostCents: number | null
+}
+
+export interface ProcessingLotLocationLedger {
+  segments: ProcessingLotLocationSegment[]
+}
+
+/** A movement allocation carries its exact accounting slice so a correction restores the same grams/cents. */
+export interface ProcessingMovementAllocation {
+  segmentId: string
+  batchId: string
+  destinationId: string
+  sourceMovementId: string
+  quantity: number
+  physicalWeightG: number
+  costCents: number | null
+  weightBasis: ProcessingWeightBasis
+  allocationMethod: 'documented_average'
+  physicalOriginConfirmed: false
+  sourceLocation: string
+  allocationOperationId: string
+}
+
 export interface ProcessingPackagingMaterial {
   id: string
   description: string
