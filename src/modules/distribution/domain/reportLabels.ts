@@ -42,6 +42,8 @@ const MOVEMENT_LABELS: Record<string, string> = {
   return_waste: 'Producto no apto al recibir retorno',
   return_waste_unassigned: 'Pérdida sin lote de origen identificado',
   courtesy: 'Entrega de cortesía',
+  reservation_created: 'Reserva creada (sin movimiento físico)',
+  reservation_released: 'Reserva liberada (sin movimiento físico)',
   overage: 'Sobrante',
   exchange: 'Cambio de producto',
   customer_return: 'Devolución del cliente',

@@ -111,6 +111,7 @@ export function computeOperatingResult(
     origen: displayOrigin(claim.routeId, scopedSales.find((sale) => sale.id === claim.saleId)?.routeName), monto: claim.revenueDelta }))
   const movementTypeLabel: Record<DistStockMovement['type'], string> = {
     traceability_notice: 'Origen físico pendiente (incidencia documental sin efecto económico)',
+    reservation_created: 'Reserva de producto (sin movimiento físico)', reservation_released: 'Liberación de reserva (sin movimiento físico)',
     intake: 'Ingreso de inventario', dispatch: 'Despacho', dispatch_addition: 'Aumento de despacho', sale: 'Venta',
     sale_correction: 'Corrección de venta', return: 'Retorno', adjustment: 'Ajuste de inventario',
     dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', dispatch_merma_sale: 'Merma adicional dentro de ventas', return_waste: 'Merma al retorno',

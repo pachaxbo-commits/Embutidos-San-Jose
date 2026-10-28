@@ -106,19 +106,32 @@ export interface ProcessingAuditEvent {
 
 export interface ProcessingReservation {
   id: string
-  batchId: string
+  restaurantId: string
+  branchId: string
+  schemaVersion: number
   productId: string
+  productName: string
   lotId: string
+  lotCode: string
+  unitType: UnitType
   location: string
   purpose: 'courtesy' | 'repack_pending' | 'review_hold'
-  physicalQuantityMilli: number
-  physicalWeightG: number
-  remainingQuantityMilli: number
-  remainingWeightG: number
+  originalQuantity: number
+  remainingQuantity: number
+  consumedQuantity: number
+  physicalWeightG: number | null
+  remainingWeightG: number | null
   status: ProcessingReservationStatus
+  source: string
+  batchId?: string
   createdAt: string
   createdBy: string
-  approvedBy?: string
+  createdByName: string
+  history: Array<{ id: string; action: string; quantity: number; at: string; by: string; byName: string; reason: string }>
+  releaseReason?: string
+  movementId?: string
+  updatedAt?: string
+  updatedBy?: string
 }
 
 export interface ProcessingAvailabilityInput {

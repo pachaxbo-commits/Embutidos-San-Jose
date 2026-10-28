@@ -82,6 +82,12 @@ service cloud.firestore {
       return hasRole(restaurantId, ['warehouse']);
     }
 
+    function distOwnsProcessingLocation(restaurantId, location) {
+      let member = get(/databases/$(database)/documents/restaurants/$(restaurantId)/members/$(request.auth.uid)).data;
+      return distWarehouse(restaurantId)
+        && location == (('warehouseId' in member && member.warehouseId != 'central' && member.warehouseId != '') ? 'warehouse__' + member.warehouseId : 'central');
+    }
+
     function distDistributor(restaurantId) {
       return hasRole(restaurantId, ['distributor']);
     }
@@ -232,6 +238,8 @@ service cloud.firestore {
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','correctDispatch','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
           || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
+          || (request.resource.data.type == 'reserveProcessingStock' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
+          || (request.resource.data.type in ['releaseProcessingReservation','deliverReservedCourtesy'] && distAdmin(restaurantId))
           || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','saveExpenseGroup','saveExpenseSupplier','registerSupplierPurchase','paySupplierPayable','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
       allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged']) && request.resource.data.acknowledged == true;
@@ -243,6 +251,10 @@ service cloud.firestore {
     }
     match /restaurants/{restaurantId}/distLots/{lotId} {
       allow read: if distWorker(restaurantId);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distStockReservations/{reservationId} {
+      allow read: if distAdmin(restaurantId) || distOwnsProcessingLocation(restaurantId, resource.data.location);
       allow write: if false;
     }
     match /restaurants/{restaurantId}/distLotHistory/{entryId} {

@@ -39,6 +39,8 @@ export type StockMovementType =
   | 'customer_return' // devolución física de cliente, inicialmente en cuarentena
   | 'transfer' // movimiento entre almacenes
   | 'sale_void' // reversión auditada de venta
+  | 'reservation_created' // reserva: cambio de disponibilidad sin cambio físico
+  | 'reservation_released' // liberación de reserva: sin cambio físico
 
 export interface DistBaseDoc {
   pendingConfirmation?: boolean
@@ -757,6 +759,7 @@ export interface DistLot {
  quarantineOriginalLotCode?: string;
  quarantineDestinationLotId?: string; quarantineDestinationLotCode?: string; quarantineLossCost?: number | null;
 }
+export type DistStockReservation = import('./domain/processing.ts').ProcessingReservation
 export interface OriginReference {
  historicalUnitCost?: number | null;
  exceptionId: string; accountingLotId: string; sourceMovementId: string;

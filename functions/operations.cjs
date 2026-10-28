@@ -69,6 +69,8 @@ class Operation {
     this.writes = new Map();
     this.stock = new Map();
     this.stockSnapshots = new Map();
+    this.reservationRows = new Map();
+    this.reservationProductRows = new Map();
     this.sequence = 0;
   }
   ref(col, id) {
@@ -101,6 +103,18 @@ class Operation {
       data,
     });
     this.cache.set(key, data);
+    if (col === 'distStockReservations') {
+      for (const [lotId, rows] of this.reservationRows.entries()) {
+        const index = rows.findIndex(row => row.id === id);
+        if (index >= 0) rows.splice(index, 1);
+        if (data.lotId === lotId) rows.push(data);
+      }
+      for (const [productId, rows] of this.reservationProductRows.entries()) {
+        const index = rows.findIndex(row => row.id === id);
+        if (index >= 0) rows.splice(index, 1);
+        if (data.productId === productId) rows.push(data);
+      }
+    }
   }
   base() {
     return {
@@ -229,6 +243,8 @@ class Operation {
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
     quantity = this.amount(quantity, e.p, false, amountPrecision);
+    const reservationRows = await this.processingReservationsForProduct(pid);
+    for (const lot of e.lots.filter(l => !lotId || l.id === lotId)) this.assertReservationAggregate(lot, loc, reservationRows.filter(row => row.lotId === lot.id));
     const unavailable = lot => {
       const held = lot.processingUnavailable?.[loc] || {};
       return roundAt((Number(held.courtesy) || 0) + (Number(held.repackPending) || 0) + (Number(held.reviewHold) || 0), precision);
@@ -280,6 +296,59 @@ class Operation {
     }
     this.move(e, loc, -quantity, precision);
     return allocations;
+  }
+  async processingReservations(lotId) {
+    if (!this.reservationRows.has(lotId)) {
+      const rows = await this.query('distStockReservations', 'lotId', lotId);
+      for (const [key, write] of this.writes.entries()) {
+        if (!key.startsWith('distStockReservations/')) continue;
+        const row = write.data;
+        if (row.id) {
+          const index = rows.findIndex(item => item.id === row.id);
+          if (index >= 0) rows.splice(index, 1);
+        }
+        if (row.lotId === lotId) rows.push(row);
+      }
+      this.reservationRows.set(lotId, rows);
+    }
+    return this.reservationRows.get(lotId);
+  }
+  async processingReservationsForProduct(productId) {
+    if (!this.reservationProductRows.has(productId)) {
+      const rows = await this.query('distStockReservations', 'productId', productId);
+      for (const [key, write] of this.writes.entries()) {
+        if (!key.startsWith('distStockReservations/')) continue;
+        const row = write.data;
+        if (row.id) {
+          const index = rows.findIndex(item => item.id === row.id);
+          if (index >= 0) rows.splice(index, 1);
+        }
+        if (row.productId === productId) rows.push(row);
+      }
+      this.reservationProductRows.set(productId, rows);
+    }
+    return this.reservationProductRows.get(productId);
+  }
+  reservationPrecision(lot) { return lot.unitType === 'kg' ? 3 : 0; }
+  reservationTotals(rows, loc) {
+    const active = rows.filter(r => r.location === loc && ['active','partially_consumed'].includes(r.status));
+    return {
+      courtesy: active.filter(r => r.purpose === 'courtesy').reduce((n,r) => n + Number(r.remainingQuantity || 0), 0),
+      repackPending: active.filter(r => r.purpose === 'repack_pending').reduce((n,r) => n + Number(r.remainingQuantity || 0), 0),
+      reviewHold: active.filter(r => r.purpose === 'review_hold').reduce((n,r) => n + Number(r.remainingQuantity || 0), 0),
+    };
+  }
+  assertReservationAggregate(lot, loc, rows) {
+    const expected = this.reservationTotals(rows, loc);
+    const actual = lot.processingUnavailable?.[loc] || { courtesy: 0, repackPending: 0, reviewHold: 0 };
+    const precision = this.reservationPrecision(lot);
+    check(['courtesy','repackPending','reviewHold'].every(k => roundAt(Number(actual[k] || 0), precision) === roundAt(expected[k], precision)), `Las reservas del lote ${lot.lotCode || lot.id} no concilian con su agregado. Requiere revisión administrativa.`);
+    return expected;
+  }
+  async assertNoActiveReservation(lot, loc, message) {
+    const rows = await this.processingReservations(lot.id);
+    this.assertReservationAggregate(lot, loc, rows);
+    check(!rows.some(row => row.location === loc && ['active','partially_consumed'].includes(row.status) && Number(row.remainingQuantity) > 0), message);
   }
   async moveStock(pid, from, to, q, options = {}) {
     const e = await this.loadStock(pid, from);
@@ -2236,7 +2305,7 @@ async function expense(o, p) {
     registeredByName: o.member.displayName || o.actor,
     note: p.note || "",
     transactionKind: "expense",
-    cashPaidAmount: p.paymentMethod === "cash" ? round(p.amount) : 0,
+    cashPaidAmount: (p.paymentMethod || "cash") === "cash" ? round(p.amount) : 0,
     transferPaidAmount: p.paymentMethod === "transfer" ? round(p.amount) : 0,
     otherPaidAmount: p.paymentMethod === "other" ? round(p.amount) : 0,
   };
@@ -3223,11 +3292,127 @@ async function claim(o, p) {
   return c;
 }
 Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, saveExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
+
+function reservationEvent(o, reservation, action, quantity, reason = '') {
+  const history = [...(reservation.history || []), { id: `${o.id}__event`, action, quantity, at: o.now, by: o.actor, byName: o.member.displayName || o.actor, reason }];
+  return { ...reservation, history, updatedAt: o.now, updatedBy: o.actor };
+}
+
+async function reservationContext(o, p) {
+  const product = await o.product(safeId(p.productId));
+  const loc = String(p.location || '');
+  check(loc === 'central' || loc.startsWith('warehouse__'), 'La reserva debe pertenecer a un almacén autorizado.');
+  o.owns(loc);
+  if (loc !== 'central') {
+    const warehouse = await o.read('distWarehouses', safeId(loc.slice('warehouse__'.length)));
+    check(warehouse && warehouse.active !== false, 'El almacén seleccionado no está disponible.');
+  }
+  const e = await o.loadStock(product.id, loc);
+  const lot = e.lots.find(row => row.id === safeId(p.lotId));
+  check(lot && lot.productId === product.id, 'El lote no corresponde al producto.');
+  check(!lot.legacy && !/^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`), 'No se puede reservar un lote sintético o anterior sin fechas.');
+  check(!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= o.today), 'El lote está vencido o en cuarentena.');
+  check(!origins.pending(lot, loc) && !Object.keys(lot.pendingOrigins || {}).some(key => origins.pending(lot, key) > 0), 'El lote tiene origen físico pendiente.');
+  const rows = await o.processingReservations(lot.id);
+  o.assertReservationAggregate(lot, loc, rows);
+  return { product, loc, e, lot, rows };
+}
+
+handlers.reserveProcessingStock = async (o, p) => {
+  check(['admin','warehouse'].includes(o.member.role), 'Solo Almacén o Administración pueden reservar producto.');
+  const { product, loc, lot, rows } = await reservationContext(o, p);
+  const purpose = p.purpose;
+  check(['courtesy','repack_pending','review_hold'].includes(purpose), 'La finalidad de la reserva no es válida.');
+  const quantity = o.amount(Number(p.quantity), product, false, quantityPrecision(product));
+  check(purpose !== 'review_hold' || o.member.role === 'admin', 'Solo Administración puede inmovilizar producto para revisión.');
+  check(purpose !== 'repack_pending' || o.member.role === 'admin' || o.member.role === 'warehouse', 'No tienes permiso para inmovilizar producto.');
+  const held = lot.processingUnavailable?.[loc] || { courtesy: 0, repackPending: 0, reviewHold: 0 };
+  const free = roundAt(Number(lot.quantities?.[loc] || 0) - origins.pending(lot, loc) - held.courtesy - held.repackPending - held.reviewHold, quantityPrecision(product));
+  check(free >= quantity, `Stock libre insuficiente; disponible ${free}.`);
+  const reservationId = safeId(p.reservationId || `${o.id}__reservation`);
+  check(!rows.some(r => r.id === reservationId) && !await o.read('distStockReservations', reservationId), 'La reserva ya existe.');
+  const physicalWeightG = product.unitType === 'kg'
+    ? Math.round(quantity * 1000)
+    : Number.isSafeInteger(p.physicalWeightG) && p.physicalWeightG > 0 ? p.physicalWeightG : null;
+  check(product.unitType === 'kg' || physicalWeightG !== null || p.physicalWeightG == null, 'El peso físico informado no es válido.');
+  const reservation = {
+    id: reservationId, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1,
+    productId: product.id, productName: product.name, lotId: lot.id, lotCode: lot.lotCode,
+    unitType: product.unitType, location: loc, purpose, originalQuantity: quantity,
+    remainingQuantity: quantity, consumedQuantity: 0, physicalWeightG,
+    remainingWeightG: physicalWeightG, status: 'active', source: String(p.source || 'manual').slice(0,80),
+    ...(p.batchId ? { batchId: safeId(p.batchId) } : {}),
+    createdAt: o.now, createdBy: o.actor, createdByName: o.member.displayName || o.actor,
+    history: [{ id: `${o.id}__created`, action: 'created', quantity, at: o.now, by: o.actor, byName: o.member.displayName || o.actor, reason: String(p.reason || '').trim() }],
+  };
+  const totals = { ...held, [purpose === 'repack_pending' ? 'repackPending' : purpose === 'review_hold' ? 'reviewHold' : 'courtesy']: roundAt(Number(held[purpose === 'repack_pending' ? 'repackPending' : purpose === 'review_hold' ? 'reviewHold' : 'courtesy'] || 0) + quantity, quantityPrecision(product)) };
+  lot.processingUnavailable = { ...(lot.processingUnavailable || {}), [loc]: totals };
+  o.put('distStockReservations', reservation.id, reservation);
+  const movementId = o.ledger(product.id, quantity, loc, loc, 'reservation_created', { lotId: lot.id, reservationId: reservation.id, reservationPurpose: purpose, physicalEffect: false, note: String(p.reason || '').trim() }, quantityPrecision(product));
+  reservation.movementId = movementId;
+  o.put('distStockReservations', reservation.id, reservation);
+  return { reservationId, quantity, physicalQuantity: Number(lot.quantities?.[loc] || 0), availableQuantity: roundAt(free - quantity, quantityPrecision(product)) };
+};
+
+handlers.releaseProcessingReservation = async (o, p) => {
+  o.admin();
+  const id = safeId(p.reservationId), reservation = await o.read('distStockReservations', id);
+  check(reservation && ['active','partially_consumed'].includes(reservation.status), 'La reserva ya no tiene cantidad pendiente.');
+  check(reservation.purpose !== 'review_hold', 'La inmovilización de revisión requiere un flujo de aprobación sanitaria.');
+  check(String(p.reason || '').trim(), 'Indica el motivo de liberación.');
+  const { product, loc, lot, rows } = await reservationContext(o, { productId: reservation.productId, lotId: reservation.lotId, location: reservation.location });
+  const current = rows.find(r => r.id === id);
+  check(current && current.remainingQuantity === reservation.remainingQuantity, 'La reserva cambió; vuelve a consultar antes de liberar.');
+  const amount = reservation.remainingQuantity;
+  const key = reservation.purpose === 'repack_pending' ? 'repackPending' : 'courtesy';
+  const held = { ...(lot.processingUnavailable[loc] || {}) };
+  check(Number(held[key] || 0) >= amount, 'El agregado de reserva no tiene saldo suficiente.');
+  held[key] = roundAt(Number(held[key] || 0) - amount, quantityPrecision(product));
+  lot.processingUnavailable = { ...lot.processingUnavailable, [loc]: held };
+  const updated = reservationEvent(o, { ...reservation, remainingQuantity: 0, remainingWeightG: 0, status: 'released', releaseReason: String(p.reason).trim() }, 'released', amount, String(p.reason).trim());
+  o.put('distStockReservations', id, updated);
+  o.ledger(product.id, amount, loc, loc, 'reservation_released', { lotId: lot.id, reservationId: id, reservationPurpose: reservation.purpose, physicalEffect: false, note: String(p.reason).trim() }, quantityPrecision(product));
+  return { reservationId: id, releasedQuantity: amount, remainingQuantity: 0 };
+};
+
+handlers.deliverReservedCourtesy = async (o, p) => {
+  o.admin();
+  const id = safeId(p.reservationId), reservation = await o.read('distStockReservations', id);
+  check(reservation?.purpose === 'courtesy' && ['active','partially_consumed'].includes(reservation.status), 'No existe una reserva activa para cortesías.');
+  const product = await o.product(reservation.productId);
+  const quantity = o.amount(Number(p.quantity), product, false, quantityPrecision(product));
+  check(quantity <= reservation.remainingQuantity, 'La cantidad supera lo reservado para cortesías.');
+  check(String(p.recipient || '').trim() && String(p.reason || '').trim(), 'Indica destinatario y motivo de la cortesía.');
+  const { product: currentProduct, loc, lot, rows } = await reservationContext(o, { productId: reservation.productId, lotId: reservation.lotId, location: reservation.location });
+  check(currentProduct.id === product.id, 'El producto reservado cambió; vuelve a consultar.');
+  check(reservation.remainingQuantity === rows.find(r => r.id === id)?.remainingQuantity, 'La reserva cambió; vuelve a consultar.');
+  const precision = quantityPrecision(product), held = { ...(lot.processingUnavailable[loc] || {}) };
+  check(Number(held.courtesy || 0) >= quantity, 'La disponibilidad reservada no concilia.');
+  held.courtesy = roundAt(Number(held.courtesy || 0) - quantity, precision);
+  lot.processingUnavailable = { ...lot.processingUnavailable, [loc]: held };
+  const weightG = quantity === reservation.remainingQuantity ? reservation.remainingWeightG : (reservation.remainingQuantity ? Math.floor(reservation.remainingWeightG * quantity / reservation.remainingQuantity) : 0);
+  const nextRemaining = roundAt(reservation.remainingQuantity - quantity, precision);
+  const nextWeight = (reservation.remainingWeightG || 0) - weightG;
+  const updated = reservationEvent(o, { ...reservation, remainingQuantity: nextRemaining, consumedQuantity: roundAt((reservation.consumedQuantity || 0) + quantity, precision), remainingWeightG: nextWeight, status: nextRemaining === 0 ? 'consumed' : 'partially_consumed' }, 'courtesy_delivered', quantity, String(p.reason).trim());
+  o.put('distStockReservations', id, updated);
+  const allocations = await o.take(product.id, loc, quantity, { lotId: lot.id, allowExpired: false, precision });
+  const costKnown = allocations.length > 0 && allocations.every(a => a.productionCost !== null);
+  const costTotal = costKnown ? round(allocations.reduce((sum,a) => sum + a.quantity * a.productionCost, 0)) : null;
+  const saleId = o.id;
+  o.ledger(product.id, quantity, loc, null, 'courtesy', { allocations, saleId, reservationId: id, courtesyReason: String(p.reason).trim(), recipient: String(p.recipient).trim(), lossCost: costTotal }, precision);
+  const line = { productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || '', descriptionSnapshot: product.description || '', unitType: product.unitType, quantity, actualUnitPrice: round(product.referencePrice), referenceUnitPrice: round(product.referencePrice), isPromotional: false, subtotal: 0, referenceSubtotal: round(quantity * product.referencePrice), allocations, costTotal };
+  o.put('distSales', saleId, { id: saleId, ...o.base(), saleKind: 'courtesy', courtesyReason: String(p.reason).trim(), courtesyRecipient: String(p.recipient).trim(), courtesyCost: costTotal, operationId: o.id, sourceLocation: loc === 'central' ? 'centralWarehouse' : loc, routeId: 'administracion', routeName: 'Administración', sellerUid: o.actor, sellerName: o.member.displayName || o.actor, dispatchId: '', customerId: '', customerName: String(p.recipient).trim(), customerCode: '', lines: [line], total: 0, paymentKind: 'cash', cashAmount: 0, qrAmount: 0, creditAmount: 0, cashReceived: 0, changeAmount: 0, note: `Reserva ${id}` });
+  return { saleId, reservationId: id, deliveredQuantity: quantity, remainingQuantity: nextRemaining, costTotal };
+};
 async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);
   check(lot, "No existe el lote.");
   check(!Object.keys(lot.pendingOrigins || {}).some(loc => origins.pending(lot, loc) > 0), 'Este lote contiene cantidades con origen pendiente; no se puede cambiar su identidad ni costo sin conciliar la excepción.');
+  const reservations = await o.processingReservations(lot.id);
+  const reservationLocations = new Set(['central', ...Object.keys(lot.processingUnavailable || {}), ...reservations.map(row => row.location)]);
+  for (const loc of reservationLocations) o.assertReservationAggregate(lot, loc, reservations);
+  check(!reservations.some(row => ['active','partially_consumed'].includes(row.status) && Number(row.remainingQuantity) > 0), 'Este lote tiene producto reservado; libera o consume la reserva antes de cambiar su trazabilidad.');
   check(
     p.lotCode?.trim() &&
       validDate(p.manufacturedOn) &&
@@ -3293,6 +3478,7 @@ handlers.resolveQuarantine = async (o, p) => {
   check(Math.abs(physicalQuantity - lotQuantity) < 0.5 / (10 ** quantityPrecision(product)), "El balance y los lotes no coinciden. Administración debe conciliar el inventario antes de resolver esta cuarentena.");
   const e = await o.loadStock(product.id, loc);
   const quantity = roundAt(Number(lot.quantities?.[loc] || 0), quantityPrecision(product));
+  await o.assertNoActiveReservation(lot, loc, 'El lote tiene producto reservado y no se puede resolver la cuarentena hasta revisar esa reserva.');
   check(quantity > 0, "La cuarentena ya no tiene existencia en este almacén.");
   check(Object.entries(lot.quantities || {}).every(([key, value]) => key === loc || roundAt(Number(value || 0), quantityPrecision(product)) === 0), "La cuarentena está distribuida en más de un almacén y requiere revisión administrativa.");
   const resolution = p.resolution;
@@ -3396,6 +3582,7 @@ handlers.rectifyQuarantineInputError = async (o, p) => {
   const entry = await o.loadStock(productId, "central");
   const sourceLot = entry.lots.find((item) => item.id === lotId);
   check(sourceLot && entry.balances.get("central") && roundAt(Number(sourceLot.quantities?.central || 0), precision) === amount, "La cuarentena cambió durante la transacción.");
+  await o.assertNoActiveReservation(sourceLot, 'central', 'La cuarentena tiene producto reservado y requiere revisión antes de rectificarla.');
   sourceLot.quantities = { ...(sourceLot.quantities || {}), central: 0 };
   o.move(entry, "central", -amount, precision);
   sourceLot.quarantined = true;
@@ -3497,6 +3684,7 @@ handlers.reopen = async (o, p) => {
         for (const part of allocations) {
           const lot = e.lots.find((item) => item.id === part.lotId);
           check(lot, "No se puede reabrir: falta el lote retornado.");
+          await o.assertNoActiveReservation(lot, warehouse, "No se puede reabrir: el lote recibido tiene una reserva activa; revisar antes de revertir físicamente la recepción.");
           origins.remove(lot, warehouse, part);
           origins.restore(lot, route, part);
         }
