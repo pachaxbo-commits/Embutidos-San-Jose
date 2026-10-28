@@ -16,6 +16,7 @@
     "android:open": "cap open android",
     "test:rules": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth,functions \"node firebase/tests/serverOperations.test.mjs\"",
     "test:processing-domain": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingDomain.test.ts",
+    "test:processing-ui": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingUi.test.ts",
     "test:processing-availability": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingAvailability.test.cjs\"",
     "test:processing-reservations": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingReservations.test.mjs\"",
     "test:access": "node firebase/tests/exclusiveAccessRules.test.mjs",

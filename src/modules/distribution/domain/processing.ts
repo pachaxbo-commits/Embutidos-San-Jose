@@ -44,6 +44,7 @@ export interface ProcessingDestination {
   kind: ProcessingDestinationKind
   productId?: string
   lotId?: string
+  lotCode?: string
   commercialUnit?: UnitType
   commercialQuantity: number
   /** Actual net product mass. Packaging tare is never included. */
@@ -75,6 +76,7 @@ export interface ConfirmProcessingBatchInput {
   location: string
   inputWeightG: number
   processingDate: string
+  note?: string
   sourceAllocations: Array<{ lotId: string; quantity: number; measuredNetWeightG: number }>
   destinations: Array<Omit<ProcessingDestination, 'sourceAllocations' | 'approvalStatus'> & { lotCode?: string; qualityConfirmed?: boolean; qualityReason?: string }>
   packagingMaterials?: ProcessingPackagingMaterial[]
@@ -111,6 +113,10 @@ export interface ProcessingBatch {
   processType: 'portioning' | 'bagging' | 'repackaging'
   processingDate?: string
   sourceProductId: string
+  sourceProductName?: string
+  sourceUnitType?: UnitType
+  sourceCostCents?: number | null
+  note?: string
   sourceLocation: string
   sourceAllocations: ProcessingSourceAllocation[]
   inputWeightG: number

@@ -7,6 +7,7 @@ export type ModuleId =
   | 'dist.reports' | 'dist.users' | 'dist.products' | 'dist.support'
   | 'dist.quotes' | 'dist.operating-result'
   | 'dist.diagnostics'
+  | 'dist.processing'
   | 'printer-settings'
 
 export interface ModuleDefinition {
@@ -42,6 +43,7 @@ export const SAN_JOSE_APP_CONFIG = {
     { id: 'dist.operating-result', label: 'Resultado del negocio', requiredPermission: 'dist.reports.view', navigableBy: ['admin'] },
     { id: 'dist.closure', label: 'Cierre', anyOfPermissions: ['dist.closure.money', 'dist.closure.warehouse'] },
     { id: 'dist.inventory', label: 'Inventario', requiredPermission: 'dist.inventory.view', navigableBy: ['admin', 'warehouse'] },
+    { id: 'dist.processing', label: 'Sacheteado y Embolsado', navigableBy: ['admin', 'warehouse'] },
     { id: 'dist.dispatches', label: 'Despachos', requiredPermission: 'dist.dispatch.create' },
     { id: 'dist.collections', label: 'Cobros', requiredPermission: 'dist.collection.create', navigableBy: ['admin'] },
     { id: 'dist.customers', label: 'Clientes', requiredPermission: 'dist.customer.manage', navigableBy: ['admin'] },

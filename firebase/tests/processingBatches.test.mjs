@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { initializeTestEnvironment, assertFails } from '@firebase/rules-unit-testing'
-import { doc, getDoc, setDoc } from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, where } from 'firebase/firestore'
 
 const req = createRequire(new URL('../../functions/package.json', import.meta.url))
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
@@ -38,7 +38,7 @@ const fixtureLot = async (productId, lotId, location, quantity, productionCost, 
   await balanceRef.set({ id: balanceId, restaurantId: 'sanjose', locationKind: location === 'central' ? 'central' : 'warehouse', warehouseId: location === 'central' ? 'central' : location.slice('warehouse__'.length), productId, unitType: 'kg', quantity: (balance.exists ? balance.data().quantity : 0) + quantity })
 }
 const validPayload = (batchId, sourceProductId = ids.source, sourceAllocations = [{ lotId: `${prefix}-source-lot`, quantity: 10, measuredNetWeightG: 10000 }]) => ({
-  batchId, processType: 'bagging', sourceProductId, location: 'central', processingDate: '2026-10-28', inputWeightG: 10000, sourceAllocations,
+  batchId, processType: 'bagging', sourceProductId, location: 'central', processingDate: '2026-10-28', note: 'Nota QA de proceso', inputWeightG: 10000, sourceAllocations,
   destinations: [
     { id: 'finished-sachets', kind: 'finished', productId: ids.package, commercialQuantity: 36, netWeightG: 9000, nominalWeightG: 250, weightBasis: 'documented_average', lotCode: `SACH-${batchId}`, manufacturedOn: '2026-10-28', packagedOn: '2026-10-28', expiresOn: '2027-01-10' },
     { id: 'courtesy-pieces', kind: 'courtesy', productId: ids.courtesy, commercialQuantity: 0.7, netWeightG: 700, lotCode: `COUR-${batchId}`, manufacturedOn: '2026-10-28', packagedOn: '2026-10-28', expiresOn: '2027-01-10', qualityConfirmed: true, qualityReason: 'Administración verificó integridad del contenido', reason: 'Porciones para futuras cortesías' },
@@ -74,6 +74,7 @@ try {
   const courtesyLot = batch.result.derivedLots.find(row => row.destinationId === 'courtesy-pieces')
   const discardMove = (await root.collection('distStockMovements').where('batchId', '==', batchId).get()).docs.map(s => s.data()).find(m => m.type === 'processing_discard')
   pass(confirmed.status === 'confirmed' && batch.inputWeightG === 10000 && batch.destinations.reduce((n, d) => n + d.netWeightG, 0) === 10000, 'elaboración válida conserva exactamente 10.000 g entre sachets, cortesía y descarte')
+  pass(batch.note === 'Nota QA de proceso', 'observaciones del proceso quedan guardadas en el batch confirmado')
   pass((await read('distBalances', `central__${ids.source}`)).quantity === 0 && (await read('distLots', sourceLot)).quantities.central === 0, '10 kg se descuentan una vez del lote y balance de origen')
   pass((await read('distBalances', `central__${ids.package}`)).quantity === 36 && (await read('distLots', outputLot.lotId)).quantities.central === 36 && (await read('distLots', outputLot.lotId)).processingCommercialBlocked === true, '36 sachets ingresan como paquetes con 9.000 g netos y quedan bloqueados para venta')
   pass((await read('distBalances', `central__${ids.courtesy}`)).quantity === 0.7 && (await read('distLots', courtesyLot.lotId)).processingUnavailable.central.courtesy === 0.7, '700 g destinados a cortesía permanecen como existencia física reservada')
@@ -193,6 +194,17 @@ try {
   await assertFails(setDoc(doc(authDb(ids.admin), 'restaurants', 'sanjose', 'distLots', `${prefix}-direct-lot`), { id: `${prefix}-direct-lot` }))
   const batchForRead = await getDoc(doc(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distProcessingBatches', warehouseValid.batchId))
   pass(batchForRead.exists(), 'Rules permiten al almacén autorizado consultar su elaboración y bloquean escrituras directas')
+  const adminBatchPage = await getDocs(query(collection(authDb(ids.admin), 'restaurants', 'sanjose', 'distProcessingBatches'), orderBy('createdAt', 'desc'), limit(20)))
+  pass(adminBatchPage.docs.some(row => row.id === warehouseValid.batchId), 'Administración puede consultar historial paginado de elaboraciones')
+  const warehouseBatchPage = await getDocs(query(collection(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distProcessingBatches'), where('sourceLocation', '==', warehouseLoc), orderBy('createdAt', 'desc'), limit(20)))
+  pass(warehouseBatchPage.docs.some(row => row.id === warehouseValid.batchId), 'Almacén puede consultar historial paginado exclusivamente de su ubicación')
+  await assertFails(getDocs(query(collection(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distProcessingBatches'), orderBy('createdAt', 'desc'), limit(20))))
+  await assertFails(getDocs(query(collection(authDb(ids.otherWarehouse), 'restaurants', 'sanjose', 'distProcessingBatches'), where('sourceLocation', '==', warehouseLoc), orderBy('createdAt', 'desc'), limit(20))))
+  await assertFails(getDocs(query(collection(authDb(ids.distributor), 'restaurants', 'sanjose', 'distProcessingBatches'), orderBy('createdAt', 'desc'), limit(20))))
+  const reservationReadId = `${prefix}-reservation-read`
+  await root.collection('distStockReservations').doc(reservationReadId).set({ id: reservationReadId, location: warehouseLoc, createdAt: new Date().toISOString() })
+  const warehouseReservationPage = await getDocs(query(collection(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distStockReservations'), where('location', '==', warehouseLoc), orderBy('createdAt', 'desc'), limit(20)))
+  pass(warehouseReservationPage.docs.some(row => row.id === reservationReadId), 'Almacén puede consultar reservas paginadas solo de su ubicación')
   await assertFails(getDoc(doc(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distProcessingBatches', batchId)))
   await assertFails(getDoc(doc(authDb(ids.otherWarehouse), 'restaurants', 'sanjose', 'distProcessingBatches', warehouseValid.batchId)))
 

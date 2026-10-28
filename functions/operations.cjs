@@ -3778,7 +3778,7 @@ handlers.confirmProcessingBatch = async (o, p) => {
   const result = { batchId, duplicate: false, inputWeightG, outputWeightG, sourceProductId: sourceProduct.id, sourceLocation: loc, sourceBeforeQuantity, sourceAfterQuantity, sourceCostCents, derivedLots, reservationIds, movementIds, discardedWeightG: destinations.filter(item => item.kind === 'discard').reduce((sum, item) => sum + item.netWeightG, 0) };
   const batch = {
     id: batchId, operationId: o.id, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, payloadHash, status: 'confirmed',
-    processType: p.processType, processingDate: p.processingDate, sourceProductId: sourceProduct.id, sourceProductName: sourceProduct.name, sourceUnitType: sourceProduct.unitType, sourceLocation: loc,
+    processType: p.processType, processingDate: p.processingDate, note: String(p.note || '').trim().slice(0, 500), sourceProductId: sourceProduct.id, sourceProductName: sourceProduct.name, sourceUnitType: sourceProduct.unitType, sourceLocation: loc,
     sourceAllocations: sourceCostRows, inputWeightG, destinations: destinations.map((item, index) => ({ ...item, costCents: destinationCosts[index], sourceLotIds: [...new Set(destinationSourceAllocations[index].map(row => row.sourceLotId))], sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: 'batch_blend_accounting_allocation' })),
     packagingMaterials: materialRows, costComponents: componentRows, sourceCostCents,
     auxiliaryCostsCapitalized: false, costPolicy: 'Solo se redistribuyó el costo histórico conocido del inventario de origen; empaques y egresos asociados son informativos y no se capitalizan.',

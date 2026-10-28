@@ -27,6 +27,7 @@ import {
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
+import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput } from '../domain/processing'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
 import { centralBalanceId, round2, toDayKey } from '../domain/engine'
 import type {
@@ -106,6 +107,74 @@ const SCHEMA_VERSION = 1
 
 export function warehouseBalanceId(warehouseId: string, productId: string): string {
   return warehouseId === 'central' ? centralBalanceId(productId) : `warehouse__${warehouseId}__${productId}`
+}
+
+export interface ProcessingBatchPage {
+  rows: ProcessingBatch[]
+  cursor: QueryDocumentSnapshot<DocumentData> | null
+  hasMore: boolean
+}
+
+/** Historial bajo demanda: acotado y filtrado por ubicación para cumplir Rules de almacén. */
+export async function loadProcessingBatchPage(
+  location: string | undefined,
+  cursor: QueryDocumentSnapshot<DocumentData> | null = null,
+  pageSize = 20,
+): Promise<ProcessingBatchPage> {
+  const context = await getContext()
+  const ref = collectionRef(context, 'distProcessingBatches')
+  const constraints: QueryConstraint[] = []
+  if (location) constraints.push(where('sourceLocation', '==', location))
+  constraints.push(orderBy('createdAt', 'desc'), limit(Math.min(50, Math.max(1, pageSize + 1))))
+  if (cursor) constraints.splice(constraints.length - 1, 0, startAfter(cursor))
+  const snapshot = await getDocsFromServer(query(ref, ...constraints))
+  const hasMore = snapshot.docs.length > pageSize
+  const docs = snapshot.docs.slice(0, pageSize)
+  return {
+    rows: docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingBatch),
+    cursor: docs.at(-1) || null,
+    hasMore,
+  }
+}
+
+export async function loadProcessingReservationPage(
+  location: string | undefined,
+  cursor: QueryDocumentSnapshot<DocumentData> | null = null,
+  pageSize = 20,
+): Promise<{ rows: ProcessingReservation[]; cursor: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
+  const context = await getContext()
+  const ref = collectionRef(context, 'distStockReservations')
+  const constraints: QueryConstraint[] = []
+  if (location) constraints.push(where('location', '==', location))
+  constraints.push(orderBy('createdAt', 'desc'), limit(Math.min(50, Math.max(1, pageSize + 1))))
+  if (cursor) constraints.splice(constraints.length - 1, 0, startAfter(cursor))
+  const snapshot = await getDocsFromServer(query(ref, ...constraints))
+  const hasMore = snapshot.docs.length > pageSize
+  const docs = snapshot.docs.slice(0, pageSize)
+  return { rows: docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingReservation), cursor: docs.at(-1) || null, hasMore }
+}
+
+export type ProcessingOperationState =
+  | { status: 'missing' }
+  | { status: 'queued'; createdAt?: string }
+  | { status: 'confirmed'; result: unknown }
+  | { status: 'rejected'; error: string }
+
+/** Lee estado desde servidor, no del cache local, antes de reintentar una respuesta desconocida. */
+export async function getProcessingOperationState(operationId: string): Promise<ProcessingOperationState> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, 'distOperations', operationId))
+  if (!snapshot.exists()) return { status: 'missing' }
+  const data = snapshot.data()
+  if (data.type !== 'confirmProcessingBatch') throw new Error('El identificador corresponde a otra operación.')
+  if (data.status === 'confirmed') return { status: 'confirmed', result: data.result }
+  if (data.status === 'rejected') return { status: 'rejected', error: String(data.error || 'El servidor rechazó la elaboración.') }
+  return { status: 'queued', ...(typeof data.createdAt === 'string' ? { createdAt: data.createdAt } : {}) }
+}
+
+/** Entrada oficial al backend; nunca modifica lotes ni balances desde el cliente. */
+export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput, operationId: string): Promise<unknown> {
+  return submitOperation('confirmProcessingBatch', input, operationId)
 }
 
 export function subscribeWarehouses(onData: (rows: DistWarehouse[]) => void, onError?: (error: Error) => void) {
