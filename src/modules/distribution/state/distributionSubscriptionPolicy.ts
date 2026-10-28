@@ -40,7 +40,10 @@ export function getDistributionSubscriptionCollections(
   }
   if (scope.canManageCredits) collections.add('distReceivableAdjustments')
   if (scope.canManageCustomers) collections.add('distCustomers')
-  if (scope.canRegisterExpenses) collections.add('distExpenseCategories')
+  if (scope.canRegisterExpenses) {
+    collections.add('distExpenseCategories')
+    collections.add('distExpenseGroups')
+  }
   if (scope.routeId === null) {
     collections.add('distStockMovements')
     collections.add('distTransfers')

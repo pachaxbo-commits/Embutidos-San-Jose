@@ -9,6 +9,7 @@ import type {
   PaymentKind,
   UnitType,
 } from '../types'
+import { expenseCashPaidAmount } from './expenseAccounting.ts'
 
 /** Redondeo monetario/cantidad a 2 decimales para evitar ruido de punto flotante */
 export function round2(value: number): number {
@@ -252,7 +253,7 @@ export function computeMoneySummary(
   }
 
   const cashExpenses = expenses.filter((expense) => !expense.voided).reduce((sum, expense) =>
-    sum + ((expense.paymentMethod ?? 'cash') === 'cash' ? (Number(expense.amount) || 0) : 0), 0)
+    sum + expenseCashPaidAmount(expense), 0)
 
   return {
     salesTotal: round2(salesTotal),
@@ -402,6 +403,7 @@ export function computeSellerBreakdown(
   claims: DistClaim[] = [],
 ): SellerBreakdown[] {
   const map = new Map<string, SellerBreakdown>()
+  const cashExpenseBySeller = new Map<string, number>()
 
   const ensure = (uid: string, name: string): SellerBreakdown => {
     const key = uid || name || 'sin-asignar'
@@ -447,7 +449,8 @@ export function computeSellerBreakdown(
   for (const expense of expenses) {
     if (expense.voided) continue
     const entry = ensure(expense.registeredByUid, expense.registeredByName)
-    entry.expenses = round2(entry.expenses + (Number(expense.amount) || 0))
+    cashExpenseBySeller.set(entry.sellerUid, round2((cashExpenseBySeller.get(entry.sellerUid) || 0) + expenseCashPaidAmount(expense)))
+    if (expense.transactionKind !== 'supplier_payment') entry.expenses = round2(entry.expenses + (Number(expense.amount) || 0))
     if (expense.routeName && !entry.routeNames.includes(expense.routeName)) entry.routeNames.push(expense.routeName)
   }
 
@@ -464,7 +467,7 @@ export function computeSellerBreakdown(
   }
 
   for (const entry of map.values()) {
-    entry.expectedCash = round2(entry.expectedCash + entry.cashSales - entry.expenses)
+    entry.expectedCash = round2(entry.expectedCash + entry.cashSales - (cashExpenseBySeller.get(entry.sellerUid) || 0))
   }
 
   return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)

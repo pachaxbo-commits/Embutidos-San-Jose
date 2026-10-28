@@ -6,6 +6,7 @@ import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { buildReconciliation, computeMoneySummary, isSaleForDispatch, matchesRoute, round2, toDayKey } from '../domain/engine'
 import { previewDispatchMermaSettlement } from '../domain/dispatchMermaSettlement'
+import { expenseCashPaidAmount } from '../domain/expenseAccounting'
 import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -427,7 +428,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const creditGenerated = round2(commercialSales.reduce((n, s) => n + (s.creditAmount || 0), 0))
     const cashCollections = round2(collections.reduce((n, c) => n + (Number.isFinite(c.cashAmount) ? c.cashAmount! : c.method === 'cash' ? c.amount : 0), 0))
     const qrCollections = round2(collections.reduce((n, c) => n + (Number.isFinite(c.qrAmount) ? c.qrAmount! : c.method === 'qr' ? c.amount : 0), 0))
-    const cashExpenses = round2(expenses.reduce((n, e) => n + ((e.paymentMethod ?? 'cash') === 'cash' ? (e.amount || 0) : 0), 0))
+    const cashExpenses = round2(expenses.reduce((n, e) => n + expenseCashPaidAmount(e), 0))
     const claimCash = round2(claims.reduce((n, c) => n + (c.cashIn || 0) - (c.cashOut || 0), 0))
     const expectedCash = round2(cashSales + cashCollections - cashExpenses + claimCash)
 

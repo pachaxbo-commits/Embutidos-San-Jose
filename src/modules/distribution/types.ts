@@ -483,10 +483,19 @@ export interface DistExpense extends DistBaseDoc {
   voidedBy?: string
   voidedByName?: string
   operationId: string
-  group?: ExpenseGroup
+  group?: ExpenseGroupId
+  groupName?: string
   categoryId?: string
   categoryName?: string
-  paymentMethod?: 'cash' | 'transfer' | 'other'
+  paymentMethod?: 'cash' | 'transfer' | 'other' | 'credit' | 'mixed'
+  transactionKind?: 'expense' | 'supplier_purchase' | 'supplier_payment'
+  cashPaidAmount?: number
+  transferPaidAmount?: number
+  otherPaidAmount?: number
+  initialPaymentMethod?: 'cash' | 'transfer' | 'other'
+  payableId?: string
+  supplierId?: string
+  supplierName?: string
   economicType?: ExpenseEconomicType
   affectsOperatingResult?: boolean
   classificationStatus?: 'classified' | 'pending_review' | 'reviewed'
@@ -503,9 +512,20 @@ export interface DistExpense extends DistBaseDoc {
 
 export type ExpenseEconomicType = 'operating_expense' | 'production_input'
 export type ExpenseGroup = 'administration' | 'indirect' | 'equipment' | 'other' | 'production_additional' | 'production_input'
+/** Group IDs are stable; built-in groups retain the ExpenseGroup IDs. */
+export type ExpenseGroupId = string
+
+export interface DistExpenseGroup extends DistBaseDoc {
+  name: string
+  active: boolean
+  order: number
+  economicType: ExpenseEconomicType
+  updatedAt?: string
+  updatedBy?: string
+}
 
 export interface DistExpenseCategory extends DistBaseDoc {
-  group: ExpenseGroup
+  group: ExpenseGroupId
   name: string
   active: boolean
   order: number
@@ -513,6 +533,60 @@ export interface DistExpenseCategory extends DistBaseDoc {
   distributorVisible?: boolean
   updatedAt?: string
   updatedBy?: string
+}
+
+export interface DistSupplier extends DistBaseDoc {
+  name: string
+  active: boolean
+  contactName?: string
+  phone?: string
+  note?: string
+  updatedAt?: string
+  updatedBy?: string
+}
+
+export interface DistPayable extends DistBaseDoc {
+  supplierId: string
+  supplierName: string
+  purchaseExpenseId: string
+  dayKey: string
+  description: string
+  groupId: string
+  groupName: string
+  categoryId: string
+  categoryName: string
+  totalAmount: number
+  paidAmount: number
+  balance: number
+  status: 'pending' | 'partial' | 'paid' | 'voided'
+  dueDayKey?: string
+  note?: string
+  routeId: string
+  routeName: string
+  voidedAt?: string
+  voidedBy?: string
+  voidedByName?: string
+  voidReason?: string
+  history?: Array<{ action: 'payment_voided' | 'purchase_voided'; paymentId?: string; amount?: number; paymentMethod?: 'cash' | 'transfer' | 'other'; reason: string; at: string; by: string; byName: string; affectedExpenseId?: string }>
+}
+
+export interface DistSupplierPayment extends DistBaseDoc {
+  payableId: string
+  supplierId: string
+  supplierName: string
+  amount: number
+  paymentMethod: 'cash' | 'transfer' | 'other'
+  dayKey: string
+  routeId: string
+  routeName: string
+  responsibleUid: string
+  responsibleName: string
+  note?: string
+  voided?: boolean
+  voidedAt?: string
+  voidedBy?: string
+  voidedByName?: string
+  voidReason?: string
 }
 
 export interface DistClosureProductRow {

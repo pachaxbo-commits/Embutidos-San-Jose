@@ -10,7 +10,6 @@ import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { formatBs, SecondaryButton } from './shared'
 import { round2 } from '../domain/engine'
 import { computeOperatingResult, type OperatingResultDetail } from '../domain/operatingResult'
-import { EXPENSE_GROUPS } from '../domain/expenseCategories'
 import type { DistributionViewProps } from './DistributionApp'
 
 type ViewMode = 'easy' | 'classic'
@@ -26,7 +25,7 @@ function classicRowsForResult(result: ReturnType<typeof computeOperatingResult>)
     { label: 'COSTO DE LO VENDIDO', amount: result.costOfSales, detailKey: 'costOfSales', kind: 'line' },
     { label: 'MARGEN BRUTO', amount: result.grossMargin, detailKey: 'grossMargin', kind: 'total' },
   )
-  for (const group of EXPENSE_GROUPS.filter((entry) => entry.id !== 'production_input')) {
+  for (const group of result.expenseGroupLabels.filter((entry) => entry.id !== 'production_input')) {
     const expenses = result.expenses.filter((expense) => expense.group === group.id)
     if (!expenses.length) continue
     rows.push({ label: group.label.toLocaleUpperCase('es'), amount: null, kind: 'heading' })
@@ -48,7 +47,7 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
   const sections: Array<[string, number | null]> = [
     ['Ventas brutas', result.grossSales], ['Cambios y devoluciones', result.adjustments],
     ['Ventas netas', result.netSales], ['Costo de lo vendido', result.costOfSales], ['Margen bruto', result.grossMargin],
-    ...EXPENSE_GROUPS.filter((group) => group.id !== 'production_input').map((group) => [group.label, result.expenseTotals[group.id]] as [string, number | null]),
+    ...result.expenseGroupLabels.filter((group) => group.id !== 'production_input').map((group) => [group.label, result.expenseTotals[group.id]] as [string, number | null]),
     ['Compras de materia prima (informativo)', result.productionInputTotal],
     ['Mermas y pérdidas', result.losses], ['Costo de cortesías', result.courtesyCost],
     ['Resultado operativo estimado', result.operatingResult],
@@ -78,7 +77,7 @@ function sheetForResult(result: ReturnType<typeof computeOperatingResult>, perio
     ['MARGEN BRUTO', '', '', '', result.grossMargin === null ? 'No disponible: falta costo histórico' : result.grossMargin],
     ['DETALLE DE EGRESOS', '', '', '', ''],
     ['Grupo', 'Categoría', 'Concepto', 'Origen / Responsable', 'Monto (Bs)'],
-    ...EXPENSE_GROUPS.flatMap((group) => {
+    ...result.expenseGroupLabels.flatMap((group) => {
       if (group.id === 'production_input') return []
       const items = result.expenses.filter((expense) => expense.group === group.id)
       if (!items.length) return []
@@ -109,7 +108,7 @@ function htmlForResult(result: ReturnType<typeof computeOperatingResult>, period
 
 async function renderSummaryPng(result: ReturnType<typeof computeOperatingResult>, period: string): Promise<Blob> {
   const canvas = document.createElement('canvas')
-  const rows: Array<[string, number | null]> = [['Ventas brutas', result.grossSales], ['Cambios y devoluciones', result.adjustments], ['Ventas netas', result.netSales], ['Costo de lo vendido', result.costOfSales], ['Margen bruto', result.grossMargin], ...EXPENSE_GROUPS.filter((g) => g.id !== 'production_input').map((g) => [g.label, result.expenseTotals[g.id]] as [string, number]), ['Compras de materia prima (informativo)', result.productionInputTotal], ['Mermas y pérdidas', result.losses], ['Costo de cortesías', result.courtesyCost]]
+  const rows: Array<[string, number | null]> = [['Ventas brutas', result.grossSales], ['Cambios y devoluciones', result.adjustments], ['Ventas netas', result.netSales], ['Costo de lo vendido', result.costOfSales], ['Margen bruto', result.grossMargin], ...result.expenseGroupLabels.filter((g) => g.id !== 'production_input').map((g) => [g.label, result.expenseTotals[g.id]] as [string, number]), ['Compras de materia prima (informativo)', result.productionInputTotal], ['Mermas y pérdidas', result.losses], ['Costo de cortesías', result.courtesyCost]]
   canvas.width = 1100; canvas.height = 435 + rows.length * 38 + 70
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Este dispositivo no pudo crear la imagen.')
@@ -209,7 +208,7 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
           {amountButton('Ventas netas', result.netSales, 'netSales', 'text-[var(--primary)]')}
           {amountButton('Costo de lo vendido', result.costOfSales, 'costOfSales')}
           {amountButton('Margen bruto', result.grossMargin, 'grossMargin', 'text-emerald-700')}
-          {EXPENSE_GROUPS.filter((group) => group.id !== 'production_input').map((group) => <Fragment key={group.id}>{amountButton(group.label, result.expenseTotals[group.id], group.id)}</Fragment>)}
+          {result.expenseGroupLabels.filter((group) => group.id !== 'production_input').map((group) => <Fragment key={group.id}>{amountButton(group.label, result.expenseTotals[group.id], group.id)}</Fragment>)}
           {amountButton('Compras de materia prima', result.productionInputTotal, 'production_input', 'text-emerald-800')}
           <p className="-mt-2 rounded-xl bg-emerald-50 p-3 text-xs text-emerald-900">Salida de dinero no descontada nuevamente porque su costo se reconoce en los productos.</p>
           {amountButton('Mermas y pérdidas', result.losses, 'losses', 'text-amber-800')}

@@ -232,7 +232,7 @@ service cloud.firestore {
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','correctDispatch','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
           || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
-          || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
+          || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','saveExpenseGroup','saveExpenseSupplier','registerSupplierPurchase','paySupplierPayable','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
       allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged']) && request.resource.data.acknowledged == true;
       allow delete: if false;
@@ -333,6 +333,22 @@ service cloud.firestore {
     }
     match /restaurants/{restaurantId}/distExpenseCategories/{categoryId} {
       allow read: if distWorker(restaurantId);
+      allow create, update, delete: if false;
+    }
+    match /restaurants/{restaurantId}/distExpenseGroups/{groupId} {
+      allow read: if distWorker(restaurantId);
+      allow create, update, delete: if false;
+    }
+    match /restaurants/{restaurantId}/distSuppliers/{supplierId} {
+      allow read: if distAdmin(restaurantId);
+      allow create, update, delete: if false;
+    }
+    match /restaurants/{restaurantId}/distPayables/{payableId} {
+      allow read: if distAdmin(restaurantId);
+      allow create, update, delete: if false;
+    }
+    match /restaurants/{restaurantId}/distSupplierPayments/{paymentId} {
+      allow read: if distAdmin(restaurantId);
       allow create, update, delete: if false;
     }
 

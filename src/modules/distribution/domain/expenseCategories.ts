@@ -1,4 +1,4 @@
-import type { DistExpenseCategory, ExpenseGroup } from '../types.ts'
+import type { DistExpenseCategory, DistExpenseGroup, ExpenseGroup, ExpenseGroupId } from '../types.ts'
 import registry from '../../../../functions/expense-presets.json' with { type: 'json' }
 
 export const EXPENSE_GROUPS: { id: ExpenseGroup; label: string }[] = [
@@ -34,10 +34,28 @@ export function mergeExpenseCategories(overrides: DistExpenseCategory[]): DistEx
   return [...byId.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, 'es'))
 }
 
-export function expenseGroupLabel(group?: ExpenseGroup): string {
+export function expenseGroupLabel(group?: string): string {
   return EXPENSE_GROUPS.find((entry) => entry.id === group)?.label ?? 'Otros / Por clasificar'
 }
 
-export function effectiveExpenseGroup(expense: { group?: ExpenseGroup; categoryId?: string }): ExpenseGroup {
+export function listExpenseGroups(custom: DistExpenseGroup[]): Array<{ id: ExpenseGroupId; label: string; economicType: 'operating_expense' | 'production_input'; active: boolean; order: number }> {
+  const overrides = new Map(custom.map((group) => [group.id, group]))
+  const defaults = EXPENSE_GROUPS.map((group, order) => ({
+    id: group.id,
+    label: overrides.get(group.id)?.name || group.label,
+    economicType: group.id === 'production_input' ? 'production_input' as const : 'operating_expense' as const,
+    active: overrides.get(group.id)?.active ?? true,
+    order: overrides.get(group.id)?.order ?? order,
+  }))
+  const additional = custom.filter((group) => !EXPENSE_GROUPS.some((builtin) => builtin.id === group.id)).map((group) => ({ id: group.id, label: group.name, economicType: group.economicType, active: group.active, order: group.order }))
+  return [...defaults, ...additional]
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'es'))
+}
+
+export function expenseGroupDisplayName(group?: string, custom: DistExpenseGroup[] = []): string {
+  return listExpenseGroups(custom).find((entry) => entry.id === group)?.label ?? EXPENSE_GROUPS.find((entry) => entry.id === group)?.label ?? 'Otros / Por clasificar'
+}
+
+export function effectiveExpenseGroup(expense: { group?: string; categoryId?: string }): string {
   return expense.group ?? 'other'
 }

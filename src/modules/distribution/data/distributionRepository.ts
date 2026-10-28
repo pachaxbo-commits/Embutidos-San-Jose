@@ -40,7 +40,11 @@ import type {
   DistDispatchLine,
   DistExpense,
   DistExpenseCategory,
-  ExpenseGroup,
+  DistExpenseGroup,
+  DistSupplier,
+  DistPayable,
+  DistSupplierPayment,
+  ExpenseGroupId,
   ExpenseEconomicType,
   DistProduct,
   DistReceivable,
@@ -88,6 +92,10 @@ export const DIST_COLLECTIONS = {
   collections: 'distCollections',
   expenses: 'distExpenses',
   expenseCategories: 'distExpenseCategories',
+  expenseGroups: 'distExpenseGroups',
+  suppliers: 'distSuppliers',
+  payables: 'distPayables',
+  supplierPayments: 'distSupplierPayments',
   closures: 'distClosures',
   adjustmentRequests: 'distAdjustmentRequests',
   quotes: 'distQuotes',
@@ -570,6 +578,116 @@ export function subscribeExpenses(
 
 export function subscribeExpenseCategories(onData: (rows: DistExpenseCategory[]) => void, onError?: (error: Error) => void) {
   return subscribeQuery<DistExpenseCategory>(ctx => collectionRef(ctx, DIST_COLLECTIONS.expenseCategories), onData, onError)
+}
+
+export function subscribeExpenseGroups(onData: (rows: DistExpenseGroup[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistExpenseGroup>(ctx => collectionRef(ctx, DIST_COLLECTIONS.expenseGroups), onData, onError)
+}
+
+export function subscribeExpenseSuppliers(onData: (rows: DistSupplier[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistSupplier>(ctx => collectionRef(ctx, DIST_COLLECTIONS.suppliers), onData, onError)
+}
+
+export function subscribeExpensePayables(onData: (rows: DistPayable[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistPayable>(ctx => collectionRef(ctx, DIST_COLLECTIONS.payables), onData, onError)
+}
+
+export function subscribeSupplierPayments(onData: (rows: DistSupplierPayment[]) => void, onError?: (error: Error) => void) {
+  return subscribeQuery<DistSupplierPayment>(ctx => collectionRef(ctx, DIST_COLLECTIONS.supplierPayments), onData, onError)
+}
+
+async function loadAllDayKeyPages<T>(collectionName: string, fromDay?: string, toDay?: string): Promise<T[]> {
+  const context = await getContext()
+  const pageSize = 200
+  const rows: T[] = []
+  let cursor: QueryDocumentSnapshot<DocumentData> | undefined
+  while (true) {
+    const constraints: QueryConstraint[] = []
+    if (fromDay) constraints.push(where('dayKey', '>=', fromDay))
+    if (toDay) constraints.push(where('dayKey', '<=', toDay))
+    constraints.push(orderBy('dayKey', 'desc'), limit(pageSize))
+    if (cursor) constraints.push(startAfter(cursor))
+    const snapshot = await getDocsFromServer(query(collectionRef(context, collectionName), ...constraints))
+    rows.push(...snapshot.docs.map((row) => ({ ...row.data(), id: row.id }) as T))
+    if (snapshot.size < pageSize) break
+    cursor = snapshot.docs[snapshot.docs.length - 1]
+  }
+  return rows
+}
+
+async function loadAllCreatedAtPages<T>(collectionName: string, fromDay?: string, toDay?: string): Promise<T[]> {
+  const context = await getContext()
+  const pageSize = 200
+  const rows: T[] = []
+  let cursor: QueryDocumentSnapshot<DocumentData> | undefined
+  const localMidnightUtc = (day: string) => new Date(`${day}T00:00:00-04:00`).toISOString()
+  const nextDay = (day: string) => {
+    const value = new Date(`${day}T12:00:00.000Z`)
+    value.setUTCDate(value.getUTCDate() + 1)
+    return value.toISOString().slice(0, 10)
+  }
+  while (true) {
+    const constraints: QueryConstraint[] = []
+    if (fromDay) constraints.push(where('createdAt', '>=', localMidnightUtc(fromDay)))
+    if (toDay) constraints.push(where('createdAt', '<', localMidnightUtc(nextDay(toDay))))
+    constraints.push(orderBy('createdAt', 'asc'), orderBy(documentId(), 'asc'), limit(pageSize))
+    if (cursor) constraints.push(startAfter(cursor))
+    const snapshot = await getDocsFromServer(query(collectionRef(context, collectionName), ...constraints))
+    rows.push(...snapshot.docs.map((row) => ({ ...row.data(), id: row.id }) as T))
+    if (snapshot.size < pageSize) break
+    cursor = snapshot.docs[snapshot.docs.length - 1]
+  }
+  return rows
+}
+
+async function loadAllDocumentIdPages<T>(collectionName: string): Promise<T[]> {
+  const context = await getContext()
+  const pageSize = 200
+  const rows: T[] = []
+  let cursor: QueryDocumentSnapshot<DocumentData> | undefined
+  while (true) {
+    const constraints: QueryConstraint[] = [orderBy(documentId(), 'asc'), limit(pageSize)]
+    if (cursor) constraints.push(startAfter(cursor))
+    const snapshot = await getDocsFromServer(query(collectionRef(context, collectionName), ...constraints))
+    rows.push(...snapshot.docs.map((row) => ({ ...row.data(), id: row.id }) as T))
+    if (snapshot.size < pageSize) break
+    cursor = snapshot.docs[snapshot.docs.length - 1]
+  }
+  return rows
+}
+
+export async function loadAllExpenseReportRows(fromDay?: string, toDay?: string): Promise<DistExpense[]> {
+  const boliviaDayKeyFromCreatedAt = (createdAt: unknown) => {
+    const date = createdAt instanceof Date ? createdAt : new Date(createdAt as string | number)
+    if (Number.isNaN(date.getTime())) return 'Fecha no disponible'
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date)
+    const part = (type: string) => parts.find(item => item.type === type)?.value || ''
+    return `${part('year')}-${part('month')}-${part('day')}`
+  }
+  if (!fromDay && !toDay) {
+    const allRows = await loadAllDocumentIdPages<DistExpense>(DIST_COLLECTIONS.expenses)
+    return allRows.map((row) => ({
+      ...row,
+      dayKey: row.dayKey || (row.createdAt ? boliviaDayKeyFromCreatedAt(row.createdAt) : 'Fecha no disponible'),
+    }))
+  }
+  const [keyedRows, createdAtRows] = await Promise.all([
+    loadAllDayKeyPages<DistExpense>(DIST_COLLECTIONS.expenses, fromDay, toDay),
+    loadAllCreatedAtPages<DistExpense>(DIST_COLLECTIONS.expenses, fromDay, toDay),
+  ])
+  const uniqueRows = new Map([...keyedRows, ...createdAtRows.filter((row) => !row.dayKey)].map((row) => [row.id, row]))
+  return [...uniqueRows.values()].map((row) => ({
+    ...row,
+    ...(row.dayKey ? {} : { dayKey: row.createdAt ? boliviaDayKeyFromCreatedAt(row.createdAt) : 'Fecha no disponible' }),
+  }))
+}
+
+export async function loadAllSupplierPayables(fromDay?: string, toDay?: string): Promise<DistPayable[]> {
+  return loadAllDayKeyPages<DistPayable>(DIST_COLLECTIONS.payables, fromDay, toDay)
+}
+
+export async function loadAllSupplierPayments(fromDay?: string, toDay?: string): Promise<DistSupplierPayment[]> {
+  return loadAllDayKeyPages<DistSupplierPayment>(DIST_COLLECTIONS.supplierPayments, fromDay, toDay)
 }
 
 /** Cartera global. Todos los roles con acceso a creditos ven la misma deuda. */
@@ -1089,7 +1207,9 @@ export interface RegisterExpenseInput {
   presetId?: string
   concept: string
   amount: number
-  group?: ExpenseGroup
+  group?: ExpenseGroupId
+  groupId?: ExpenseGroupId
+  groupName?: string
   categoryId?: string
   categoryName?: string
   paymentMethod?: 'cash' | 'transfer' | 'other'
@@ -1108,6 +1228,44 @@ export async function registerExpense(input: RegisterExpenseInput, provisionalCl
   const createdAt = new Date().toISOString()
   const provisional = { ...baseDocFields(context, createdAt), ...input, ...provisionalClassification, id: input.operationId, dayKey: input.dayKey || toDayKey(createdAt), pendingConfirmation: true } as DistExpense
   return submitOperation<DistExpense>('expense', input, input.operationId, provisional)
+}
+
+export async function saveExpenseGroup(input: { groupId: string; name: string; economicType: ExpenseEconomicType; active: boolean; order: number }) {
+  return submitOperation<DistExpenseGroup>('saveExpenseGroup', input, newOperationId('expense-group'))
+}
+
+export async function saveExpenseSupplier(input: { supplierId: string; name: string; contactName?: string; phone?: string; note?: string; active: boolean }) {
+  return submitOperation<DistSupplier>('saveExpenseSupplier', input, newOperationId('expense-supplier'))
+}
+
+export interface SupplierPurchaseInput {
+  operationId: string
+  supplierId: string
+  groupId: string
+  categoryId: string
+  description: string
+  amount: number
+  initialPayment: number
+  paymentMethod?: 'cash' | 'transfer' | 'other'
+  dayKey: string
+  dueDayKey?: string
+  note?: string
+}
+
+export async function registerSupplierPurchase(input: SupplierPurchaseInput) {
+  return submitOperation<{ expense: DistExpense; payable: DistPayable }>('registerSupplierPurchase', input, input.operationId)
+}
+
+export async function paySupplierPayable(input: { payableId: string; amount: number; paymentMethod: 'cash' | 'transfer' | 'other'; dayKey: string; note?: string }, operationId = newOperationId('supplier-payment')) {
+  return submitOperation<{ payment: DistSupplierPayment; payable: DistPayable }>('paySupplierPayable', input, operationId)
+}
+
+export async function voidSupplierPayment(input: { paymentId: string; reason: string }) {
+  return submitOperation<{ payment: DistSupplierPayment; payable: DistPayable }>('voidSupplierPayment', input, newOperationId('void-supplier-payment'))
+}
+
+export async function voidSupplierPurchase(input: { payableId: string; reason: string }) {
+  return submitOperation<DistPayable>('voidSupplierPurchase', input, newOperationId('void-supplier-purchase'))
 }
 
 export interface ResolveQuarantineInput {
@@ -1134,11 +1292,11 @@ export async function deleteExpense(expenseId: string, reason = ''): Promise<voi
   await submitOperation('deleteExpense', { expenseId, reason }, newOperationId('delete-expense'))
 }
 
-export async function saveExpenseCategory(input: { categoryId: string; group: ExpenseGroup; name: string; active: boolean; order: number; autoClassifiable: boolean; distributorVisible: boolean }) {
+export async function saveExpenseCategory(input: { categoryId: string; group: ExpenseGroupId; name: string; active: boolean; order: number; autoClassifiable: boolean; distributorVisible: boolean }) {
   return submitOperation<DistExpenseCategory>('saveExpenseCategory', input, newOperationId('expense-category'))
 }
 
-export async function classifyExpense(input: { expenseId: string; group: ExpenseGroup; categoryId: string; economicType: ExpenseEconomicType }) {
+export async function classifyExpense(input: { expenseId: string; group: ExpenseGroupId; categoryId: string; economicType: ExpenseEconomicType }) {
   return submitOperation<DistExpense>('classifyExpense', input, newOperationId('expense-classification'))
 }
 

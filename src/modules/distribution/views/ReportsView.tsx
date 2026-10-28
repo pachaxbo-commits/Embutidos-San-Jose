@@ -33,6 +33,7 @@ import { RangePicker, describeRange } from './RangePicker'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
 import { aggregateCustomerPurchases } from '../domain/customerPurchases'
+import { expenseCashPaidAmount } from '../domain/expenseAccounting'
 import { computeProductProfitReport, type ProductProfitSummaryItem } from '../domain/productProfit'
 import {
   computeAsOfReceivablesPortfolio,
@@ -369,7 +370,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     const periodCashCollections = round2(
       collections.reduce((sum, c) => sum + (c.cashAmount ?? (c.method === 'cash' ? c.amount : 0)), 0),
     )
-    const periodCashExpenses = round2(expenses.reduce((sum, e) => sum + ((e.paymentMethod ?? 'cash') === 'cash' ? e.amount : 0), 0))
+    const periodCashExpenses = round2(expenses.reduce((sum, e) => sum + expenseCashPaidAmount(e), 0))
 
     const periodClaimsCashIn = round2(claims.reduce((sum, c) => sum + (c.cashIn || 0), 0))
     const periodClaimsCashOut = round2(claims.reduce((sum, c) => sum + (c.cashOut || 0), 0))

@@ -2,6 +2,23 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const expensePresetRegistry = require("./expense-presets.json");
 const origins = require('./origin-traceability.cjs');
 const expenseCategoryDefaults = expensePresetRegistry.defaults;
+const expenseBuiltinGroups = {
+  administration: { name: "Gastos de administración", economicType: "operating_expense" },
+  indirect: { name: "Gastos indirectos", economicType: "operating_expense" },
+  equipment: { name: "Gastos de equipamiento", economicType: "operating_expense" },
+  other: { name: "Otros egresos operativos", economicType: "operating_expense" },
+  production_additional: { name: "Gasto de producción adicional", economicType: "operating_expense" },
+  production_input: { name: "Compras para producción", economicType: "production_input" },
+};
+
+async function readExpenseGroupConfig(o, id) {
+  const builtin = expenseBuiltinGroups[id];
+  const saved = await o.read("distExpenseGroups", safeId(id));
+  if (!builtin) return saved;
+  if (!saved) return { ...builtin, id };
+  check(saved.economicType === builtin.economicType, "La clasificación económica de un grupo inicial no se puede cambiar.");
+  return { ...builtin, ...saved, id, economicType: builtin.economicType };
+}
 const round = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const roundAt = (n, precision = 2) => Math.round((Number(n) + Number.EPSILON) * (10 ** precision)) / (10 ** precision);
 const quantityPrecision = (product) => product?.unitType === "kg" ? 3 : 2;
@@ -2062,7 +2079,7 @@ async function expense(o, p) {
       (o.member.role === "distributor" && p.routeId === o.member.routeId),
     "No puedes registrar gastos en esta ruta.",
   );
-  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
+  const groups = Object.keys(expenseBuiltinGroups);
   const paymentMethods = ["cash", "transfer", "other"];
   check(Number.isFinite(p.amount) && p.amount > 0, "Revisa el monto.");
   check(!p.paymentMethod || paymentMethods.includes(p.paymentMethod), "La forma de pago no es válida.");
@@ -2074,19 +2091,42 @@ async function expense(o, p) {
   let classificationStatus;
   let classificationSource;
   let concept;
-  if (typeof p.presetId === "string" && p.presetId.startsWith("admin-category:")) {
+  if (typeof p.presetId === "string" && p.presetId.startsWith("group-category:")) {
+    o.admin();
+    categoryId = safeId(p.presetId.slice("group-category:".length));
+    const selectedGroup = safeId(p.groupId);
+    const groupConfig = await readExpenseGroupConfig(o, selectedGroup);
+    check(groupConfig && groupConfig.active !== false, "El grupo ya no está activo. Actualiza la selección.");
+    const saved = await o.read("distExpenseCategories", categoryId);
+    const defaultIndex = Number(String(categoryId).split("-").at(-1)) - 1;
+    const defaultName = String(categoryId).startsWith(`${selectedGroup}-`) ? expenseCategoryDefaults[selectedGroup]?.[defaultIndex] : undefined;
+    check(saved ? saved.active === true && saved.group === selectedGroup : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
+    check(!saved || saved.group === selectedGroup, "La categoría no pertenece al grupo seleccionado.");
+    category = saved?.name || defaultName;
+    check(category && groupConfig.economicType, "La configuración económica del grupo está incompleta.");
+    check(groupConfig.economicType === "production_input" ? selectedGroup === "production_input" || selectedGroup.startsWith("custom-") : selectedGroup !== "production_input", "El grupo y su clasificación económica no coinciden.");
+    p.groupName = groupConfig.name || groupConfig.label;
+    group = selectedGroup;
+    economicType = groupConfig.economicType;
+    classificationStatus = "reviewed";
+    classificationSource = "admin_review";
+    concept = category;
+  } else if (typeof p.presetId === "string" && p.presetId.startsWith("admin-category:")) {
     o.admin();
     const id = safeId(p.presetId.slice("admin-category:".length));
     const saved = await o.read("distExpenseCategories", id);
     const defaultIndex = Number(String(id).split("-").at(-1)) - 1;
     const defaultGroup = groups.find((candidate) => id.startsWith(`${candidate}-`));
     const defaultName = defaultGroup && expenseCategoryDefaults[defaultGroup]?.[defaultIndex];
-    check(saved ? saved.active === true && groups.includes(saved.group) : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
+    check(saved ? saved.active === true : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
     group = saved?.group || defaultGroup;
     categoryId = id;
     category = saved?.name || defaultName;
     check(group && category, "La categoría seleccionada no es válida.");
-    economicType = group === "production_input" ? "production_input" : "operating_expense";
+    const groupConfig = await readExpenseGroupConfig(o, group);
+    check(groupConfig && groupConfig.active !== false, "El grupo de esta categoría está inactivo.");
+    economicType = groupConfig.economicType;
+    p.groupName = groupConfig.name || groupConfig.label;
     classificationStatus = "reviewed";
     classificationSource = "admin_review";
     concept = category;
@@ -2094,11 +2134,13 @@ async function expense(o, p) {
     const id = safeId(p.presetId.slice("category:".length));
     const saved = await o.read("distExpenseCategories", id);
     check(saved?.active && saved.autoClassifiable === true && (o.member.role === "admin" || saved.distributorVisible === true), "Esta categoría no está habilitada para el registro automático.");
-    check(groups.includes(saved.group), "El grupo de la categoría no es válido.");
+    const groupConfig = await readExpenseGroupConfig(o, saved.group);
+    check(groupConfig && groupConfig.active !== false, "El grupo de la categoría no es válido.");
     group = saved.group;
+    p.groupName = groupConfig.name || groupConfig.label;
     categoryId = id;
     category = saved.name;
-    economicType = group === "production_input" ? "production_input" : "operating_expense";
+    economicType = groupConfig.economicType;
     classificationStatus = "classified";
     classificationSource = "automatic";
     concept = category;
@@ -2112,11 +2154,14 @@ async function expense(o, p) {
       check(p.group === undefined && p.categoryId === undefined && p.economicType === undefined && p.affectsOperatingResult === undefined, "La clasificación se determina desde la opción seleccionada; no envíes una clasificación manual.");
     }
     group = preset.group;
+    const groupConfig = await readExpenseGroupConfig(o, group);
+    check(groupConfig && groupConfig.active !== false, "El grupo de esta opción está inactivo.");
     categoryId = preset.categoryId;
     const saved = await o.read("distExpenseCategories", categoryId);
     check(!saved || (saved.active && saved.group === group), "La categoría ya no está activa. Actualiza la selección.");
     category = saved?.name || preset.categoryName;
-    economicType = preset.economicType;
+    economicType = groupConfig.economicType;
+    p.groupName = groupConfig.name || groupConfig.label;
     classificationStatus = preset.classificationStatus;
     classificationSource = preset.classificationSource;
     concept = preset.id === "other_unsure" ? "Otro" : preset.categoryName;
@@ -2134,11 +2179,13 @@ async function expense(o, p) {
   } else {
     // Backward compatibility for older Administration clients. New UI always uses a preset.
     group = p.group || "other";
-    check(groups.includes(group), "El grupo del egreso no es válido.");
+    const groupConfig = await readExpenseGroupConfig(o, group);
+    check(groupConfig && groupConfig.active !== false, "El grupo del egreso no es válido.");
     economicType = p.economicType || (p.affectsOperatingResult === false ? "production_input" : "operating_expense");
     check(["operating_expense", "production_input"].includes(economicType), "El tipo de salida no es válido.");
     check(p.affectsOperatingResult === undefined || p.affectsOperatingResult === (economicType === "operating_expense"), "El tipo de salida y su tratamiento económico no coinciden.");
-    check(economicType === "production_input" ? group === "production_input" : group !== "production_input", "El grupo debe corresponder al tipo de salida.");
+    check(groupConfig.economicType === economicType, "La clasificación económica no coincide con la configuración del grupo.");
+    p.groupName = groupConfig.name || groupConfig.label;
     categoryId = p.categoryId ? safeId(p.categoryId) : "other-2";
     const saved = p.categoryId ? await o.read("distExpenseCategories", categoryId) : null;
     const defaultIndex = Number(String(categoryId).split("-").at(-1)) - 1;
@@ -2158,6 +2205,7 @@ async function expense(o, p) {
     ...(p.dayKey ? { dayKey: p.dayKey } : {}),
     operationId: o.id,
     group,
+    groupName: p.groupName || expenseBuiltinGroups[group]?.name || group,
     categoryId,
     categoryName: category,
     paymentMethod: p.paymentMethod || "cash",
@@ -2172,6 +2220,10 @@ async function expense(o, p) {
     registeredByUid: o.actor,
     registeredByName: o.member.displayName || o.actor,
     note: p.note || "",
+    transactionKind: "expense",
+    cashPaidAmount: p.paymentMethod === "cash" ? round(p.amount) : 0,
+    transferPaidAmount: p.paymentMethod === "transfer" ? round(p.amount) : 0,
+    otherPaidAmount: p.paymentMethod === "other" ? round(p.amount) : 0,
   };
   o.put("distExpenses", o.id, e);
   return e;
@@ -2182,6 +2234,7 @@ async function deleteExpense(o, p) {
   check(String(p.reason || "").trim(), "Indica el motivo de anulación del egreso.");
   const expense = await o.read("distExpenses", p.expenseId);
   check(expense && !expense.voided, "El gasto ya no está activo.");
+  check((expense.transactionKind || "expense") === "expense", "Las compras a proveedor y sus pagos requieren una corrección auditada de cuentas por pagar; no se anulan como un egreso común.");
   o.put("distExpenses", expense.id, {
     ...expense,
     voided: true,
@@ -2195,12 +2248,17 @@ async function deleteExpense(o, p) {
 
 async function saveExpenseCategory(o, p) {
   o.admin();
-  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
+  const groups = Object.keys(expenseBuiltinGroups);
   const id = safeId(p.categoryId);
   const name = String(p.name || "").trim();
-  check(groups.includes(p.group), "El grupo de la categoría no es válido.");
+  const groupConfig = await readExpenseGroupConfig(o, p.group);
+  check(groupConfig && groupConfig.active !== false, "El grupo de la categoría no es válido o está inactivo.");
   check(name.length > 0 && name.length <= 60, "Escribe una categoría de hasta 60 caracteres.");
   const previous = await o.read("distExpenseCategories", id);
+  const duplicate = await o.all("distExpenseCategories");
+  const defaultNames = expenseCategoryDefaults[p.group] || [];
+  const duplicateDefault = defaultNames.some((defaultName, index) => `${p.group}-${index + 1}` !== id && defaultName.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es"));
+  check(!duplicateDefault && !duplicate.some((row) => row.id !== id && row.group === p.group && row.name?.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es")), "Ya existe una categoría con ese nombre en el grupo.");
   const category = {
     id, ...o.base(), group: p.group, name,
     active: p.active !== false,
@@ -2214,12 +2272,192 @@ async function saveExpenseCategory(o, p) {
   return category;
 }
 
+async function saveExpenseGroup(o, p) {
+  o.admin();
+  const id = safeId(p.groupId);
+  const name = String(p.name || "").trim();
+  check(name.length > 0 && name.length <= 60, "Escribe un nombre de grupo de hasta 60 caracteres.");
+  check(["operating_expense", "production_input"].includes(p.economicType), "Selecciona la clasificación económica del grupo.");
+  const builtin = expenseBuiltinGroups[id];
+  check(!builtin || p.economicType === builtin.economicType, "La clasificación de un grupo inicial no se puede cambiar.");
+  const previous = await o.read("distExpenseGroups", id);
+  const otherGroups = await o.all("distExpenseGroups");
+  const configuredNames = Object.entries(expenseBuiltinGroups).map(([builtinId, config]) => ({
+    id: builtinId,
+    name: otherGroups.find((row) => row.id === builtinId)?.name || config.name,
+  }));
+  const duplicateBuiltin = configuredNames.some((row) => row.id !== id && row.name.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es"));
+  check(!duplicateBuiltin && !otherGroups.some((row) => row.id !== id && !Object.hasOwn(expenseBuiltinGroups, row.id) && row.name?.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es")), "Ya existe un grupo con ese nombre.");
+  if (previous && previous.economicType !== p.economicType) {
+    const [expenses, categories] = await Promise.all([o.query("distExpenses", "group", id), o.query("distExpenseCategories", "group", id)]);
+    check(expenses.length === 0 && categories.length === 0, "No se puede cambiar la clasificación económica de un grupo que ya tiene historial.");
+  }
+  const group = {
+    id, ...o.base(), name, economicType: builtin?.economicType || p.economicType,
+    active: p.active !== false,
+    order: Number.isFinite(p.order) ? Math.max(0, Math.round(p.order)) : 999,
+    ...(previous ? { createdAt: previous.createdAt, createdBy: previous.createdBy } : {}),
+    updatedAt: o.now, updatedBy: o.actor,
+  };
+  o.put("distExpenseGroups", id, group);
+  return group;
+}
+
+async function saveExpenseSupplier(o, p) {
+  o.admin();
+  const id = safeId(p.supplierId);
+  const name = String(p.name || "").trim();
+  check(name.length > 0 && name.length <= 100, "Escribe el nombre del proveedor.");
+  const previous = await o.read("distSuppliers", id);
+  const all = await o.all("distSuppliers");
+  check(!all.some((item) => item.id !== id && item.name?.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es")), "Ya existe un proveedor con ese nombre.");
+  const supplier = { id, ...o.base(), name, active: p.active !== false, contactName: String(p.contactName || "").trim(), phone: String(p.phone || "").trim(), note: String(p.note || "").trim(), ...(previous ? { createdAt: previous.createdAt, createdBy: previous.createdBy } : {}), updatedAt: o.now, updatedBy: o.actor };
+  o.put("distSuppliers", id, supplier);
+  return supplier;
+}
+
+async function registerSupplierPurchase(o, p) {
+  o.admin();
+  const supplier = await o.read("distSuppliers", safeId(p.supplierId));
+  check(supplier?.active === true, "Selecciona un proveedor activo.");
+  const total = round(p.amount);
+  const paid = round(p.initialPayment || 0);
+  check(Number.isFinite(total) && total > 0, "Revisa el monto de compra.");
+  check(Number.isFinite(paid) && paid >= 0 && paid <= total, "El adelanto debe estar entre cero y el total de compra.");
+  check(validDate(p.dayKey), "La fecha de compra no es válida.");
+  check(!p.dueDayKey || (validDate(p.dueDayKey) && p.dueDayKey >= p.dayKey), "La fecha de vencimiento no es válida.");
+  const groupId = safeId(p.groupId), categoryId = safeId(p.categoryId);
+  const group = await readExpenseGroupConfig(o, groupId);
+  check(group && group.active !== false && group.economicType === "production_input", "Las cuentas por pagar solo se registran en grupos clasificados como compras para producción.");
+  const category = await o.read("distExpenseCategories", categoryId);
+  const index = Number(String(categoryId).split("-").at(-1)) - 1;
+  const defaultName = String(categoryId).startsWith(`${groupId}-`) ? expenseCategoryDefaults[groupId]?.[index] : undefined;
+  check(category ? category.active === true && category.group === groupId : Boolean(defaultName), "Selecciona una categoría activa del grupo.");
+  const detail = String(p.description || "").trim();
+  check(detail.length > 0 && detail.length <= 200, "Describe brevemente la materia prima comprada.");
+  const method = paid === 0 ? "credit" : paid === total ? p.paymentMethod : "mixed";
+  check(paid === 0 || ["cash", "transfer", "other"].includes(p.paymentMethod), "Selecciona la forma de pago del adelanto.");
+  const categoryName = category?.name || defaultName;
+  const expense = {
+    id: o.id, ...o.base(), dayKey: p.dayKey, operationId: o.id, transactionKind: "supplier_purchase",
+    group: groupId, groupName: group.name || group.label || groupId, categoryId, categoryName,
+    economicType: "production_input", affectsOperatingResult: false, classificationStatus: "reviewed", classificationSource: "admin_review",
+    concept: detail, amount: total, paymentMethod: method,
+    cashPaidAmount: p.paymentMethod === "cash" ? paid : 0, transferPaidAmount: p.paymentMethod === "transfer" ? paid : 0, otherPaidAmount: p.paymentMethod === "other" ? paid : 0, initialPaymentMethod: p.paymentMethod,
+    routeId: "administracion", routeName: "Administración", registeredByUid: o.actor, registeredByName: o.member.displayName || o.actor,
+    supplierId: supplier.id, supplierName: supplier.name, note: String(p.note || "").trim(),
+  };
+  const balance = round(total - paid);
+  const payable = {
+    id: o.id, ...o.base(), supplierId: supplier.id, supplierName: supplier.name, purchaseExpenseId: o.id,
+    dayKey: p.dayKey, description: detail, groupId, groupName: expense.groupName, categoryId, categoryName,
+    totalAmount: total, paidAmount: paid, balance, status: balance === 0 ? "paid" : paid > 0 ? "partial" : "pending",
+    ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}), note: String(p.note || "").trim(), routeId: "administracion", routeName: "Administración",
+  };
+  o.put("distExpenses", expense.id, expense);
+  o.put("distPayables", payable.id, payable);
+  if (paid > 0) o.put("distSupplierPayments", `${o.id}__initial`, {
+    id: `${o.id}__initial`, ...o.base(), payableId: o.id, supplierId: supplier.id, supplierName: supplier.name, amount: paid,
+    paymentMethod: p.paymentMethod, dayKey: p.dayKey, routeId: "administracion", routeName: "Administración",
+    responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, note: "Pago inicial de la compra",
+  });
+  return { expense, payable };
+}
+
+async function paySupplierPayable(o, p) {
+  o.admin();
+  const payable = await o.read("distPayables", safeId(p.payableId));
+  check(payable && payable.status !== "voided", "La cuenta por pagar no está disponible.");
+  const amount = round(p.amount);
+  check(Number.isFinite(amount) && amount > 0, "Ingresa un abono mayor que cero.");
+  check(["cash", "transfer", "other"].includes(p.paymentMethod), "Selecciona la forma de pago.");
+  check(validDate(p.dayKey), "La fecha del pago no es válida.");
+  check(amount <= payable.balance, "El pago supera el saldo pendiente.");
+  const nextBalance = round(payable.balance - amount);
+  const nextPaid = round(payable.paidAmount + amount);
+  const paymentId = `${o.id}__payment`;
+  const payment = {
+    id: paymentId, ...o.base(), payableId: payable.id, supplierId: payable.supplierId, supplierName: payable.supplierName,
+    amount, paymentMethod: p.paymentMethod, dayKey: p.dayKey, routeId: "administracion", routeName: "Administración",
+    responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, note: String(p.note || "").trim(),
+  };
+  const expense = {
+    id: paymentId, ...o.base(), dayKey: p.dayKey, operationId: o.id, transactionKind: "supplier_payment",
+    group: payable.groupId, groupName: payable.groupName, categoryId: payable.categoryId, categoryName: payable.categoryName,
+    economicType: "production_input", affectsOperatingResult: false, classificationStatus: "reviewed", classificationSource: "admin_review",
+    concept: `Pago a proveedor: ${payable.supplierName}`, amount, paymentMethod: p.paymentMethod,
+    cashPaidAmount: p.paymentMethod === "cash" ? amount : 0, transferPaidAmount: p.paymentMethod === "transfer" ? amount : 0, otherPaidAmount: p.paymentMethod === "other" ? amount : 0,
+    payableId: payable.id, supplierId: payable.supplierId, supplierName: payable.supplierName,
+    routeId: "administracion", routeName: "Administración", registeredByUid: o.actor, registeredByName: o.member.displayName || o.actor, note: String(p.note || "").trim(),
+  };
+  const updatedPayable = { ...payable, paidAmount: nextPaid, balance: nextBalance, status: nextBalance === 0 ? "paid" : "partial", updatedAt: o.now, updatedBy: o.actor };
+  o.put("distSupplierPayments", paymentId, payment);
+  o.put("distExpenses", paymentId, expense);
+  o.put("distPayables", payable.id, updatedPayable);
+  return { payment, payable: updatedPayable };
+}
+
+async function voidSupplierPayment(o, p) {
+  o.admin();
+  const reason = String(p.reason || "").trim();
+  check(reason.length > 0 && reason.length <= 300, "Indica el motivo de la corrección del pago.");
+  const payment = await o.read("distSupplierPayments", safeId(p.paymentId));
+  check(payment && !payment.voided, "El pago ya fue corregido o anulado.");
+  const payable = await o.read("distPayables", safeId(payment.payableId));
+  check(payable && payable.status !== "voided", "La cuenta por pagar no está disponible.");
+  const amount = round(payment.amount);
+  check(amount > 0 && amount <= payable.paidAmount, "El pago no coincide con el saldo contabilizado de la cuenta.");
+  const paidAmount = round(payable.paidAmount - amount);
+  const balance = round(payable.totalAmount - paidAmount);
+  const status = paidAmount === 0 ? "pending" : balance === 0 ? "paid" : "partial";
+  const correctedPayment = { ...payment, voided: true, voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: reason };
+  o.put("distSupplierPayments", payment.id, correctedPayment);
+
+  let affectedExpenseId = payment.id;
+  if (payment.id.endsWith("__initial")) {
+    affectedExpenseId = payable.purchaseExpenseId;
+    const purchase = await o.read("distExpenses", affectedExpenseId);
+    check(purchase?.transactionKind === "supplier_purchase" && !purchase.voided, "No se puede corregir el adelanto porque su compra original no está disponible.");
+    const cashPaidAmount = round(Math.max(0, Number(purchase.cashPaidAmount || 0) - (payment.paymentMethod === "cash" ? amount : 0)));
+    const transferPaidAmount = round(Math.max(0, Number(purchase.transferPaidAmount || 0) - (payment.paymentMethod === "transfer" ? amount : 0)));
+    const otherPaidAmount = round(Math.max(0, Number(purchase.otherPaidAmount || 0) - (payment.paymentMethod === "other" ? amount : 0)));
+    const paidByMethod = [cashPaidAmount, transferPaidAmount, otherPaidAmount].filter(value => value > 0).length;
+    const initialPaymentMethod = paidByMethod > 1 ? "mixed" : cashPaidAmount > 0 ? "cash" : transferPaidAmount > 0 ? "transfer" : otherPaidAmount > 0 ? "other" : "credit";
+    o.put("distExpenses", purchase.id, { ...purchase, cashPaidAmount, transferPaidAmount, otherPaidAmount, initialPaymentMethod, paymentMethod: initialPaymentMethod, updatedAt: o.now, updatedBy: o.actor });
+  } else {
+    const expense = await o.read("distExpenses", payment.id);
+    check(expense?.transactionKind === "supplier_payment" && !expense.voided, "No se puede corregir el pago porque su movimiento financiero no está disponible.");
+    o.put("distExpenses", expense.id, { ...expense, voided: true, voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: reason, updatedAt: o.now, updatedBy: o.actor });
+  }
+  const updatedPayable = { ...payable, paidAmount, balance, status, updatedAt: o.now, updatedBy: o.actor, history: [...(payable.history || []), { action: "payment_voided", paymentId: payment.id, amount, paymentMethod: payment.paymentMethod, reason, at: o.now, by: o.actor, byName: o.member.displayName || o.actor, affectedExpenseId }].slice(-100) };
+  o.put("distPayables", payable.id, updatedPayable);
+  return { payment: correctedPayment, payable: updatedPayable };
+}
+
+async function voidSupplierPurchase(o, p) {
+  o.admin();
+  const reason = String(p.reason || "").trim();
+  check(reason.length > 0 && reason.length <= 300, "Indica el motivo de anulación de la compra.");
+  const payable = await o.read("distPayables", safeId(p.payableId));
+  check(payable && payable.status !== "voided", "La cuenta por pagar ya fue anulada o no existe.");
+  check(payable.paidAmount === 0, "Anula primero los pagos con una corrección auditada antes de anular la compra.");
+  const payments = await o.query("distSupplierPayments", "payableId", payable.id);
+  check(payments.every(payment => payment.voided === true), "La compra conserva pagos sin corregir.");
+  const expense = await o.read("distExpenses", payable.purchaseExpenseId);
+  check(expense?.transactionKind === "supplier_purchase" && !expense.voided, "La compra original ya no está activa.");
+  o.put("distExpenses", expense.id, { ...expense, voided: true, voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: reason, updatedAt: o.now, updatedBy: o.actor });
+  const updatedPayable = { ...payable, status: "voided", paidAmount: 0, balance: 0, voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: reason, updatedAt: o.now, updatedBy: o.actor, history: [...(payable.history || []), { action: "purchase_voided", reason, at: o.now, by: o.actor, byName: o.member.displayName || o.actor }].slice(-100) };
+  o.put("distPayables", payable.id, updatedPayable);
+  return updatedPayable;
+}
+
 async function classifyExpense(o, p) {
   o.admin();
   const expense = await o.read("distExpenses", safeId(p.expenseId));
   check(expense && !expense.voided, "El egreso ya no está activo.");
-  const groups = ["administration", "indirect", "equipment", "other", "production_additional", "production_input"];
-  check(groups.includes(p.group), "El grupo del egreso no es válido.");
+  check((expense.transactionKind || "expense") === "expense", "Las compras a proveedor y sus pagos conservan la clasificación de su cuenta por pagar.");
+  const groupConfig = await readExpenseGroupConfig(o, p.group);
+  check(groupConfig && groupConfig.active !== false, "El grupo del egreso no es válido.");
   const categoryId = safeId(p.categoryId);
   const category = await o.read("distExpenseCategories", categoryId);
   const index = Number(String(categoryId).split("-").at(-1)) - 1;
@@ -2229,7 +2467,7 @@ async function classifyExpense(o, p) {
   check(["operating_expense", "production_input"].includes(economicType), "Selecciona el tipo de salida.");
   check(p.affectsOperatingResult === undefined || typeof p.affectsOperatingResult === "boolean", "La decisión económica del egreso no es válida.");
   check(p.affectsOperatingResult === undefined || p.affectsOperatingResult === (economicType === "operating_expense"), "El tipo de salida y su tratamiento económico no coinciden.");
-  check(economicType === "production_input" ? p.group === "production_input" : p.group !== "production_input", "El grupo debe corresponder al tipo de salida.");
+  check(economicType === groupConfig.economicType, "La clasificación económica no coincide con la configuración del grupo.");
   const affectsOperatingResult = economicType === "operating_expense";
   const previous = {
     group: expense.group || "other",
@@ -2242,7 +2480,7 @@ async function classifyExpense(o, p) {
     classificationStatus: expense.classificationStatus ?? null,
     classificationSource: expense.classificationSource ?? null,
   };
-  const next = { group: p.group, categoryId, categoryName: category?.name || defaultName, economicType, affectsOperatingResult, classificationStatus: "reviewed", classificationSource: "admin_review" };
+  const next = { group: p.group, groupName: groupConfig.name || groupConfig.label || p.group, categoryId, categoryName: category?.name || defaultName, economicType, affectsOperatingResult, classificationStatus: "reviewed", classificationSource: "admin_review" };
   const history = [...(expense.classificationHistory || []), { at: o.now, by: o.actor, byName: o.member.displayName || o.actor, previous, next }].slice(-20);
   const updated = { ...expense, ...next, classificationHistory: history, updatedAt: o.now, updatedBy: o.actor };
   o.put("distExpenses", expense.id, updated);
@@ -2359,7 +2597,7 @@ async function closure(o, p) {
     const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
     const cashSales = sum(commercialSales, "cashAmount"),
       cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
-      cashExpenses = sum(expenses.filter((expense) => (expense.paymentMethod || "cash") === "cash"), "amount"),
+      cashExpenses = round(expenses.filter((expense) => !expense.voided).reduce((total, expense) => total + (Number.isFinite(expense.cashPaidAmount) ? Math.max(0, expense.cashPaidAmount) : (expense.paymentMethod || "cash") === "cash" ? (expense.amount || 0) : 0), 0)),
       claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
       expectedCash = round(
         cashSales + cashCollections - cashExpenses + claimCash,
@@ -2771,7 +3009,7 @@ async function closure(o, p) {
   const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
   const cashSales = sum(commercialSales, "cashAmount"),
     cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
-    cashExpenses = sum(expenses.filter((expense) => (expense.paymentMethod || "cash") === "cash"), "amount"),
+    cashExpenses = round(expenses.filter((expense) => !expense.voided).reduce((total, expense) => total + (Number.isFinite(expense.cashPaidAmount) ? Math.max(0, expense.cashPaidAmount) : (expense.paymentMethod || "cash") === "cash" ? (expense.amount || 0) : 0), 0)),
     claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
     expectedCash = round(
       cashSales + cashCollections - cashExpenses + claimCash,
@@ -2969,7 +3207,7 @@ async function claim(o, p) {
   o.put("distClaims", o.id, c);
   return c;
 }
-Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, classifyExpense, deleteProduct, closure, claim });
+Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, saveExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
 async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);

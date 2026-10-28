@@ -1,26 +1,26 @@
-import type { DistClaim, DistExpense, DistRoute, DistSale, DistStockMovement, ExpenseGroup } from '../types.ts'
+import type { DistClaim, DistExpense, DistRoute, DistSale, DistStockMovement } from '../types.ts'
 import { matchesRoute, round2, toDayKey } from './engine.ts'
 import { computeProductProfitReport, type ProductProfitReport } from './productProfit.ts'
-import { effectiveExpenseGroup } from './expenseCategories.ts'
+import { effectiveExpenseGroup, expenseGroupLabel } from './expenseCategories.ts'
 import { effectiveExpenseEconomicType, isExpenseReviewPending } from './expenseReview.ts'
 
 export interface OperatingResultExpenseRow {
-  id: string; dayKey: string; group: ExpenseGroup; category: string; concept: string
-  origin: string; responsible: string; amount: number; paymentMethod: 'cash' | 'transfer' | 'other'; economicType: 'operating_expense' | 'production_input'
+  id: string; dayKey: string; group: string; groupLabel: string; category: string; concept: string
+  origin: string; responsible: string; amount: number; paymentMethod: 'cash' | 'transfer' | 'other' | 'credit' | 'mixed'; economicType: 'operating_expense' | 'production_input'
 }
 export interface OperatingResultDetail {
-  key: 'grossSales' | 'adjustments' | 'netSales' | 'costOfSales' | 'grossMargin' | ExpenseGroup | 'losses' | 'courtesies' | 'result'
+  key: 'grossSales' | 'adjustments' | 'netSales' | 'costOfSales' | 'grossMargin' | string | 'losses' | 'courtesies' | 'result'
   label: string; amount: number | null; rows: Array<Record<string, string | number>>; explanation?: string
 }
 export interface OperatingResult {
   grossSales: number; adjustments: number; netSales: number; costOfSales: number | null; grossMargin: number | null
-  expenseTotals: Record<ExpenseGroup, number>; productionInputTotal: number; losses: number | null; courtesyCost: number | null
+  expenseTotals: Record<string, number>; expenseGroupLabels: Array<{ id: string; label: string }>; productionInputTotal: number; losses: number | null; courtesyCost: number | null
   operatingResult: number | null; costsKnown: boolean; report: ProductProfitReport; details: OperatingResultDetail[]
   expenses: OperatingResultExpenseRow[]; salesByOrigin: Array<{ origin: string; amount: number }>
   pendingClassificationCount: number; pendingEconomicDecisionCount: number
 }
 
-const ZERO: Record<ExpenseGroup, number> = { administration: 0, indirect: 0, equipment: 0, other: 0, production_additional: 0, production_input: 0 }
+const ZERO: Record<string, number> = { administration: 0, indirect: 0, equipment: 0, other: 0, production_additional: 0, production_input: 0 }
 
 export function computeOperatingResult(
   sales: DistSale[], claims: DistClaim[], expenses: DistExpense[], movements: DistStockMovement[], dayKeys: string[], routeFilter = '', routes: Pick<DistRoute, 'id' | 'name'>[] = [],
@@ -29,7 +29,7 @@ export function computeOperatingResult(
     (dayKeys.length === 0 || dayKeys.includes(dayKey)) && (!routeFilter || matchesRoute(routeId || '', routeFilter))
   const scopedSales = sales.filter((sale) => !sale.voidedAt && !sale.pendingConfirmation && inScope(sale.dayKey || toDayKey(sale.createdAt), sale.routeId))
   const scopedClaims = claims.filter((claim) => inScope(claim.dayKey || toDayKey(claim.createdAt), claim.routeId))
-  const allScopedActiveExpenses = expenses.filter((expense) => !expense.voided && inScope(expense.dayKey || toDayKey(expense.createdAt), expense.routeId))
+  const allScopedActiveExpenses = expenses.filter((expense) => !expense.voided && expense.transactionKind !== 'supplier_payment' && inScope(expense.dayKey || toDayKey(expense.createdAt), expense.routeId))
   const scopedExpenses = allScopedActiveExpenses.filter((expense) => effectiveExpenseEconomicType(expense) === 'operating_expense')
   const productionInputs = allScopedActiveExpenses.filter((expense) => effectiveExpenseEconomicType(expense) === 'production_input')
   const pendingClassificationCount = allScopedActiveExpenses.filter(isExpenseReviewPending).length
@@ -67,6 +67,7 @@ export function computeOperatingResult(
       id: expense.id,
       dayKey: expense.dayKey || toDayKey(expense.createdAt),
       group,
+      groupLabel: expense.groupName || expenseGroupLabel(group),
       category: expense.categoryName || 'Por clasificar',
       concept: expense.concept,
       origin: displayOrigin(expense.routeId, expense.routeName),
@@ -95,7 +96,7 @@ export function computeOperatingResult(
   const operatingResult = costsKnown
     ? round2((grossMargin ?? 0) - operatingExpenseTotal - (lossCost ?? 0) - courtesyCostValue)
     : null
-  const expenseRowsFor = (group?: ExpenseGroup) => expenseRows.filter((expense) => !group || expense.group === group).map((expense) => ({
+  const expenseRowsFor = (group?: string) => expenseRows.filter((expense) => !group || expense.group === group).map((expense) => ({
     fecha: expense.dayKey, categoría: expense.category, concepto: expense.concept, origen: expense.origin,
     responsable: expense.responsible,
     'forma de pago': expense.paymentMethod === 'cash' ? 'Efectivo' : expense.paymentMethod === 'transfer' ? 'QR / transferencia' : 'Otro',
@@ -129,7 +130,7 @@ export function computeOperatingResult(
     { key: 'netSales', label: 'Ventas netas', amount: netSales, rows: [...saleRows, ...claimRows] },
     { key: 'costOfSales', label: 'Costo de lo vendido', amount: costOfSales, rows: report.allLineDetails.map((line) => ({ fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, costo: line.costBs ?? 'Costo histórico no registrado' })) },
     { key: 'grossMargin', label: 'Margen bruto', amount: grossMargin, rows: report.items.map((item) => ({ producto: item.productName, ventas: item.salesBs, costo: item.costBs ?? 'No registrado', margen: item.profitBs ?? 'No disponible' })) },
-    ...(['administration', 'indirect', 'equipment', 'production_additional', 'other'] as ExpenseGroup[]).map((group) => ({ key: group, label: group === 'administration' ? 'Gastos de administración' : group === 'indirect' ? 'Gastos indirectos' : group === 'equipment' ? 'Gastos de equipamiento' : group === 'production_additional' ? 'Producción adicional' : 'Otros / por clasificar', amount: expenseTotals[group], rows: expenseRowsFor(group) })),
+    ...[...new Map(expenseRows.filter((row) => row.economicType === 'operating_expense').map((row) => [row.group, row.groupLabel])).entries()].map(([group, label]) => ({ key: group, label, amount: expenseTotals[group] || 0, rows: expenseRowsFor(group) })),
     { key: 'production_input', label: 'Compras de materia prima', amount: productionInputTotal, rows: expenseRowsFor('production_input'), explanation: 'Salida de dinero no descontada nuevamente porque su costo se reconoce en los productos.' },
     { key: 'losses', label: 'Mermas y pérdidas', amount: lossCost, rows: movementRows, explanation: lossCostsKnown ? undefined : 'Hay movimientos sin costo histórico; no se estima una cifra incompleta.' },
     { key: 'courtesies', label: 'Costo de cortesías', amount: courtesyCost, rows: courtesyRows },
@@ -140,5 +141,6 @@ export function computeOperatingResult(
       { concepto: 'Costo de cortesías', monto: courtesyCost ?? 'No disponible por costo histórico faltante' },
     ] },
   ]
-  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, productionInputTotal, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin, pendingClassificationCount, pendingEconomicDecisionCount }
+  const expenseGroupLabels = [...new Map(expenseRows.map((row) => [row.group, row.groupLabel])).entries()].map(([id, label]) => ({ id, label }))
+  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, expenseGroupLabels, productionInputTotal, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin, pendingClassificationCount, pendingEconomicDecisionCount }
 }

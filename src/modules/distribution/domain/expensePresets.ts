@@ -1,10 +1,10 @@
 import registry from '../../../../functions/expense-presets.json' with { type: 'json' }
-import type { DistExpenseCategory, ExpenseEconomicType, ExpenseGroup } from '../types.ts'
+import type { DistExpenseCategory, DistExpenseGroup, ExpenseEconomicType, ExpenseGroupId } from '../types.ts'
 
 export interface ExpensePreset {
   id: string
   label: string
-  group: ExpenseGroup
+  group: ExpenseGroupId
   categoryId: string
   categoryName: string
   economicType: ExpenseEconomicType
@@ -20,16 +20,19 @@ export const EXPENSE_TOP_LEVEL_CHOICES = [
   { value: 'production_input', label: 'Materia prima / producción' },
 ]
 
-export function customExpensePreset(category: DistExpenseCategory, includeAdminOnly = false): ExpensePreset | null {
+export function customExpensePreset(category: DistExpenseCategory, includeAdminOnly = false, customGroups: DistExpenseGroup[] = []): ExpensePreset | null {
   if (!category.active || !category.autoClassifiable || (!category.distributorVisible && !includeAdminOnly)) return null
-  if (!['administration', 'indirect', 'equipment', 'other', 'production_additional', 'production_input'].includes(category.group)) return null
+  const customGroup = customGroups.find((group) => group.id === category.group && group.active)
+  const validGroup = ['administration', 'indirect', 'equipment', 'other', 'production_additional', 'production_input'].includes(category.group) || Boolean(customGroup)
+  if (!validGroup) return null
+  const economicType = customGroup?.economicType || (category.group === 'production_input' ? 'production_input' : 'operating_expense')
   return {
     id: `category:${category.id}`,
     label: category.name,
     group: category.group,
     categoryId: category.id,
     categoryName: category.name,
-    economicType: category.group === 'production_input' ? 'production_input' : 'operating_expense',
+    economicType,
     classificationStatus: 'classified',
     classificationSource: 'automatic',
     requiresDetail: false,
@@ -37,15 +40,16 @@ export function customExpensePreset(category: DistExpenseCategory, includeAdminO
 }
 
 /** Categorías manuales de Administración: la selección explícita queda auditada. */
-export function adminExpensePreset(category: DistExpenseCategory): ExpensePreset | null {
-  if (!category.active || !['administration', 'indirect', 'equipment', 'other', 'production_additional', 'production_input'].includes(category.group)) return null
+export function adminExpensePreset(category: DistExpenseCategory, customGroups: DistExpenseGroup[] = []): ExpensePreset | null {
+  const customGroup = customGroups.find((group) => group.id === category.group && group.active)
+  if (!category.active || (!['administration', 'indirect', 'equipment', 'other', 'production_additional', 'production_input'].includes(category.group) && !customGroup)) return null
   return {
     id: `admin-category:${category.id}`,
     label: category.name,
     group: category.group,
     categoryId: category.id,
     categoryName: category.name,
-    economicType: category.group === 'production_input' ? 'production_input' : 'operating_expense',
+    economicType: customGroup?.economicType || (category.group === 'production_input' ? 'production_input' : 'operating_expense'),
     classificationStatus: 'reviewed',
     classificationSource: 'admin_review',
     requiresDetail: false,

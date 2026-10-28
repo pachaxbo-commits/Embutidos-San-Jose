@@ -11,6 +11,7 @@ import {
   subscribeCustomers,
   subscribeExpenses,
   subscribeExpenseCategories,
+  subscribeExpenseGroups,
   subscribeOpenDispatches,
   subscribeProducts,
   subscribeReceivables,
@@ -34,6 +35,7 @@ import type {
   DistDispatch,
   DistExpense,
   DistExpenseCategory,
+  DistExpenseGroup,
   DistProduct,
   DistReceivable,
   DistReceivableAdjustment,
@@ -104,6 +106,7 @@ export interface DistributionData {
   collections: DistCollection[]
   expenses: DistExpense[]
   expenseCategories: DistExpenseCategory[]
+  expenseGroups: DistExpenseGroup[]
   receivables: DistReceivable[]
   receivableAdjustments: DistReceivableAdjustment[]
   closures: DistClosure[]
@@ -132,6 +135,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [collections, setCollections] = useState<DistCollection[]>([])
   const [expenses, setExpenses] = useState<DistExpense[]>([])
   const [expenseCategories, setExpenseCategories] = useState<DistExpenseCategory[]>([])
+  const [expenseGroups, setExpenseGroups] = useState<DistExpenseGroup[]>([])
   const [receivables, setReceivables] = useState<DistReceivable[]>([])
   const [receivableAdjustments, setReceivableAdjustments] = useState<DistReceivableAdjustment[]>([])
   const [closures, setClosures] = useState<DistClosure[]>([])
@@ -198,9 +202,13 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setCustomers(rows.sort((a, b) => a.name.localeCompare(b.name)))
         onLoaded('customers')
       }, onError)] : [((() => { setCustomers([]); onLoaded('customers'); return () => {} })())]),
-      ...(!subscriptionCollections.has('distExpenseCategories') || isProductionPreviewReadOnly() ? [((() => { setExpenseCategories([]); onLoaded('expenseCategories'); return () => {} })())] : [subscribeExpenseCategories((rows) => {
+      ...(!subscriptionCollections.has('distExpenseCategories') || isProductionPreviewReadOnly() ? [((() => { setExpenseCategories([]); setExpenseGroups([]); onLoaded('expenseCategories'); onLoaded('expenseGroups'); return () => {} })())] : [subscribeExpenseCategories((rows) => {
         setExpenseCategories(rows)
         onLoaded('expenseCategories')
+      }, onError)]),
+      ...(!subscriptionCollections.has('distExpenseGroups') || isProductionPreviewReadOnly() ? [] : [subscribeExpenseGroups((rows) => {
+        setExpenseGroups(rows)
+        onLoaded('expenseGroups')
       }, onError)]),
       subscribeBalances((rows) => {
         setBalances(rows)
@@ -282,6 +290,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     collections: [...collections, ...pendingCollections],
     expenses: [...expenses, ...pendingExpenses],
     expenseCategories,
+    expenseGroups,
     receivables: visibleReceivables,
     receivableAdjustments,
     closures,
