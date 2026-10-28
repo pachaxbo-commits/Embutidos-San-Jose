@@ -1,4 +1,5 @@
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { createHash } = require('node:crypto');
 const expensePresetRegistry = require("./expense-presets.json");
 const origins = require('./origin-traceability.cjs');
 const expenseCategoryDefaults = expensePresetRegistry.defaults;
@@ -1729,11 +1730,23 @@ async function warehouseShift(o, p) {
   const value = { id: o.id, ...o.base(), warehouseId, responsibleName: p.responsibleName.trim(), openedAt: o.now, openedBy: o.actor, active: true };
   o.put("distWarehouseShifts", o.id, value); return value;
 }
+async function assertNotReservedCourtesy(o, sale) {
+  if (sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy') return;
+  if (sale.reservationId) check(false, 'Esta cortesía está vinculada a una reserva; requiere un procedimiento especializado para corregirla o anularla.');
+  const movements = await o.query('distStockMovements', 'saleId', sale.id);
+  if (movements.some(row => row.type === 'courtesy' && row.reservationId))
+    check(false, 'Esta cortesía está vinculada a una reserva; requiere un procedimiento especializado para corregirla o anularla.');
+  const operationId = sale.operationId || sale.id;
+  const operation = await o.read('distOperations', operationId);
+  if (operation?.payload?.reservationId || operation?.result?.reservationId)
+    check(false, 'Esta cortesía está vinculada a una reserva; requiere un procedimiento especializado para corregirla o anularla.');
+}
 async function editSale(o, p) {
   check(["admin", "distributor"].includes(o.member.role), "Sin permiso para corregir ventas.");
   check(p.reason?.trim(), "La razón de la edición es obligatoria.");
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
+  await assertNotReservedCourtesy(o, sale);
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes corregir tus propias ventas.");
   const qrVerifications = await o.query("distQrVerifications", "sourceId", sale.id);
   check(!qrVerifications.some(row => row.sourceType === "sale"), "La venta tiene una verificación bancaria QR. Requiere revisión administrativa antes de corregirla.");
@@ -1888,6 +1901,7 @@ async function voidSale(o, p) {
   check(p.reason?.trim(), "La razón de la anulación es obligatoria.");
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
+  await assertNotReservedCourtesy(o, sale);
   check(!sale.voidedAt, "La venta ya fue anulada.");
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes anular tus propias ventas.");
   const qrVerifications = await o.query("distQrVerifications", "sourceId", sale.id);
@@ -3359,7 +3373,9 @@ handlers.releaseProcessingReservation = async (o, p) => {
   const id = safeId(p.reservationId), reservation = await o.read('distStockReservations', id);
   check(reservation && ['active','partially_consumed'].includes(reservation.status), 'La reserva ya no tiene cantidad pendiente.');
   check(reservation.purpose !== 'review_hold', 'La inmovilización de revisión requiere un flujo de aprobación sanitaria.');
+  check(reservation.purpose !== 'repack_pending', 'El producto pendiente de reenvasado solo puede liberarse mediante el procedimiento autorizado de reenvasado.');
   check(String(p.reason || '').trim(), 'Indica el motivo de liberación.');
+  check(p.commercialQualityConfirmed === true, 'Confirma que el producto mantiene calidad comercial para el nuevo destino.');
   const { product, loc, lot, rows } = await reservationContext(o, { productId: reservation.productId, lotId: reservation.lotId, location: reservation.location });
   const current = rows.find(r => r.id === id);
   check(current && current.remainingQuantity === reservation.remainingQuantity, 'La reserva cambió; vuelve a consultar antes de liberar.');
@@ -3378,11 +3394,24 @@ handlers.releaseProcessingReservation = async (o, p) => {
 handlers.deliverReservedCourtesy = async (o, p) => {
   o.admin();
   const id = safeId(p.reservationId), reservation = await o.read('distStockReservations', id);
-  check(reservation?.purpose === 'courtesy' && ['active','partially_consumed'].includes(reservation.status), 'No existe una reserva activa para cortesías.');
+  const deliveryId = safeId(p.deliveryId);
+  check(reservation, 'No existe la reserva indicada.');
   const product = await o.product(reservation.productId);
   const quantity = o.amount(Number(p.quantity), product, false, quantityPrecision(product));
+  const recipient = String(p.recipient || '').trim(), reason = String(p.reason || '').trim();
+  check(quantity > 0, 'La cantidad debe ser mayor a cero.');
+  check(recipient && reason, 'Indica destinatario y motivo de la cortesía.');
+  const deliveryPayload = { deliveryId, reservationId: id, quantity, recipient, reason, deliveredWeightG: p.deliveredWeightG ?? null };
+  const payloadHash = createHash('sha256').update(JSON.stringify(deliveryPayload)).digest('hex');
+  const deliveryRef = o.ref('distCourtesyDeliveries', deliveryId);
+  const priorDelivery = await o.tx.get(deliveryRef);
+  if (priorDelivery.exists) {
+    const prior = priorDelivery.data();
+    check(prior.payloadHash === payloadHash, 'El deliveryId ya fue utilizado con datos diferentes.');
+    return { ...prior.result, duplicate: true };
+  }
+  check(reservation.purpose === 'courtesy' && ['active','partially_consumed'].includes(reservation.status), 'No existe una reserva activa para cortesías.');
   check(quantity <= reservation.remainingQuantity, 'La cantidad supera lo reservado para cortesías.');
-  check(String(p.recipient || '').trim() && String(p.reason || '').trim(), 'Indica destinatario y motivo de la cortesía.');
   const { product: currentProduct, loc, lot, rows } = await reservationContext(o, { productId: reservation.productId, lotId: reservation.lotId, location: reservation.location });
   check(currentProduct.id === product.id, 'El producto reservado cambió; vuelve a consultar.');
   check(reservation.remainingQuantity === rows.find(r => r.id === id)?.remainingQuantity, 'La reserva cambió; vuelve a consultar.');
@@ -3390,19 +3419,35 @@ handlers.deliverReservedCourtesy = async (o, p) => {
   check(Number(held.courtesy || 0) >= quantity, 'La disponibilidad reservada no concilia.');
   held.courtesy = roundAt(Number(held.courtesy || 0) - quantity, precision);
   lot.processingUnavailable = { ...lot.processingUnavailable, [loc]: held };
-  const weightG = quantity === reservation.remainingQuantity ? reservation.remainingWeightG : (reservation.remainingQuantity ? Math.floor(reservation.remainingWeightG * quantity / reservation.remainingQuantity) : 0);
+  let weightG = null;
+  if (reservation.remainingWeightG !== null && reservation.remainingWeightG !== undefined) {
+    if (quantity === reservation.remainingQuantity) weightG = reservation.remainingWeightG;
+    else {
+      weightG = Number(p.deliveredWeightG);
+      check(Number.isSafeInteger(weightG) && weightG > 0 && weightG <= reservation.remainingWeightG,
+        'Indica el peso medido de esta entrega en gramos; no se puede estimar desde la cantidad de paquetes.');
+    }
+  } else {
+    check(p.deliveredWeightG === undefined || p.deliveredWeightG === null,
+      'La reserva no tiene peso físico verificado; no registres gramos estimados.');
+  }
   const nextRemaining = roundAt(reservation.remainingQuantity - quantity, precision);
-  const nextWeight = (reservation.remainingWeightG || 0) - weightG;
+  const nextWeight = reservation.remainingWeightG == null ? null : reservation.remainingWeightG - weightG;
   const updated = reservationEvent(o, { ...reservation, remainingQuantity: nextRemaining, consumedQuantity: roundAt((reservation.consumedQuantity || 0) + quantity, precision), remainingWeightG: nextWeight, status: nextRemaining === 0 ? 'consumed' : 'partially_consumed' }, 'courtesy_delivered', quantity, String(p.reason).trim());
+  updated.history[updated.history.length - 1] = { ...updated.history.at(-1), deliveryId, saleId: o.id, remainingQuantity: nextRemaining, costTotal: null };
   o.put('distStockReservations', id, updated);
   const allocations = await o.take(product.id, loc, quantity, { lotId: lot.id, allowExpired: false, precision });
   const costKnown = allocations.length > 0 && allocations.every(a => a.productionCost !== null);
   const costTotal = costKnown ? round(allocations.reduce((sum,a) => sum + a.quantity * a.productionCost, 0)) : null;
+  updated.history[updated.history.length - 1].costTotal = costTotal;
+  o.put('distStockReservations', id, updated);
   const saleId = o.id;
-  o.ledger(product.id, quantity, loc, null, 'courtesy', { allocations, saleId, reservationId: id, courtesyReason: String(p.reason).trim(), recipient: String(p.recipient).trim(), lossCost: costTotal }, precision);
+  o.ledger(product.id, quantity, loc, null, 'courtesy', { allocations, saleId, reservationId: id, deliveryId, ...(weightG == null ? {} : { physicalWeightG: weightG }), courtesyReason: reason, recipient, lossCost: costTotal }, precision);
   const line = { productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || '', descriptionSnapshot: product.description || '', unitType: product.unitType, quantity, actualUnitPrice: round(product.referencePrice), referenceUnitPrice: round(product.referencePrice), isPromotional: false, subtotal: 0, referenceSubtotal: round(quantity * product.referencePrice), allocations, costTotal };
-  o.put('distSales', saleId, { id: saleId, ...o.base(), saleKind: 'courtesy', courtesyReason: String(p.reason).trim(), courtesyRecipient: String(p.recipient).trim(), courtesyCost: costTotal, operationId: o.id, sourceLocation: loc === 'central' ? 'centralWarehouse' : loc, routeId: 'administracion', routeName: 'Administración', sellerUid: o.actor, sellerName: o.member.displayName || o.actor, dispatchId: '', customerId: '', customerName: String(p.recipient).trim(), customerCode: '', lines: [line], total: 0, paymentKind: 'cash', cashAmount: 0, qrAmount: 0, creditAmount: 0, cashReceived: 0, changeAmount: 0, note: `Reserva ${id}` });
-  return { saleId, reservationId: id, deliveredQuantity: quantity, remainingQuantity: nextRemaining, costTotal };
+  o.put('distSales', saleId, { id: saleId, ...o.base(), saleKind: 'courtesy', reservationId: id, deliveryId, ...(weightG == null ? {} : { physicalWeightG: weightG }), courtesyReason: reason, courtesyRecipient: recipient, courtesyCost: costTotal, operationId: o.id, sourceLocation: loc === 'central' ? 'centralWarehouse' : loc, routeId: 'administracion', routeName: 'Administración', sellerUid: o.actor, sellerName: o.member.displayName || o.actor, dispatchId: '', customerId: '', customerName: recipient, customerCode: '', lines: [line], total: 0, paymentKind: 'cash', cashAmount: 0, qrAmount: 0, creditAmount: 0, cashReceived: 0, changeAmount: 0, note: `Reserva ${id}` });
+  const result = { saleId, reservationId: id, deliveryId, deliveredQuantity: quantity, remainingQuantity: nextRemaining, costTotal };
+  o.put('distCourtesyDeliveries', deliveryId, { id: deliveryId, ...o.base(), schemaVersion: 1, payloadHash, payload: deliveryPayload, reservationId: id, saleId, result, status: 'confirmed', createdAt: o.now, createdBy: o.actor });
+  return result;
 };
 async function updateLot(o, p) {
   o.admin();

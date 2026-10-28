@@ -21,6 +21,7 @@ let checks = 0
 const pass = (condition, message) => { assert.ok(condition, message); checks++; console.log(`PASS ${message}`) }
 const queueDb = uid => env.authenticatedContext(uid).firestore()
 async function command(actor, type, payload, operationId = `${prefix}-${type}-${Math.random().toString(36).slice(2)}`, expected = 'confirmed') {
+  if (type === 'deliverReservedCourtesy' && !payload.deliveryId) payload = { ...payload, deliveryId: `${operationId}-delivery` }
   const ref = root.collection('distOperations').doc(operationId)
   await setDoc(doc(queueDb(actor), 'restaurants', 'sanjose', 'distOperations', operationId), { id: operationId, restaurantId: 'sanjose', createdBy: actor, createdAt: new Date().toISOString(), type, payload, status: 'queued' })
   await processCommand(db, ref)
@@ -116,6 +117,28 @@ try {
   const exactUnitReservationId = `${prefix}-unit-reservation__reservation`
   await command(ids.admin, 'reserveProcessingStock', { reservationId: exactUnitReservationId, productId: unitProduct, lotId: unitLot, location: 'central', purpose: 'courtesy', quantity: 2 }, `${prefix}-unit-reserve`)
   pass((await root.collection('distStockReservations').doc(exactUnitReservationId).get()).data().physicalWeightG === null, 'reservar unidades no inventa gramos a partir del peso aproximado')
+  await command(ids.admin, 'deliverReservedCourtesy', { reservationId: exactUnitReservationId, quantity: 1, recipient: 'QA', reason: 'Parcial sin peso medido' }, `${prefix}-unit-gift-partial`)
+  let unitReservation = (await root.collection('distStockReservations').doc(exactUnitReservationId).get()).data()
+  pass(unitReservation.physicalWeightG === null && unitReservation.remainingWeightG === null, 'entrega parcial sin peso verificado conserva null')
+  const unitGiftId = unitReservation.history.at(-1).id.split('__event')[0]
+  const unitGiftOp = (await root.collection('distOperations').doc(unitGiftId).get()).data()
+  const unitGiftSale = (await root.collection('distSales').doc(unitGiftOp.result.saleId).get()).data()
+  pass(unitGiftSale.physicalWeightG === undefined, 'venta de cortesía sin peso no registra gramos ficticios')
+  await command(ids.admin, 'deliverReservedCourtesy', { reservationId: exactUnitReservationId, quantity: 1, recipient: 'QA', reason: 'Final sin peso medido' }, `${prefix}-unit-gift-final`)
+  unitReservation = (await root.collection('distStockReservations').doc(exactUnitReservationId).get()).data()
+  pass(unitReservation.physicalWeightG === null && unitReservation.remainingWeightG === null, 'entrega completa sin peso conserva null')
+
+  const measuredProduct = `${prefix}-measured-package`, measuredLot = `${prefix}-measured-lot`, measuredReservationId = `${prefix}-measured-reservation__reservation`
+  await seedLot(measuredProduct, measuredLot, 3, {}, 'package')
+  await command(ids.admin, 'reserveProcessingStock', { reservationId: measuredReservationId, productId: measuredProduct, lotId: measuredLot, location: 'central', purpose: 'courtesy', quantity: 2, physicalWeightG: 1250, reason: 'Peso total medido' }, `${prefix}-measured-reserve`)
+  const missingMeasure = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: measuredReservationId, quantity: 1, recipient: 'QA', reason: 'Sin medir parcial' }, `${prefix}-measured-no-weight`, 'rejected')
+  pass(missingMeasure.error.includes('peso medido') && (await root.collection('distStockReservations').doc(measuredReservationId).get()).data().remainingWeightG === 1250, 'entrega parcial de peso conocido exige gramos medidos y no altera reserva')
+  await command(ids.admin, 'deliverReservedCourtesy', { reservationId: measuredReservationId, quantity: 1, deliveredWeightG: 500, recipient: 'QA', reason: 'Medición individual' }, `${prefix}-measured-partial`)
+  let measuredReservation = (await root.collection('distStockReservations').doc(measuredReservationId).get()).data()
+  pass(measuredReservation.remainingWeightG === 750 && measuredReservation.remainingQuantity === 1, 'medición parcial conserva exactamente los gramos restantes')
+  await command(ids.admin, 'deliverReservedCourtesy', { reservationId: measuredReservationId, quantity: 1, recipient: 'QA', reason: 'Último paquete' }, `${prefix}-measured-final`)
+  measuredReservation = (await root.collection('distStockReservations').doc(measuredReservationId).get()).data()
+  pass(measuredReservation.remainingWeightG === 0 && measuredReservation.remainingQuantity === 0, 'último paquete consume exactamente los gramos medidos restantes')
 
   const driftProduct = `${prefix}-drift-product`, driftLot = `${prefix}-drift-lot`, driftReservation = `${prefix}-drift-reservation`
   await seedLot(driftProduct, driftLot, 5, { processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
@@ -130,6 +153,11 @@ try {
   pass(warehouseReservation.status === 'confirmed' && (await root.collection('distBalances').doc(`warehouse__${ids.warehouseId}__${ids.product}`).get()).data().quantity === 1, 'Almacén reserva solo en su ubicación y sin mover físico')
   const warehouseReservationSnapshot = await getDoc(doc(queueDb(ids.warehouse), 'restaurants', 'sanjose', 'distStockReservations', warehouseReservationId))
   pass(warehouseReservationSnapshot.exists(), 'Rules permiten a Almacén consultar la reserva de su propio almacén')
+  const warehouseGift = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: warehouseReservationId, quantity: 0.5, recipient: 'QA almacén', reason: 'Cortesía desde otro almacén' }, `${prefix}-warehouse-gift`)
+  const warehouseGiftSale = (await root.collection('distSales').doc(warehouseGift.result.saleId).get()).data()
+  const warehouseBalanceBeforeVoid = (await root.collection('distBalances').doc(`warehouse__${ids.warehouseId}__${ids.product}`).get()).data().quantity
+  await command(ids.admin, 'voidSale', { saleId: warehouseGiftSale.id, reason: 'QA bloqueo ubicación' }, `${prefix}-warehouse-gift-void`, 'rejected')
+  pass(warehouseGiftSale.sourceLocation === `warehouse__${ids.warehouseId}` && (await root.collection('distBalances').doc(`warehouse__${ids.warehouseId}__${ids.product}`).get()).data().quantity === warehouseBalanceBeforeVoid && (await balanceRef().get()).data().quantity === 20, 'cortesía de otro almacén no puede anularse ni restaurarse en central')
   const crossWarehouse = await command(ids.warehouse, 'reserveProcessingStock', { productId: ids.product, lotId: ids.lot, location: 'central', purpose: 'courtesy', quantity: 1 }, `${prefix}-warehouse-cross-location`, 'rejected')
   pass(crossWarehouse.status === 'rejected', 'Almacén no puede reservar fuera de su almacén autorizado')
   await assertFails(setDoc(doc(queueDb(ids.warehouse), 'restaurants', 'sanjose', 'distOperations', `${prefix}-warehouse-release`), { id: `${prefix}-warehouse-release`, restaurantId: 'sanjose', createdBy: ids.warehouse, type: 'releaseProcessingReservation', payload: {}, status: 'queued' })); checks++
@@ -151,36 +179,51 @@ try {
   await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración', lines: [{ productId: ids.product, quantity: 5, actualUnitPrice: 20 }], cashAmount: 100, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-sale-free`)
   pass((await balanceRef().get()).data().quantity === 15, 'venta de stock libre deja 15 kg físicos')
 
-  const firstGift = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 0.5, recipient: 'Cliente QA', reason: 'Prueba de entrega' }, `${prefix}-gift-partial`)
+  const firstGift = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 0.5, deliveredWeightG: 500, deliveryId: `${prefix}-same-business-action`, recipient: 'Cliente QA', reason: 'Prueba de entrega' }, `${prefix}-gift-partial`)
   let currentLot = (await root.collection('distLots').doc(ids.lot).get()).data()
   let currentReservation = (await root.collection('distStockReservations').doc(reserveId).get()).data()
   pass(firstGift.result.deliveredQuantity === 0.5 && (await balanceRef().get()).data().quantity === 14.5 && currentLot.processingUnavailable.central.courtesy === 1.5 && currentReservation.remainingQuantity === 1.5, 'entrega parcial descuenta una vez y mantiene 1,5 kg reservados')
   const giftSale = (await root.collection('distSales').doc(firstGift.result.saleId).get()).data()
   pass(giftSale.saleKind === 'courtesy' && giftSale.total === 0 && giftSale.cashAmount === 0 && giftSale.creditAmount === 0 && giftSale.courtesyCost === 6, 'cortesía queda vinculada sin ingreso ni crédito y con costo histórico único')
+  pass(giftSale.reservationId === reserveId, 'venta de cortesía conserva vínculo explícito a la reserva')
+  const beforeBlockedCourtesyEdit = (await balanceRef().get()).data().quantity
+  const beforeBlockedCourtesyMoves = (await root.collection('distStockMovements').where('saleId', '==', giftSale.id).get()).size
+  await command(ids.admin, 'editSale', { saleId: giftSale.id, reason: 'QA no editar cortesía', lines: [] }, `${prefix}-gift-edit-block`, 'rejected')
+  await command(ids.admin, 'voidSale', { saleId: giftSale.id, reason: 'QA no anular cortesía' }, `${prefix}-gift-void-block`, 'rejected')
+  pass((await balanceRef().get()).data().quantity === beforeBlockedCourtesyEdit && (await root.collection('distStockReservations').doc(reserveId).get()).data().remainingQuantity === 1.5 && (await root.collection('distStockMovements').where('saleId', '==', giftSale.id).get()).size === beforeBlockedCourtesyMoves, 'edición y anulación bloqueadas sin tocar stock, reserva ni Kardex')
   await processCommand(db, root.collection('distOperations').doc(`${prefix}-gift-partial`))
   pass((await balanceRef().get()).data().quantity === 14.5, 'reintento de entrega no duplica el descuento')
+  const salesBeforeDuplicate = (await root.collection('distSales').where('reservationId', '==', reserveId).get()).size
+  const movementsBeforeDuplicate = (await root.collection('distStockMovements').where('reservationId', '==', reserveId).get()).size
+  const duplicateAction = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 0.5, deliveredWeightG: 500, deliveryId: `${prefix}-same-business-action`, recipient: 'Cliente QA', reason: 'Prueba de entrega' }, `${prefix}-gift-new-operation-id`)
+  pass(duplicateAction.result.duplicate === true && (await balanceRef().get()).data().quantity === 14.5 && (await root.collection('distSales').where('reservationId', '==', reserveId).get()).size === salesBeforeDuplicate && (await root.collection('distStockMovements').where('reservationId', '==', reserveId).get()).size === movementsBeforeDuplicate, 'otro operationId con el mismo deliveryId devuelve resultado original sin venta, movimiento ni stock duplicados')
+  const mismatchDuplicate = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 0.25, deliveredWeightG: 250, deliveryId: `${prefix}-same-business-action`, recipient: 'Cliente QA', reason: 'Datos distintos' }, `${prefix}-gift-mismatch-id`, 'rejected')
+  pass(mismatchDuplicate.error.includes('datos diferentes') && (await balanceRef().get()).data().quantity === 14.5, 'deliveryId reutilizado con payload diferente se rechaza sin efectos')
+  const otherReservationId = `${prefix}-other-reservation__reservation`
+  await command(ids.admin, 'reserveProcessingStock', { reservationId: otherReservationId, productId: unknownCostProduct, lotId: unknownCostLot, location: 'central', purpose: 'courtesy', quantity: 1, reason: 'Otra reserva QA' }, `${prefix}-other-reserve`)
+  const otherReservationDuplicate = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: otherReservationId, quantity: 0.5, deliveryId: `${prefix}-same-business-action`, recipient: 'Cliente QA', reason: 'Prueba de entrega' }, `${prefix}-gift-other-reservation`, 'rejected')
+  pass(otherReservationDuplicate.error.includes('datos diferentes') && (await root.collection('distBalances').doc(`central__${unknownCostProduct}`).get()).data().quantity === 1, 'deliveryId no puede reutilizarse desde otra reserva ni descontarla')
 
   const concurrentGifts = await Promise.all([
-    command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 1, recipient: 'Cliente QA', reason: 'QA cortesía concurrente A' }, `${prefix}-gift-race-a`, null),
-    command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 1, recipient: 'Cliente QA', reason: 'QA cortesía concurrente B' }, `${prefix}-gift-race-b`, null),
+    command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 1, deliveredWeightG: 1000, deliveryId: `${prefix}-concurrent-business-action`, recipient: 'Cliente QA', reason: 'QA cortesía simultánea' }, `${prefix}-gift-race-a`, null),
+    command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 1, deliveredWeightG: 1000, deliveryId: `${prefix}-concurrent-business-action`, recipient: 'Cliente QA', reason: 'QA cortesía simultánea' }, `${prefix}-gift-race-b`, null),
   ])
-  pass(concurrentGifts.filter(op => op.status === 'confirmed').length === 1 && concurrentGifts.filter(op => op.status === 'rejected').length === 1, 'entregas de cortesía simultáneas no consumen la reserva dos veces')
-  const finalGift = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 0.5, recipient: 'Cliente QA', reason: 'Entrega final' }, `${prefix}-gift-final`)
+  pass(concurrentGifts.filter(op => op.status === 'confirmed').length === 2 && concurrentGifts.filter(op => op.result?.duplicate).length === 1 && (await balanceRef().get()).data().quantity === 13.5, 'dos solicitudes simultáneas del mismo deliveryId confirman como una sola salida física')
+  const finalGift = await command(ids.admin, 'deliverReservedCourtesy', { reservationId: reserveId, quantity: 0.5, deliveredWeightG: 500, recipient: 'Cliente QA', reason: 'Entrega final' }, `${prefix}-gift-final`)
   currentLot = (await root.collection('distLots').doc(ids.lot).get()).data()
   currentReservation = (await root.collection('distStockReservations').doc(reserveId).get()).data()
   pass(finalGift.result.remainingQuantity === 0 && currentReservation.status === 'consumed' && currentLot.processingUnavailable.central.courtesy === 0 && (await balanceRef().get()).data().quantity === 13, 'entrega total consume reserva y físico una sola vez')
 
   const releaseId = `${prefix}-release-reservation`
   await command(ids.admin, 'reserveProcessingStock', { reservationId: releaseId, productId: ids.product, lotId: ids.lot, location: 'central', purpose: 'repack_pending', quantity: 1, reason: 'Pendiente reenvasado' })
-  await command(ids.admin, 'releaseProcessingReservation', { reservationId: releaseId, reason: 'Ya no requiere reenvasado' }, `${prefix}-release-op`)
+  const unsafeRelease = await command(ids.admin, 'releaseProcessingReservation', { reservationId: releaseId, reason: 'Ya no requiere reenvasado', commercialQualityConfirmed: true }, `${prefix}-release-op`, 'rejected')
   currentLot = (await root.collection('distLots').doc(ids.lot).get()).data()
-  pass(currentLot.processingUnavailable.central.repackPending === 0 && (await balanceRef().get()).data().quantity === 13, 'liberar devuelve disponibilidad sin alterar físico')
-  await processCommand(db, root.collection('distOperations').doc(`${prefix}-release-op`))
+  pass(unsafeRelease.status === 'rejected' && currentLot.processingUnavailable.central.repackPending === 1 && (await balanceRef().get()).data().quantity === 13, 'repack_pending no se libera con motivo ni confirmación genérica; reserva y físico permanecen')
   await command(ids.admin, 'releaseProcessingReservation', { reservationId: releaseId, reason: 'Reintento' }, `${prefix}-release-again`, 'rejected')
 
   const events = await root.collection('distStockMovements').where('productId', '==', ids.product).get()
   const reservationEvents = events.docs.map(d => d.data()).filter(m => ['reservation_created','reservation_released'].includes(m.type))
-  pass(reservationEvents.length === 4 && reservationEvents.every(m => m.centralDelta === 0 && m.routeDelta === 0), 'eventos de reserva en Kardex tienen delta físico cero')
+  pass(reservationEvents.length === 3 && reservationEvents.every(m => m.centralDelta === 0 && m.routeDelta === 0), 'solo la reserva creada genera evento documental; Kardex mantiene delta físico cero')
   pass(reservationEvents.every(m => m.fromLocation === m.toLocation), 'reserva/liberación conservan ubicación y no alteran saldo Kardex')
   pass(currentLot.quantities.central === 13 && (await balanceRef().get()).data().quantity === 13, 'balance y suma de lotes mantienen conciliación final')
   console.log(`processing reservations emulator: ${checks} checks PASS`)
