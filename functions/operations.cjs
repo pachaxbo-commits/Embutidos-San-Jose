@@ -68,6 +68,7 @@ class Operation {
     this.cache = new Map();
     this.writes = new Map();
     this.stock = new Map();
+    this.stockSnapshots = new Map();
     this.sequence = 0;
   }
   ref(col, id) {
@@ -75,6 +76,7 @@ class Operation {
   }
   async read(col, id) {
     const key = `${col}/${id}`;
+    if (this.writes.has(key)) return this.writes.get(key).data;
     if (!this.cache.has(key)) {
       const snap = await this.tx.get(this.ref(col, id));
       this.cache.set(key, snap.exists ? { ...snap.data(), id: snap.id } : null);
@@ -92,10 +94,13 @@ class Operation {
     return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
   }
   put(col, id, value) {
-    this.writes.set(`${col}/${id}`, {
+    const key = `${col}/${id}`;
+    const data = JSON.parse(JSON.stringify(value));
+    this.writes.set(key, {
       ref: this.ref(col, id),
-      data: JSON.parse(JSON.stringify(value)),
+      data,
     });
+    this.cache.set(key, data);
   }
   base() {
     return {
@@ -148,6 +153,7 @@ class Operation {
     if (!this.stock.has(pid)) {
       const lots = await this.query("distLots", "productId", pid);
       this.stock.set(pid, { p, lots, balances: new Map() });
+      this.stockSnapshots.set(`lots:${pid}`, new Map(lots.map(l => [l.id, JSON.stringify(l)])));
     }
     const entry = this.stock.get(pid);
     if (!entry.balances.has(loc)) {
@@ -173,6 +179,9 @@ class Operation {
               quantity: 0,
             },
       );
+      const balanceSnapshots = this.stockSnapshots.get(`balances:${pid}`) || new Map();
+      balanceSnapshots.set(loc, JSON.stringify(entry.balances.get(loc)));
+      this.stockSnapshots.set(`balances:${pid}`, balanceSnapshots);
       const precision = quantityPrecision(p);
       const tracked = roundAt(
         entry.lots.reduce((n, l) => n + (l.quantities?.[loc] || 0), 0),
@@ -204,6 +213,7 @@ class Operation {
           createdAt: this.now,
           createdBy: this.actor,
         });
+        this.stockSnapshots.get(`lots:${pid}`).set(id, null);
       }
     }
     return entry;
@@ -214,13 +224,16 @@ class Operation {
     check(b.quantity >= 0, "Stock insuficiente.");
     b.updatedAt = this.now;
   }
-  async take(pid, loc, quantity, { allowExpired = false, lotId, allocationsRequested, precision: requestedPrecision } = {}) {
+  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
     quantity = this.amount(quantity, e.p, false, amountPrecision);
-    const allowPendingOrigin = loc.startsWith('route__');
-    const usable = lot => roundAt((lot.quantities?.[loc] || 0) - (allowPendingOrigin ? 0 : origins.pending(lot, loc)), precision);
+    const unavailable = lot => {
+      const held = lot.processingUnavailable?.[loc] || {};
+      return roundAt((Number(held.courtesy) || 0) + (Number(held.repackPending) || 0) + (Number(held.reviewHold) || 0), precision);
+    };
+    const usable = lot => roundAt((lot.quantities?.[loc] || 0) - unavailable(lot) - (allowPendingOrigin ? 0 : origins.pending(lot, loc)), precision);
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
       const seen = new Set();
@@ -232,7 +245,7 @@ class Operation {
         const lot = e.lots.find((row) => row.id === part.lotId);
         check(lot && lot.productId === pid, "El lote no pertenece al producto seleccionado.");
         check(allowExpired || (!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= this.today)), "El lote está vencido o en cuarentena.");
-        check(usable(lot) >= requestedQuantity, `El lote ${lot.lotCode || lot.id} no tiene cantidad identificada suficiente; revisa reservas de origen.`);
+        check(usable(lot) >= requestedQuantity, `El lote ${lot.lotCode || lot.id} no tiene cantidad libre suficiente; revisa reservas, cuarentena y origen pendiente.`);
         return { lot, quantity: requestedQuantity };
       });
       check(Math.abs(roundAt(requested.reduce((sum, part) => sum + part.quantity, 0), precision) - quantity) < 1 / (10 ** precision), "La distribución por lotes debe coincidir con la cantidad total.");
@@ -346,9 +359,11 @@ class Operation {
     return id;
   }
   flush() {
-    for (const e of this.stock.values()) {
-      for (const l of e.lots) this.put("distLots", l.id, l);
-      for (const b of e.balances.values()) this.put("distBalances", b.id, b);
+    for (const [pid, e] of this.stock.entries()) {
+      const lotSnapshots = this.stockSnapshots.get(`lots:${pid}`) || new Map();
+      for (const l of e.lots) if (lotSnapshots.get(l.id) !== JSON.stringify(l)) this.put("distLots", l.id, l);
+      const balanceSnapshots = this.stockSnapshots.get(`balances:${pid}`) || new Map();
+      for (const [loc, b] of e.balances.entries()) if (balanceSnapshots.get(loc) !== JSON.stringify(b)) this.put("distBalances", b.id, b);
     }
     for (const w of this.writes.values()) this.tx.set(w.ref, w.data);
   }

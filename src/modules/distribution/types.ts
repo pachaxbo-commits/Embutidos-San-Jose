@@ -746,6 +746,8 @@ export interface DistQrVerification {
 
 export interface DistLot {
  pendingOrigins?: Record<string, OriginReference[]>;
+ /** Aggregate reservation by location. Writers must update this lot document in the same transaction as reservation documents to serialize competing stock operations. */
+ processingUnavailable?: Record<string, { courtesy: number; repackPending: number; reviewHold: number }>;
  id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;
  quantities: Record<string, number>; quarantined?: boolean; legacy?: boolean; createdAt: string; createdBy: string;
