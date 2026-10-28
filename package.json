@@ -102,7 +102,8 @@
     "rules:load": "node firebase/tests/loadRules.mjs",
     "inspect:demo": "node firebase/tests/inspectDemo.mjs",
     "test:processing-batches": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingBatches.test.mjs\"",
-    "test:processing-derived-dispatch": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingDerivedDispatch.test.mjs\""
+    "test:processing-derived-dispatch": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingDerivedDispatch.test.mjs\"",
+    "test:processing-derived-sale": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node --experimental-strip-types firebase/tests/processingDerivedSale.test.mjs\""
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

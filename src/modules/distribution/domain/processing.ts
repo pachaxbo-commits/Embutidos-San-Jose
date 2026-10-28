@@ -124,6 +124,9 @@ export interface ProcessingMovementAllocation {
   physicalOriginConfirmed: false
   sourceLocation: string
   allocationOperationId: string
+  saleId?: string
+  saleMovementId?: string
+  location?: string
 }
 
 export interface ProcessingPackagingMaterial {

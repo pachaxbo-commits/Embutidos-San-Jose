@@ -28,6 +28,7 @@ const canonicalJson = value => JSON.stringify(value, (_key, item) => {
   return Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]));
 });
 const sha256 = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
+const processingDerivedSalesEmulatorOnly = () => process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST === 'true' && process.env.FUNCTIONS_EMULATOR === 'true' && /^(localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST || '');
 const integerShare = (total, offset, quantity, whole) => {
   if (total === null || total === undefined) return null;
   check(Number.isSafeInteger(total) && total >= 0 && Number.isSafeInteger(offset) && Number.isSafeInteger(quantity) && Number.isSafeInteger(whole) && whole > 0 && offset >= 0 && quantity >= 0 && offset + quantity <= whole, 'Asignación entera de peso o costo inválida.');
@@ -321,7 +322,7 @@ class Operation {
   }
   processingMovementAllowed(lot, loc, options) {
     if (!lot.processingCommercialBlocked) return true;
-    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true;
+    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true && processingDerivedSalesEmulatorOnly();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
     if (origins.pending(lot, loc) > 0 || !lot.processingSourceAllocationBasis) return false;
     const unavailable = lot.processingUnavailable?.[loc] || {};
@@ -405,7 +406,7 @@ class Operation {
     if (lot.processingCostCentsRemaining !== null) lot.processingCostCentsRemaining -= part.costCents;
     this.assertProcessingLocation(lot, loc);
   }
-  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false } = {}) {
+  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false, processingSale = false } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
@@ -421,7 +422,7 @@ class Operation {
       if (!lot.processingCommercialBlocked) return true;
       const proof = processingCourtesyReservation;
       const courtesyAllowed = Boolean(proof && proof.purpose === 'courtesy' && proof.location === loc && proof.lotId === lot.id && proof.batchId && proof.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy');
-      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer });
+      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer, processingSale });
     };
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
@@ -471,6 +472,9 @@ class Operation {
           (a.expiresOn || "9999").localeCompare(b.expiresOn || "9999") ||
           a.id.localeCompare(b.id),
       );
+    const ordinaryAvailable = roundAt(lots.reduce((sum, lot) => sum + usable(lot), 0), precision);
+    if (processingSale && ordinaryAvailable < quantity && !processingDerivedSalesEmulatorOnly() && e.lots.some(lot => lot.processingCommercialBlocked && usable(lot) > 0))
+      check(false, 'La venta comercial de sachets derivados todavía no está habilitada para usuarios reales; el stock permanece bloqueado hasta completar la Fase 3D.2B y la auditoría de activación.');
     check(
       roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
       `Stock disponible insuficiente de ${e.p.name}. Revisa cantidades, vencimientos y reservas por origen pendiente; esas reservas no se pueden vender ni despachar.`,
@@ -483,7 +487,7 @@ class Operation {
       remaining = roundAt(remaining - q, precision);
       if (l.processingCommercialBlocked) {
         if (!processingCourtesyReservation) {
-          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
+          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingSale }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
           const processingAllocations = this.takeProcessingAllocation(l, loc, q, this.id);
           const parts = origins.take(l, loc, q, allowPendingOrigin);
           check(parts.length === 1 && !parts[0].originReferences, 'El despacho del lote derivado requiere asignación de origen completa.');
@@ -643,10 +647,10 @@ class Operation {
       responsibleRole: this.member.role,
       ...extra,
       ...(Array.isArray(extra.allocations) && extra.allocations.some(allocation => allocation.processingAllocation) ? (() => {
-        const parts = extra.allocations.filter(allocation => allocation.processingAllocation).map(allocation => allocation.processingAllocation);
+        const parts = extra.allocations.filter(allocation => allocation.processingAllocation).map(allocation => ({ ...allocation.processingAllocation, ...(type === 'sale' ? { saleId: this.id, saleMovementId: id } : {}) }));
         const physicalWeightG = parts.reduce((sum, part) => sum + part.physicalWeightG, 0);
         const costCents = parts.some(part => part.costCents === null) ? null : parts.reduce((sum, part) => sum + part.costCents, 0);
-        return { processingAllocations: parts, processingBatchIds: [...new Set(parts.map(part => part.batchId))], physicalWeightG, costCents, processingWeightBasis: [...new Set(parts.map(part => part.weightBasis))], processingAllocationMethod: 'documented_average_not_individual_measurement' };
+        return { processingAllocations: parts, processingBatchIds: [...new Set(parts.map(part => part.batchId))], physicalWeightG, processingCostCents: costCents, ...(extra.costCents === undefined ? { costCents } : {}), processingWeightBasis: [...new Set(parts.map(part => part.weightBasis))], processingAllocationMethod: 'documented_average_not_individual_measurement' };
       })() : {}),
       ...(origins.references(extra.allocations).length ? { originReferences: origins.references(extra.allocations), traceabilityStatus: 'physical_origin_pending', note: `${extra.note || ''} ${origins.note}`.trim() } : {}),
     });
@@ -1565,9 +1569,17 @@ async function sale(o, p) {
     check(product.unitType === "kg" || l.physicalQuantity == null || Number(l.physicalQuantity) === chargedQuantity, "El peso físico adicional solo aplica a productos por kg.");
     check(Number.isFinite(Number(l.quantity)) && Number(l.quantity) > 0, "La cantidad cobrada es inválida.");
     const excessWeightQuantity = roundAt(physicalQuantity - chargedQuantity, quantityPrecision(product));
-    const allocations = await o.take(l.productId, loc, physicalQuantity, { precision: quantityPrecision(product) });
-    const known = allocations.every((a) => a.productionCost !== null);
-    lines.push({
+    // This server-side opt-in is deliberately effective only while both Functions
+    // and Firestore emulators are active. A client payload cannot enable it.
+    const allocations = await o.take(l.productId, loc, physicalQuantity, { precision: quantityPrecision(product), processingSale: true });
+    const known = allocations.every((allocation) => allocation.processingAllocation
+      ? Number.isSafeInteger(allocation.processingAllocation.costCents)
+      : allocation.productionCost !== null && allocation.productionCost !== undefined);
+    const processingCostCents = allocations.filter(allocation => allocation.processingAllocation).reduce((sum, allocation) => sum + allocation.processingAllocation.costCents, 0);
+    const ordinaryCost = allocations.filter(allocation => !allocation.processingAllocation).reduce((sum, allocation) => sum + Number(allocation.quantity) * Number(allocation.productionCost), 0);
+    const costCents = known ? processingCostCents + Math.round((ordinaryCost + Number.EPSILON) * 100) : null;
+    check(costCents === null || Number.isSafeInteger(costCents) && costCents >= 0, 'El costo histórico de la venta no tiene centavos válidos.');
+    const line = {
       productId: l.productId,
       productNameSnapshot: product.name,
       presentationSnapshot: product.presentation || product.category || "",
@@ -1581,17 +1593,22 @@ async function sale(o, p) {
       subtotal: isCourtesy ? 0 : round(l.quantity * actualUnitPrice),
       ...(isCourtesy ? { referenceSubtotal: round(l.quantity * product.referencePrice) } : {}),
       allocations,
-      costTotal: known
-        ? round(
-            allocations.reduce((s, a) => s + a.quantity * a.productionCost, 0),
-          )
-        : null,
-    });
-    o.ledger(l.productId, physicalQuantity, loc, null, isCourtesy ? "courtesy" : "sale", {
+      costCents,
+      costTotal: costCents === null ? null : costCents / 100,
+    };
+    const movementId = o.ledger(l.productId, physicalQuantity, loc, null, isCourtesy ? "courtesy" : "sale", {
       allocations,
+      costCents,
+      costTotal: costCents === null ? null : costCents / 100,
       ...(excessWeightQuantity > 0 ? { chargedQuantity, excessWeightQuantity, note: `Excedente de peso entregado: ${excessWeightQuantity} kg` } : {}),
-      ...(isCourtesy ? { courtesyReason: p.courtesyReason.trim(), lossCost: known ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null } : {}),
+      ...(isCourtesy ? { courtesyReason: p.courtesyReason.trim(), lossCost: costCents === null ? null : costCents / 100 } : {}),
     });
+    for (const allocation of allocations) if (allocation.processingAllocation) {
+      allocation.processingAllocation.saleId = o.id;
+      allocation.processingAllocation.saleMovementId = movementId;
+      allocation.processingAllocation.location = loc;
+    }
+    lines.push(line);
   }
   const total = round(lines.reduce((n, l) => n + l.subtotal, 0));
   if (isCourtesy) {
@@ -1982,11 +1999,22 @@ async function assertNotReservedCourtesy(o, sale) {
   if (operation?.payload?.reservationId || operation?.result?.reservationId)
     check(false, 'Esta cortesía está vinculada a una reserva; requiere un procedimiento especializado para corregirla o anularla.');
 }
+function saleContainsDerivedProcessingAllocation(sale) {
+  const snapshots = [sale, sale?.effectiveSnapshot].filter(Boolean);
+  return snapshots.some(snapshot => (snapshot.lines || []).some(line => (line.allocations || []).some(allocation => allocation.processingAllocation)));
+}
+function assertNoDerivedSaleMutation(sale, action) {
+  check(!saleContainsDerivedProcessingAllocation(sale), `La venta de sachets derivados no admite ${action} todavía; requiere el flujo comercial especializado de la Fase 3D.2B.`);
+}
+function assertNoDerivedSalesInDispatch(sales, action) {
+  check(!(sales || []).some(saleContainsDerivedProcessingAllocation), `El despacho tiene ventas de sachets derivados. ${action} requiere el ciclo comercial especializado de la Fase 3D.2B.`);
+}
 async function editSale(o, p) {
   check(["admin", "distributor"].includes(o.member.role), "Sin permiso para corregir ventas.");
   check(p.reason?.trim(), "La razón de la edición es obligatoria.");
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
+  assertNoDerivedSaleMutation(sale, 'correcciones');
   await assertNotReservedCourtesy(o, sale);
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes corregir tus propias ventas.");
   const qrVerifications = await o.query("distQrVerifications", "sourceId", sale.id);
@@ -2142,6 +2170,7 @@ async function voidSale(o, p) {
   check(p.reason?.trim(), "La razón de la anulación es obligatoria.");
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
+  assertNoDerivedSaleMutation(sale, 'anulaciones');
   await assertNotReservedCourtesy(o, sale);
   check(!sale.voidedAt, "La venta ya fue anulada.");
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes anular tus propias ventas.");
@@ -2984,6 +3013,7 @@ async function closure(o, p) {
     .map((sale) =>
       sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
     );
+  assertNoDerivedSalesInDispatch(sales, 'La recepción y el cierre');
   if (p.mode === "warehouse") {
     o.owns(warehouse);
     check(!previous.warehouseClosedBy, "El retorno ya se confirmó.");
@@ -3412,6 +3442,7 @@ async function claim(o, p) {
   check(["exchange", "return"].includes(p.kind), "Tipo de reclamo inválido.");
   const s = await o.read("distSales", p.saleId);
   check(s, "No existe la venta original.");
+  assertNoDerivedSaleMutation(s, 'devoluciones o cambios');
   check(s.saleKind !== "courtesy" && s.effectiveSnapshot?.saleKind !== "courtesy", "Las cortesías no generan cambios ni devoluciones con movimientos de dinero.");
   const isDistributor = o.member.role === "distributor";
   if (isDistributor) {
@@ -4226,6 +4257,7 @@ handlers.reopen = async (o, p) => {
   check(!c?.rectification, "Este cierre tiene una rectificación auditada y requiere revisión administrativa especializada antes de reabrirlo.");
   check(c?.status === "closed", "Solo se puede reabrir un cierre finalizado.");
   const d = c.dispatchId ? await o.read("distDispatches", c.dispatchId) : null;
+  if (d) assertNoDerivedSalesInDispatch(await o.query('distSales', 'dispatchId', d.id), 'La reapertura');
   let reversedMovementIds = [];
   if (d) {
     check(d.status === "closed", "El despacho no está cerrado.");

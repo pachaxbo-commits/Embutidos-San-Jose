@@ -83,7 +83,7 @@ try {
   const batchMoves = (await root.collection('distStockMovements').where('batchId', '==', batchId).get()).docs.map(s => s.data())
   pass(batchMoves.find(m => m.type === 'processing_consumption').centralDelta === -10 && batchMoves.filter(m => m.type === 'processing_output').length === 2 && batchMoves.find(m => m.type === 'processing_discard').centralDelta === 0, 'Kardex registra una salida de origen, dos entradas por SKU y descarte sin doble delta')
   const packageSale = await run(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración', lines: [{ productId: ids.package, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-blocked-package-sale`, 'rejected')
-  pass(packageSale.error.includes('Stock disponible insuficiente') && (await read('distBalances', `central__${ids.package}`)).quantity === 36, 'la venta ordinaria no puede consumir un lote derivado sin seguimiento comercial de gramos y costos')
+  pass(packageSale.error.includes('no está habilitada para usuarios reales') && (await read('distBalances', `central__${ids.package}`)).quantity === 36 && !(await root.collection('distSales').doc(packageSale.operationId).get()).exists, 'la venta comercial de lotes derivados permanece bloqueada fuera del opt-in aislado de QA')
 
   const courtesyReservationId = batch.result.reservationIds[0]
   const delivered = await run(ids.admin, 'deliverReservedCourtesy', { reservationId: courtesyReservationId, quantity: 0.2, deliveredWeightG: 200, recipient: 'QA cliente', reason: 'Entrega de prueba', deliveryId: `${batchId}-gift-1` }, `${prefix}-batch-gift-delivery`)

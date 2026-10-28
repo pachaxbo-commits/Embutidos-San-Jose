@@ -150,6 +150,7 @@ export interface DistStockMovement extends DistBaseDoc {
   physicalWeightG?: number
   commercialQuantity?: number
   costCents?: number | null
+  processingCostCents?: number | null
   costTotal?: number | null
   processingAllocations?: import('./domain/processing.ts').ProcessingMovementAllocation[]
   processingBatchIds?: string[]
@@ -296,7 +297,8 @@ export interface DistDispatch extends DistBaseDoc {
 
 export interface DistSaleLine {
   costTotal?: number | null
-  allocations?: { lotId: string; lotCode: string; expiresOn: string; quantity: number; productionCost: number | null }[]
+  costCents?: number | null
+  allocations?: DistLotAllocation[]
   productId: string
   productNameSnapshot: string
   presentationSnapshot?: string
