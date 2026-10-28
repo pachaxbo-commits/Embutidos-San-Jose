@@ -2,7 +2,7 @@ import { roundStockQuantity } from './stockAvailability.ts'
 import { originPendingQuantity } from './originTraceability.ts'
 import type { DistBalance, DistLot, UnitType } from '../types.ts'
 
-export type WarehouseLotStatus = 'Disponible' | 'Disponible · trazabilidad incompleta' | 'Disponible parcialmente · origen pendiente' | 'Reservado · origen pendiente' | 'Vencido' | 'Cuarentena'
+export type WarehouseLotStatus = 'Disponible' | 'Disponible · trazabilidad incompleta' | 'Disponible parcialmente · origen pendiente' | 'Disponible parcialmente · reserva de elaboración' | 'Reservado · origen pendiente' | 'Reservado para cortesías' | 'Pendiente de reenvasado' | 'En revisión' | 'Vencido' | 'Cuarentena' | 'Bloqueado · elaboración pendiente de integración comercial'
 
 export interface WarehouseLotRow {
   lot: DistLot
@@ -27,19 +27,27 @@ export function productWarehouseLotRows(
     .map(({ lot, physical }) => {
       const expired = Boolean(lot.expiresOn && lot.expiresOn < today)
       const traceIncomplete = !lot.lotCode?.trim() || !lot.manufacturedOn || !lot.expiresOn
-      const status: WarehouseLotStatus = lot.quarantined
+      const held = lot.processingUnavailable?.[location]
+      const heldQuantity = Number(held?.courtesy || 0) + Number(held?.repackPending || 0) + Number(held?.reviewHold || 0)
+      const status: WarehouseLotStatus = lot.processingCommercialBlocked
+        ? 'Bloqueado · elaboración pendiente de integración comercial'
+        : lot.quarantined
         ? 'Cuarentena'
         : expired
           ? 'Vencido'
           : originPendingQuantity(lot, location) > 0
             ? originPendingQuantity(lot, location) >= physical ? 'Reservado · origen pendiente' : 'Disponible parcialmente · origen pendiente'
+              : heldQuantity >= physical && Number(held?.reviewHold || 0) > 0 ? 'En revisión'
+              : heldQuantity >= physical && Number(held?.repackPending || 0) > 0 ? 'Pendiente de reenvasado'
+              : heldQuantity >= physical && Number(held?.courtesy || 0) > 0 ? 'Reservado para cortesías'
+              : heldQuantity > 0 ? 'Disponible parcialmente · reserva de elaboración'
           : traceIncomplete
             ? 'Disponible · trazabilidad incompleta'
             : 'Disponible'
       return {
         lot,
         physical,
-        available: status.startsWith('Disponible') ? Math.max(0, physical - originPendingQuantity(lot, location)) : 0,
+        available: status.startsWith('Disponible') ? Math.max(0, physical - originPendingQuantity(lot, location) - Number(lot.processingUnavailable?.[location]?.courtesy || 0) - Number(lot.processingUnavailable?.[location]?.repackPending || 0) - Number(lot.processingUnavailable?.[location]?.reviewHold || 0)) : 0,
         originPending: originPendingQuantity(lot, location),
         status,
         // Keep anomalous historical values visible as stored; never round a

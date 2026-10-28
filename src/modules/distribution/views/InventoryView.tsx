@@ -34,6 +34,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   dispatch_waste: 'Pérdida registrada al despachar',
   customer_return: 'Devolución del cliente',
   quarantine_release: 'Liberación auditada de cuarentena', quarantine_discard: 'Descarte auditado de cuarentena',
+  processing_consumption: 'Consumo en elaboración', processing_output: 'Salida de elaboración', processing_discard: 'Descarte confirmado en elaboración',
 }
 
 /**
@@ -327,7 +328,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                       <p className="break-words text-xs font-extrabold text-slate-900">{product.name}</p>
                       <p className="mt-1 text-[11px] font-semibold text-slate-600">Existencia física: <strong className="text-slate-900">{formatQty(availability.physical, product.unitType)}</strong></p>
                       <p className="text-[11px] font-semibold text-emerald-800">Disponible para venta: <strong>{formatQty(availability.available, product.unitType)}</strong></p>
-                      {availability.unavailable > 0 && <details className="mt-1 text-[11px] font-semibold text-amber-800"><summary className="cursor-pointer">No disponible: {formatQty(availability.unavailable, product.unitType)}</summary><div className="mt-1 pl-2 text-slate-600">{availability.quarantine > 0 && <p>En cuarentena: {formatQty(availability.quarantine, product.unitType)}</p>}{availability.expired > 0 && <p>Vencido: {formatQty(availability.expired, product.unitType)}</p>}{availability.other > 0 && <p>Por revisar / origen pendiente: {formatQty(availability.other, product.unitType)}</p>}</div></details>}
+                      {availability.unavailable > 0 && <details className="mt-1 text-[11px] font-semibold text-amber-800"><summary className="cursor-pointer">No disponible: {formatQty(availability.unavailable, product.unitType)}</summary><div className="mt-1 pl-2 text-slate-600">{availability.quarantine > 0 && <p>En cuarentena: {formatQty(availability.quarantine, product.unitType)}</p>}{availability.expired > 0 && <p>Vencido: {formatQty(availability.expired, product.unitType)}</p>}{availability.processingBlocked > 0 && <p>Elaboración pendiente de integración comercial: {formatQty(availability.processingBlocked, product.unitType)}</p>}{availability.courtesyReserved > 0 && <p>Reservado para cortesías: {formatQty(availability.courtesyReserved, product.unitType)}</p>}{availability.repackPending > 0 && <p>Pendiente de reenvasado: {formatQty(availability.repackPending, product.unitType)}</p>}{availability.reviewHold > 0 && <p>En revisión: {formatQty(availability.reviewHold, product.unitType)}</p>}{availability.originPending !== undefined && availability.originPending > 0 && <p>Origen físico pendiente: {formatQty(availability.originPending, product.unitType)}</p>}{availability.other > 0 && <p>Otro saldo no disponible: {formatQty(availability.other, product.unitType)}</p>}</div></details>}
                     </div>
                     <div className="grid w-[84px] shrink-0 grid-cols-2 gap-1">
                       {(canIntake || canAdjust) && (
@@ -540,7 +541,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
             : <div className="grid max-h-[58vh] min-w-0 gap-2 overflow-y-auto pr-1">
               {selectedProductLotRows.map(({ lot, physical, available, originPending, status, hasFractionalCountQuantity }) => <article key={lot.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-900">Lote {lot.lotCode || 'sin código registrado'}</p><p className={`mt-1 inline-flex max-w-full rounded-full px-2 py-1 text-[10px] font-black ${status === 'Cuarentena' ? 'bg-amber-100 text-amber-900' : status === 'Vencido' ? 'bg-rose-100 text-rose-900' : 'bg-emerald-100 text-emerald-900'}`}>{status}</p></div>
+                  <div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-900">Lote {lot.lotCode || 'sin código registrado'}</p><p className={`mt-1 inline-flex max-w-full rounded-full px-2 py-1 text-[10px] font-black ${status === 'Vencido' ? 'bg-rose-100 text-rose-900' : status === 'Disponible' || status.startsWith('Disponible · trazabilidad incompleta') ? 'bg-emerald-100 text-emerald-900' : 'bg-amber-100 text-amber-900'}`}>{status}</p></div>
                   <strong className="shrink-0 text-sm tabular-nums text-slate-900">{formatQty(physical, lotsProduct.unitType)}</strong>
                 </div>
                 <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
@@ -569,7 +570,7 @@ export function InventoryView({ session, data }: DistributionViewProps) {
               const merma = Number(movement.dispatchMerma || 0)
               const normal = Number(movement.normalQuantity ?? Math.max(0, movement.quantity - merma))
               const recoverable = movement.type === 'return_merma'
-              const loss = ['dispatch_waste', 'return_waste', 'return_waste_unassigned', 'shortage', 'quarantine_discard'].includes(movement.type)
+              const loss = ['dispatch_waste', 'return_waste', 'return_waste_unassigned', 'shortage', 'quarantine_discard', 'processing_discard'].includes(movement.type)
               const label = movement.type === 'return_merma' ? 'Merma recuperable · vuelve al stock vendible' : movement.type === 'return_waste' || movement.type === 'return_waste_unassigned' ? 'Producto no apto / pérdida · no vuelve al stock' : MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'
               return <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className={`break-words text-xs font-extrabold ${recoverable ? 'text-emerald-800' : loss ? 'text-rose-800' : 'text-slate-900'}`}>{label}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p></div><strong className="shrink-0 text-sm tabular-nums text-slate-900">{formatQty(movement.quantity, movement.unitType)}</strong></div>

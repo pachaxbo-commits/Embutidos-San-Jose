@@ -53,6 +53,15 @@ const anomalousPackageRows = productWarehouseLotRows('p1', 'package', [lot('pkg-
 equal(anomalousPackageRows[0].physical, 3.6, 'no se redondea silenciosamente la cantidad histórica observada')
 equal(anomalousPackageRows[0].hasFractionalCountQuantity, true, 'cantidad fraccionaria se señala para revisión')
 
+const processingBlocked = productWarehouseLotRows('p1', 'package', [lot('derived-blocked', 36, { processingCommercialBlocked: true })], 'central', '2026-10-20')
+equal(processingBlocked[0].available, 0, 'lote derivado no se expone para venta')
+equal(processingBlocked[0].status, 'Bloqueado · elaboración pendiente de integración comercial', 'el motivo del bloqueo comercial es visible')
+const reservedForCourtesy = productWarehouseLotRows('p1', 'kg', [lot('courtesy-reserved', 0.7, { processingUnavailable: { central: { courtesy: 0.7, repackPending: 0, reviewHold: 0 } } })], 'central', '2026-10-20')
+equal(reservedForCourtesy[0].available, 0, 'reserva de cortesía no queda disponible')
+equal(reservedForCourtesy[0].status, 'Reservado para cortesías', 'se distingue la reserva para cortesías')
+const repackReserved = productWarehouseLotRows('p1', 'kg', [lot('repack-reserved', 0.2, { processingUnavailable: { central: { courtesy: 0, repackPending: 0.2, reviewHold: 0 } } })], 'central', '2026-10-20')
+equal(repackReserved[0].status, 'Pendiente de reenvasado', 'reenvasado pendiente no se muestra como disponible')
+
 console.log('PASS: lotes por almacén/producto, cuarentena, vencidos, sin trazabilidad, cantidades cero, precision y discrepancias visibles.')
 const origin = { exceptionId: 'synthetic-exception', accountingLotId: 'mixed', sourceMovementId: 'loss', physicalOriginConfirmed: false, basis: 'original_accounting_debit_only', quantity: 0.2 }
 const reserved = productWarehouseLotRows('p1', 'kg', [lot('mixed', 1.2, { pendingOrigins: { central: [origin] } }), lot('all-pending', 0.2, { pendingOrigins: { central: [{ ...origin, accountingLotId: 'all-pending' }] } })], 'central', '2026-10-20')

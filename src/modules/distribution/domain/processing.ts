@@ -18,6 +18,17 @@ export interface ProcessingSourceAllocation extends DistLotAllocation {
   originStatus: 'confirmed' | 'pending' | 'synthetic'
 }
 
+/** Asignación contable determinista por destino; no certifica qué lote físico quedó en cada sachet. */
+export interface ProcessingDestinationSourceAllocation {
+  sourceLotId: string
+  sourceLotCode: string
+  sourceProductId: string
+  quantityMilli: number
+  weightG: number
+  costCents: number | null
+  originStatus: 'accounting_allocation_not_physical_identification'
+}
+
 export interface ProcessingCostComponent {
   id: string
   kind: 'source_inventory' | 'packaging' | 'labor' | 'other'
@@ -41,11 +52,34 @@ export interface ProcessingDestination {
   weightBasis?: ProcessingWeightBasis
   /** Remainder grams are explicitly retained with the package range. */
   packageWeight?: PackageWeightLedger
-  sourceAllocations: Array<{ sourceLotId: string; quantityMilli: number; weightG: number; costCents: number | null }>
+  sourceAllocations: ProcessingDestinationSourceAllocation[]
   reason?: string
   approvalStatus: ProcessingApprovalStatus
   manufacturedOn?: string
+  packagedOn?: string
   expiresOn?: string
+  sourceLotIds?: string[]
+  sourceAllocationBasis?: 'batch_blend_accounting_allocation'
+  costCents?: number | null
+  qualityConfirmedBy?: string
+  qualityConfirmedAt?: string
+  qualityReason?: string
+  approvedBy?: string
+  approvedByName?: string
+}
+
+export interface ConfirmProcessingBatchInput {
+  batchId: string
+  processType: ProcessingBatch['processType']
+  sourceProductId: string
+  location: string
+  inputWeightG: number
+  processingDate: string
+  sourceAllocations: Array<{ lotId: string; quantity: number; measuredNetWeightG: number }>
+  destinations: Array<Omit<ProcessingDestination, 'sourceAllocations' | 'approvalStatus'> & { lotCode?: string; qualityConfirmed?: boolean; qualityReason?: string }>
+  packagingMaterials?: ProcessingPackagingMaterial[]
+  costComponents?: ProcessingCostComponent[]
+  otherDestinationsG?: number
 }
 
 export interface PackageWeightLedger {
@@ -75,6 +109,7 @@ export interface ProcessingBatch {
   schemaVersion: number
   status: ProcessingStatus
   processType: 'portioning' | 'bagging' | 'repackaging'
+  processingDate?: string
   sourceProductId: string
   sourceLocation: string
   sourceAllocations: ProcessingSourceAllocation[]
@@ -121,6 +156,7 @@ export interface ProcessingReservation {
   consumedQuantity: number
   physicalWeightG: number | null
   remainingWeightG: number | null
+  remainingCostCents?: number | null
   status: ProcessingReservationStatus
   source: string
   batchId?: string

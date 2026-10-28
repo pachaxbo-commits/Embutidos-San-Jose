@@ -99,7 +99,8 @@
     "prepare:android-update": "node scripts/prepare-android-update.mjs",
     "seed:demo": "node firebase/tests/seedDemoTenant.mjs",
     "rules:load": "node firebase/tests/loadRules.mjs",
-    "inspect:demo": "node firebase/tests/inspectDemo.mjs"
+    "inspect:demo": "node firebase/tests/inspectDemo.mjs",
+    "test:processing-batches": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingBatches.test.mjs\""
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

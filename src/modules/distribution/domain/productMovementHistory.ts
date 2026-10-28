@@ -2,10 +2,10 @@ import type { DistStockMovement } from '../types.ts'
 
 export type ProductMovementFilter = 'all' | 'losses' | 'differences' | 'dispatchReturns' | 'intakesAdjustments'
 
-const recoverableOrLoss = new Set(['return_merma', 'return_waste', 'return_waste_unassigned', 'dispatch_waste', 'quarantine_discard'])
+const recoverableOrLoss = new Set(['return_merma', 'return_waste', 'return_waste_unassigned', 'dispatch_waste', 'quarantine_discard', 'processing_discard'])
 const dispatches = new Set(['dispatch', 'dispatch_addition', 'dispatch_correction', 'dispatch_merma_sale'])
 const returns = new Set(['return', 'return_merma', 'return_waste', 'return_waste_unassigned'])
-const intakeAdjustment = new Set(['intake', 'adjustment', 'transfer', 'sale', 'sale_correction', 'courtesy', 'quarantine_release'])
+const intakeAdjustment = new Set(['intake', 'adjustment', 'transfer', 'sale', 'sale_correction', 'courtesy', 'quarantine_release', 'processing_consumption', 'processing_output'])
 
 export function isDispatchWithMerma(movement: DistStockMovement): boolean {
   return dispatches.has(movement.type) && Number(movement.dispatchMerma || 0) > 0

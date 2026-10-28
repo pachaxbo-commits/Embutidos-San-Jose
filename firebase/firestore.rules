@@ -238,7 +238,7 @@ service cloud.firestore {
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','correctDispatch','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
           || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
-          || (request.resource.data.type == 'reserveProcessingStock' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
+          || (request.resource.data.type in ['reserveProcessingStock','confirmProcessingBatch'] && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
           || (request.resource.data.type in ['releaseProcessingReservation','deliverReservedCourtesy'] && distAdmin(restaurantId))
           || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','saveExpenseGroup','saveExpenseSupplier','registerSupplierPurchase','paySupplierPayable','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
       allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
@@ -255,6 +255,18 @@ service cloud.firestore {
     }
     match /restaurants/{restaurantId}/distStockReservations/{reservationId} {
       allow read: if distAdmin(restaurantId) || distOwnsProcessingLocation(restaurantId, resource.data.location);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distProcessingBatches/{batchId} {
+      allow read: if distAdmin(restaurantId) || distOwnsProcessingLocation(restaurantId, resource.data.sourceLocation);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distProcessingBatchAudit/{eventId} {
+      allow read: if distAdmin(restaurantId) || distOwnsProcessingLocation(restaurantId, resource.data.location);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distCourtesyDeliveries/{deliveryId} {
+      allow read: if distAdmin(restaurantId);
       allow write: if false;
     }
     match /restaurants/{restaurantId}/distLotHistory/{entryId} {

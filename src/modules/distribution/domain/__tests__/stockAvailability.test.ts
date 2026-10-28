@@ -26,15 +26,15 @@ const projected = (raw: DistBalance, lots: DistLot[], pending: DistSale[] = []) 
 
 const expiredLots = [lot('sellable', 2.94), lot('expired', 0.02, { expiresOn: '2026-10-16' })]
 assertObject(stockAvailability(projected(balance(2.96), expiredLots), expiredLots, 'central', today), {
-  physical: 2.96, available: 2.94, unavailable: 0.02, quarantine: 0, expired: 0.02, other: 0,
+  physical: 2.96, available: 2.94, unavailable: 0.02, quarantine: 0, expired: 0.02, other: 0, processingBlocked: 0, processingHeld: 0, courtesyReserved: 0, repackPending: 0, reviewHold: 0,
 })
 
 const quarantineLots = [lot('sellable', 2.94), lot('surplus', 0.02, { quarantined: true })]
 assertObject(stockAvailability(projected(balance(2.96), quarantineLots), quarantineLots, 'central', today), {
-  physical: 2.96, available: 2.94, unavailable: 0.02, quarantine: 0.02, expired: 0, other: 0,
+  physical: 2.96, available: 2.94, unavailable: 0.02, quarantine: 0.02, expired: 0, other: 0, processingBlocked: 0, processingHeld: 0, courtesyReserved: 0, repackPending: 0, reviewHold: 0,
 })
 assertObject(stockAvailability(projected(balance(0.02), [quarantineLots[1]]), [quarantineLots[1]], 'central', today), {
-  physical: 0.02, available: 0, unavailable: 0.02, quarantine: 0.02, expired: 0, other: 0,
+  physical: 0.02, available: 0, unavailable: 0.02, quarantine: 0.02, expired: 0, other: 0, processingBlocked: 0, processingHeld: 0, courtesyReserved: 0, repackPending: 0, reviewHold: 0,
 })
 
 const allSellable = [lot('sellable', 2.96)]
@@ -48,7 +48,20 @@ assertEqual(pendingStock.unavailable, 0)
 
 const preciseLots = [lot('sellable', 2.935), lot('surplus', 0.02, { quarantined: true })]
 assertObject(stockAvailability(projected(balance(2.955), preciseLots), preciseLots, 'central', today), {
-  physical: 2.955, available: 2.935, unavailable: 0.02, quarantine: 0.02, expired: 0, other: 0,
+  physical: 2.955, available: 2.935, unavailable: 0.02, quarantine: 0.02, expired: 0, other: 0, processingBlocked: 0, processingHeld: 0, courtesyReserved: 0, repackPending: 0, reviewHold: 0,
 })
 
-console.log('PASS existencia física, vendible, vencido, cuarentena, venta pendiente y precisión kg')
+const processingLot = lot('derived-packages', 36, { unitType: 'package', processingCommercialBlocked: true })
+const processingBalance = { ...balance(36), unitType: 'package' as const }
+const processingAvailability = stockAvailability(projected(processingBalance, [processingLot]), [processingLot], 'central', today)
+assertEqual(processingAvailability.processingBlocked, 36)
+assertEqual(processingAvailability.available, 0)
+const courtesyProductId = `${productId}-courtesy`
+const courtesyLot = { ...lot('courtesy-stock', 0.7, { productId: courtesyProductId, processingUnavailable: { central: { courtesy: 0.7, repackPending: 0, reviewHold: 0 } } }) }
+const courtesyBalance = { ...balance(0.7), id: `central__${courtesyProductId}`, productId: courtesyProductId }
+const courtesyAvailability = stockAvailability(projected(courtesyBalance, [courtesyLot]), [courtesyLot], 'central', today)
+assertEqual(courtesyAvailability.courtesyReserved, 0.7)
+assertEqual(courtesyAvailability.processingHeld, 0.7)
+assertEqual(courtesyAvailability.available, 0)
+
+console.log('PASS existencia física, vendible, vencido, cuarentena, reservas de elaboración, venta pendiente y precisión kg')

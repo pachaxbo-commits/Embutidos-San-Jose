@@ -41,6 +41,9 @@ export type StockMovementType =
   | 'sale_void' // reversión auditada de venta
   | 'reservation_created' // reserva: cambio de disponibilidad sin cambio físico
   | 'reservation_released' // liberación de reserva: sin cambio físico
+  | 'processing_consumption' // consumo físico del producto de origen en elaboración
+  | 'processing_output' // entrada de una presentación derivada (bloqueada si falta trazabilidad posterior)
+  | 'processing_discard' // clasificación de gramos descartados dentro del consumo del batch; sin segundo delta físico
 
 export interface DistBaseDoc {
   pendingConfirmation?: boolean
@@ -141,6 +144,17 @@ export interface DistAdjustmentRequest extends DistBaseDoc {
 
 /** Ledger auditable; las reaperturas agregan metadata de reversión sin borrar el movimiento. */
 export interface DistStockMovement extends DistBaseDoc {
+  batchId?: string
+  destinationId?: string
+  destinationKind?: string
+  physicalWeightG?: number
+  commercialQuantity?: number
+  costCents?: number | null
+  costTotal?: number | null
+  processingCommercialBlocked?: boolean
+  sourceLotIds?: string[]
+  sourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[]
+  sourceAllocationBasis?: 'batch_blend_accounting_allocation'
   originReferences?: OriginReference[]
   traceabilityStatus?: 'physical_origin_pending'
   documentedMovementIds?: string[]
@@ -750,6 +764,19 @@ export interface DistLot {
  pendingOrigins?: Record<string, OriginReference[]>;
  /** Aggregate reservation by location. Writers must update this lot document in the same transaction as reservation documents to serialize competing stock operations. */
  processingUnavailable?: Record<string, { courtesy: number; repackPending: number; reviewHold: number }>;
+ /** Server-only gate until package weight and exact historical cost are consumed end-to-end. */
+ processingCommercialBlocked?: boolean;
+ processingBatchId?: string;
+ processingDestinationId?: string;
+ processingDestinationKind?: import('./domain/processing.ts').ProcessingDestinationKind;
+ processingPhysicalWeightGRemaining?: number;
+ processingCostCentsRemaining?: number | null;
+ processingCostTotalCents?: number | null;
+ processingPackageWeightLedger?: import('./domain/processing.ts').PackageWeightLedger;
+ processingSourceLotIds?: string[];
+ processingSourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[];
+ processingSourceAllocationBasis?: 'batch_blend_accounting_allocation';
+ packagedOn?: string;
  id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;
  quantities: Record<string, number>; quarantined?: boolean; legacy?: boolean; createdAt: string; createdBy: string;

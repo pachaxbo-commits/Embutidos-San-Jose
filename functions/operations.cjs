@@ -23,6 +23,57 @@ async function readExpenseGroupConfig(o, id) {
 const round = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const roundAt = (n, precision = 2) => Math.round((Number(n) + Number.EPSILON) * (10 ** precision)) / (10 ** precision);
 const quantityPrecision = (product) => product?.unitType === "kg" ? 3 : 2;
+const canonicalJson = value => JSON.stringify(value, (_key, item) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+  return Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]));
+});
+const sha256 = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
+function kgToGrams(value, label = 'El peso') {
+  const text = typeof value === 'number' ? String(value) : String(value ?? '');
+  check(/^\d+(?:\.\d{1,3})?$/.test(text), `${label} debe expresarse en kg con hasta tres decimales.`);
+  const [whole, fraction = ''] = text.split('.');
+  const grams = BigInt(whole) * 1000n + BigInt((fraction + '000').slice(0, 3));
+  check(grams > 0n && grams <= BigInt(Number.MAX_SAFE_INTEGER), `${label} excede el rango seguro.`);
+  return Number(grams);
+}
+function allocateCentsByWeight(totalCents, weightsG) {
+  check(Number.isSafeInteger(totalCents) && totalCents >= 0, 'El costo total en centavos no es válido.');
+  const totalWeight = weightsG.reduce((sum, weight) => sum + weight, 0);
+  check(Number.isSafeInteger(totalWeight) && totalWeight > 0 && weightsG.every(w => Number.isSafeInteger(w) && w >= 0), 'Los pesos para asignar costo no son válidos.');
+  const total = BigInt(totalCents), denominator = BigInt(totalWeight);
+  const cents = weightsG.map(weight => Number(total * BigInt(weight) / denominator));
+  let remainder = totalCents - cents.reduce((sum, amount) => sum + amount, 0);
+  for (let index = 0; remainder > 0; index = (index + 1) % cents.length) {
+    if (weightsG[index] > 0) { cents[index]++; remainder--; }
+  }
+  return cents;
+}
+function allocateWeightMatrix(rowWeightsG, columnWeightsG) {
+  check(rowWeightsG.every(Number.isSafeInteger) && columnWeightsG.every(Number.isSafeInteger), 'Las asignaciones por lote requieren gramos enteros.');
+  check(rowWeightsG.reduce((sum, value) => sum + value, 0) === columnWeightsG.reduce((sum, value) => sum + value, 0), 'Las asignaciones por lote no conservan los gramos.');
+  const remainingColumns = [...columnWeightsG];
+  const matrix = rowWeightsG.map(() => columnWeightsG.map(() => 0));
+  for (let rowIndex = 0; rowIndex < rowWeightsG.length; rowIndex++) {
+    const rowWeight = rowWeightsG[rowIndex];
+    const remainingTotal = remainingColumns.reduce((sum, value) => sum + value, 0);
+    if (rowIndex === rowWeightsG.length - 1) {
+      matrix[rowIndex] = [...remainingColumns];
+    } else {
+      const row = remainingColumns.map(column => remainingTotal > 0 ? Number(BigInt(rowWeight) * BigInt(column) / BigInt(remainingTotal)) : 0);
+      let remainder = rowWeight - row.reduce((sum, value) => sum + value, 0);
+      for (let columnIndex = 0; remainder > 0; columnIndex = (columnIndex + 1) % row.length) {
+        if (row[columnIndex] < remainingColumns[columnIndex]) { row[columnIndex]++; remainder--; }
+      }
+      matrix[rowIndex] = row;
+    }
+    for (let columnIndex = 0; columnIndex < remainingColumns.length; columnIndex++) {
+      remainingColumns[columnIndex] -= matrix[rowIndex][columnIndex];
+      check(remainingColumns[columnIndex] >= 0, 'Una asignación contable superó los gramos del destino.');
+    }
+  }
+  check(remainingColumns.every(value => value === 0), 'Las asignaciones contables no cubren los gramos de cada destino.');
+  return matrix;
+}
 // Alias financiero de Administración. No incluye Impulsación ni rutas operativas.
 const isAdministrationRouteId = (routeId) => routeId === "admin" || routeId === "administracion";
 const isSaleForDispatch = (sale, routeId) =>
@@ -239,7 +290,7 @@ class Operation {
     check(b.quantity >= 0, "Stock insuficiente.");
     b.updatedAt = this.now;
   }
-  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision } = {}) {
+  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
@@ -251,6 +302,11 @@ class Operation {
       return roundAt((Number(held.courtesy) || 0) + (Number(held.repackPending) || 0) + (Number(held.reviewHold) || 0), precision);
     };
     const usable = lot => roundAt((lot.quantities?.[loc] || 0) - unavailable(lot) - (allowPendingOrigin ? 0 : origins.pending(lot, loc)), precision);
+    const processingCourtesyAllowed = lot => {
+      if (!lot.processingCommercialBlocked) return true;
+      const proof = processingCourtesyReservation;
+      return Boolean(proof && proof.purpose === 'courtesy' && proof.location === loc && proof.lotId === lot.id && proof.batchId && proof.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy');
+    };
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
       const seen = new Set();
@@ -261,6 +317,7 @@ class Operation {
         check(requestedQuantity > 0, "La cantidad asignada a cada lote debe ser mayor a cero.");
         const lot = e.lots.find((row) => row.id === part.lotId);
         check(lot && lot.productId === pid, "El lote no pertenece al producto seleccionado.");
+        check(processingCourtesyAllowed(lot), 'El lote derivado de elaboración sigue bloqueado para venta o despacho hasta integrar el seguimiento físico y de costo.');
         check(allowExpired || (!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= this.today)), "El lote está vencido o en cuarentena.");
         check(usable(lot) >= requestedQuantity, `El lote ${lot.lotCode || lot.id} no tiene cantidad libre suficiente; revisa reservas, cuarentena y origen pendiente.`);
         return { lot, quantity: requestedQuantity };
@@ -275,6 +332,7 @@ class Operation {
         (l) =>
           usable(l) > 0 &&
           (!lotId || l.id === lotId) &&
+          processingCourtesyAllowed(l) &&
           (allowExpired ||
             (!l.quarantined && (!l.expiresOn || l.expiresOn >= this.today))),
       )
@@ -293,7 +351,19 @@ class Operation {
       if (remaining <= 0) break;
       const q = roundAt(Math.min(remaining, usable(l)), precision);
       remaining = roundAt(remaining - q, precision);
-      allocations.push(...origins.take(l, loc, q, allowPendingOrigin));
+      const parts = origins.take(l, loc, q, allowPendingOrigin);
+      if (l.processingCommercialBlocked) {
+        check(Number.isSafeInteger(processingPhysicalWeightG) && processingPhysicalWeightG > 0 && processingPhysicalWeightG <= Number(l.processingPhysicalWeightGRemaining), 'El peso físico asignado a la cortesía no concilia con el lote derivado.');
+        if (Number.isSafeInteger(l.processingCostCentsRemaining))
+          check(Number.isSafeInteger(processingCostCents) && processingCostCents >= 0 && processingCostCents <= l.processingCostCentsRemaining, 'El costo asignado a la cortesía no concilia con el lote derivado.');
+        l.processingPhysicalWeightGRemaining -= processingPhysicalWeightG;
+        if (Number.isSafeInteger(l.processingCostCentsRemaining)) l.processingCostCentsRemaining -= processingCostCents;
+        for (const part of parts) {
+          part.physicalWeightG = processingPhysicalWeightG;
+          if (Number.isSafeInteger(processingCostCents)) part.processingCostCents = processingCostCents;
+        }
+      }
+      allocations.push(...parts);
     }
     this.move(e, loc, -quantity, precision);
     return allocations;
@@ -3312,7 +3382,7 @@ function reservationEvent(o, reservation, action, quantity, reason = '') {
   return { ...reservation, history, updatedAt: o.now, updatedBy: o.actor };
 }
 
-async function reservationContext(o, p) {
+async function reservationContext(o, p, { allowProcessingOutput = false } = {}) {
   const product = await o.product(safeId(p.productId));
   const loc = String(p.location || '');
   check(loc === 'central' || loc.startsWith('warehouse__'), 'La reserva debe pertenecer a un almacén autorizado.');
@@ -3324,6 +3394,7 @@ async function reservationContext(o, p) {
   const e = await o.loadStock(product.id, loc);
   const lot = e.lots.find(row => row.id === safeId(p.lotId));
   check(lot && lot.productId === product.id, 'El lote no corresponde al producto.');
+  check(!lot.processingCommercialBlocked || allowProcessingOutput && lot.processingDestinationKind === 'courtesy', 'El lote derivado de elaboración sigue bloqueado para nuevas reservas comerciales.');
   check(!lot.legacy && !/^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`), 'No se puede reservar un lote sintético o anterior sin fechas.');
   check(!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= o.today), 'El lote está vencido o en cuarentena.');
   check(!origins.pending(lot, loc) && !Object.keys(lot.pendingOrigins || {}).some(key => origins.pending(lot, key) > 0), 'El lote tiene origen físico pendiente.');
@@ -3412,7 +3483,7 @@ handlers.deliverReservedCourtesy = async (o, p) => {
   }
   check(reservation.purpose === 'courtesy' && ['active','partially_consumed'].includes(reservation.status), 'No existe una reserva activa para cortesías.');
   check(quantity <= reservation.remainingQuantity, 'La cantidad supera lo reservado para cortesías.');
-  const { product: currentProduct, loc, lot, rows } = await reservationContext(o, { productId: reservation.productId, lotId: reservation.lotId, location: reservation.location });
+  const { product: currentProduct, loc, lot, rows } = await reservationContext(o, { productId: reservation.productId, lotId: reservation.lotId, location: reservation.location }, { allowProcessingOutput: Boolean(reservation.batchId && reservation.purpose === 'courtesy') });
   check(currentProduct.id === product.id, 'El producto reservado cambió; vuelve a consultar.');
   check(reservation.remainingQuantity === rows.find(r => r.id === id)?.remainingQuantity, 'La reserva cambió; vuelve a consultar.');
   const precision = quantityPrecision(product), held = { ...(lot.processingUnavailable[loc] || {}) };
@@ -3431,14 +3502,28 @@ handlers.deliverReservedCourtesy = async (o, p) => {
     check(p.deliveredWeightG === undefined || p.deliveredWeightG === null,
       'La reserva no tiene peso físico verificado; no registres gramos estimados.');
   }
+  let processingCostCents = null;
+  if (lot.processingCommercialBlocked) {
+    check(reservation.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy', 'La reserva no autoriza consumir este lote derivado.');
+    check(Number.isSafeInteger(reservation.remainingWeightG) && Number.isSafeInteger(lot.processingPhysicalWeightGRemaining) && reservation.remainingWeightG === lot.processingPhysicalWeightGRemaining, 'El peso restante de la reserva no concilia con el lote derivado.');
+    if (Number.isSafeInteger(reservation.remainingCostCents)) {
+      processingCostCents = quantity === reservation.remainingQuantity
+        ? reservation.remainingCostCents
+        : Number(BigInt(reservation.remainingCostCents) * BigInt(weightG) / BigInt(reservation.remainingWeightG));
+      check(Number.isSafeInteger(lot.processingCostCentsRemaining) && lot.processingCostCentsRemaining === reservation.remainingCostCents, 'El costo restante de la reserva no concilia con el lote derivado.');
+    } else check(lot.processingCostCentsRemaining === null, 'El costo restante del lote derivado no concilia con la reserva.');
+  }
   const nextRemaining = roundAt(reservation.remainingQuantity - quantity, precision);
   const nextWeight = reservation.remainingWeightG == null ? null : reservation.remainingWeightG - weightG;
-  const updated = reservationEvent(o, { ...reservation, remainingQuantity: nextRemaining, consumedQuantity: roundAt((reservation.consumedQuantity || 0) + quantity, precision), remainingWeightG: nextWeight, status: nextRemaining === 0 ? 'consumed' : 'partially_consumed' }, 'courtesy_delivered', quantity, String(p.reason).trim());
+  const nextCostCents = Number.isSafeInteger(reservation.remainingCostCents) ? reservation.remainingCostCents - processingCostCents : reservation.remainingCostCents ?? null;
+  const updated = reservationEvent(o, { ...reservation, remainingQuantity: nextRemaining, consumedQuantity: roundAt((reservation.consumedQuantity || 0) + quantity, precision), remainingWeightG: nextWeight, ...(reservation.batchId ? { remainingCostCents: nextCostCents } : {}), status: nextRemaining === 0 ? 'consumed' : 'partially_consumed' }, 'courtesy_delivered', quantity, String(p.reason).trim());
   updated.history[updated.history.length - 1] = { ...updated.history.at(-1), deliveryId, saleId: o.id, remainingQuantity: nextRemaining, costTotal: null };
   o.put('distStockReservations', id, updated);
-  const allocations = await o.take(product.id, loc, quantity, { lotId: lot.id, allowExpired: false, precision });
+  const allocations = await o.take(product.id, loc, quantity, { lotId: lot.id, allowExpired: false, precision, ...(lot.processingCommercialBlocked ? { processingCourtesyReservation: reservation, processingPhysicalWeightG: weightG, processingCostCents } : {}) });
   const costKnown = allocations.length > 0 && allocations.every(a => a.productionCost !== null);
-  const costTotal = costKnown ? round(allocations.reduce((sum,a) => sum + a.quantity * a.productionCost, 0)) : null;
+  const costTotal = lot.processingCommercialBlocked
+    ? (Number.isSafeInteger(processingCostCents) ? processingCostCents / 100 : null)
+    : costKnown ? round(allocations.reduce((sum,a) => sum + a.quantity * a.productionCost, 0)) : null;
   updated.history[updated.history.length - 1].costTotal = costTotal;
   o.put('distStockReservations', id, updated);
   const saleId = o.id;
@@ -3447,6 +3532,264 @@ handlers.deliverReservedCourtesy = async (o, p) => {
   o.put('distSales', saleId, { id: saleId, ...o.base(), saleKind: 'courtesy', reservationId: id, deliveryId, ...(weightG == null ? {} : { physicalWeightG: weightG }), courtesyReason: reason, courtesyRecipient: recipient, courtesyCost: costTotal, operationId: o.id, sourceLocation: loc === 'central' ? 'centralWarehouse' : loc, routeId: 'administracion', routeName: 'Administración', sellerUid: o.actor, sellerName: o.member.displayName || o.actor, dispatchId: '', customerId: '', customerName: recipient, customerCode: '', lines: [line], total: 0, paymentKind: 'cash', cashAmount: 0, qrAmount: 0, creditAmount: 0, cashReceived: 0, changeAmount: 0, note: `Reserva ${id}` });
   const result = { saleId, reservationId: id, deliveryId, deliveredQuantity: quantity, remainingQuantity: nextRemaining, costTotal };
   o.put('distCourtesyDeliveries', deliveryId, { id: deliveryId, ...o.base(), schemaVersion: 1, payloadHash, payload: deliveryPayload, reservationId: id, saleId, result, status: 'confirmed', createdAt: o.now, createdBy: o.actor });
+  return result;
+};
+
+handlers.confirmProcessingBatch = async (o, p) => {
+  check(['admin', 'warehouse'].includes(o.member.role), 'Solo Almacén o Administración pueden confirmar una elaboración.');
+  const batchId = safeId(p.batchId);
+  const loc = String(p.location || '');
+  check(loc === 'central' || /^warehouse__[^/]+$/.test(loc), 'La elaboración debe indicar un almacén válido.');
+  o.owns(loc);
+  if (loc !== 'central') {
+    const warehouse = await o.read('distWarehouses', safeId(loc.slice('warehouse__'.length)));
+    check(warehouse && warehouse.active !== false, 'El almacén de la elaboración no está disponible.');
+  }
+  const payloadHash = sha256(p);
+  const batchRef = o.ref('distProcessingBatches', batchId);
+  const prior = await o.tx.get(batchRef);
+  if (prior.exists) {
+    const saved = prior.data();
+    check(saved.payloadHash === payloadHash, 'El batchId ya fue utilizado con datos diferentes.');
+    return { ...saved.result, duplicate: true };
+  }
+
+  check(['portioning', 'bagging', 'repackaging'].includes(p.processType), 'El tipo de elaboración no está permitido.');
+  check(validDate(p.processingDate) && p.processingDate <= o.today, 'La fecha de elaboración debe ser válida y no futura.');
+  const sourceProduct = await o.product(safeId(p.sourceProductId));
+  check(sourceProduct.unitType === 'kg', 'Esta fase solo consume producto de origen medido en kg; paquetes y unidades requieren integración de peso por unidad.');
+  const inputWeightG = Number(p.inputWeightG);
+  check(Number.isSafeInteger(inputWeightG) && inputWeightG > 0, 'El peso de entrada debe ser un entero positivo de gramos.');
+  check(Array.isArray(p.sourceAllocations) && p.sourceAllocations.length > 0 && p.sourceAllocations.length <= 30, 'Indica entre 1 y 30 asignaciones comprobadas de lote de origen.');
+  const sourceEntry = await o.loadStock(sourceProduct.id, loc);
+  const seenSourceLots = new Set();
+  let sourceGrams = 0;
+  const requestedSourceAllocations = p.sourceAllocations.map((source, index) => {
+    const lotId = safeId(source.lotId);
+    check(!seenSourceLots.has(lotId), 'No repitas lotes de origen.');
+    seenSourceLots.add(lotId);
+    const measuredNetWeightG = Number(source.measuredNetWeightG);
+    const quantityG = kgToGrams(source.quantity, `Cantidad del lote ${lotId}`);
+    check(Number.isSafeInteger(measuredNetWeightG) && measuredNetWeightG === quantityG, `El peso medido del lote ${lotId} no corresponde exactamente a su cantidad en kg.`);
+    const lot = sourceEntry.lots.find(item => item.id === lotId);
+    check(lot && lot.productId === sourceProduct.id, `El lote ${lotId} no pertenece al SKU de origen.`);
+    check(!lot.legacy && !lot.synthetic && !/^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`), `El lote ${lot.lotCode || lot.id} es sintético o requiere conciliación.`);
+    check(!lot.quarantined && validDate(lot.manufacturedOn) && validDate(lot.expiresOn) && lot.expiresOn >= o.today && lot.expiresOn >= lot.manufacturedOn, `El lote ${lot.lotCode || lot.id} está vencido, en cuarentena o carece de fechas verificables.`);
+    check(origins.pending(lot, loc) === 0, `El lote ${lot.lotCode || lot.id} tiene origen físico pendiente en este almacén.`);
+    check(!lot.processingCommercialBlocked, `El lote ${lot.lotCode || lot.id} proviene de una elaboración cuyo consumo comercial sigue bloqueado.`);
+    sourceGrams += measuredNetWeightG;
+    check(Number.isSafeInteger(sourceGrams), 'El peso total de origen excede el rango seguro.');
+    return { lotId, quantity: measuredNetWeightG / 1000, measuredNetWeightG, sourceIndex: index };
+  });
+  check(sourceGrams === inputWeightG, 'La suma de las asignaciones de origen debe coincidir exactamente con el peso de entrada.');
+
+  check(Array.isArray(p.destinations) && p.destinations.length > 0 && p.destinations.length <= 30, 'Agrega entre 1 y 30 destinos físicos.');
+  const seenDestinations = new Set();
+  const destinations = [];
+  const targetProducts = new Map();
+  let outputWeightG = 0;
+  for (const raw of p.destinations) {
+    const id = safeId(raw.id);
+    check(!seenDestinations.has(id), 'Cada destino debe tener identificador único.');
+    seenDestinations.add(id);
+    const kind = raw.kind;
+    check(['finished', 'courtesy', 'repack_pending', 'review_hold', 'discard'].includes(kind), 'Este destino todavía no está implementado; no se registró como producto vendible.');
+    const netWeightG = Number(raw.netWeightG);
+    check(Number.isSafeInteger(netWeightG) && netWeightG > 0, `El destino ${id} requiere peso neto físico medido en gramos.`);
+    if (raw.nominalWeightG !== undefined) check(Number.isSafeInteger(Number(raw.nominalWeightG)) && Number(raw.nominalWeightG) > 0, `El peso nominal del destino ${id} debe ser un entero positivo y solo informativo.`);
+    outputWeightG += netWeightG;
+    check(Number.isSafeInteger(outputWeightG), 'El peso de salida excede el rango seguro.');
+    if (kind === 'discard') {
+      check(o.member.role === 'admin', 'El descarte real requiere aprobación directa de Administración.');
+      check(String(raw.reason || '').trim().length >= 3, `Indica el motivo del descarte ${id}.`);
+      check(!raw.productId && (!raw.commercialQuantity || Number(raw.commercialQuantity) === 0), 'El descarte no puede crear un SKU ni cantidad comercial.');
+      destinations.push({ id, kind, productId: sourceProduct.id, commercialUnit: 'kg', commercialQuantity: 0, netWeightG, reason: String(raw.reason).trim(), approvalStatus: 'approved', approvedBy: o.actor, approvedByName: o.member.displayName || o.actor });
+      continue;
+    }
+    const productId = safeId(raw.productId);
+    check(productId !== sourceProduct.id, 'El producto terminado debe ser un SKU previamente configurado y distinto del SKU a granel de origen.');
+    const target = await o.product(productId);
+    check(!raw.commercialUnit || raw.commercialUnit === target.unitType, `La unidad comercial de ${target.name} cambió; actualiza la elaboración.`);
+    const commercialQuantity = Number(raw.commercialQuantity);
+    check(Number.isFinite(commercialQuantity) && commercialQuantity > 0 && (target.unitType === 'kg' ? Number.isSafeInteger(netWeightG) && Math.abs(commercialQuantity * 1000 - netWeightG) < 0.000001 : Number.isSafeInteger(commercialQuantity)), `La cantidad comercial de ${target.name} no corresponde a su presentación.`);
+    if (target.unitType === 'kg') check(Math.abs(commercialQuantity * 1000 - netWeightG) < 0.000001, `El peso neto y los kg comerciales de ${target.name} deben coincidir.`);
+    else check(['measured_total', 'documented_average'].includes(raw.weightBasis), `Registra el peso neto total medido de ${target.name}; el peso aproximado del catálogo no sirve para conciliar.`);
+    if (kind === 'courtesy') {
+      check(o.member.role === 'admin' && raw.qualityConfirmed === true && String(raw.qualityReason || '').trim(), 'Producto para cortesía requiere confirmación explícita de aptitud por Administración.');
+    } else if (kind === 'repack_pending' || kind === 'review_hold') {
+      check(String(raw.reason || '').trim().length >= 3, `Indica por qué ${target.name} queda inmovilizado.`);
+      if (kind === 'review_hold') check(o.member.role === 'admin' || o.member.role === 'warehouse', 'No tienes permiso para inmovilizar producto para revisión.');
+    }
+    check(validDate(raw.manufacturedOn) && validDate(raw.packagedOn) && raw.manufacturedOn <= o.today && raw.packagedOn <= o.today && raw.manufacturedOn <= raw.packagedOn, `El destino ${id} requiere fecha de elaboración y envasado válidas y diferenciadas.`);
+    const sourceExpiry = Math.min(...requestedSourceAllocations.map(source => sourceEntry.lots.find(lot => lot.id === source.lotId).expiresOn).map(date => Date.parse(`${date}T00:00:00Z`)));
+    check(validDate(raw.expiresOn) && raw.expiresOn >= raw.packagedOn && Date.parse(`${raw.expiresOn}T00:00:00Z`) <= sourceExpiry, `El vencimiento de ${target.name} no puede superar el vencimiento más conservador de sus lotes de origen.`);
+    const lotCode = String(raw.lotCode || '').trim();
+    check(lotCode.length > 0 && lotCode.length <= 80, `Indica el código de lote derivado para ${target.name}.`);
+    const destination = { id, kind, productId, commercialUnit: target.unitType, commercialQuantity: roundAt(commercialQuantity, quantityPrecision(target)), netWeightG, ...(raw.nominalWeightG === undefined ? {} : { nominalWeightG: Number(raw.nominalWeightG) }), weightBasis: raw.weightBasis || (target.unitType === 'kg' ? 'measured_total' : 'documented_average'), lotCode, manufacturedOn: raw.manufacturedOn, packagedOn: raw.packagedOn, expiresOn: raw.expiresOn, ...(raw.reason ? { reason: String(raw.reason).trim() } : {}), ...(kind === 'courtesy' ? { qualityConfirmedBy: o.actor, qualityConfirmedAt: o.now, qualityReason: String(raw.qualityReason).trim() } : {}), approvalStatus: kind === 'finished' ? 'not_required' : kind === 'courtesy' ? 'approved' : 'pending' };
+    destinations.push(destination);
+    targetProducts.set(productId, target);
+  }
+  check(outputWeightG === inputWeightG, `La elaboración no conserva la masa: entrada ${inputWeightG} g, destinos ${outputWeightG} g, diferencia ${inputWeightG - outputWeightG} g.`);
+  check(!p.otherDestinationsG || Number(p.otherDestinationsG) === 0, 'Los destinos adicionales todavía no están implementados; asígnalos explícitamente antes de confirmar.');
+
+  const packagingMaterials = Array.isArray(p.packagingMaterials) ? p.packagingMaterials : [];
+  check(packagingMaterials.length <= 100, 'Hay demasiados materiales de empaque en una sola elaboración.');
+  const materialIds = new Set();
+  const materialRows = [];
+  for (const material of packagingMaterials) {
+    const id = safeId(material.id);
+    check(!materialIds.has(id), 'No repitas materiales de empaque.'); materialIds.add(id);
+    const quantityMilli = Number(material.quantityMilli), damagedQuantityMilli = Number(material.damagedQuantityMilli || 0);
+    check(Number.isSafeInteger(quantityMilli) && quantityMilli > 0 && Number.isSafeInteger(damagedQuantityMilli) && damagedQuantityMilli >= 0 && damagedQuantityMilli <= quantityMilli, 'La cantidad de material o bolsas dañadas no es válida.');
+    const costCents = material.costCents == null ? null : Number(material.costCents);
+    check(costCents === null || Number.isSafeInteger(costCents) && costCents >= 0, 'El costo del material debe expresarse en centavos o quedar desconocido.');
+    let expenseReference = null;
+    if (material.expenseId) {
+      expenseReference = safeId(material.expenseId);
+      const expense = await o.read('distExpenses', expenseReference);
+      check(expense && !expense.voided, `No se encontró el egreso vigente ${expenseReference}.`);
+    }
+    materialRows.push({ id, description: String(material.description || '').trim().slice(0, 120), quantityMilli, damagedQuantityMilli, costCents, ...(expenseReference ? { expenseId: expenseReference } : {}), costTreatment: 'informational_only_no_additional_result_charge' });
+  }
+  const costComponents = Array.isArray(p.costComponents) ? p.costComponents : [];
+  check(costComponents.length <= 50, 'Hay demasiados componentes de costo en una sola elaboración.');
+  const componentIds = new Set();
+  const componentRows = [];
+  for (const component of costComponents) {
+    const id = safeId(component.id);
+    check(!componentIds.has(id), 'No repitas componentes de costo.'); componentIds.add(id);
+    const amountCents = component.amountCents == null ? null : Number(component.amountCents);
+    check(amountCents === null || Number.isSafeInteger(amountCents) && amountCents >= 0, 'El componente de costo debe expresarse en centavos o quedar desconocido.');
+    check(component.capitalizable !== true, 'La capitalización de costos adicionales requiere asignación contable transaccional, aún no disponible; se rechazó sin cambiar inventario.');
+    let expenseId = null;
+    if (component.expenseId) {
+      expenseId = safeId(component.expenseId);
+      const expense = await o.read('distExpenses', expenseId);
+      check(expense && !expense.voided, `No se encontró el egreso vigente ${expenseId}.`);
+    }
+    if (component.alreadyRecognizedAsOperatingExpense) check(expenseId, 'Un costo ya registrado como egreso requiere su referencia existente.');
+    componentRows.push({ id, kind: component.kind || 'other', amountCents, ...(expenseId ? { expenseId } : {}), alreadyRecognizedAsOperatingExpense: component.alreadyRecognizedAsOperatingExpense === true, capitalizable: false, sourceReference: String(component.sourceReference || '').trim(), costTreatment: 'informational_only_no_additional_result_charge' });
+  }
+
+  const sourceCostRows = requestedSourceAllocations.map(source => {
+    const lot = sourceEntry.lots.find(item => item.id === source.lotId);
+    const historicalCostCents = Number.isFinite(lot.productionCost) && lot.productionCost >= 0 ? Math.round(source.quantity * lot.productionCost * 100) : null;
+    return { sourceLotId: lot.id, sourceLotCode: lot.lotCode, sourceProductId: sourceProduct.id, sourceUnitType: sourceProduct.unitType, originStatus: 'confirmed', quantity: source.quantity, quantityMilli: source.measuredNetWeightG, measuredNetWeightG: source.measuredNetWeightG, expiresOn: lot.expiresOn, productionCost: lot.productionCost ?? null, historicalCostCents };
+  });
+  const sourceCostKnown = sourceCostRows.every(row => row.historicalCostCents !== null);
+  const sourceCostCents = sourceCostKnown ? sourceCostRows.reduce((sum, row) => sum + row.historicalCostCents, 0) : null;
+  if (sourceCostCents !== null) check(Number.isSafeInteger(sourceCostCents), 'El costo histórico total excede el rango seguro.');
+  const sourceDestinationWeights = allocateWeightMatrix(sourceCostRows.map(row => row.measuredNetWeightG), destinations.map(item => item.netWeightG));
+  const destinationSourceAllocations = destinations.map(() => []);
+  if (sourceCostKnown) {
+    for (let sourceIndex = 0; sourceIndex < sourceCostRows.length; sourceIndex++) {
+      const sourceRow = sourceCostRows[sourceIndex];
+      const costShares = allocateCentsByWeight(sourceRow.historicalCostCents, sourceDestinationWeights[sourceIndex]);
+      for (let destinationIndex = 0; destinationIndex < destinations.length; destinationIndex++) {
+        const weightG = sourceDestinationWeights[sourceIndex][destinationIndex];
+        if (weightG > 0) destinationSourceAllocations[destinationIndex].push({ sourceLotId: sourceRow.sourceLotId, sourceLotCode: sourceRow.sourceLotCode, sourceProductId: sourceRow.sourceProductId, quantityMilli: weightG, weightG, costCents: costShares[destinationIndex], originStatus: 'accounting_allocation_not_physical_identification' });
+      }
+    }
+  } else {
+    for (let sourceIndex = 0; sourceIndex < sourceCostRows.length; sourceIndex++) {
+      const sourceRow = sourceCostRows[sourceIndex];
+      for (let destinationIndex = 0; destinationIndex < destinations.length; destinationIndex++) {
+        const weightG = sourceDestinationWeights[sourceIndex][destinationIndex];
+        if (weightG > 0) destinationSourceAllocations[destinationIndex].push({ sourceLotId: sourceRow.sourceLotId, sourceLotCode: sourceRow.sourceLotCode, sourceProductId: sourceRow.sourceProductId, quantityMilli: weightG, weightG, costCents: null, originStatus: 'accounting_allocation_not_physical_identification' });
+      }
+    }
+  }
+  const destinationCosts = sourceCostKnown
+    ? destinations.map((_, destinationIndex) => destinationSourceAllocations[destinationIndex].reduce((sum, allocation) => sum + allocation.costCents, 0))
+    : destinations.map(() => null);
+  const derivedLots = [];
+  const movementIds = [];
+  const reservationIds = [];
+  const auditEventIds = [];
+  const sourceBeforeQuantity = Number(sourceEntry.balances.get(loc)?.quantity || 0);
+  const sourceAllocations = await o.take(sourceProduct.id, loc, inputWeightG / 1000, { allocationsRequested: requestedSourceAllocations.map(({ lotId, quantity }) => ({ lotId, quantity })), allowExpired: false, allowPendingOrigin: false, precision: 3 });
+  const actualSourceCostCents = sourceAllocations.every(allocation => allocation.productionCost !== null)
+    ? sourceAllocations.reduce((sum, allocation) => sum + Math.round(allocation.quantity * allocation.productionCost * 100), 0)
+    : null;
+  check(actualSourceCostCents === sourceCostCents, 'El costo histórico de los lotes cambió durante la elaboración; no se aplicaron cambios.');
+  const consumptionMovementId = o.ledger(sourceProduct.id, inputWeightG / 1000, loc, null, 'processing_consumption', { batchId, lotIds: sourceAllocations.map(a => a.lotId), allocations: sourceAllocations, physicalWeightG: inputWeightG, costCents: sourceCostCents, costTotal: sourceCostCents === null ? null : sourceCostCents / 100 }, 3);
+  movementIds.push(consumptionMovementId);
+  const destinationWeightById = new Map(destinations.map((destination, index) => [destination.id, { ...destination, costCents: destinationCosts[index] }]));
+  for (let index = 0; index < destinations.length; index++) {
+    const destination = destinationWeightById.get(destinations[index].id);
+    const costCents = destination.costCents;
+    if (destination.kind === 'discard') {
+      const discardKg = destination.netWeightG / 1000;
+      const movementId = o.ledger(sourceProduct.id, discardKg, loc, loc, 'processing_discard', { batchId, destinationId: destination.id, sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: 'batch_blend_accounting_allocation', physicalEffect: false, physicalWeightG: destination.netWeightG, lossCost: costCents === null ? null : costCents / 100, lossCostCents: costCents, lossClassification: 'confirmed_physical_loss', note: destination.reason }, 3);
+      movementIds.push(movementId);
+      continue;
+    }
+    const target = targetProducts.get(destination.productId);
+    const targetEntry = await o.loadStock(target.id, loc);
+    check(!targetEntry.lots.some(lot => lot.legacy || lot.synthetic || /^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`)), `El SKU ${target.name} tiene saldo histórico sin lotes conciliados; no se creó inventario derivado.`);
+    const lotId = `processing_${sha256(`${batchId}:${destination.id}`).slice(0, 40)}`;
+    check(!targetEntry.lots.some(lot => lot.lotCode === destination.lotCode && lot.manufacturedOn === destination.manufacturedOn), `Ya existe el lote ${destination.lotCode} para ${target.name}.`);
+    check(!await o.read('distLots', lotId), `El identificador de lote derivado ${lotId} ya existe.`);
+    const unitCost = costCents === null ? null : roundAt((costCents / 100) / destination.commercialQuantity, 6);
+    const heldKey = destination.kind === 'courtesy' ? 'courtesy' : destination.kind === 'repack_pending' ? 'repackPending' : destination.kind === 'review_hold' ? 'reviewHold' : null;
+    const lot = {
+      id: lotId, restaurantId: 'sanjose', productId: target.id, productName: target.name, unitType: target.unitType,
+      lotCode: destination.lotCode, manufacturedOn: destination.manufacturedOn, packagedOn: destination.packagedOn, expiresOn: destination.expiresOn,
+      productionCost: unitCost, quantities: { [loc]: destination.commercialQuantity }, quarantined: false, legacy: false,
+      processingCommercialBlocked: true, processingBatchId: batchId, processingDestinationId: destination.id, processingDestinationKind: destination.kind,
+      processingPhysicalWeightGRemaining: destination.netWeightG, processingCostCentsRemaining: costCents,
+      processingSourceLotIds: destinationSourceAllocations[index].map(row => row.sourceLotId), processingSourceAllocations: destinationSourceAllocations[index], processingSourceAllocationBasis: 'batch_blend_accounting_allocation', processingCostTotalCents: costCents,
+      ...(target.unitType === 'kg' ? {} : { processingPackageWeightLedger: { packageCount: destination.commercialQuantity, measuredNetWeightG: destination.netWeightG, consumedCount: 0, consumedWeightG: 0, nextPackageIndex: 0, weightBasis: destination.weightBasis } }),
+      ...(heldKey ? { processingUnavailable: { [loc]: { courtesy: heldKey === 'courtesy' ? destination.commercialQuantity : 0, repackPending: heldKey === 'repackPending' ? destination.commercialQuantity : 0, reviewHold: heldKey === 'reviewHold' ? destination.commercialQuantity : 0 } } } : {}),
+      createdAt: o.now, createdBy: o.actor, branchId: 'main', dayKey: o.today, schemaVersion: 1,
+    };
+    lot.quantities[loc] = roundAt(destination.commercialQuantity, quantityPrecision(target));
+    if (heldKey && destination.netWeightG > 0) {
+      const reservationId = `${lotId}__reservation`;
+      const reservation = {
+        id: reservationId, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, productId: target.id, productName: target.name,
+        lotId, lotCode: lot.lotCode, unitType: target.unitType, location: loc,
+        purpose: heldKey === 'courtesy' ? 'courtesy' : heldKey === 'repackPending' ? 'repack_pending' : 'review_hold',
+        originalQuantity: lot.quantities[loc], remainingQuantity: lot.quantities[loc], consumedQuantity: 0,
+        physicalWeightG: destination.netWeightG, remainingWeightG: destination.netWeightG,
+        remainingCostCents: costCents, status: 'active', source: `processing_batch:${batchId}`, batchId,
+        createdAt: o.now, createdBy: o.actor, createdByName: o.member.displayName || o.actor,
+        history: [{ id: `${reservationId}__created`, action: 'created', quantity: lot.quantities[loc], at: o.now, by: o.actor, byName: o.member.displayName || o.actor, reason: destination.reason || destination.qualityReason || `Destino ${destination.kind} de elaboración ${batchId}`, batchId }],
+      };
+      o.put('distStockReservations', reservationId, reservation);
+      reservationIds.push(reservationId);
+      const reservationMovementId = o.ledger(target.id, lot.quantities[loc], loc, loc, 'reservation_created', { batchId, lotId, reservationId, reservationPurpose: reservation.purpose, physicalEffect: false, note: `Reserva creada por elaboración ${batchId}` }, quantityPrecision(target));
+      reservation.movementId = reservationMovementId;
+      o.put('distStockReservations', reservationId, reservation);
+      movementIds.push(reservationMovementId);
+    }
+    targetEntry.lots.push(lot);
+    o.stockSnapshots.get(`lots:${target.id}`).set(lotId, null);
+    o.move(targetEntry, loc, lot.quantities[loc], quantityPrecision(target));
+    o.put('distLots', lotId, lot);
+    const movementId = o.ledger(target.id, lot.quantities[loc], null, loc, 'processing_output', { batchId, lotId, lotCode: lot.lotCode, destinationId: destination.id, destinationKind: destination.kind, physicalWeightG: destination.netWeightG, commercialQuantity: lot.quantities[loc], costCents, costTotal: costCents === null ? null : costCents / 100, processingCommercialBlocked: true, sourceLotIds: lot.processingSourceLotIds, sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: lot.processingSourceAllocationBasis, note: destination.reason || '' }, quantityPrecision(target));
+    movementIds.push(movementId);
+    derivedLots.push({ lotId, productId: target.id, productName: target.name, destinationId: destination.id, destinationKind: destination.kind, lotCode: lot.lotCode, commercialQuantity: lot.quantities[loc], unitType: target.unitType, netWeightG: destination.netWeightG, costCents, sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: 'batch_blend_accounting_allocation', reservationId: reservationIds.find(id => id === `${lotId}__reservation`) || null, processingCommercialBlocked: true });
+    const auditId = `processing_audit_${sha256(`${batchId}:${destination.id}`).slice(0, 40)}`;
+    o.put('distProcessingBatchAudit', auditId, { id: auditId, ...o.base(), batchId, operationId: o.id, location: loc, sourceLocation: loc, event: heldKey ? 'destination_reserved' : 'destination_created', destinationId: destination.id, productId: target.id, lotId, reservationId: reservationIds.find(id => id === `${lotId}__reservation`) || null, physicalWeightG: destination.netWeightG, costCents, createdAt: o.now, createdBy: o.actor });
+    auditEventIds.push(auditId);
+  }
+  const sourceAfterQuantity = Number(sourceEntry.balances.get(loc)?.quantity || 0);
+  const result = { batchId, duplicate: false, inputWeightG, outputWeightG, sourceProductId: sourceProduct.id, sourceLocation: loc, sourceBeforeQuantity, sourceAfterQuantity, sourceCostCents, derivedLots, reservationIds, movementIds, discardedWeightG: destinations.filter(item => item.kind === 'discard').reduce((sum, item) => sum + item.netWeightG, 0) };
+  const batch = {
+    id: batchId, operationId: o.id, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, payloadHash, status: 'confirmed',
+    processType: p.processType, processingDate: p.processingDate, sourceProductId: sourceProduct.id, sourceProductName: sourceProduct.name, sourceUnitType: sourceProduct.unitType, sourceLocation: loc,
+    sourceAllocations: sourceCostRows, inputWeightG, destinations: destinations.map((item, index) => ({ ...item, costCents: destinationCosts[index], sourceLotIds: [...new Set(destinationSourceAllocations[index].map(row => row.sourceLotId))], sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: 'batch_blend_accounting_allocation' })),
+    packagingMaterials: materialRows, costComponents: componentRows, sourceCostCents,
+    auxiliaryCostsCapitalized: false, costPolicy: 'Solo se redistribuyó el costo histórico conocido del inventario de origen; empaques y egresos asociados son informativos y no se capitalizan.',
+    responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, createdAt: o.now, dayKey: o.today, confirmedAt: o.now, confirmedBy: o.actor,
+    auditEventIds, movementIds, reservationIds, reversal: { status: 'clear', dependencyIds: [] }, result,
+  };
+  o.put('distProcessingBatches', batchId, batch);
+  const confirmedAuditId = `processing_audit_${sha256(`${batchId}:confirmed`).slice(0, 40)}`;
+  o.put('distProcessingBatchAudit', confirmedAuditId, { id: confirmedAuditId, ...o.base(), batchId, operationId: o.id, location: loc, sourceLocation: loc, event: 'confirmed', inputWeightG, outputWeightG, sourceCostCents, createdAt: o.now, createdBy: o.actor, movementIds });
+  batch.auditEventIds.push(confirmedAuditId);
+  o.put('distProcessingBatches', batchId, batch);
   return result;
 };
 async function updateLot(o, p) {
