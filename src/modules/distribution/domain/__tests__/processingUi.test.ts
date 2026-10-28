@@ -1,4 +1,4 @@
-import { decimalInputToScaledInteger, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity } from '../processingUi.ts'
+import { decimalInputToScaledInteger, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity, normalizeProcessingUiType } from '../processingUi.ts'
 import type { DistLot } from '../../types.ts'
 import { getVisibleModules } from '../../../../config/appConfig.ts'
 
@@ -20,6 +20,10 @@ equal(gramsInput('9.000'), null, 'rechaza fracciones de gramo')
 equal(decimalInputToScaledInteger('2,345', 1000), 2345, 'cantidad de material en milésimas')
 equal(decimalInputToScaledInteger('12,50', 100), 1250, 'costo expresado en centavos')
 equal(decimalInputToScaledInteger('12,501', 100), null, 'costo no redondea decimales ocultos')
+equal(normalizeProcessingUiType('bagging'), 'bagging', 'mantiene sacheteado disponible')
+equal(normalizeProcessingUiType('portioning'), 'portioning', 'mantiene porcionado disponible')
+equal(normalizeProcessingUiType('repackaging'), 'bagging', 'borrador antiguo no implica reenvasado posterior')
+equal(normalizeProcessingUiType('unknown'), 'bagging', 'tipo desconocido vuelve al proceso seguro')
 equal(lotAvailableQuantity({ ...baseLot, processingUnavailable: { central: { courtesy: 1, repackPending: 1, reviewHold: 1 } } }, 'central'), 7, 'descuenta reservas de elegibilidad de lote')
 equal(isEligibleProcessingLot(baseLot, 'bulk-a', 'central', '2026-10-28'), true, 'lote normal vigente elegible')
 equal(isEligibleProcessingLot({ ...baseLot, quarantined: true }, 'bulk-a', 'central', '2026-10-28'), false, 'lote en cuarentena excluido')

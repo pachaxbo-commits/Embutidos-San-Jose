@@ -1,6 +1,19 @@
 import type { DistLot } from '../types'
 import { originPendingQuantity } from './originTraceability.ts'
 
+/** Process types that the current sacheteado screen actually supports. */
+export type SupportedProcessingUiType = 'bagging' | 'portioning'
+
+/**
+ * Older local drafts may contain `repackaging`, which used to be selectable
+ * even though the backend only records a generic conversion batch. Treat that
+ * legacy value as the supported bagging flow; it must never imply that a
+ * finished, damaged package was actually repacked.
+ */
+export function normalizeProcessingUiType(value: unknown): SupportedProcessingUiType {
+  return value === 'portioning' ? 'portioning' : 'bagging'
+}
+
 export function kgInputToGrams(value: string): number | null {
   const match = value.trim().match(/^(\d+)(?:[.,](\d{1,3}))?$/)
   if (!match) return null

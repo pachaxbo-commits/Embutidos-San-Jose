@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Plus, RefreshCw
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, LoadingState, Screen } from '../../../components/ui/Screen'
 import { reconcileProcessingMass } from '../domain/processingDomain'
-import { decimalInputToScaledInteger, formatKgFromGrams, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity } from '../domain/processingUi'
+import { decimalInputToScaledInteger, formatKgFromGrams, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity, normalizeProcessingUiType } from '../domain/processingUi'
 import { newOperationId, warehouseBalanceId, loadProcessingBatchPage, loadProcessingReservationPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
 import { stockAvailability } from '../domain/stockAvailability'
 import type { ProcessingBatch, ProcessingReservation, ProcessingDestinationKind, ProcessingWeightBasis, ConfirmProcessingBatchInput, ProcessingPackagingMaterial, ProcessingCostComponent } from '../domain/processing'
@@ -38,7 +38,7 @@ function readDraft(uid: string, location: string, today: string, preserveSavedLo
     if (!raw) return freshDraft(location, today)
     const parsed = JSON.parse(raw) as Draft
     if (!parsed.batchId || !parsed.operationId || !Array.isArray(parsed.sources) || !Array.isArray(parsed.destinations)) return freshDraft(location, today)
-    return { ...freshDraft(location, today), ...parsed, location: preserveSavedLocation && typeof parsed.location === 'string' ? parsed.location : location }
+    return { ...freshDraft(location, today), ...parsed, processType: normalizeProcessingUiType(parsed.processType), location: preserveSavedLocation && typeof parsed.location === 'string' ? parsed.location : location }
   } catch { return freshDraft(location, today) }
 }
 function persistDraft(uid: string, draft: Draft): boolean {
@@ -323,7 +323,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
       {step === 0 && <SectionCard title="Paso 1 · Producto de origen y lotes">
         <div className="space-y-3">
           {canAdmin ? <Field label="Almacén de origen" required><SelectInput value={draft.location} onChange={event => editDraft(current => ({ ...current, location: event.target.value, sourceProductId: '', sources: [] }))}>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field> : <div className="rounded-xl bg-slate-50 p-3 text-sm"><b>Almacén asignado:</b> {data.warehouses.find(item => item.id === fixedLocation)?.name || (fixedLocation === 'central' ? 'Almacén central' : fixedLocation)}</div>}
-          <Field label="Tipo de proceso"><SelectInput value={draft.processType} onChange={event => editDraft(current => ({ ...current, processType: event.target.value as Draft['processType'] }))}><option value="bagging">Sacheteado y embolsado</option><option value="portioning">Porcionado</option><option value="repackaging">Reenvasado dentro de elaboración</option></SelectInput></Field>
+          <Field label="Tipo de elaboración"><SelectInput value={draft.processType} onChange={event => editDraft(current => ({ ...current, processType: event.target.value as Draft['processType'] }))}><option value="bagging">Sacheteado y embolsado</option><option value="portioning">Porcionado</option></SelectInput><p className="mt-1 text-xs text-slate-500">Este flujo transforma producto a granel. El reemplazo de bolsas de producto terminado y la liberación de pendientes requieren procedimientos separados.</p></Field>
           <Field label="Producto a granel · unidad kg" required hint="Solo aparecen SKU con lotes elegibles. El servidor vuelve a comprobar stock, lote y vencimiento al confirmar."><SelectInput value={draft.sourceProductId} onChange={event => setSourceProduct(event.target.value)}><option value="">Selecciona producto</option>{sourceProducts.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
           {selectedProduct && <div className="grid grid-cols-2 gap-2"><div className="rounded-xl border border-slate-200 p-3"><p className="text-[10px] font-black uppercase text-slate-500">Existencia física</p><p className="mt-1 font-black tabular-nums">{(stock?.physical || 0).toFixed(3)} kg</p></div><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><p className="text-[10px] font-black uppercase text-emerald-800">Disponible para procesar</p><p className="mt-1 font-black tabular-nums text-emerald-900">{(stock?.available || 0).toFixed(3)} kg</p></div></div>}
           {selectedProduct && <div className="space-y-2"><p className="text-[11px] font-extrabold text-slate-600">Lotes elegibles (vence primero)</p>{eligibleLots.length === 0 ? <EmptyBlock title="Sin lotes elegibles" description="Se excluyen lotes vencidos, sintéticos, en cuarentena, bloqueados o con origen físico pendiente." /> : eligibleLots.map(lot => {
