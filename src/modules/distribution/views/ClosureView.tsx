@@ -4,7 +4,7 @@ import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { buildReconciliation, computeMoneySummary, isSaleForDispatch, matchesRoute, round2, toDayKey } from '../domain/engine'
+import { buildReconciliation, computeMoneySummary, isSaleForDispatchSettlement, matchesRoute, round2, toDayKey } from '../domain/engine'
 import { previewDispatchMermaSettlement } from '../domain/dispatchMermaSettlement'
 import { expenseCashPaidAmount } from '../domain/expenseAccounting'
 import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
@@ -239,7 +239,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const mark = (key: string) => { ready.add(key); if (ready.size >= expected) setReadyDispatch(dispatchKey) }
     const fail = (e: Error) => setError(e.message)
     const ownerUid = session.role === 'distributor' ? session.uid : undefined
-    const stop = [subscribeSales(days, dispatchRoute, rows => { setSalesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(s => isSaleForDispatch(s, dispatchRoute) && !s.voidedAt && !s.pendingConfirmation && (s.dispatchId === dispatchKey || (!s.dispatchId && s.createdAt >= dispatchCreated))).map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s) }); mark('sales') }, fail, ownerUid)]
+    const stop = [subscribeSales(days, dispatchRoute, rows => { setSalesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(s => isSaleForDispatchSettlement(s, dispatchKey, dispatchRoute, dispatchCreated) && !s.voidedAt && !s.pendingConfirmation).map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s) }); mark('sales') }, fail, ownerUid)]
     if (session.role !== 'warehouse') {
       stop.push(subscribeCollections(days, dispatchRoute, rows => { setCollectionsSnapshot({ dispatchId: dispatchKey, rows: rows.filter(c => c.createdAt >= dispatchCreated) }); mark('collections') }, fail, ownerUid))
       stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.createdAt >= dispatchCreated) }); mark('expenses') }, fail, ownerUid))

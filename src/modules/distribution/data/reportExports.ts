@@ -2,7 +2,7 @@ import { jsPDF, autoTable, Workbook } from "../../../lib/documentLibraries.ts";
 import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
-import { matchesRoute, round2, toDayKey } from "../domain/engine";
+import { computeSellerBreakdown, matchesRoute, round2, toDayKey } from "../domain/engine";
 import { roundStockQuantity } from "../domain/stockAvailability";
 import { originPendingQuantity } from '../domain/originTraceability';
 import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio, currentCustomerDisplayName } from "../domain/creditRoutes";
@@ -394,6 +394,7 @@ export function reportSheets(
       (s) =>
         inScope(s) &&
         !s.pendingConfirmation &&
+        !s.voidedAt &&
         (!seller || s.sellerUid === seller),
     ),
     credits = computeAsOfReceivablesPortfolio({
@@ -456,6 +457,7 @@ export function reportSheets(
       "Almacén registrado",
     );
   };
+  const sellerBreakdown = computeSellerBreakdown(sales, collections, expenses, claims, data.products);
   return [
     {
       id: 'summary',
@@ -490,6 +492,12 @@ export function reportSheets(
         costKnown,
         seller,
       },
+    },
+    {
+      id: 'sellerSummary',
+      name: "Kg por vendedor",
+      headers: ["Vendedor", "Rutas", "Granel (kg)", "Sachets documentados (kg)", "Sachets estimados (kg)", "Total documentado (kg)", "Total incluyendo estimados (kg)", "Paquetes", "Paquetes sin peso fiable"],
+      rows: sellerBreakdown.map(item => [item.sellerName, item.routeNames.join(' · '), item.kilograms, item.documentedSachetKilograms, item.estimatedSachetKilograms, item.totalDocumentedKilograms, item.totalEstimatedKilograms, item.packages, item.unknownWeightPackages]),
     },
     {
       id: 'sales',
@@ -751,16 +759,17 @@ export function reportSheets(
     {
       id: 'expenses',
       name: "Gastos",
-      headers: ["Fecha", "Ruta", "Responsable", "Concepto", "Importe (Bs)"],
+      headers: ["Fecha", "Ruta", "Responsable", "Concepto", "Detalle de artículos de compra", "Importe (Bs)"],
       rows: [
         ...expenses.map((e) => [
         reportDateTime(e.createdAt),
         reportRecordName(e.routeName, "Ruta registrada"),
         reportPersonName(e.registeredByName),
         e.concept,
+        e.purchaseLines?.map(line => `${line.description}: ${line.quantity} ${line.unit === 'other' ? line.unitLabel || 'otra unidad' : line.unit}; unitario Bs ${line.unitPrice}; total Bs ${line.total}; merma ${line.wasteQuantity}; neto ${line.netUsableQuantity}`).join(" | ") || "",
         e.amount,
         ] as Cell[]),
-        ["TOTAL", "", "", "", round2(expenses.reduce((n, e) => n + e.amount, 0))],
+        ["TOTAL", "", "", "", "", round2(expenses.reduce((n, e) => n + e.amount, 0))],
       ],
     },
     {

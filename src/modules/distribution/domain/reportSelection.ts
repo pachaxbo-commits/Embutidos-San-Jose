@@ -1,5 +1,6 @@
 export type ReportSheetId =
   | 'summary'
+  | 'sellerSummary'
   | 'sales'
   | 'courtesies'
   | 'products'
@@ -26,6 +27,7 @@ export interface ReportOption {
 
 export const REPORT_OPTIONS: readonly ReportOption[] = [
   { id: 'summary', label: 'Resumen', sheetName: 'Resumen' },
+  { id: 'sellerSummary', label: 'Resumen por vendedor · kg vendidos', sheetName: 'Kg por vendedor' },
   { id: 'sales', label: 'Ventas', sheetName: 'Ventas' },
   { id: 'courtesies', label: 'Entregas de cortesía', sheetName: 'Cortesías' },
   { id: 'products', label: 'Productos vendidos', sheetName: 'Productos vendidos' },

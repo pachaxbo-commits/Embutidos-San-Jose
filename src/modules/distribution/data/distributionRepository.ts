@@ -59,6 +59,7 @@ import type {
   PaymentKind,
   SourceLocation,
   UnitType,
+  SupplierPurchaseLine,
 } from '../types'
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from './supportMaintenance'
 import { recordQrVerification, type QrSourceType } from './qrVerification'
@@ -892,6 +893,7 @@ export async function saveProduct(product: Omit<DistProduct, 'restaurantId' | 'c
     {
       ...product,
       approximateWeightKg: product.approximateWeightKg === undefined ? deleteField() : product.approximateWeightKg,
+      documentedPackageWeightKg: product.documentedPackageWeightKg === undefined ? deleteField() : product.documentedPackageWeightKg,
       referencePrice: round2(product.referencePrice),
       restaurantId: context.restaurantId,
       createdAt: product.createdAt ?? now,
@@ -1234,6 +1236,10 @@ export async function saveExpenseGroup(input: { groupId: string; name: string; e
   return submitOperation<DistExpenseGroup>('saveExpenseGroup', input, newOperationId('expense-group'))
 }
 
+export async function deleteExpenseGroup(input: { groupId: string }) {
+  return submitOperation<{ id: string; deleted: true }>('deleteExpenseGroup', input, newOperationId('delete-expense-group'))
+}
+
 export async function saveExpenseSupplier(input: { supplierId: string; name: string; contactName?: string; phone?: string; note?: string; active: boolean }) {
   return submitOperation<DistSupplier>('saveExpenseSupplier', input, newOperationId('expense-supplier'))
 }
@@ -1250,6 +1256,7 @@ export interface SupplierPurchaseInput {
   dayKey: string
   dueDayKey?: string
   note?: string
+  purchaseLines?: SupplierPurchaseLine[]
 }
 
 export async function registerSupplierPurchase(input: SupplierPurchaseInput) {
@@ -1294,6 +1301,10 @@ export async function deleteExpense(expenseId: string, reason = ''): Promise<voi
 
 export async function saveExpenseCategory(input: { categoryId: string; group: ExpenseGroupId; name: string; active: boolean; order: number; autoClassifiable: boolean; distributorVisible: boolean }) {
   return submitOperation<DistExpenseCategory>('saveExpenseCategory', input, newOperationId('expense-category'))
+}
+
+export async function deleteExpenseCategory(input: { categoryId: string }) {
+  return submitOperation<{ id: string; deleted: true }>('deleteExpenseCategory', input, newOperationId('delete-expense-category'))
 }
 
 export async function classifyExpense(input: { expenseId: string; group: ExpenseGroupId; categoryId: string; economicType: ExpenseEconomicType }) {

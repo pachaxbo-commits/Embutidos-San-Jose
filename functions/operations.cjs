@@ -2,9 +2,11 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const expensePresetRegistry = require("./expense-presets.json");
 const origins = require('./origin-traceability.cjs');
 const expenseCategoryDefaults = expensePresetRegistry.defaults;
+const retiredIndirectCommercializationCategoryIds = new Set(["indirect-7", "indirect-8", "indirect-9"]);
 const expenseBuiltinGroups = {
   administration: { name: "Gastos de administración", economicType: "operating_expense" },
   indirect: { name: "Gastos indirectos", economicType: "operating_expense" },
+  commercialization: { name: "Gastos de comercialización", economicType: "operating_expense" },
   equipment: { name: "Gastos de equipamiento", economicType: "operating_expense" },
   other: { name: "Otros egresos operativos", economicType: "operating_expense" },
   production_additional: { name: "Gasto de producción adicional", economicType: "operating_expense" },
@@ -96,6 +98,9 @@ class Operation {
       ref: this.ref(col, id),
       data: JSON.parse(JSON.stringify(value)),
     });
+  }
+  remove(col, id) {
+    this.writes.set(`${col}/${id}`, { ref: this.ref(col, id), delete: true });
   }
   base() {
     return {
@@ -350,7 +355,10 @@ class Operation {
       for (const l of e.lots) this.put("distLots", l.id, l);
       for (const b of e.balances.values()) this.put("distBalances", b.id, b);
     }
-    for (const w of this.writes.values()) this.tx.set(w.ref, w.data);
+    for (const w of this.writes.values()) {
+      if (w.delete) this.tx.delete(w.ref);
+      else this.tx.set(w.ref, w.data);
+    }
   }
 }
 async function intake(o, p) {
@@ -1246,6 +1254,7 @@ async function sale(o, p) {
       productNameSnapshot: product.name,
       presentationSnapshot: product.presentation || product.category || "",
       descriptionSnapshot: product.description || "",
+      ...(product.unitType === "package" && Number(product.documentedPackageWeightKg) > 0 ? { documentedPackageWeightKgSnapshot: Number(product.documentedPackageWeightKg) } : {}),
       unitType: product.unitType,
       quantity: l.quantity,
       ...(physicalQuantity !== chargedQuantity ? { physicalQuantity, excessWeightQuantity } : {}),
@@ -1632,7 +1641,7 @@ async function changeProductUnit(o, p) {
   const sales = (await o.all("distSales")).filter(row => (row.lines || []).some(line => line.productId === product.id));
   check(!balances.some(row => Math.abs(Number(row.quantity) || 0) > 0.0001), "No se puede cambiar la unidad porque el producto tiene existencias.");
   check(movements.length === 0 && sales.length === 0, "No se puede cambiar la unidad porque existe historial. Crea otro producto.");
-  const updated = { ...product, unitType: p.unitType, approximateWeightKg: p.unitType === "kg" ? null : product.approximateWeightKg ?? null, updatedAt: o.now, updatedBy: o.actor };
+  const updated = { ...product, unitType: p.unitType, approximateWeightKg: p.unitType === "kg" ? null : product.approximateWeightKg ?? null, documentedPackageWeightKg: p.unitType === "kg" ? null : product.documentedPackageWeightKg ?? null, updatedAt: o.now, updatedBy: o.actor };
   o.put("distProducts", product.id, updated); return updated;
 }
 async function warehouseShift(o, p) {
@@ -1746,7 +1755,7 @@ async function editSale(o, p) {
     const promotional = round(input.actualUnitPrice) !== referenceUnitPrice;
     check(o.member.role === "admin" || !promotional || input.isPromotional === true, "Marca la venta como promocional para modificar el precio.");
     const lineSubtotal = isCourtesy ? 0 : round(quantity * input.actualUnitPrice);
-    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", quantity, ...(physicalQuantity !== quantity ? { physicalQuantity, excessWeightQuantity: roundAt(physicalQuantity - quantity, quantityPrecision(product)) } : {}), unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice, isPromotional: isCourtesy ? false : promotional, subtotal: lineSubtotal, ...(isCourtesy ? { referenceSubtotal: round(quantity * referenceUnitPrice) } : {}), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
+    lines.push({ productId: product.id, productNameSnapshot: product.name, presentationSnapshot: product.presentation || product.category || "", descriptionSnapshot: product.description || "", ...(product.unitType === "package" && Number(previousLine?.documentedPackageWeightKgSnapshot ?? product.documentedPackageWeightKg) > 0 ? { documentedPackageWeightKgSnapshot: Number(previousLine?.documentedPackageWeightKgSnapshot ?? product.documentedPackageWeightKg) } : {}), quantity, ...(physicalQuantity !== quantity ? { physicalQuantity, excessWeightQuantity: roundAt(physicalQuantity - quantity, quantityPrecision(product)) } : {}), unitType: product.unitType, actualUnitPrice: round(input.actualUnitPrice), referenceUnitPrice, isPromotional: isCourtesy ? false : promotional, subtotal: lineSubtotal, ...(isCourtesy ? { referenceSubtotal: round(quantity * referenceUnitPrice) } : {}), allocations, costTotal: allocations.every(a => a.productionCost !== null) ? round(allocations.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null });
   }
   for (const previousLine of previousByProduct.values()) {
     if (!requestedProductIds.has(previousLine.productId)) {
@@ -2100,7 +2109,7 @@ async function expense(o, p) {
     const saved = await o.read("distExpenseCategories", categoryId);
     const defaultIndex = Number(String(categoryId).split("-").at(-1)) - 1;
     const defaultName = String(categoryId).startsWith(`${selectedGroup}-`) ? expenseCategoryDefaults[selectedGroup]?.[defaultIndex] : undefined;
-    check(saved ? saved.active === true && saved.group === selectedGroup : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
+    check(saved ? saved.active === true && saved.group === selectedGroup && !(selectedGroup === "indirect" && retiredIndirectCommercializationCategoryIds.has(categoryId)) : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
     check(!saved || saved.group === selectedGroup, "La categoría no pertenece al grupo seleccionado.");
     category = saved?.name || defaultName;
     check(category && groupConfig.economicType, "La configuración económica del grupo está incompleta.");
@@ -2118,7 +2127,7 @@ async function expense(o, p) {
     const defaultIndex = Number(String(id).split("-").at(-1)) - 1;
     const defaultGroup = groups.find((candidate) => id.startsWith(`${candidate}-`));
     const defaultName = defaultGroup && expenseCategoryDefaults[defaultGroup]?.[defaultIndex];
-    check(saved ? saved.active === true : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
+    check(saved ? saved.active === true && !(saved.group === "indirect" && retiredIndirectCommercializationCategoryIds.has(id)) : Boolean(defaultName), "La categoría ya no está activa. Actualiza la selección.");
     group = saved?.group || defaultGroup;
     categoryId = id;
     category = saved?.name || defaultName;
@@ -2248,13 +2257,17 @@ async function deleteExpense(o, p) {
 
 async function saveExpenseCategory(o, p) {
   o.admin();
-  const groups = Object.keys(expenseBuiltinGroups);
   const id = safeId(p.categoryId);
   const name = String(p.name || "").trim();
   const groupConfig = await readExpenseGroupConfig(o, p.group);
   check(groupConfig && groupConfig.active !== false, "El grupo de la categoría no es válido o está inactivo.");
   check(name.length > 0 && name.length <= 60, "Escribe una categoría de hasta 60 caracteres.");
   const previous = await o.read("distExpenseCategories", id);
+  if (previous && previous.group !== p.group) {
+    const sourceGroup = await readExpenseGroupConfig(o, previous.group);
+    check(sourceGroup?.economicType === groupConfig.economicType,
+      "Mueve la categoría a un grupo con el mismo tratamiento económico. Los egresos históricos conservan su clasificación.");
+  }
   const duplicate = await o.all("distExpenseCategories");
   const defaultNames = expenseCategoryDefaults[p.group] || [];
   const duplicateDefault = defaultNames.some((defaultName, index) => `${p.group}-${index + 1}` !== id && defaultName.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es"));
@@ -2270,6 +2283,24 @@ async function saveExpenseCategory(o, p) {
   };
   o.put("distExpenseCategories", id, category);
   return category;
+}
+
+async function deleteExpenseCategory(o, p) {
+  o.admin();
+  const id = safeId(p.categoryId);
+  const category = await o.read("distExpenseCategories", id);
+  check(category, "La categoría no existe o ya fue eliminada.");
+  const isBuiltIn = Object.entries(expenseCategoryDefaults).some(([group, names]) =>
+    names.some((_, index) => `${group}-${index + 1}` === id));
+  check(!isBuiltIn, "Las categorías iniciales se pueden desactivar, pero no borrar para conservar compatibilidad histórica.");
+  const [expenses, payables] = await Promise.all([
+    o.query("distExpenses", "categoryId", id),
+    o.query("distPayables", "categoryId", id),
+  ]);
+  check(expenses.length === 0 && payables.length === 0,
+    "La categoría tiene egresos o compras asociados. Desactívala o muévela para conservar el historial.");
+  o.remove("distExpenseCategories", id);
+  return { id, deleted: true };
 }
 
 async function saveExpenseGroup(o, p) {
@@ -2303,6 +2334,24 @@ async function saveExpenseGroup(o, p) {
   return group;
 }
 
+async function deleteExpenseGroup(o, p) {
+  o.admin();
+  const id = safeId(p.groupId);
+  check(!Object.hasOwn(expenseBuiltinGroups, id),
+    "Los grupos iniciales se pueden desactivar, pero no borrar para conservar compatibilidad histórica.");
+  const group = await o.read("distExpenseGroups", id);
+  check(group, "El grupo no existe o ya fue eliminado.");
+  const [expenses, payables, categories] = await Promise.all([
+    o.query("distExpenses", "group", id),
+    o.query("distPayables", "groupId", id),
+    o.query("distExpenseCategories", "group", id),
+  ]);
+  check(expenses.length === 0 && payables.length === 0 && categories.length === 0,
+    "El grupo aún tiene categorías o historial. Desactívalo o traslada sus categorías antes de eliminarlo.");
+  o.remove("distExpenseGroups", id);
+  return { id, deleted: true };
+}
+
 async function saveExpenseSupplier(o, p) {
   o.admin();
   const id = safeId(p.supplierId);
@@ -2323,6 +2372,39 @@ async function registerSupplierPurchase(o, p) {
   const total = round(p.amount);
   const paid = round(p.initialPayment || 0);
   check(Number.isFinite(total) && total > 0, "Revisa el monto de compra.");
+  let purchaseLines;
+  if (p.purchaseLines !== undefined) {
+    const allowedUnits = ["kg", "g", "unit", "box", "sack", "liter", "other"];
+    check(Array.isArray(p.purchaseLines) && p.purchaseLines.length > 0 && p.purchaseLines.length <= 50,
+      "Agrega entre 1 y 50 artículos a la compra.");
+    purchaseLines = p.purchaseLines.map((line) => {
+      const description = String(line?.description || "").trim();
+      const quantity = Number(line?.quantity);
+      const unitPrice = round(line?.unitPrice);
+      const wasteQuantity = Number(line?.wasteQuantity || 0);
+      check(description.length > 0 && description.length <= 120, "Cada artículo necesita una descripción.");
+      check(allowedUnits.includes(line?.unit), "Selecciona una unidad válida para cada artículo.");
+      check(Number.isFinite(quantity) && quantity > 0 && Number.isFinite(unitPrice) && unitPrice >= 0,
+        "La cantidad y el precio unitario deben ser válidos.");
+      check(Number.isFinite(wasteQuantity) && wasteQuantity >= 0 && wasteQuantity <= quantity,
+        "La merma física debe estar entre cero y la cantidad comprada.");
+      const unitLabel = String(line?.unitLabel || "").trim();
+      check(line.unit !== "other" || unitLabel.length > 0, "Describe la unidad de medida seleccionada como otra.");
+      const lineTotal = round(quantity * unitPrice);
+      check(Number.isFinite(Number(line?.total)) && round(line.total) === lineTotal,
+        "El total de una línea no coincide con cantidad por precio unitario.");
+      check(Number.isFinite(Number(line?.netUsableQuantity)) && roundAt(line.netUsableQuantity, 3) === roundAt(quantity - wasteQuantity, 3),
+        "La cantidad neta debe ser igual a la cantidad comprada menos la merma.");
+      return {
+        description, quantity: roundAt(quantity, 3), unit: line.unit,
+        ...(line.unit === "other" ? { unitLabel } : {}), unitPrice, total: lineTotal,
+        wasteQuantity: roundAt(wasteQuantity, 3), netUsableQuantity: roundAt(quantity - wasteQuantity, 3),
+        ...(String(line.note || "").trim() ? { note: String(line.note).trim().slice(0, 300) } : {}),
+      };
+    });
+    check(round(purchaseLines.reduce((sum, line) => sum + line.total, 0)) === total,
+      "El monto de compra debe coincidir con la suma de los artículos.");
+  }
   check(Number.isFinite(paid) && paid >= 0 && paid <= total, "El adelanto debe estar entre cero y el total de compra.");
   check(validDate(p.dayKey), "La fecha de compra no es válida.");
   check(!p.dueDayKey || (validDate(p.dueDayKey) && p.dueDayKey >= p.dayKey), "La fecha de vencimiento no es válida.");
@@ -2333,7 +2415,7 @@ async function registerSupplierPurchase(o, p) {
   const index = Number(String(categoryId).split("-").at(-1)) - 1;
   const defaultName = String(categoryId).startsWith(`${groupId}-`) ? expenseCategoryDefaults[groupId]?.[index] : undefined;
   check(category ? category.active === true && category.group === groupId : Boolean(defaultName), "Selecciona una categoría activa del grupo.");
-  const detail = String(p.description || "").trim();
+  const detail = String(p.description || purchaseLines?.map((line) => line.description).join(", ") || "").trim();
   check(detail.length > 0 && detail.length <= 200, "Describe brevemente la materia prima comprada.");
   const method = paid === 0 ? "credit" : paid === total ? p.paymentMethod : "mixed";
   check(paid === 0 || ["cash", "transfer", "other"].includes(p.paymentMethod), "Selecciona la forma de pago del adelanto.");
@@ -2346,13 +2428,14 @@ async function registerSupplierPurchase(o, p) {
     cashPaidAmount: p.paymentMethod === "cash" ? paid : 0, transferPaidAmount: p.paymentMethod === "transfer" ? paid : 0, otherPaidAmount: p.paymentMethod === "other" ? paid : 0, initialPaymentMethod: p.paymentMethod,
     routeId: "administracion", routeName: "Administración", registeredByUid: o.actor, registeredByName: o.member.displayName || o.actor,
     supplierId: supplier.id, supplierName: supplier.name, note: String(p.note || "").trim(),
+    ...(purchaseLines ? { purchaseLines } : {}),
   };
   const balance = round(total - paid);
   const payable = {
     id: o.id, ...o.base(), supplierId: supplier.id, supplierName: supplier.name, purchaseExpenseId: o.id,
     dayKey: p.dayKey, description: detail, groupId, groupName: expense.groupName, categoryId, categoryName,
     totalAmount: total, paidAmount: paid, balance, status: balance === 0 ? "paid" : paid > 0 ? "partial" : "pending",
-    ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}), note: String(p.note || "").trim(), routeId: "administracion", routeName: "Administración",
+    ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}), note: String(p.note || "").trim(), ...(purchaseLines ? { purchaseLines } : {}), routeId: "administracion", routeName: "Administración",
   };
   o.put("distExpenses", expense.id, expense);
   o.put("distPayables", payable.id, payable);
@@ -2640,7 +2723,14 @@ async function closure(o, p) {
     previous = (await o.read("distClosures", id)) || {};
   const route = location("route", d.routeId),
     warehouse = location("warehouse", d.warehouseId || "central");
-  const sales = (await o.query("distSales", "dispatchId", d.id))
+  const [dispatchSales, routeSales] = await Promise.all([
+    o.query("distSales", "dispatchId", d.id),
+    o.query("distSales", "routeId", d.routeId),
+  ]);
+  const sales = [...new Map([...dispatchSales, ...routeSales]
+    .filter((sale) => sale.dispatchId === d.id || (!sale.dispatchId && sale.routeId === d.routeId && sale.createdAt >= d.createdAt))
+    .filter((sale) => isSaleForDispatch(sale, d.routeId))
+    .map((sale) => [sale.id, sale])).values()]
     .filter((sale) => isSaleForDispatch(sale, d.routeId))
     .map((sale) =>
       sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
@@ -3207,7 +3297,7 @@ async function claim(o, p) {
   o.put("distClaims", o.id, c);
   return c;
 }
-Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, saveExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
+Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, deleteExpenseCategory, saveExpenseGroup, deleteExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
 async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);

@@ -71,6 +71,8 @@ export interface DistProduct {
   referencePrice: number
   /** Peso aproximado por paquete/unidad. NO se usa para convertir reportes. */
   approximateWeightKg?: number
+  /** Peso neto documentado por paquete, expresado en kg. */
+  documentedPackageWeightKg?: number
   active: boolean
   sortOrder: number
   restaurantId: string
@@ -279,6 +281,8 @@ export interface DistSaleLine {
   productNameSnapshot: string
   presentationSnapshot?: string
   descriptionSnapshot?: string
+  /** Peso neto documentado por paquete congelado al momento de la venta. */
+  documentedPackageWeightKgSnapshot?: number
   quantity: number
   unitType: UnitType
   /** En ventas de Administración por kg: cantidad realmente entregada; el cobro usa quantity. */
@@ -508,10 +512,26 @@ export interface DistExpense extends DistBaseDoc {
   registeredByUid: string
   registeredByName: string
   note?: string
+  /** Detalle cuantitativo de compra; opcional para conservar compatibilidad histórica. */
+  purchaseLines?: SupplierPurchaseLine[]
+}
+
+export type PurchaseUnit = 'kg' | 'g' | 'unit' | 'box' | 'sack' | 'liter' | 'other'
+
+export interface SupplierPurchaseLine {
+  description: string
+  quantity: number
+  unit: PurchaseUnit
+  unitLabel?: string
+  unitPrice: number
+  total: number
+  wasteQuantity: number
+  netUsableQuantity: number
+  note?: string
 }
 
 export type ExpenseEconomicType = 'operating_expense' | 'production_input'
-export type ExpenseGroup = 'administration' | 'indirect' | 'equipment' | 'other' | 'production_additional' | 'production_input'
+export type ExpenseGroup = 'administration' | 'indirect' | 'commercialization' | 'equipment' | 'other' | 'production_additional' | 'production_input'
 /** Group IDs are stable; built-in groups retain the ExpenseGroup IDs. */
 export type ExpenseGroupId = string
 
@@ -561,6 +581,7 @@ export interface DistPayable extends DistBaseDoc {
   status: 'pending' | 'partial' | 'paid' | 'voided'
   dueDayKey?: string
   note?: string
+  purchaseLines?: SupplierPurchaseLine[]
   routeId: string
   routeName: string
   voidedAt?: string

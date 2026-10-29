@@ -4,6 +4,7 @@ import type {
   DistClaim,
   DistDispatch,
   DistExpense,
+  DistProduct,
   DistSale,
   DistSaleLine,
   PaymentKind,
@@ -59,6 +60,19 @@ export function isSaleForDispatch(
   dispatchRouteId: string,
 ): boolean {
   return (!sale.routeId || sale.routeId === dispatchRouteId) && sale.sourceLocation !== 'centralWarehouse'
+}
+
+/** Scope the same-dispatch legacy sales accepted by the closure backend. */
+export function isSaleForDispatchSettlement(
+  sale: { dispatchId?: string; routeId?: string | null; sourceLocation?: string | null; createdAt: string },
+  dispatchId: string,
+  dispatchRouteId: string,
+  dispatchCreatedAt: string,
+): boolean {
+  if (!isSaleForDispatch(sale, dispatchRouteId)) return false
+  return sale.dispatchId === dispatchId || (
+    !sale.dispatchId && sale.routeId === dispatchRouteId && sale.createdAt >= dispatchCreatedAt
+  )
 }
 
 /**
@@ -386,6 +400,11 @@ export interface SellerBreakdown {
   collected: number
   expenses: number
   kilograms: number
+  documentedSachetKilograms: number
+  estimatedSachetKilograms: number
+  unknownWeightPackages: number
+  totalDocumentedKilograms: number
+  totalEstimatedKilograms: number
   packages: number
   /** Efectivo que deberia entregar: ventas efectivo + cobros efectivo - gastos */
   expectedCash: number
@@ -401,8 +420,16 @@ export function computeSellerBreakdown(
   collections: DistCollection[],
   expenses: DistExpense[],
   claims: DistClaim[] = [],
+  products: DistProduct[] = [],
 ): SellerBreakdown[] {
   const map = new Map<string, SellerBreakdown>()
+  const productsById = new Map(products.map(product => [product.id, product]))
+  const salesById = new Map(sales.map(sale => [sale.id, sale]))
+  const returnedBySaleProduct = new Map<string, number>()
+  for (const claim of claims) {
+    const key = `${claim.saleId}::${claim.productId}`
+    returnedBySaleProduct.set(key, (returnedBySaleProduct.get(key) || 0) + Math.max(0, Number(claim.quantity) || 0))
+  }
   const cashExpenseBySeller = new Map<string, number>()
 
   const ensure = (uid: string, name: string): SellerBreakdown => {
@@ -421,6 +448,11 @@ export function computeSellerBreakdown(
       collected: 0,
       expenses: 0,
       kilograms: 0,
+      documentedSachetKilograms: 0,
+      estimatedSachetKilograms: 0,
+      unknownWeightPackages: 0,
+      totalDocumentedKilograms: 0,
+      totalEstimatedKilograms: 0,
       packages: 0,
       expectedCash: 0,
     }
@@ -429,16 +461,39 @@ export function computeSellerBreakdown(
   }
 
   for (const sale of sales) {
-    if (sale.saleKind === 'courtesy') continue
-    const entry = ensure(sale.sellerUid, sale.sellerName)
+    if (sale.saleKind === 'courtesy' || sale.voidedAt || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    const entry = ensure(effective.sellerUid, effective.sellerName)
     entry.salesCount += 1
-    entry.salesTotal = round2(entry.salesTotal + (Number(sale.total) || 0))
-    entry.cashSales = round2(entry.cashSales + (Number(sale.cashAmount) || 0))
-    entry.qrSales = round2(entry.qrSales + (Number(sale.qrAmount) || 0))
-    entry.creditGenerated = round2(entry.creditGenerated + (Number(sale.creditAmount) || 0))
-    entry.kilograms = round2(entry.kilograms + computeSoldKilograms([sale]))
-    entry.packages = round2(entry.packages + computeSoldPackages([sale]))
-    if (sale.routeName && !entry.routeNames.includes(sale.routeName)) entry.routeNames.push(sale.routeName)
+    entry.salesTotal = round2(entry.salesTotal + (Number(effective.total) || 0))
+    entry.cashSales = round2(entry.cashSales + (Number(effective.cashAmount) || 0))
+    entry.qrSales = round2(entry.qrSales + (Number(effective.qrAmount) || 0))
+    entry.creditGenerated = round2(entry.creditGenerated + (Number(effective.creditAmount) || 0))
+    for (const line of effective.lines || []) {
+      const key = `${sale.id}::${line.productId}`
+      const soldQuantity = Math.max(0, Number(line.quantity) || 0)
+      const returnedQuantity = Math.min(soldQuantity, returnedBySaleProduct.get(key) || 0)
+      addSellerSaleLine(entry, line, soldQuantity - returnedQuantity, productsById)
+      returnedBySaleProduct.set(key, Math.max(0, (returnedBySaleProduct.get(key) || 0) - returnedQuantity))
+    }
+    if (effective.routeName && !entry.routeNames.includes(effective.routeName)) entry.routeNames.push(effective.routeName)
+  }
+
+  // Devoluciones y cambios reducen la cantidad originalmente vendida. La
+  // reposición del cambio se suma una vez como producto efectivamente entregado.
+  for (const claim of claims) {
+    const originalSale = salesById.get(claim.saleId)
+    const sellerUid = claim.sellerUid || originalSale?.sellerUid
+    if (!sellerUid || !originalSale || originalSale.voidedAt || originalSale.pendingConfirmation) continue
+    const entry = ensure(sellerUid, claim.sellerName || originalSale.sellerName)
+    if (claim.kind === 'exchange' && claim.replacement) {
+      addSellerSaleLine(entry, {
+        productId: claim.replacement.productId,
+        unitType: claim.replacement.unitType,
+        quantity: claim.replacement.quantity,
+        presentationSnapshot: '',
+      } as DistSaleLine, Math.max(0, Number(claim.replacement.quantity) || 0), productsById)
+    }
   }
 
   for (const collection of collections) {
@@ -467,8 +522,60 @@ export function computeSellerBreakdown(
   }
 
   for (const entry of map.values()) {
+    entry.kilograms = round3(entry.kilograms)
+    entry.documentedSachetKilograms = round3(entry.documentedSachetKilograms)
+    entry.estimatedSachetKilograms = round3(entry.estimatedSachetKilograms)
+    entry.totalDocumentedKilograms = round3(entry.kilograms + entry.documentedSachetKilograms)
+    entry.totalEstimatedKilograms = round3(entry.totalDocumentedKilograms + entry.estimatedSachetKilograms)
+    entry.unknownWeightPackages = round3(entry.unknownWeightPackages)
     entry.expectedCash = round2(entry.expectedCash + entry.cashSales - (cashExpenseBySeller.get(entry.sellerUid) || 0))
   }
 
   return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
+}
+
+function round3(value: number): number {
+  return Math.round((Number(value) + Number.EPSILON) * 1000) / 1000
+}
+
+function documentedPackageWeight(line: DistSaleLine, product?: DistProduct): number | undefined {
+  if (Number.isFinite(line.documentedPackageWeightKgSnapshot) && (line.documentedPackageWeightKgSnapshot || 0) > 0) {
+    return line.documentedPackageWeightKgSnapshot
+  }
+  // Una presentación con unidad y peso explícitos es una especificación
+  // documental. El peso aproximado del catálogo nunca pasa por esta rama.
+  const label = `${line.presentationSnapshot || ''} ${line.descriptionSnapshot || ''}`
+  const match = label.match(/(?:^|\D)(\d+(?:[.,]\d+)?)\s*(kg|g|gr|gramos?)\b/i)
+  if (match) {
+    const amount = Number(match[1].replace(',', '.'))
+    const weight = match[2].toLowerCase() === 'kg' ? amount : amount / 1000
+    if (Number.isFinite(weight) && weight > 0) return weight
+  }
+  if (Number.isFinite(product?.documentedPackageWeightKg) && (product?.documentedPackageWeightKg || 0) > 0) {
+    return product?.documentedPackageWeightKg
+  }
+  return undefined
+}
+
+function addSellerSaleLine(
+  entry: SellerBreakdown,
+  line: Pick<DistSaleLine, 'productId' | 'unitType' | 'quantity' | 'presentationSnapshot' | 'descriptionSnapshot' | 'documentedPackageWeightKgSnapshot'>,
+  signedQuantity: number,
+  productsById: Map<string, DistProduct>,
+): void {
+  const product = productsById.get(line.productId)
+  if (line.unitType === 'kg') {
+    entry.kilograms += signedQuantity
+    return
+  }
+  entry.packages += signedQuantity
+  if (line.unitType !== 'package') return
+  const exactWeight = documentedPackageWeight(line as DistSaleLine, product)
+  if (exactWeight !== undefined) {
+    entry.documentedSachetKilograms += signedQuantity * exactWeight
+  } else if (Number.isFinite(product?.approximateWeightKg) && (product?.approximateWeightKg || 0) > 0) {
+    entry.estimatedSachetKilograms += signedQuantity * (product?.approximateWeightKg || 0)
+  } else {
+    entry.unknownWeightPackages += signedQuantity
+  }
 }
