@@ -75,8 +75,17 @@ try {
   const productionBlocked = await command(ids.seller, 'sale', salePayload({ role: 'distributor', routeId: ids.route, dispatchId, lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), `${prefix}-prod-gate`, 'rejected')
   pass(productionBlocked.error.includes('bloqueado') && (await read('distLots', centralLot)).quantities[`route__${ids.route}`] === 10, 'venta derivada continúa bloqueada si el servidor no tiene la marca de Functions Emulator, aunque el payload solicite activarla')
   await root.collection('distWarehouses').doc(`${prefix}-warehouse`).set({ id: `${prefix}-warehouse`, restaurantId: 'sanjose', active: true, name: 'QA almacén destino' })
+  const transferDestination = `warehouse__${prefix}-warehouse`
+  const transferLotBefore = await read('distLots', centralLot)
+  const transferCentralBefore = await read('distBalances', `central__${ids.product}`)
+  const transferDestinationBefore = await read('distBalances', `${transferDestination}__${ids.product}`)
+  const transferMovementsBefore = (await root.collection('distStockMovements').where('productId', '==', ids.product).get()).size
   const noFlagTransfer = await command(ids.admin, 'transfer', { from: 'central', to: `${prefix}-warehouse`, line: { productId: ids.product, quantity: 1 } }, `${prefix}-prod-transfer-gate`, 'rejected')
-  pass(Boolean(noFlagTransfer.error) && (await read('distLots', centralLot)).quantities.central === 26, 'traslado derivado se rechaza sin flag confiable y conserva el saldo')
+  const transferLotAfter = await read('distLots', centralLot)
+  const transferCentralAfter = await read('distBalances', `central__${ids.product}`)
+  const transferDestinationAfter = await read('distBalances', `${transferDestination}__${ids.product}`)
+  const transferMovementsAfter = (await root.collection('distStockMovements').where('productId', '==', ids.product).get()).size
+  pass(Boolean(noFlagTransfer.error) && JSON.stringify(transferLotAfter) === JSON.stringify(transferLotBefore) && JSON.stringify(transferCentralAfter) === JSON.stringify(transferCentralBefore) && JSON.stringify(transferDestinationAfter) === JSON.stringify(transferDestinationBefore) && transferMovementsAfter === transferMovementsBefore, 'traslado derivado sin autorización se rechaza sin cambiar lote, gramos, centavos, saldos de origen/destino ni Kardex')
   const noFlagAddition = await command(ids.admin, 'addition', { dispatch: { id: dispatchId }, lines: [{ productId: ids.product, quantity: 1, normalQuantity: 1, dispatchMerma: 0, allocationsRequested: [{ lotId: centralLot, quantity: 1 }] }] }, `${prefix}-prod-addition-gate`, 'rejected')
   pass(Boolean(noFlagAddition.error) && (await read('distLots', centralLot)).quantities.central === 26, 'aumento derivado se rechaza sin flag confiable y no toma otro lote')
 
