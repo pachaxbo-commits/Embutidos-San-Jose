@@ -130,6 +130,31 @@ export interface ProcessingEvidenceRecord {
   viewers: string[]
 }
 
+export interface ProcessingRepackRecord {
+  id: string
+  operationId: string
+  status: 'confirmed'
+  sourceLotId: string
+  sourceProductId: string
+  sourceProductName: string
+  sourceUnitType: UnitType
+  location: string
+  reservationId: string
+  reviewId: string
+  reviewCaseId: string
+  authorizationId: string
+  evidenceRefs: string[]
+  openedCommercialQuantity: number
+  openedPhysicalWeightG: number
+  sourceCostCents: number | null
+  outputLots: Array<{ id: string; lotId: string; productId: string; productName: string; lotCode: string; commercialQuantity: number; commercialUnit: UnitType; netWeightG: number; costCents: number | null; movementId: string }>
+  movementIds: string[]
+  responsibleUid: string
+  responsibleName: string
+  confirmedAt: string
+  reversal: { status: 'blocked'; dependencyIds: string[]; reason: string }
+}
+
 export function validateRepackOperationContract(input: RepackOperationInput): void {
   const fail = (message: string): never => { throw new Error(message) }
   const validCommercialQuantity = (quantity: number, unit: UnitType) => Number.isFinite(quantity) && quantity > 0 &&

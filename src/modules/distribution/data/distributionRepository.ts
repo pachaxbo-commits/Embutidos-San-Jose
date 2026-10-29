@@ -27,7 +27,7 @@ import {
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
-import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord } from '../domain/processing'
+import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord, ProcessingRepackRecord, ProcessingEvidenceRecord, ProcessingQualityAuthorization } from '../domain/processing'
 import { validateRepackOperationContract } from '../domain/processing'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
 import { centralBalanceId, round2, toDayKey } from '../domain/engine'
@@ -157,6 +157,44 @@ export async function loadProcessingReservationPage(
   const hasMore = snapshot.docs.length > pageSize
   const docs = snapshot.docs.slice(0, pageSize)
   return { rows: docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingReservation), cursor: docs.at(-1) || null, hasMore }
+}
+
+async function loadProcessingPage<T>(name: string, location: string | undefined, dateField: string, cursor: QueryDocumentSnapshot<DocumentData> | null, pageSize: number): Promise<{ rows: T[]; cursor: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
+  const context = await getContext()
+  const constraints: QueryConstraint[] = []
+  if (location) constraints.push(where('location', '==', location))
+  constraints.push(orderBy(dateField, 'desc'), limit(Math.min(50, Math.max(1, pageSize + 1))))
+  if (cursor) constraints.splice(constraints.length - 1, 0, startAfter(cursor))
+  const snapshot = await getDocsFromServer(query(collectionRef(context, name), ...constraints))
+  const hasMore = snapshot.docs.length > pageSize
+  const docs = snapshot.docs.slice(0, pageSize)
+  return { rows: docs.map(row => ({ id: row.id, ...row.data() }) as T), cursor: docs.at(-1) || null, hasMore }
+}
+
+export function loadProcessingReviewPage(location: string | undefined, cursor: QueryDocumentSnapshot<DocumentData> | null = null, pageSize = 20) {
+  return loadProcessingPage<ProcessingReviewRecord>('distProcessingReviews', location, 'reviewedAt', cursor, pageSize)
+}
+
+export function loadProcessingRepackPage(location: string | undefined, cursor: QueryDocumentSnapshot<DocumentData> | null = null, pageSize = 20) {
+  return loadProcessingPage<ProcessingRepackRecord>('distProcessingRepackings', location, 'confirmedAt', cursor, pageSize)
+}
+
+/** Evidence is queried by both location and reservation so warehouse Rules can prove scope. */
+export async function loadProcessingEvidenceForReservation(location: string, reservationId: string): Promise<ProcessingEvidenceRecord[]> {
+  const context = await getContext()
+  const snapshot = await getDocsFromServer(query(collectionRef(context, 'distProcessingEvidence'), where('location', '==', location), where('reservationId', '==', reservationId), where('status', '==', 'verified'), limit(30)))
+  return snapshot.docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingEvidenceRecord)
+}
+
+export async function loadMyProcessingQualityAuthorization(): Promise<ProcessingQualityAuthorization | null> {
+  const context = await getContext()
+  return loadProcessingQualityAuthorizationFor(context.uid)
+}
+
+export async function loadProcessingQualityAuthorizationFor(beneficiaryUid: string): Promise<ProcessingQualityAuthorization | null> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, 'distProcessingQualityAuthorizations', beneficiaryUid))
+  return snapshot.exists() ? ({ id: snapshot.data().authorizationId || snapshot.id, ...snapshot.data() }) as ProcessingQualityAuthorization : null
 }
 
 export type ProcessingOperationState =

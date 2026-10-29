@@ -4,12 +4,13 @@ import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../c
 import { EmptyBlock, LoadingState, Screen } from '../../../components/ui/Screen'
 import { reconcileProcessingMass } from '../domain/processingDomain'
 import { decimalInputToScaledInteger, formatKgFromGrams, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity, normalizeProcessingUiType } from '../domain/processingUi'
-import { newOperationId, warehouseBalanceId, loadProcessingBatchPage, loadProcessingReservationPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
+import { newOperationId, warehouseBalanceId, loadProcessingBatchPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
 import { stockAvailability } from '../domain/stockAvailability'
-import type { ProcessingBatch, ProcessingReservation, ProcessingDestinationKind, ProcessingWeightBasis, ConfirmProcessingBatchInput, ProcessingPackagingMaterial, ProcessingCostComponent } from '../domain/processing'
+import type { ProcessingBatch, ProcessingDestinationKind, ProcessingWeightBasis, ConfirmProcessingBatchInput, ProcessingPackagingMaterial, ProcessingCostComponent } from '../domain/processing'
 import type { DistLot, DistProduct } from '../types'
 import type { DistributionViewProps } from './DistributionApp'
 import { PrimaryButton, SecondaryButton, SectionCard } from './shared'
+import { ProcessingOperationsView } from './ProcessingOperationsView'
 
 type SourceRow = { lotId: string; quantityKg: string }
 type DestinationDraft = {
@@ -24,8 +25,8 @@ type Draft = {
   processingDate: string; sources: SourceRow[]; destinations: DestinationDraft[]; materials: MaterialDraft[]; costs: CostDraft[]; notes: string; operationPending?: boolean
 }
 type SubmitState = 'idle' | 'sending' | 'unknown' | 'rejected' | 'confirmed'
-type Tab = 'new' | 'history'
-type HistoryMode = 'batches' | 'reservations'
+type Tab = 'new' | 'reservations' | 'review' | 'repack' | 'history'
+type HistoryMode = 'batches' | 'reviews' | 'repackings'
 const DRAFT_PREFIX = 'sanjose_processing_draft_v1'
 const randomId = (prefix: string) => newOperationId(prefix).replace(/[^A-Za-z0-9_-]/g, '_')
 const todayKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
@@ -65,9 +66,6 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
   const [historyWarehouse, setHistoryWarehouse] = useState('all')
   const [historyCursor, setHistoryCursor] = useState<ProcessingBatchPage['cursor']>(null)
   const [historyHasMore, setHistoryHasMore] = useState(false)
-  const [reservations, setReservations] = useState<ProcessingReservation[]>([])
-  const [reservationCursor, setReservationCursor] = useState<ProcessingBatchPage['cursor']>(null)
-  const [reservationsHasMore, setReservationsHasMore] = useState(false)
   const submitLock = useRef(false)
   const location = session.role === 'admin' ? draft.location : fixedLocation
   const locationKey = location === 'central' ? 'central' : `warehouse__${location}`
@@ -107,18 +105,6 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
     return () => { active = false }
   }, [tab, historyMode, session.role, locationKey, historyWarehouse])
 
-  useEffect(() => {
-    if (tab !== 'history' || historyMode !== 'reservations') return
-    let active = true
-    queueMicrotask(() => { if (active) { setLoadingHistory(true); setHistoryError(''); setReservations([]); setReservationCursor(null); setReservationsHasMore(false) } })
-    const location = session.role === 'warehouse' ? locationKey : historyWarehouse === 'all' ? undefined : historyWarehouse === 'central' ? 'central' : `warehouse__${historyWarehouse}`
-    void loadProcessingReservationPage(location).then(page => {
-      if (!active) return
-      setReservations(page.rows); setReservationCursor(page.cursor); setReservationsHasMore(page.hasMore)
-    }).catch(reason => { if (active) setHistoryError((reason as Error).message || 'No se pudieron consultar las reservas.') })
-      .finally(() => { if (active) setLoadingHistory(false) })
-    return () => { active = false }
-  }, [tab, historyMode, session.role, locationKey, historyWarehouse])
 
   const editDraft = (update: (current: Draft) => Draft) => {
     if (submitState === 'unknown' || submitState === 'sending') return
@@ -273,34 +259,25 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
     } catch (reason) { setHistoryError((reason as Error).message || 'No se pudo consultar el historial.') }
     finally { setLoadingHistory(false) }
   }
-  const refreshReservations = async (more = false) => {
-    setLoadingHistory(true); setHistoryError('')
-    try {
-      const location = session.role === 'warehouse' ? locationKey : historyWarehouse === 'all' ? undefined : historyWarehouse === 'central' ? 'central' : `warehouse__${historyWarehouse}`
-      const page = await loadProcessingReservationPage(location, more ? reservationCursor : null)
-      setReservations(rows => more ? [...rows, ...page.rows] : page.rows); setReservationCursor(page.cursor); setReservationsHasMore(page.hasMore)
-    } catch (reason) { setHistoryError((reason as Error).message || 'No se pudieron consultar las reservas.') }
-    finally { setLoadingHistory(false) }
-  }
-
   const locationOptions = [{ id: 'central', name: 'Almacén central', active: true }, ...data.warehouses.filter(warehouse => warehouse.active)]
   const sourceProducts = data.products.filter(product => product.active && !product.deleted && product.unitType === 'kg' && data.lots.some(lot => isEligibleProcessingLot(lot, product.id, locationKey, today)))
   const destinationsProducts = data.products.filter(product => product.active && !product.deleted)
 
   return <Screen title="Sacheteado y Embolsado" subtitle="Registra el consumo real, los destinos físicos y el lote derivado. La confirmación y los cambios de stock ocurren únicamente en el servidor.">
-    <div className="mb-3 grid grid-cols-2 gap-2">
-      <button type="button" onClick={() => { setTab('new'); setSelectedBatch(null) }} className={`min-h-11 rounded-xl px-3 text-sm font-extrabold ${tab === 'new' ? 'bg-[var(--primary)] text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>Nueva elaboración</button>
-      <button type="button" onClick={() => { setTab('history'); setSelectedBatch(null) }} className={`min-h-11 rounded-xl px-3 text-sm font-extrabold ${tab === 'history' ? 'bg-[var(--primary)] text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>Historial</button>
+    <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {([['new','Nueva elaboración'],['reservations','Mercadería reservada'],['review','Revisión de producto'],['repack','Reenvasado'],['history','Historial']] as const).map(([key,label]) => <button key={key} type="button" onClick={() => { setTab(key); setSelectedBatch(null) }} aria-current={tab === key ? 'page' : undefined} className={`min-h-11 rounded-xl px-2 text-xs font-extrabold sm:text-sm ${tab === key ? 'bg-[var(--primary)] text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
     </div>
 
+    {['reservations','review','repack'].includes(tab) && <ProcessingOperationsView mode={tab as 'reservations' | 'review' | 'repack'} session={session} products={data.products} lots={data.lots} locationOptions={[{id:'central',name:'Almacén central'}, ...data.warehouses.filter(item => item.active)]} />}
+
     {tab === 'history' ? <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => { setHistoryMode('batches'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'batches' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Elaboraciones</button><button type="button" onClick={() => { setHistoryMode('reservations'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reservations' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reservados y pendientes</button></div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3"><button type="button" onClick={() => { setHistoryMode('batches'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'batches' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Elaboraciones</button><button type="button" onClick={() => { setHistoryMode('reviews'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reviews' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Revisiones</button><button type="button" onClick={() => { setHistoryMode('repackings'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'repackings' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reenvasados</button></div>
       {session.role === 'admin' && <Field label="Filtrar por almacén"><SelectInput value={historyWarehouse} onChange={event => setHistoryWarehouse(event.target.value)}><option value="all">Todos los almacenes</option>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field>}
-      {historyMode === 'reservations' ? <>
-        {loadingHistory && reservations.length === 0 ? <LoadingState label="Consultando reservas activas e históricas…" /> : historyError ? <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{historyError}<button type="button" className="ml-2 font-bold underline" onClick={() => void refreshReservations()}>Reintentar</button></div> : reservations.length === 0 ? <EmptyBlock title="Sin reservas ni pendientes registrados" description="Una reserva conserva producto físico, pero lo mantiene fuera de venta hasta un flujo autorizado." /> : <div className="space-y-2">{reservations.map(reservation => <article key={reservation.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div className="min-w-0"><h3 className="break-words text-sm font-extrabold">{reservation.productName}</h3><p className="mt-1 text-xs text-slate-600">Lote {reservation.lotCode} · {reservation.location === 'central' ? 'Almacén central' : reservation.location}</p></div><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-900">{reservation.status === 'partially_consumed' ? 'PARCIALMENTE CONSUMIDO' : reservation.status === 'active' ? 'ACTIVA' : reservation.status.toUpperCase()}</span></div><p className="mt-2 text-xs">Motivo: <b>{reservation.purpose === 'courtesy' ? 'Reservado para cortesía' : reservation.purpose === 'repack_pending' ? 'Pendiente de reenvasado' : 'Inmovilizado para revisión'}</b></p><p className="mt-1 text-xs">Restante: <b>{reservation.remainingQuantity} {reservation.unitType}</b>{reservation.remainingWeightG == null ? ' · peso físico no registrado' : ` · ${reservation.remainingWeightG} g`}{reservation.remainingCostCents == null ? ' · costo no disponible' : ` · costo Bs ${(reservation.remainingCostCents / 100).toFixed(2)}`}</p><p className="mt-1 text-[10px] text-slate-500">Creada {formatDateTime(reservation.createdAt)} · {reservation.createdByName} · {reservation.source}</p><p className="mt-2 rounded-lg bg-slate-50 p-2 text-[11px] font-semibold text-slate-600">Esta pantalla es de consulta. No liberes ni marques como vendible una reserva de reenvasado o revisión sin el procedimiento autorizado.</p></article>)}{reservationsHasMore && <SecondaryButton full disabled={loadingHistory} onClick={() => void refreshReservations(true)}>Cargar más reservas</SecondaryButton>}<SecondaryButton full disabled={loadingHistory} onClick={() => void refreshReservations()}><RefreshCw size={15} />Actualizar reservas</SecondaryButton></div>}
-      </> : selectedBatch ? <SectionCard title="Detalle de elaboración" action={<SecondaryButton onClick={() => setSelectedBatch(null)}>Volver al historial</SecondaryButton>}>
+      {historyMode === 'reviews' && <ProcessingOperationsView mode="history-reviews" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
+      {historyMode === 'repackings' && <ProcessingOperationsView mode="history-repackings" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
+      {historyMode === 'batches' && selectedBatch ? <SectionCard title="Detalle de elaboración" action={<SecondaryButton onClick={() => setSelectedBatch(null)}>Volver al historial</SecondaryButton>}>
         <BatchDetail batch={selectedBatch} products={data.products} locations={locationOptions} />
-      </SectionCard> : <>
+      </SectionCard> : historyMode === 'batches' ? <>
         {loadingHistory && history.length === 0 ? <LoadingState label="Consultando últimas elaboraciones…" /> : historyError ? <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{historyError}<button type="button" className="ml-2 font-bold underline" onClick={() => void refreshHistory()}>Reintentar</button></div> : history.length === 0 ? <EmptyBlock title="Todavía no hay elaboraciones" description="Las elaboraciones confirmadas aparecerán aquí. Los borradores locales no se mezclan con el historial del servidor." /> : <div className="space-y-2">
           {history.map(batch => <button key={batch.id} type="button" onClick={() => setSelectedBatch(batch)} className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-3 text-left hover:border-slate-300">
             <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-extrabold text-slate-900">{batch.sourceProductName || data.products.find(product => product.id === batch.sourceProductId)?.name || batch.sourceProductId}</span><span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-black text-emerald-800">CONFIRMADA · venta bloqueada</span></div>
@@ -310,7 +287,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
           {historyHasMore && <SecondaryButton full disabled={loadingHistory} onClick={() => void refreshHistory(true)}>{loadingHistory ? 'Cargando…' : 'Cargar más'}</SecondaryButton>}
           <SecondaryButton full disabled={loadingHistory} onClick={() => void refreshHistory()}><RefreshCw size={15} />Actualizar</SecondaryButton>
         </div>}
-      </>}
+      </> : null}
     </div> : <div className="space-y-3">
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-slate-100 p-1 sm:grid-cols-4">
         {['Origen', 'Producción', 'Materiales', 'Confirmación'].map((label, index) => <button key={label} type="button" onClick={() => setStep(index)} aria-current={step === index ? 'step' : undefined} className={`min-h-10 rounded-xl px-1 text-[11px] font-extrabold ${step === index ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>{index + 1}. {label}</button>)}
