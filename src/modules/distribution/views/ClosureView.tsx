@@ -37,6 +37,15 @@ const parseDraftQuantities = (drafts: Record<string, string>) =>
 
 const getClosureSortTimestamp = (closure: DistClosure) => closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt || ''
 
+const dispatchHasDerivedPackageProduct = (dispatch: DistributionViewProps['data']['openDispatches'][number] | null, productId: string) => {
+  if (!dispatch) return false
+  const lines = [
+    ...(dispatch.lines || []),
+    ...(dispatch.additions || []).filter(addition => !addition.voided).flatMap(addition => addition.quantityByProduct || []),
+  ]
+  return lines.some(line => line.productId === productId && (line.allocations || []).some(allocation => allocation.processingAllocation))
+}
+
 /**
  * Arqueo de ruta: conciliacion fisica por producto y cuadre de dinero.
  *
@@ -59,6 +68,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [receiptReviewedByDispatch, setReceiptReviewedByDispatch] = useState<Record<string, string[]>>({})
   const [receiptModalProductId, setReceiptModalProductId] = useState<string | null>(null)
   const [receiptModalDraft, setReceiptModalDraft] = useState({ normal: '', merma: '0', waste: '0', reason: '' })
+  const [damagedPackageDrafts, setDamagedPackageDrafts] = useState<Record<string, Record<string, { quantity: string; condition: string; reason: string; measuredWeightG: string }>>>({})
+  const [receiptModalDamageDraft, setReceiptModalDamageDraft] = useState({ quantity: '0', condition: '', reason: '', measuredWeightG: '' })
   const [embeddedMermaSalesDrafts, setEmbeddedMermaSalesDrafts] = useState<Record<string, Record<string, boolean>>>({})
   const [embeddedMermaSalesReasonDrafts, setEmbeddedMermaSalesReasonDrafts] = useState<Record<string, Record<string, string>>>({})
   const [cashDrafts, setCashDrafts] = useState<Record<string, string>>({})
@@ -268,9 +279,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         embeddedMermaSalesDrafts[dispatchKey]?.[row.productId] === true)
       : null
     const expectedPhysicalReturn = mermaPreview?.eligible ? mermaPreview.expectedPhysicalReturn : row.expectedReturn
+    const damageDraft = damagedPackageDrafts[dispatchKey]?.[row.productId]
+    const damagedPackageQuantity = damageDraft ? parseReturnQuantityInput(damageDraft.quantity) ?? 0 : 0
+    const derivedPackages = dispatchHasDerivedPackageProduct(dispatch, row.productId)
     const breakdown = isDistributor
       ? calculateReturnBreakdown(row.expectedReturn, row.actualReturn, 0)
-      : calculatePhysicalReturnBreakdown(expectedPhysicalReturn, row.actualReturn, returnMerma, returnWaste)
+      : calculatePhysicalReturnBreakdown(expectedPhysicalReturn, row.actualReturn + (derivedPackages ? damagedPackageQuantity : 0), derivedPackages ? 0 : returnMerma, derivedPackages ? 0 : returnWaste)
     const saved = existingProductsById.get(row.productId)
     const declaredReturnNormal = existingClosure?.declaredReturns?.[row.productId] ?? saved?.declaredReturnNormal ?? (saved?.declaredReturn != null ? saved.declaredReturn - (saved.declaredReturnMerma || 0) : undefined)
     const declaredReturnMerma = existingClosure?.declaredReturnMermas?.[row.productId] ?? saved?.declaredReturnMerma ?? 0
@@ -293,10 +307,16 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       declaredReturn,
       declaredReturnNormal,
       declaredReturnMerma,
-      physicalReturn: isDistributor ? undefined : calculateDeclaredReturnTotal(row.actualReturn + returnMerma, returnWaste),
+      physicalReturn: isDistributor ? undefined : calculateDeclaredReturnTotal(row.actualReturn + (derivedPackages ? damagedPackageQuantity : returnMerma + returnWaste), 0),
       actualReturn: row.actualReturn,
-      returnMerma,
-      returnWaste,
+      returnMerma: derivedPackages ? 0 : returnMerma,
+      returnWaste: derivedPackages ? 0 : returnWaste,
+      ...(derivedPackages ? {
+        damagedPackageQuantity,
+        damagedPackageCondition: damageDraft?.condition || '',
+        damagedPackageReason: damageDraft?.reason || '',
+        damagedMeasuredWeightG: damageDraft?.measuredWeightG.trim() ? Number(damageDraft.measuredWeightG) : null,
+      } : {}),
       returnWasteReason: wasteReasons[row.productId] || '',
       shortage: breakdown.shortage,
       overage: breakdown.overage,
@@ -313,12 +333,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     input?.focus({ preventScroll: true })
   }, [returnInputIssue])
   const receiptModalRow = productRows.find(row => row.productId === receiptModalProductId) ?? null
+  const receiptModalHasDerivedPackages = dispatchHasDerivedPackageProduct(dispatch, receiptModalProductId || '')
   const receiptFailureProduct = error
     ? productRows.find(row => error.includes(row.productName) || error.includes(row.productId)) ?? null
     : null
   const receiptModalNormal = parseReturnQuantityInput(receiptModalDraft.normal) ?? 0
   const receiptModalMerma = parseReturnQuantityInput(receiptModalDraft.merma) ?? 0
   const receiptModalWaste = parseReturnQuantityInput(receiptModalDraft.waste) ?? 0
+  const receiptModalDamagedQuantity = parseReturnQuantityInput(receiptModalDamageDraft.quantity) ?? 0
   const receiptEmbeddedMermaConfirmed = receiptModalRow
     ? embeddedMermaSalesDrafts[dispatchKey]?.[receiptModalRow.productId] === true
     : false
@@ -332,11 +354,16 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     ? previewDispatchMermaSettlement(dispatch, routeSales, receiptModalRow.productId, receiptModalNormal, receiptModalMerma, receiptModalWaste, false)
     : null
   const receiptModalBreakdown = receiptModalRow
-    ? calculatePhysicalReturnBreakdown(receiptModalMermaPreview?.expectedPhysicalReturn ?? receiptModalRow.expectedReturn, receiptModalNormal, receiptModalMerma, receiptModalWaste)
+    ? calculatePhysicalReturnBreakdown(receiptModalMermaPreview?.expectedPhysicalReturn ?? receiptModalRow.expectedReturn,
+      receiptModalNormal + (receiptModalHasDerivedPackages ? receiptModalDamagedQuantity : 0),
+      receiptModalHasDerivedPackages ? 0 : receiptModalMerma,
+      receiptModalHasDerivedPackages ? 0 : receiptModalWaste)
     : null
 
   const openReceiptEditor = (productId: string) => {
     setReceiptModalProductId(productId)
+    const savedDamage = damagedPackageDrafts[dispatchKey]?.[productId]
+    setReceiptModalDamageDraft(savedDamage || { quantity: '0', condition: '', reason: '', measuredWeightG: '' })
     setEmbeddedMermaSalesDrafts(current => current[dispatchKey]?.[productId]
       ? current
       : { ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [productId]: false } })
@@ -359,6 +386,30 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       setError('Los kilogramos admiten decimales; paquetes y unidades requieren cantidades enteras.')
       return
     }
+    const damagedQuantity = parseReturnQuantityInput(receiptModalDamageDraft.quantity)
+    if (receiptModalHasDerivedPackages) {
+      if (damagedQuantity === null || !Number.isInteger(damagedQuantity) || damagedQuantity < 0) {
+        setError('Los paquetes dañados deben ser una cantidad entera no negativa.')
+        return
+      }
+      if (damagedQuantity > 0 && !['package_damaged_content_intact', 'package_damaged_partial', 'aptitude_uncertain', 'confirmed_unfit'].includes(receiptModalDamageDraft.condition)) {
+        setError('Selecciona la condición observada de los paquetes dañados.')
+        return
+      }
+      if (damagedQuantity > 0 && receiptModalDamageDraft.reason.trim().length < 3) {
+        setError('Describe brevemente el daño observado.')
+        return
+      }
+      if (receiptModalDamageDraft.condition === 'confirmed_unfit' && session.role !== 'admin') {
+        setError('Solo Administración puede declarar un producto confirmado como no apto; permanecerá inmovilizado.')
+        return
+      }
+      const measuredWeightG = receiptModalDamageDraft.measuredWeightG.trim() === '' ? null : Number(receiptModalDamageDraft.measuredWeightG)
+      if (measuredWeightG !== null && (!Number.isSafeInteger(measuredWeightG) || measuredWeightG < 0)) {
+        setError('El peso medido debe ser un número entero de gramos, o déjalo vacío si no se midió.')
+        return
+      }
+    }
     if (receiptModalWaste > 0 && !receiptModalDraft.reason.trim()) {
       setError('Indica por qué el producto no puede volver al stock vendible.')
       return
@@ -369,9 +420,13 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }
     const pid = receiptModalRow.productId
     setReturnDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? returns), [pid]: receiptModalDraft.normal } }))
-    setRecoverableMermaDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? recoverableMermas), [pid]: receiptModalDraft.merma } }))
-    setWasteDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wastes), [pid]: receiptModalDraft.waste } }))
-    setWasteReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wasteReasons), [pid]: receiptModalDraft.reason.trim() } }))
+    setRecoverableMermaDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? recoverableMermas), [pid]: receiptModalHasDerivedPackages ? '0' : receiptModalDraft.merma } }))
+    setWasteDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wastes), [pid]: receiptModalHasDerivedPackages ? '0' : receiptModalDraft.waste } }))
+    setWasteReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] ?? wasteReasons), [pid]: receiptModalHasDerivedPackages ? '' : receiptModalDraft.reason.trim() } }))
+    if (receiptModalHasDerivedPackages) setDamagedPackageDrafts(current => ({
+      ...current,
+      [dispatchKey]: { ...(current[dispatchKey] || {}), [pid]: { ...receiptModalDamageDraft, quantity: String(damagedQuantity ?? 0), reason: receiptModalDamageDraft.reason.trim() } },
+    }))
     setEmbeddedMermaSalesDrafts(current => ({
       ...current,
       [dispatchKey]: { ...(current[dispatchKey] || {}), [pid]: receiptEmbeddedMermaConfirmed },
@@ -1298,7 +1353,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               const received = parseReturnQuantityInput(returns[row.productId] || '') ?? 0
               const enteredRecoverableMerma = parseReturnQuantityInput(recoverableMermas[row.productId] || '0') ?? 0
               const enteredWaste = parseReturnQuantityInput(wastes[row.productId] || '0') ?? 0
-              const breakdown = calculatePhysicalReturnBreakdown(row.expectedReturn, received, enteredRecoverableMerma, enteredWaste)
+              const derivedPackages = dispatchHasDerivedPackageProduct(dispatch, row.productId)
+              const damagedQuantity = derivedPackages ? Number(row.damagedPackageQuantity || 0) : 0
+              const breakdown = calculatePhysicalReturnBreakdown(row.expectedReturn, received + damagedQuantity, derivedPackages ? 0 : enteredRecoverableMerma, derivedPackages ? 0 : enteredWaste)
               const reviewed = reviewedReceiptIds.has(row.productId)
               return (
                 <article ref={element => { returnCardRefs.current[row.productId] = element }} key={row.productId} data-return-product={row.productId} className={`w-full min-w-0 rounded-2xl border bg-white p-4 shadow-xs transition-colors ${rowIssue ? 'border-rose-500 ring-2 ring-rose-200' : 'border-slate-200 hover:border-slate-300'}`}>
@@ -1341,7 +1398,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                     </div>
                     <p className="mt-2 text-xs text-slate-600">Declarado por distribuidor: <strong>{declaredNormal === undefined ? 'Sin registro' : isDistributor ? formatQty(Number(declaredTotal), row.unitType) : existingClosure?.returnDeclarationMode === 'normal_only' ? `${formatQty(Number(declaredNormal), row.unitType)} normal` : `Normal ${formatQty(Number(declaredNormal), row.unitType)} + merma ${formatQty(Number(declaredMerma), row.unitType)} = ${formatQty(Number(declaredTotal), row.unitType)}`}</strong></p>
                     {declaredTotal !== undefined && reviewed && <p className="mt-1 text-xs font-semibold text-indigo-800">{existingClosure?.returnDeclarationMode === 'normal_only' ? 'Diferencia entre normal declarado y recibido' : 'Diferencia contra declaración'}: {formatQty(calculateReturnDeclarationDifference(existingClosure?.returnDeclarationMode === 'normal_only' ? Number(declaredNormal) : declaredTotal, existingClosure?.returnDeclarationMode === 'normal_only' ? breakdown.normalReturn : breakdown.totalReceived), row.unitType)}</p>}
-                    {reviewed && <p className="mt-1 text-xs text-slate-700">{session.role !== 'distributor' && existingClosure?.returnDeclarationMode === 'normal_only' ? `Normal recibido ${formatQty(breakdown.normalReturn, row.unitType)} · Merma recuperable registrada por Almacén: ${formatQty(breakdown.recoverableMerma, row.unitType)} · ` : ''}Total físico recibido {formatQty(breakdown.totalReceived, row.unitType)}{session.role !== 'distributor' ? ` · vuelve al stock ${formatQty(breakdown.sellableFromDispatch, row.unitType)}${enteredWaste > 0 ? ` · no apto ${formatQty(enteredWaste, row.unitType)}` : ''}` : ''}</p>}
+                    {reviewed && <p className="mt-1 text-xs text-slate-700">{derivedPackages
+                      ? `Paquetes completos aptos ${formatQty(received, row.unitType)} · dañados e inmovilizados ${formatQty(damagedQuantity, row.unitType)} · total recibido físicamente ${formatQty(received + damagedQuantity, row.unitType)}`
+                      : `${session.role !== 'distributor' && existingClosure?.returnDeclarationMode === 'normal_only' ? `Normal recibido ${formatQty(breakdown.normalReturn, row.unitType)} · Merma recuperable registrada por Almacén: ${formatQty(breakdown.recoverableMerma, row.unitType)} · ` : ''}Total físico recibido ${formatQty(breakdown.totalReceived, row.unitType)}${session.role !== 'distributor' ? ` · vuelve al stock ${formatQty(breakdown.sellableFromDispatch, row.unitType)}${enteredWaste > 0 ? ` · no apto ${formatQty(enteredWaste, row.unitType)}` : ''}` : ''}`}</p>}
                     <div className="mt-3"><PrimaryButton full disabled={returnsAlreadyApplied} onClick={() => openReceiptEditor(row.productId)}>{reviewed ? 'Editar recepción' : 'Registrar recepción'}</PrimaryButton></div>
                   </div>}
                 </article>
@@ -1593,7 +1652,31 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
             {receiptModalUnconfirmedPreview?.eligible && receiptModalUnconfirmedPreview.pendingPhysicalMerma > 0 && <div className="grid gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><label className="flex cursor-pointer items-start gap-3"><input className="mt-1 h-4 w-4 shrink-0 accent-amber-700" type="checkbox" checked={receiptEmbeddedMermaConfirmed} onChange={event => setEmbeddedMermaSalesDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.checked } }))} /><span><strong>Confirmo físicamente</strong> que {formatQty(receiptModalUnconfirmedPreview.pendingPhysicalMerma, receiptModalRow.unitType)} adicionales salieron dentro de bolsas correspondientes a ventas ya registradas, sin cobro adicional. El servidor descontará ese peso de la ruta una sola vez y lo incluirá en el costo físico de venta. Si no lo puedes confirmar, déjalo sin marcar: la recepción seguirá pendiente y deberás revisar la diferencia física antes de confirmar.</span></label>{receiptEmbeddedMermaConfirmed && <Field label="Qué comprobó Almacén" required hint="Se guardará junto al responsable y la fecha de confirmación."><TextInput value={embeddedMermaSalesReasonDrafts[dispatchKey]?.[receiptModalRow.productId] || ''} placeholder="Describe brevemente la comprobación física" onChange={event => setEmbeddedMermaSalesReasonDrafts(current => ({ ...current, [dispatchKey]: { ...(current[dispatchKey] || {}), [receiptModalRow.productId]: event.target.value } }))} /></Field>}</div>}
 
-            <div className="grid min-w-0 gap-4">
+            {receiptModalHasDerivedPackages ? <div className="grid min-w-0 gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-bold text-amber-950">Recepción de sachets derivados. Los paquetes dañados se reciben en cuarentena y no vuelven al stock vendible. El peso asignado del lote y el peso medido son datos distintos.</p>
+              <Field label="Paquetes completos, sellados y aptos" hint="Solo paquetes recibidos en condición comercial normal.">
+                <TextInput type="text" inputMode="numeric" value={receiptModalDraft.normal} placeholder="Cantidad apta" onChange={event => setReceiptModalDraft(current => ({ ...current, normal: event.target.value }))} />
+              </Field>
+              <Field label="Paquetes dañados recibidos físicamente" hint="No los cuentes como faltantes ni como merma por kg.">
+                <TextInput type="text" inputMode="numeric" value={receiptModalDamageDraft.quantity} onChange={event => setReceiptModalDamageDraft(current => ({ ...current, quantity: event.target.value }))} />
+              </Field>
+              {receiptModalDamagedQuantity > 0 && <>
+                <Field label="Condición observada" required>
+                  <select className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" value={receiptModalDamageDraft.condition} onChange={event => setReceiptModalDamageDraft(current => ({ ...current, condition: event.target.value }))}>
+                    <option value="">Selecciona una condición</option>
+                    <option value="package_damaged_content_intact">Envase roto, contenido aparentemente íntegro</option>
+                    <option value="package_damaged_partial">Envase roto, contenido parcial</option>
+                    <option value="aptitude_uncertain">Aptitud incierta</option>
+                    {session.role === 'admin' && <option value="confirmed_unfit">Confirmado como no apto</option>}
+                  </select>
+                </Field>
+                <Field label="Motivo / observación" required><TextInput value={receiptModalDamageDraft.reason} placeholder="Describe lo observado" onChange={event => setReceiptModalDamageDraft(current => ({ ...current, reason: event.target.value }))} /></Field>
+                <Field label="Peso físico medido (gramos)" hint="Opcional. Déjalo vacío si no se midió; nunca se inferirá desde el peso asignado.">
+                  <TextInput type="text" inputMode="numeric" value={receiptModalDamageDraft.measuredWeightG} placeholder="Desconocido" onChange={event => setReceiptModalDamageDraft(current => ({ ...current, measuredWeightG: event.target.value }))} />
+                </Field>
+              </>}
+              <p className="text-xs text-amber-900">La recepción conserva paquetes, asignación histórica de gramos y costo por lote. El peso medido puede diferir o ser desconocido; cualquier diferencia queda pendiente de revisión.</p>
+            </div> : <div className="grid min-w-0 gap-4">
               <div>
                 <Field label="Retorno normal" hint="Producto que vuelve normalmente al stock.">
                   <TextInput type="text" inputMode={receiptModalRow.unitType === 'kg' ? 'decimal' : 'numeric'} value={receiptModalDraft.normal} placeholder="Cantidad recibida" onChange={event => setReceiptModalDraft(current => ({ ...current, normal: event.target.value }))} />
@@ -1609,14 +1692,15 @@ export function ClosureView({ session, data }: DistributionViewProps) {
                 </Field>
                 {receiptModalWaste > 0 && <div className="mt-3"><Field label="Motivo" required><TextInput value={receiptModalDraft.reason} placeholder="Describe por qué no se puede vender" onChange={event => setReceiptModalDraft(current => ({ ...current, reason: event.target.value }))} /></Field></div>}
               </div>
-            </div>
+            </div>}
 
-            <p className="text-xs text-amber-800">Si hay cantidades con origen pendiente, se recibirán físicamente y quedarán reservadas automáticamente hasta revisar su procedencia. El resto del stock sigue disponible.</p>
+            {!receiptModalHasDerivedPackages && <p className="text-xs text-amber-800">Si hay cantidades con origen pendiente, se recibirán físicamente y quedarán reservadas automáticamente hasta revisar su procedencia. El resto del stock sigue disponible.</p>}
             <div className="grid grid-cols-2 gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 sm:grid-cols-3">
               <div><p className="text-xs font-semibold text-slate-600">Total recibido</p><p className="text-lg font-black text-slate-900">{formatQty(receiptModalBreakdown.totalReceived, receiptModalRow.unitType)}</p></div>
-              <div><p className="text-xs font-semibold text-slate-600">Vuelve al stock</p><p className="text-lg font-black text-emerald-800">{formatQty(receiptModalBreakdown.sellableFromDispatch, receiptModalRow.unitType)}</p></div>
-              <div><p className="text-xs font-semibold text-slate-600">Merma registrada</p><p className="text-lg font-black text-emerald-800">{formatQty(receiptModalMerma, receiptModalRow.unitType)}</p></div>
-              <div><p className="text-xs font-semibold text-slate-600">Producto perdido</p><p className="text-lg font-black text-rose-700">{formatQty(receiptModalWaste, receiptModalRow.unitType)}</p></div>
+              <div><p className="text-xs font-semibold text-slate-600">{receiptModalHasDerivedPackages ? 'Paquetes aptos al stock' : 'Vuelve al stock'}</p><p className="text-lg font-black text-emerald-800">{formatQty(receiptModalHasDerivedPackages ? receiptModalNormal : receiptModalBreakdown.sellableFromDispatch, receiptModalRow.unitType)}</p></div>
+              {receiptModalHasDerivedPackages
+                ? <div><p className="text-xs font-semibold text-slate-600">Paquetes en cuarentena</p><p className="text-lg font-black text-amber-800">{formatQty(receiptModalDamagedQuantity, receiptModalRow.unitType)}</p></div>
+                : <><div><p className="text-xs font-semibold text-slate-600">Merma registrada</p><p className="text-lg font-black text-emerald-800">{formatQty(receiptModalMerma, receiptModalRow.unitType)}</p></div><div><p className="text-xs font-semibold text-slate-600">Producto perdido</p><p className="text-lg font-black text-rose-700">{formatQty(receiptModalWaste, receiptModalRow.unitType)}</p></div></>}
               <div><p className="text-xs font-semibold text-slate-600">Faltante</p><p className="text-lg font-black text-amber-800">{formatQty(receiptModalBreakdown.shortage, receiptModalRow.unitType)}</p></div>
               <div><p className="text-xs font-semibold text-slate-600">Sobrante</p><p className="text-lg font-black text-amber-800">{formatQty(receiptModalBreakdown.overage, receiptModalRow.unitType)}</p></div>
             </div>

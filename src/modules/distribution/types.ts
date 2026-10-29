@@ -655,6 +655,15 @@ export interface DistClosureProductRow {
   /** Producto no apto/pérdida. En cierres históricos mantiene el significado de la merma usada entonces. */
   returnWaste?: number
   returnWasteReason?: string
+  /** Paquetes derivados recibidos dañados; se inmovilizan en cuarentena. */
+  damagedPackageQuantity?: number
+  damagedPackageCondition?: string
+  damagedPackageReason?: string
+  /** Medición física opcional real en gramos; null/ausente significa desconocido. */
+  damagedMeasuredWeightG?: number | null
+  damagedHistoricalAssignedWeightG?: number
+  damagedWeightMeasurementScope?: string
+  damagedQuarantineLots?: Array<{ lotId: string; reservationId: string; movementId: string; quantity: number; batchId: string; costCents: number | null }>
   shortage?: number
   overage?: number
   lossCost?: number | null

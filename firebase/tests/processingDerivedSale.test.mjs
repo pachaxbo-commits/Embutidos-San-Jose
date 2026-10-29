@@ -192,7 +192,7 @@ try {
   const edit = await command(ids.admin, 'editSale', { saleId: routeSale.operationId, reason: 'QA no implementado', lines: [] }, `${prefix}-edit-derived`, 'rejected')
   const voided = await command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA no implementado' }, `${prefix}-void-derived`, 'rejected')
   const claim = await command(ids.admin, 'claim', { saleId: routeSale.operationId, productId: ids.product, quantity: 1, kind: 'return', reason: 'QA no implementado' }, `${prefix}-claim-derived`, 'rejected')
-  pass(edit.error.includes('conservar todos los productos') && voided.error.includes('3D.2B') && claim.error.includes('3D.2B'), 'edición física, anulación y devolución derivada sin evidencia siguen bloqueadas')
+  pass(edit.error.includes('conservar todos los productos') && voided.error.includes('3D.2B') && claim.error.includes('Confirma que recibiste físicamente'), 'edición física y anulación siguen bloqueadas; una devolución sin evidencia física se rechaza')
   const movementCountAfterBlockedActions = (await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size
   pass((await read('distLots', centralLot)).quantities[routeLoc] === 0 && movementCountAfterBlockedActions === movementCountBeforeBlockedActions, 'rechazos de edición física/anulación/devolución no modifican stock ni agregan movimientos')
 
@@ -234,6 +234,105 @@ try {
   await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: multiProduct, quantity: 3, actualUnitPrice: 10 }], cashAmount: 30 }), multiSaleId)
   const multiSale = await read('distSales', multiSaleId)
   pass(multiSale.lines[0].allocations.length === 2 && multiSale.lines[0].allocations.map(row => row.lotId).sort().join(',') === [multiLotA, multiLotB].sort().join(',') && multiSale.lines[0].costCents === 550 && multiSale.lines[0].allocations.reduce((sum, row) => sum + row.processingAllocation.physicalWeightG, 0) === 1000, 'venta de 3 paquetes cruza dos lotes/batches derivados y conserva 1.000 g y 550 centavos por asignación')
+
+  const returnProduct = `${prefix}-return-product`, returnLot = `${prefix}-return-lot`, returnBatch = `${prefix}-return-batch`
+  await seedProduct(returnProduct, 'package', 999)
+  await seedPackageLot({ productId: returnProduct, lotId: returnLot, quantity: 36, weightG: 9000, costCents: 4500, batchId: returnBatch })
+  const returnSaleId = `${prefix}-return-sale`
+  await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: returnProduct, quantity: 7, actualUnitPrice: 10 }], cashAmount: 70 }), returnSaleId)
+  const returnOperationId = `${prefix}-claim-return-two`
+  const returnPayload = { saleId: returnSaleId, productId: returnProduct, kind: 'return', quantity: 2, reason: 'Dos paquetes devueltos con envase dañado; revisar contenido', method: 'cash', warehouseId: 'central', physicalReceiptConfirmed: true, derivedReturnCondition: 'package_damaged_partial', measuredPhysicalWeightG: 430, expectedReturnedQuantity: 0 }
+  const returned = await command(ids.admin, 'claim', returnPayload, returnOperationId)
+  const returnRecord = await read('distClaims', returnOperationId)
+  const quarantineId = `${returnOperationId}__quarantine_0`
+  const quarantinedReturn = await read('distLots', quarantineId)
+  const quarantineReservation = (await root.collection('distStockReservations').where('lotId', '==', quarantineId).get()).docs[0]?.data()
+  const returnBalance = await read('distBalances', `central__${returnProduct}`)
+  pass(returned.status === 'confirmed' && returnRecord.quantity === 2 && returnRecord.returnedCostCents === 250 && returnRecord.historicalAssignedWeightG === 500 && returnRecord.measuredPhysicalWeightG === 430 && returnRecord.unresolvedWeightDifferenceG === 70, 'devolución de dos sachets conserva 500 g/250 centavos asignados y registra 430 g medidos con 70 g pendientes')
+  pass(quarantinedReturn.quarantined && quarantinedReturn.processingUnavailable.central.reviewHold === 2 && quarantinedReturn.quantities.central === 2 && quarantinedReturn.processingByLocation.central.segments[0].remainingWeightG === 500 && quarantinedReturn.processingByLocation.central.segments[0].remainingCostCents === 250 && quarantinedReturn.processingMeasuredWeightGRemaining === 430 && returnBalance.quantity === 31, 'dos paquetes quedan físicamente contados en cuarentena; el stock vendible permanece 29 y el balance total es 31')
+  pass(quarantineReservation.purpose === 'review_hold' && quarantineReservation.status === 'active' && quarantineReservation.remainingQuantity === 2 && quarantineReservation.remainingWeightG === 500 && (await read('distSales', returnSaleId)).derivedReturnedQuantityByProduct[returnProduct] === 2, 'reserva review_hold enlaza devolución y venta; su contador transaccional evita sobredevoluciones')
+  const resolvedUnsafe = await command(ids.admin, 'resolveQuarantine', { lotId: quarantineId, location: 'central', resolution: 'released_new_lot', newLotCode: 'QA-RELEASE', manufacturedOn: '2026-10-10', expiresOn: '2027-01-01', productionCost: 1, reason: 'intento inseguro' }, `${prefix}-resolve-derived-return`, 'rejected')
+  pass(resolvedUnsafe.error.includes('procedimiento especializado') && (await read('distLots', quarantineId)).quantities.central === 2 && (await read('distStockReservations', quarantineReservation.id)).remainingQuantity === 2, 'resolveQuarantine genérico no libera ni altera una devolución derivada en revisión')
+  const returnMovesBeforeRetry = (await root.collection('distStockMovements').where('claimId', '==', returnOperationId).get()).size
+  await processCommand(db, root.collection('distOperations').doc(returnOperationId))
+  pass((await root.collection('distStockMovements').where('claimId', '==', returnOperationId).get()).size === returnMovesBeforeRetry && (await read('distBalances', `central__${returnProduct}`)).quantity === 31, 'reintento de devolución con el mismo operationId no duplica paquetes, gramos, costo ni movimiento')
+  const duplicateReturn = await command(ids.admin, 'claim', returnPayload, `${prefix}-claim-return-duplicate`, 'rejected')
+  pass(duplicateReturn.error.includes('saldo de devoluciones cambió') && (await read('distBalances', `central__${returnProduct}`)).quantity === 31, 'operationId distinto con el offset anterior se rechaza como devolución duplicada sin cambios físicos')
+
+  const returnRaceProduct = `${prefix}-return-race-product`, returnRaceLot = `${prefix}-return-race-lot`
+  await seedProduct(returnRaceProduct, 'package', 999)
+  await seedPackageLot({ productId: returnRaceProduct, lotId: returnRaceLot, quantity: 10, weightG: 2500, costCents: 1250, batchId: `${prefix}-return-race-batch` })
+  const raceReturnSaleId = `${prefix}-return-race-sale`
+  await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: returnRaceProduct, quantity: 5, actualUnitPrice: 10 }], cashAmount: 50 }), raceReturnSaleId)
+  const raceClaimPayload = { ...returnPayload, saleId: raceReturnSaleId, productId: returnRaceProduct, quantity: 2, measuredPhysicalWeightG: null, expectedReturnedQuantity: 0 }
+  const raceClaims = await Promise.all([
+    command(ids.admin, 'claim', raceClaimPayload, `${prefix}-race-claim-a`, null),
+    command(ids.admin, 'claim', raceClaimPayload, `${prefix}-race-claim-b`, null),
+  ])
+  const raceStatuses = raceClaims.map(row => row.status).sort().join(',')
+  pass(raceStatuses === 'confirmed,rejected' && (await read('distBalances', `central__${returnRaceProduct}`)).quantity === 7 && (await read('distSales', raceReturnSaleId)).derivedReturnedQuantityByProduct[returnRaceProduct] === 2, 'dos devoluciones concurrentes con el mismo offset solo confirman una y no exceden la venta')
+  const unknownReturnId = `${prefix}-claim-return-unknown-weight`
+  await command(ids.admin, 'claim', { ...raceClaimPayload, quantity: 1, derivedReturnCondition: 'sealed_intact', measuredPhysicalWeightG: null, expectedReturnedQuantity: 2 }, unknownReturnId)
+  const unknownReturnLot = await read('distLots', `${unknownReturnId}__quarantine_0`)
+  pass(unknownReturnLot.processingPhysicalWeightGRemaining === 250 && unknownReturnLot.processingMeasuredWeightGRemaining === null && unknownReturnLot.derivedReturn.measuredWeightG === null && unknownReturnLot.derivedReturn.weightDifferenceG === null, 'devolución sin pesaje conserva medición null y separa los gramos históricos asignados')
+
+  const damagedProduct = `${prefix}-damaged-route-product`, damagedLot = `${prefix}-damaged-route-lot`
+  const damagedRoute = `${prefix}-damaged-route`, damagedSeller = `${prefix}-damaged-seller`
+  await seedProduct(damagedProduct, 'package', 999)
+  await root.collection('distRoutes').doc(damagedRoute).set({ id: damagedRoute, restaurantId: 'sanjose', active: true, name: 'QA damaged route' })
+  await root.collection('members').doc(damagedSeller).set({ role: 'distributor', active: true, routeId: damagedRoute, displayName: 'QA Damaged Seller' })
+  await seedPackageLot({ productId: damagedProduct, lotId: damagedLot, quantity: 10, weightG: 2500, costCents: 1250, batchId: `${prefix}-damaged-batch` })
+  const damagedDispatchId = `${prefix}-damaged-dispatch`
+  await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: damagedRoute, routeName: 'QA damaged route', distributorUid: damagedSeller, distributorName: 'QA Damaged Seller', lines: [{ productId: damagedProduct, productName: 'QA damaged sachets', unitType: 'package', quantity: 10, normalQuantity: 10, dispatchMerma: 0, allocationsRequested: [{ lotId: damagedLot, quantity: 10 }] }] }, damagedDispatchId)
+  const damagedSaleId = `${prefix}-damaged-sale`
+  await command(damagedSeller, 'sale', salePayload({ role: 'distributor', routeId: damagedRoute, dispatchId: damagedDispatchId, lines: [{ productId: damagedProduct, quantity: 7, actualUnitPrice: 10 }], cashAmount: 70 }), damagedSaleId)
+  const damagedReceiveId = `${prefix}-damaged-receipt`
+  const damagedReceive = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: damagedDispatchId, warehouseResponsibleName: 'QA Almacén', products: [{ productId: damagedProduct, actualReturn: 1, returnMerma: 0, returnWaste: 0, physicalReturn: 3, damagedPackageQuantity: 2, damagedPackageCondition: 'package_damaged_partial', damagedPackageReason: 'Bolsa abierta; se midió el contenido recibido', damagedMeasuredWeightG: 430 }] } }, damagedReceiveId)
+  const damagedClosure = await read('distClosures', `closure_${damagedDispatchId}`)
+  const damagedRow = damagedClosure.products.find(row => row.productId === damagedProduct)
+  const damagedQuarantineId = damagedRow.damagedQuarantineLots[0].lotId
+  const damagedQuarantine = await read('distLots', damagedQuarantineId)
+  const damagedBalance = await read('distBalances', `central__${damagedProduct}`)
+  const damagedMovement = (await root.collection('distStockMovements').where('refId', '==', damagedReceiveId).get()).docs.map(row => row.data()).find(row => row.type === 'derived_damaged_return')
+  pass(damagedReceive.status === 'confirmed' && damagedRow.actualReturn === 1 && damagedRow.damagedPackageQuantity === 2 && damagedRow.physicalReturn === 3 && damagedRow.shortage === 0, 'recepción mixta registra un paquete apto y dos dañados como recibidos; no los clasifica como faltantes')
+  pass(damagedBalance.quantity === 3 && (await read('distLots', damagedLot)).quantities.central === 1 && damagedQuarantine.quantities.central === 2 && damagedQuarantine.quarantined && damagedQuarantine.processingUnavailable.central.reviewHold === 2, 'un paquete regresa a stock normal y dos quedan físicamente en lote separado inmovilizado')
+  pass(damagedQuarantine.processingByLocation.central.segments[0].remainingQuantity === 2 && damagedQuarantine.processingByLocation.central.segments[0].remainingWeightG === 500 && damagedQuarantine.processingByLocation.central.segments[0].remainingCostCents === 250 && damagedQuarantine.processingMeasuredWeightGRemaining === 430 && damagedQuarantine.derivedReturn.weightDifferenceG === 70, 'cuarentena preserva 500 g/250 centavos históricos y diferencia 70 g frente a los 430 g medidos')
+  pass(damagedMovement?.quantity === 2 && damagedMovement.historicalAssignedWeightG === 500 && damagedMovement.measuredPhysicalWeightG === 430 && damagedMovement.dispatchId === damagedDispatchId && damagedMovement.quarantineReservationId, 'Kardex de paquete dañado enlaza despacho, asignaciones, medición y reserva sin movimiento de merma/kg')
+  const damagedRetryMovementCount = (await root.collection('distStockMovements').where('refId', '==', damagedReceiveId).get()).size
+  await processCommand(db, root.collection('distOperations').doc(damagedReceiveId))
+  pass((await root.collection('distStockMovements').where('refId', '==', damagedReceiveId).get()).size === damagedRetryMovementCount && (await read('distBalances', `central__${damagedProduct}`)).quantity === 3, 'reintento del mismo recibo de sachets dañados no duplica balance, cuarentena ni movimientos')
+
+  const blockedDamageProduct = `${prefix}-blocked-damage-product`, blockedDamageLot = `${prefix}-blocked-damage-lot`
+  const blockedDamageRoute = `${prefix}-blocked-damage-route`, blockedDamageSeller = `${prefix}-blocked-damage-seller`
+  await seedProduct(blockedDamageProduct, 'package', 999)
+  await root.collection('distRoutes').doc(blockedDamageRoute).set({ id: blockedDamageRoute, restaurantId: 'sanjose', active: true, name: 'QA blocked damage route' })
+  await root.collection('members').doc(blockedDamageSeller).set({ role: 'distributor', active: true, routeId: blockedDamageRoute, displayName: 'QA Blocked Seller' })
+  await seedPackageLot({ productId: blockedDamageProduct, lotId: blockedDamageLot, quantity: 2, weightG: 500, costCents: 250, batchId: `${prefix}-blocked-damage-batch` })
+  const blockedDamageDispatch = `${prefix}-blocked-damage-dispatch`
+  await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: blockedDamageRoute, routeName: 'QA blocked damage route', distributorUid: blockedDamageSeller, distributorName: 'QA Blocked Seller', lines: [{ productId: blockedDamageProduct, productName: 'QA blocked damage', unitType: 'package', quantity: 2, normalQuantity: 2, dispatchMerma: 0, allocationsRequested: [{ lotId: blockedDamageLot, quantity: 2 }] }] }, blockedDamageDispatch)
+  const blockedDamageRouteLoc = `route__${blockedDamageRoute}`
+  const blockedDamageBefore = await read('distLots', blockedDamageLot)
+  const blockedDamageAttempt = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: blockedDamageDispatch, warehouseResponsibleName: 'QA Warehouse', products: [{ productId: blockedDamageProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 1, damagedPackageQuantity: 1, damagedPackageCondition: 'package_damaged_partial', damagedPackageReason: '', damagedMeasuredWeightG: null }] } }, `${prefix}-blocked-damage-attempt`, 'rejected')
+  pass(blockedDamageAttempt.error.includes('Describe el daño observado') && JSON.stringify(await read('distLots', blockedDamageLot)) === JSON.stringify(blockedDamageBefore) && !(await read('distClosures', `closure_${blockedDamageDispatch}`))?.warehouseClosedBy && (await read('distBalances', `${blockedDamageRouteLoc}__${blockedDamageProduct}`)).quantity === 2, 'recepción dañada sin motivo se rechaza sin modificar lotes, balances ni cierre')
+  const unfitWarehouseAttempt = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: blockedDamageDispatch, warehouseResponsibleName: 'QA Warehouse', products: [{ productId: blockedDamageProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 1, damagedPackageQuantity: 1, damagedPackageCondition: 'confirmed_unfit', damagedPackageReason: 'QA rol almacén', damagedMeasuredWeightG: null }] } }, `${prefix}-unfit-warehouse-attempt`, 'rejected')
+  pass(unfitWarehouseAttempt.error.includes('Solo Administración') && JSON.stringify(await read('distLots', blockedDamageLot)) === JSON.stringify(blockedDamageBefore), 'Almacén no puede declarar no apto y el rechazo no produce escrituras parciales')
+
+  const mixedSkuProduct = `${prefix}-mixed-sku-damage-product`, mixedSkuNormalLot = `${prefix}-mixed-sku-normal-lot`, mixedSkuDerivedLot = `${prefix}-mixed-sku-derived-lot`
+  const mixedSkuRoute = `${prefix}-mixed-sku-route`, mixedSkuSeller = `${prefix}-mixed-sku-seller`
+  await seedProduct(mixedSkuProduct, 'package', 2)
+  await root.collection('distRoutes').doc(mixedSkuRoute).set({ id: mixedSkuRoute, restaurantId: 'sanjose', active: true, name: 'QA mixed SKU route' })
+  await root.collection('members').doc(mixedSkuSeller).set({ role: 'distributor', active: true, routeId: mixedSkuRoute, displayName: 'QA Mixed SKU Seller' })
+  await root.collection('distLots').doc(mixedSkuNormalLot).set({ id: mixedSkuNormalLot, restaurantId: 'sanjose', productId: mixedSkuProduct, productName: 'QA mixed SKU', unitType: 'package', lotCode: 'NORMAL-LOT', manufacturedOn: '2026-10-10', expiresOn: '2027-01-01', productionCost: 2, quantities: { central: 1 } })
+  await root.collection('distBalances').doc(`central__${mixedSkuProduct}`).set({ id: `central__${mixedSkuProduct}`, restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: mixedSkuProduct, unitType: 'package', quantity: 1 })
+  await seedPackageLot({ productId: mixedSkuProduct, lotId: mixedSkuDerivedLot, quantity: 1, weightG: 250, costCents: 125, batchId: `${prefix}-mixed-sku-batch`, expiresOn: '2027-02-01' })
+  const mixedSkuDispatchId = `${prefix}-mixed-sku-dispatch`
+  await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: mixedSkuRoute, routeName: 'QA mixed SKU route', distributorUid: mixedSkuSeller, distributorName: 'QA Mixed SKU Seller', lines: [{ productId: mixedSkuProduct, productName: 'QA mixed SKU', unitType: 'package', quantity: 2, normalQuantity: 2, dispatchMerma: 0, allocationsRequested: [{ lotId: mixedSkuNormalLot, quantity: 1 }, { lotId: mixedSkuDerivedLot, quantity: 1 }] }] }, mixedSkuDispatchId)
+  const mixedSkuReceiveId = `${prefix}-mixed-sku-damage-receipt`
+  const mixedSkuReceive = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: mixedSkuDispatchId, warehouseResponsibleName: 'QA Almacén', products: [{ productId: mixedSkuProduct, actualReturn: 1, returnMerma: 0, returnWaste: 0, physicalReturn: 2, damagedPackageQuantity: 1, damagedPackageCondition: 'package_damaged_content_intact', damagedPackageReason: 'El envase del sachet derivado está roto', damagedMeasuredWeightG: null }] } }, mixedSkuReceiveId)
+  const mixedSkuClosure = await read('distClosures', `closure_${mixedSkuDispatchId}`)
+  const mixedSkuQuarantine = await read('distLots', mixedSkuClosure.products[0].damagedQuarantineLots[0].lotId)
+  pass(mixedSkuReceive.status === 'confirmed' && (await read('distLots', mixedSkuNormalLot)).quantities.central === 1, 'SKU mixto conserva la devolución normal en su lote tradicional sin transformarla en sachet')
+  pass(mixedSkuQuarantine.derivedReturn.sourceLotId === mixedSkuDerivedLot && mixedSkuQuarantine.processingByLocation.central.segments[0].remainingWeightG === 250 && mixedSkuQuarantine.processingByLocation.central.segments[0].remainingCostCents === 125 && mixedSkuQuarantine.processingMeasuredWeightGRemaining === null, 'el paquete dañado toma solo el lote derivado y mantiene el peso histórico mientras la medición queda desconocida')
 
   const centsProduct = `${prefix}-cents-product`
   await seedProduct(centsProduct, 'package', 900)

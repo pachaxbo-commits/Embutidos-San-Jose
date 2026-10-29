@@ -3100,6 +3100,7 @@ async function closure(o, p) {
       const previousProduct = previous.products?.find((row) => row.productId === pid);
       const actualRaw = Number(returnRow?.actualReturn);
       const wasteRaw = Number(returnRow?.returnWaste || 0);
+      const damagedPackageRaw = Number(returnRow?.damagedPackageQuantity || 0);
       const hasRecoverableMerma = Object.prototype.hasOwnProperty.call(returnRow || {}, "returnMerma");
       const precision = hasRecoverableMerma && e.p.unitType === "kg" ? 3 : 2;
       const quantityRound = (value) => roundAt(value, precision);
@@ -3108,21 +3109,22 @@ async function closure(o, p) {
       const recoverableMerma = hasRecoverableMerma && Number.isFinite(Number(returnRow?.returnMerma))
         ? quantityRound(Number(returnRow.returnMerma))
         : hasRecoverableMerma ? Number.NaN : 0;
+      const damagedPackageQuantity = Number.isFinite(damagedPackageRaw) ? quantityRound(damagedPackageRaw) : Number.NaN;
       const wasteReason = String(returnRow?.returnWasteReason || "").trim();
       // Operaciones nuevas envían tres componentes independientes. En las
       // antiguas returnWaste sigue significando pérdida/no vendible.
       const received = hasRecoverableMerma
-        ? quantityRound(actual + recoverableMerma + (Number.isFinite(waste) ? waste : 0))
+        ? quantityRound(actual + recoverableMerma + (Number.isFinite(waste) ? waste : 0) + damagedPackageQuantity)
         : Number.isFinite(Number(returnRow?.physicalReturn))
           ? round(Number(returnRow.physicalReturn))
-          : round(actual + (Number.isFinite(waste) ? waste : 0));
+          : round(actual + (Number.isFinite(waste) ? waste : 0) + damagedPackageQuantity);
       check(
         Number.isFinite(actual) && actual >= 0 && Number.isFinite(received) && received >= 0,
         "Completa las cantidades recibidas físicamente.",
       );
-      check(Number.isFinite(waste) && waste >= 0 && Number.isFinite(recoverableMerma) && recoverableMerma >= 0,
+      check(Number.isFinite(waste) && waste >= 0 && Number.isFinite(recoverableMerma) && recoverableMerma >= 0 && Number.isFinite(damagedPackageQuantity) && damagedPackageQuantity >= 0,
         "Las cantidades de merma deben ser válidas y no negativas.");
-      check(e.p.unitType === "kg" || [actual, recoverableMerma, waste, received].every(Number.isInteger),
+      check(e.p.unitType === "kg" || [actual, recoverableMerma, waste, received, damagedPackageQuantity].every(Number.isInteger),
         "Paquetes y unidades requieren cantidades enteras.");
       check(waste === 0 || wasteReason.length > 0, "Indica por qué el producto no puede volver al stock vendible.");
       if (hasRecoverableMerma && Number.isFinite(Number(returnRow?.physicalReturn))) {
@@ -3144,9 +3146,19 @@ async function closure(o, p) {
       const wasteFromRoute = quantityRound(Math.min(waste, Math.max(0, expected - normalApt - recoverableFromRoute)));
       const productDispatchLines = activeDispatchLines.filter((line) => line.productId === pid);
       const hasDerivedPackages = productDispatchLines.some((line) => (line.allocations || []).some(allocation => allocation.processingAllocation));
+      const derivedDamageCondition = String(returnRow?.damagedPackageCondition || '').trim();
+      const derivedDamageReason = String(returnRow?.damagedPackageReason || '').trim();
+      const derivedDamageWeightG = returnRow?.damagedMeasuredWeightG === null || returnRow?.damagedMeasuredWeightG === undefined || returnRow?.damagedMeasuredWeightG === ''
+        ? null : Number(returnRow.damagedMeasuredWeightG);
       if (hasDerivedPackages) {
         check(e.p.unitType === 'package' || e.p.unitType === 'unit', `El retorno de sachets derivados de ${e.p.name || pid} requiere una presentación de paquetes o unidades.`);
-        check(waste === 0 && recoverableMerma === 0, `Los sachets derivados de ${e.p.name || pid} no usan la merma por kg. Registra paquetes completos recibidos; daños, producto no apto y faltantes requieren su clasificación especializada.`);
+        check(waste === 0 && recoverableMerma === 0, `Los sachets derivados de ${e.p.name || pid} no usan la merma por kg. Registra paquetes recibidos; no se aceptan mermas de granel para sachets.`);
+        check(damagedPackageQuantity === 0 || hasRecoverableMerma, `La recepción de sachets dañados de ${e.p.name || pid} requiere el formulario actualizado de Almacén.`);
+        check(damagedPackageQuantity === 0 || ['package_damaged_content_intact','package_damaged_partial','aptitude_uncertain','confirmed_unfit'].includes(derivedDamageCondition), `Selecciona la condición de los sachets dañados de ${e.p.name || pid}.`);
+        check(damagedPackageQuantity === 0 || derivedDamageReason.length >= 3, `Describe el daño observado en ${e.p.name || pid}.`);
+        check(derivedDamageCondition !== 'confirmed_unfit' || o.member.role === 'admin', `Solo Administración puede declarar producto no apto; ${e.p.name || pid} seguirá inmovilizado.`);
+        check(derivedDamageWeightG === null || Number.isSafeInteger(derivedDamageWeightG) && derivedDamageWeightG >= 0, `El peso medido de ${e.p.name || pid} debe indicarse en gramos enteros o dejarse desconocido.`);
+        check(damagedPackageQuantity <= expected, `Los paquetes dañados recibidos de ${e.p.name || pid} superan el saldo físico esperado de ruta.`);
       }
       const normalLoaded = quantityRound(productDispatchLines.reduce((sum, line) => {
         const merma = Number(line.dispatchMerma) || 0;
@@ -3233,14 +3245,46 @@ async function closure(o, p) {
       // lo no apto se descuenta como pérdida, nunca vuelve al almacén vendible.
       const accountedRouteQuantity = legacySemantics
         ? quantityRound(normalApt + waste)
-        : quantityRound(normalApt + recoverableFromRoute + wasteFromRoute);
-      const receivedParts = accountedRouteQuantity > 0
-        ? await o.take(pid, route, accountedRouteQuantity, { allowExpired: true, precision, processingReturn: hasDerivedPackages })
-        : [];
-      const [returnParts, recoverableMermaParts, wasteParts] = splitAllocationsByAmounts(
-        receivedParts,
-        [normalApt, recoverableFromRoute, wasteFromRoute],
-      );
+        : quantityRound(normalApt + recoverableFromRoute + wasteFromRoute + (hasDerivedPackages ? Math.min(damagedPackageQuantity, Math.max(0, expected - normalApt)) : 0));
+      const damagedFromRoute = hasDerivedPackages ? quantityRound(Math.min(damagedPackageQuantity, Math.max(0, expected - normalApt))) : 0;
+      let receivedParts = [];
+      let returnParts = [], recoverableMermaParts = [], wasteParts = [], damagedParts = [];
+      if (damagedFromRoute > 0) {
+        // A single SKU can have traditional and derived lots. Damaged package
+        // receipts must be sourced only from derived allocations; do not let
+        // FEFO accidentally reinterpret a traditional lot as a sachet return.
+        let remainingDamaged = damagedFromRoute;
+        const damageRequests = [];
+        for (const lot of e.lots) {
+          if (!lot.processingCommercialBlocked || lot.processingDestinationKind !== 'finished' || lot.quarantined) continue;
+          const held = lot.processingUnavailable?.[route] || {};
+          const unavailableQuantity = quantityRound((Number(held.courtesy) || 0) + (Number(held.repackPending) || 0) + (Number(held.reviewHold) || 0));
+          const availableQuantity = Math.max(0, quantityRound((Number(lot.quantities?.[route]) || 0) - unavailableQuantity));
+          const quantity = Math.min(remainingDamaged, availableQuantity);
+          if (quantity > 0) damageRequests.push({ lotId: lot.id, quantity });
+          remainingDamaged = quantityRound(remainingDamaged - quantity);
+          if (remainingDamaged <= 0) break;
+        }
+        check(remainingDamaged <= 0, `No hay suficientes paquetes derivados con asignación íntegra para recibir los dañados de ${e.p.name || pid}. Revisa el lote y la trazabilidad.`);
+        damagedParts = await o.take(pid, route, damagedFromRoute, { allowExpired: true, precision, processingReturn: true, allocationsRequested: damageRequests });
+        const otherReturnQuantity = quantityRound(accountedRouteQuantity - damagedFromRoute);
+        const otherParts = otherReturnQuantity > 0
+          ? await o.take(pid, route, otherReturnQuantity, { allowExpired: true, precision, processingReturn: hasDerivedPackages })
+          : [];
+        [returnParts, recoverableMermaParts, wasteParts] = splitAllocationsByAmounts(
+          otherParts,
+          [normalApt, recoverableFromRoute, wasteFromRoute],
+        );
+        receivedParts = [...otherParts, ...damagedParts];
+      } else {
+        receivedParts = accountedRouteQuantity > 0
+          ? await o.take(pid, route, accountedRouteQuantity, { allowExpired: true, precision, processingReturn: hasDerivedPackages })
+          : [];
+        [returnParts, recoverableMermaParts, wasteParts] = splitAllocationsByAmounts(
+          receivedParts,
+          [normalApt, recoverableFromRoute, wasteFromRoute],
+        );
+      }
       for (const a of [...returnParts, ...recoverableMermaParts]) {
         const lot = e.lots.find((x) => x.id === a.lotId);
         check(lot, "No se encontró el lote del producto retornado.");
@@ -3258,6 +3302,29 @@ async function closure(o, p) {
           dispatchId: d.id,
           note: "Merma operativa recibida; solo queda disponible la cantidad con origen identificado.",
         }, precision);
+      }
+      let derivedDamageReceipts = [];
+      if (damagedFromRoute > 0) {
+        const sourceBatches = new Set(damagedParts.map(allocation => allocation.processingAllocation?.batchId).filter(Boolean));
+        derivedDamageReceipts = putDerivedReturnQuarantine(o, e, damagedParts, {
+          location: warehouse,
+          sourceSaleId: '',
+          claimId: `${o.id}__${pid}`,
+          condition: derivedDamageCondition,
+          reason: derivedDamageReason,
+          measuredWeightG: derivedDamageWeightG,
+          measurementScope: sourceBatches.size === 1 ? 'claim_total' : 'multi_batch_unallocated',
+          fromLocation: route,
+          movementType: 'derived_damaged_return',
+          dispatchId: d.id,
+        });
+        if (sourceBatches.size > 1 && derivedDamageWeightG !== null) {
+          for (const row of derivedDamageReceipts) {
+            const lot = await o.read('distLots', row.lotId);
+            lot.derivedReturn.measurementScope = 'multi_batch_unallocated';
+            o.put('distLots', lot.id, lot);
+          }
+        }
       }
       let dispatchMermaSaleMovementId;
       let dispatchMermaSaleCost = null;
@@ -3399,6 +3466,15 @@ async function closure(o, p) {
         shortage,
         overage,
         ...(shortageMovementId ? { shortageMovementId } : {}),
+        ...(hasDerivedPackages && damagedFromRoute > 0 ? {
+          damagedPackageQuantity: damagedFromRoute,
+          damagedPackageCondition: derivedDamageCondition,
+          damagedPackageReason: derivedDamageReason,
+          damagedMeasuredWeightG: derivedDamageWeightG,
+          damagedHistoricalAssignedWeightG: damagedParts.reduce((sum, allocation) => sum + Number(allocation.processingAllocation?.physicalWeightG || 0), 0),
+          damagedWeightMeasurementScope: derivedDamageReceipts.length > 1 ? 'aggregate_not_allocated_between_source_batches' : 'single_batch_or_unknown',
+          damagedQuarantineLots: derivedDamageReceipts.map(row => ({ lotId: row.lotId, reservationId: row.reservationId, movementId: row.movementId, quantity: row.quantity, batchId: row.batchId, costCents: row.costCents })),
+        } : {}),
         lossCost: wasteFromRoute === waste && wasteParts.every((a) => a.productionCost !== null)
           ? round(wasteParts.reduce((sum, a) => sum + a.quantity * a.productionCost, 0))
           : null,
@@ -3507,13 +3583,235 @@ async function closure(o, p) {
   });
   return c;
 }
+function processingClaimSlices(lines, returnedBefore, quantity) {
+  const allocations = (lines || []).flatMap(line => line.allocations || []);
+  check(allocations.length > 0 && allocations.every(allocation => allocation.processingAllocation),
+    'La línea combina lotes tradicionales y derivados; requiere separar las asignaciones antes de devolverla.');
+  check(allocations.every(allocation => Number.isSafeInteger(allocation.quantity) && allocation.quantity > 0 && Number.isSafeInteger(allocation.processingAllocation.quantity) && allocation.processingAllocation.quantity === allocation.quantity),
+    'La venta no conserva una asignación comercial completa por paquete.');
+  let offset = returnedBefore, remaining = quantity;
+  const slices = [];
+  for (const allocation of allocations) {
+    const count = Math.min(remaining, Math.max(0, allocation.quantity - offset));
+    if (count > 0) slices.push(origins.slice(allocation, offset, count));
+    remaining -= count;
+    offset = Math.max(0, offset - allocation.quantity);
+    if (remaining === 0) break;
+  }
+  check(remaining === 0, 'No se encontraron paquetes derivados todavía disponibles para devolver.');
+  return slices;
+}
+
+function putDerivedReturnQuarantine(o, entry, sourceAllocations, { location: loc, sourceSaleId, claimId, condition, reason, measuredWeightG, measurementScope = 'claim_total', fromLocation = null, movementType = 'customer_return', dispatchId = '' }) {
+  const groups = new Map();
+  for (const allocation of sourceAllocations) {
+    const part = allocation.processingAllocation;
+    check(part && part.batchId && part.segmentId, 'La devolución no conserva batch y segmento de sacheteado.');
+    const key = `${allocation.lotId}__${part.batchId}`;
+    const group = groups.get(key) || { sourceLotId: allocation.lotId, batchId: part.batchId, allocations: [], quantity: 0, weightG: 0, weightKnown: true, costCents: 0, costKnown: true };
+    group.allocations.push(allocation);
+    group.quantity += allocation.quantity;
+    if (!Number.isSafeInteger(part.physicalWeightG) || part.physicalWeightG < 0) group.weightKnown = false;
+    else group.weightG += part.physicalWeightG;
+    if (part.costCents === null || part.costCents === undefined) group.costKnown = false;
+    else group.costCents += part.costCents;
+    groups.set(key, group);
+  }
+  const result = [];
+  let groupIndex = 0;
+  for (const group of groups.values()) {
+    const sourceLot = entry.lots.find(lot => lot.id === group.sourceLotId);
+    check(sourceLot && sourceLot.processingBatchId === group.batchId, 'No se encontró el lote derivado de origen de la devolución.');
+    const lotId = `${claimId}__quarantine_${groupIndex++}`;
+    check(!entry.lots.some(lot => lot.id === lotId), 'La cuarentena de esta devolución ya existe.');
+    const costCents = group.costKnown ? group.costCents : null;
+    const returnedSegments = new Map();
+    for (const allocation of group.allocations) {
+      const part = allocation.processingAllocation;
+      const segment = returnedSegments.get(part.segmentId) || { sourceSegmentId: part.segmentId, batchId: part.batchId, destinationId: part.destinationId, sourceMovementId: part.sourceMovementId, weightBasis: part.weightBasis, quantity: 0, weightG: 0, weightKnown: true, costCents: 0, costKnown: true };
+      segment.quantity += part.quantity;
+      if (!Number.isSafeInteger(part.physicalWeightG) || part.physicalWeightG < 0) segment.weightKnown = false;
+      else segment.weightG += part.physicalWeightG;
+      if (part.costCents === null || part.costCents === undefined) segment.costKnown = false;
+      else segment.costCents += part.costCents;
+      returnedSegments.set(part.segmentId, segment);
+    }
+    const segmentRows = [...returnedSegments.values()].map(segment => ({
+      segmentId: `${segment.sourceSegmentId}:returned:${claimId}`,
+      sourceSegmentId: segment.sourceSegmentId,
+      batchId: segment.batchId,
+      destinationId: segment.destinationId,
+      sourceMovementId: segment.sourceMovementId,
+      weightBasis: segment.weightBasis,
+      remainingQuantity: segment.quantity,
+      remainingWeightG: segment.weightKnown ? segment.weightG : null,
+      remainingCostCents: segment.costKnown ? segment.costCents : null,
+    }));
+    const assignedWeightG = group.weightKnown ? group.weightG : null;
+    const groupMeasuredWeightG = measurementScope === 'claim_total' && groups.size === 1 ? measuredWeightG : null;
+    const lot = {
+      id: lotId, restaurantId: 'sanjose', branchId: 'main', productId: entry.p.id,
+      productName: entry.p.name, unitType: entry.p.unitType,
+      lotCode: `DEVOLUCIÓN · ${sourceLot.lotCode || sourceLot.id}`,
+      manufacturedOn: sourceLot.manufacturedOn || '', expiresOn: sourceLot.expiresOn || '',
+      productionCost: null, quantities: { [loc]: group.quantity }, quarantined: true,
+      processingCommercialBlocked: true, processingDestinationKind: 'review_hold',
+      processingBatchId: group.batchId, processingDestinationId: sourceLot.processingDestinationId || '',
+      processingSourceLotIds: [group.sourceLotId], processingSourceAllocationBasis: sourceLot.processingSourceAllocationBasis,
+      processingPhysicalWeightGRemaining: assignedWeightG, processingMeasuredWeightGRemaining: groupMeasuredWeightG,
+      processingCostCentsRemaining: costCents,
+      processingByLocation: { [loc]: { segments: segmentRows } },
+      processingUnavailable: { [loc]: { courtesy: 0, repackPending: 0, reviewHold: group.quantity } },
+      derivedReturn: { claimId, sourceSaleId, sourceLotId: group.sourceLotId, batchId: group.batchId, condition, reason,
+        assignedWeightG, measuredWeightG: groupMeasuredWeightG,
+        weightDifferenceG: groupMeasuredWeightG === null || assignedWeightG === null ? null : assignedWeightG - groupMeasuredWeightG,
+        weightBasis: 'historical_segment_assignment', physicalOriginConfirmed: false },
+      createdAt: o.now, createdBy: o.actor, createdByName: o.member.displayName || o.actor,
+    };
+    const reservationId = `${claimId}__review_hold_${groupIndex - 1}`;
+    const reservation = {
+      id: reservationId, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1,
+      productId: entry.p.id, productName: entry.p.name, lotId, lotCode: lot.lotCode, unitType: entry.p.unitType,
+      location: loc, purpose: 'review_hold', originalQuantity: group.quantity, remainingQuantity: group.quantity,
+      consumedQuantity: 0, physicalWeightG: assignedWeightG, remainingWeightG: assignedWeightG,
+      remainingCostCents: costCents, batchId: group.batchId, source: 'derived_customer_return', status: 'active',
+      createdAt: o.now, createdBy: o.actor, createdByName: o.member.displayName || o.actor,
+      history: [{ id: `${o.id}__hold_created_${groupIndex}`, action: 'created', quantity: group.quantity, at: o.now,
+        by: o.actor, byName: o.member.displayName || o.actor, reason: `Retorno derivado; revisión sanitaria pendiente. ${reason}` }],
+    };
+    const movementAllocations = group.allocations.map(allocation => ({
+      ...allocation, lotId, lotCode: lot.lotCode, expiresOn: lot.expiresOn, productionCost: null,
+      processingAllocation: { ...allocation.processingAllocation, returnedFromLotId: group.sourceLotId, returnedToLocation: loc, physicalOriginConfirmed: false },
+    }));
+    entry.lots.push(lot);
+    o.put('distLots', lotId, lot);
+    o.put('distStockReservations', reservationId, reservation);
+    o.move(entry, loc, group.quantity, quantityPrecision(entry.p));
+    const movementId = o.ledger(entry.p.id, group.quantity, fromLocation, loc, movementType, {
+      lotId, allocations: movementAllocations, sourceSaleId, claimId, batchId: group.batchId,
+      dispatchId,
+      quarantineReservationId: reservationId, quarantined: true,
+      historicalAssignedWeightG: assignedWeightG, measuredPhysicalWeightG: groupMeasuredWeightG,
+      physicalWeightDifferenceG: groupMeasuredWeightG === null || assignedWeightG === null ? null : assignedWeightG - groupMeasuredWeightG,
+      costCents, costAccountingStatus: 'pending_quarantine_disposition',
+      traceabilityStatus: 'accounting_lot_reference_physical_origin_unconfirmed',
+      note: `Sachet devuelto y recibido físicamente; inmovilizado para revisión, no disponible para venta. ${reason}`,
+    }, quantityPrecision(entry.p));
+    lot.derivedReturn.movementId = movementId;
+    lot.derivedReturn.reservationId = reservationId;
+    o.put('distLots', lotId, lot);
+    result.push({ lotId, reservationId, movementId, sourceLotId: group.sourceLotId, batchId: group.batchId,
+      quantity: group.quantity, assignedWeightG, costCents, measuredWeightG: groupMeasuredWeightG,
+      allocations: movementAllocations });
+  }
+  return result;
+}
+
+async function claimDerivedSale(o, p, sale) {
+  check(p.kind === 'return' || p.kind === 'exchange', 'Tipo de reclamo inválido.');
+  check(p.physicalReceiptConfirmed === true, 'Confirma que recibiste físicamente los sachets antes de registrar la devolución.');
+  const effectiveSale = { ...sale, ...await o.withDocumentedOrigins(sale, sale.effectiveSnapshot || sale) };
+  const lines = (effectiveSale.lines || []).filter(line => line.productId === p.productId);
+  check(lines.length > 0 && lines.some(line => (line.allocations || []).some(allocation => allocation.processingAllocation)), 'El producto no corresponde a un sachet derivado de esta venta.');
+  const product = await o.product(safeId(p.productId));
+  check(product.unitType === 'package' || product.unitType === 'unit', 'La devolución derivada solo admite paquetes o unidades completas.');
+  const quantity = o.amount(Number(p.quantity), product, false, 0);
+  check(Number.isSafeInteger(quantity) && quantity > 0, 'Devuelve una cantidad entera de paquetes o unidades.');
+  const prior = await o.query('distClaims', 'saleId', sale.id);
+  const priorForLine = prior.filter(row => row.productId === product.id);
+  check(priorForLine.every(row => Array.isArray(row.returnedProcessingAllocations) && row.returnedProcessingAllocations.length > 0), 'Hay devoluciones anteriores sin asignación derivada verificable; requiere conciliación administrativa.');
+  const returnedBefore = priorForLine.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+  check(Number.isSafeInteger(p.expectedReturnedQuantity) && p.expectedReturnedQuantity === returnedBefore,
+    'El saldo de devoluciones cambió en otra sesión. Actualiza la venta y vuelve a revisar los paquetes recibidos.');
+  const soldQuantity = lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
+  check(returnedBefore + quantity <= soldQuantity, 'La cantidad supera los paquetes vendidos o ya devueltos.');
+  const sourceAllocations = processingClaimSlices(lines, returnedBefore, quantity);
+  const originalPrices = [...new Set(lines.map(line => Number(line.actualUnitPrice)))];
+  check(originalPrices.length === 1 && Number.isFinite(originalPrices[0]), 'La venta tiene precios distintos para el mismo producto; requiere revisión administrativa.');
+  const condition = String(p.derivedReturnCondition || 'aptitude_uncertain');
+  check(['sealed_intact','package_damaged_content_intact','package_damaged_partial','aptitude_uncertain','confirmed_unfit'].includes(condition), 'Selecciona el estado físico del producto devuelto.');
+  check(condition !== 'confirmed_unfit' || o.member.role === 'admin', 'Solo Administración puede registrar una declaración de producto no apto; seguirá en cuarentena.');
+  const reason = String(p.reason || '').trim();
+  check(reason.length >= 3 && reason.length <= 500, 'Describe el motivo de la devolución.');
+  const measuredWeightG = p.measuredPhysicalWeightG === null || p.measuredPhysicalWeightG === undefined || p.measuredPhysicalWeightG === ''
+    ? null : Number(p.measuredPhysicalWeightG);
+  check(measuredWeightG === null || Number.isSafeInteger(measuredWeightG) && measuredWeightG >= 0, 'El peso físico medido debe indicarse en gramos enteros o dejarse desconocido.');
+  const assignedWeightKnown = sourceAllocations.every(allocation => Number.isSafeInteger(allocation.processingAllocation.physicalWeightG) && allocation.processingAllocation.physicalWeightG >= 0);
+  const assignedWeightG = assignedWeightKnown
+    ? sourceAllocations.reduce((sum, allocation) => sum + allocation.processingAllocation.physicalWeightG, 0)
+    : null;
+  const costValues = sourceAllocations.map(allocation => allocation.processingAllocation.costCents);
+  const returnedCostCents = costValues.some(value => value === null || value === undefined) ? null : costValues.reduce((sum, value) => sum + value, 0);
+  const isDistributor = o.member.role === 'distributor';
+  if (isDistributor) check(sale.sellerUid === o.actor, 'Solo puedes devolver productos de tus propias ventas.');
+  else check(o.member.role === 'admin' || o.member.role === 'warehouse', 'Sin permiso para recibir devoluciones.');
+  const dispatch = sale.dispatchId ? await o.read('distDispatches', sale.dispatchId) : null;
+  if (isDistributor) check(!dispatch || dispatch.status === 'open', 'La ruta está cerrada; Administración debe recibir la devolución.');
+  const locationId = isDistributor ? location('route', sale.routeId) : location('warehouse', p.warehouseId || 'central');
+  o.owns(locationId);
+  if (!isDistributor && locationId !== 'central') {
+    const warehouse = await o.read('distWarehouses', safeId(p.warehouseId));
+    check(warehouse && warehouse.active !== false, 'Almacén no disponible.');
+  }
+  const entry = await o.loadStock(product.id, locationId);
+  const returnedProcessingAllocations = putDerivedReturnQuarantine(o, entry, sourceAllocations, {
+    location: locationId, sourceSaleId: sale.id, claimId: o.id, condition, reason, measuredWeightG,
+  });
+  const returnedValue = round(quantity * originalPrices[0]);
+  const replacementProduct = p.kind === 'exchange' ? await o.product(safeId(p.replacementProductId)) : null;
+  let replacement = null, replacementValue = 0, additionalCostCents = 0;
+  if (p.kind === 'exchange') {
+    const replacementQuantity = o.amount(Number(p.replacementQuantity), replacementProduct, false, quantityPrecision(replacementProduct));
+    check(replacementQuantity > 0, 'Indica una cantidad válida para el reemplazo.');
+    const allocations = await o.take(replacementProduct.id, locationId, replacementQuantity, { processingSale: true });
+    replacementValue = round(replacementQuantity * replacementProduct.referencePrice);
+    additionalCostCents = historicalAllocationCostCents(allocations);
+    replacement = { productId: replacementProduct.id, productName: replacementProduct.name, quantity: replacementQuantity,
+      unitType: replacementProduct.unitType, unitPrice: replacementProduct.referencePrice, total: replacementValue, allocations,
+      costCents: additionalCostCents, costTotal: additionalCostCents === null ? null : additionalCostCents / 100 };
+    o.ledger(replacementProduct.id, replacementQuantity, locationId, null, 'exchange', { allocations, claimId: o.id, saleId: sale.id });
+  }
+  const revenueDelta = round(replacementValue - returnedValue);
+  const debt = await o.read('distReceivables', sale.id);
+  const debtReduction = round(Math.min(debt?.balance || 0, Math.max(0, -revenueDelta)));
+  if (debtReduction > 0) {
+    const balance = round(debt.balance - debtReduction);
+    o.put('distReceivables', debt.id, { ...debt, creditedAmount: round((debt.creditedAmount || 0) + debtReduction), balance,
+      status: balance <= 0 ? 'PAID' : debt.paidAmount > 0 ? 'PARTIAL' : 'OPEN', returnedAmount: round((debt.returnedAmount || 0) + debtReduction) });
+  }
+  const refund = round(Math.max(0, -revenueDelta) - debtReduction);
+  check((revenueDelta === 0 && ['none','cash','qr'].includes(p.method)) || (revenueDelta !== 0 && ['cash','qr'].includes(p.method)), 'Elige efectivo o QR para cobrar o devolver la diferencia.');
+  const updatedSale = { ...sale, derivedReturnRevision: Number(sale.derivedReturnRevision || 0) + 1,
+    derivedReturnedQuantityByProduct: { ...(sale.derivedReturnedQuantityByProduct || {}), [product.id]: returnedBefore + quantity },
+    lastDerivedReturnClaimId: o.id, lastDerivedReturnAt: o.now };
+  o.put('distSales', sale.id, updatedSale);
+  const claim = { id: o.id, ...o.base(), kind: p.kind, saleId: sale.id, sellerUid: sale.sellerUid, sellerName: sale.sellerName,
+    customerId: sale.customerId || '', customerName: sale.customerName || '', routeId: sale.routeId, productId: product.id,
+    productName: product.name, unitType: product.unitType, quantity, reason, warehouseId: isDistributor ? '' : p.warehouseId || 'central',
+    returnedValue, replacement, revenueDelta, additionalCost: additionalCostCents === null ? null : additionalCostCents / 100,
+    additionalCostCents, debtReduction, cashIn: p.method === 'cash' ? Math.max(0, revenueDelta) : 0,
+    cashOut: p.method === 'cash' ? refund : 0, qrIn: p.method === 'qr' ? Math.max(0, revenueDelta) : 0,
+    qrOut: p.method === 'qr' ? refund : 0, method: p.method, responsibleName: o.member.displayName || o.actor,
+    physicalReceiptConfirmed: true, receivedAt: o.now, receivedBy: o.actor, receivedByName: o.member.displayName || o.actor,
+    derivedReturnCondition: condition, measuredPhysicalWeightG: measuredWeightG, historicalAssignedWeightG: assignedWeightG,
+    unresolvedWeightDifferenceG: measuredWeightG === null || assignedWeightG === null ? null : assignedWeightG - measuredWeightG,
+    returnedCostCents, costAccountingStatus: 'pending_quarantine_disposition', returnedProcessingAllocations,
+    inventoryStatus: 'quarantined_review_hold', traceabilityStatus: 'accounting_lot_reference_physical_origin_unconfirmed' };
+  o.put('distClaims', o.id, claim);
+  return claim;
+}
+
 async function claim(o, p) {
   check(["admin", "distributor"].includes(o.member.role), "Sin permiso para registrar cambios o devoluciones.");
   check(p.reason?.trim(), "Indica el motivo del cambio o devolución.");
   check(["exchange", "return"].includes(p.kind), "Tipo de reclamo inválido.");
   const s = await o.read("distSales", p.saleId);
   check(s, "No existe la venta original.");
-  assertNoDerivedSaleMutation(s, 'devoluciones o cambios');
+  check(!s.voidedAt && !s.pendingConfirmation, "La venta no está vigente para una devolución.");
+  const sourceSnapshot = s.effectiveSnapshot || s;
+  const targetLines = (sourceSnapshot.lines || []).filter(line => line.productId === p.productId);
+  if (targetLines.some(line => (line.allocations || []).some(allocation => allocation.processingAllocation)))
+    return claimDerivedSale(o, p, s);
   check(s.saleKind !== "courtesy" && s.effectiveSnapshot?.saleKind !== "courtesy", "Las cortesías no generan cambios ni devoluciones con movimientos de dinero.");
   const isDistributor = o.member.role === "distributor";
   if (isDistributor) {
@@ -4144,6 +4442,8 @@ handlers.resolveQuarantine = async (o, p) => {
   const lotId = safeId(p.lotId);
   const lot = await o.read("distLots", lotId);
   check(lot && lot.quarantined === true && !lot.quarantineResolvedAt, "Este lote ya no está pendiente de revisión.");
+  check(!lot.processingCommercialBlocked && !lot.processingBatchId && !lot.derivedReturn && !lot.processingByLocation,
+    "Esta cuarentena tiene trazabilidad de sacheteado o devolución derivada. Requiere un procedimiento especializado; no se liberó ni descartó producto.");
   const product = await o.product(lot.productId);
   check(p.location === "central" || (typeof p.location === "string" && p.location.startsWith("warehouse__")), "El almacén seleccionado no es válido.");
   const warehouseId = p.location === "central" ? "central" : safeId(p.location.slice("warehouse__".length));
