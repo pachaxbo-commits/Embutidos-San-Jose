@@ -270,7 +270,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
 
     {['reservations','review','repack'].includes(tab) && <ProcessingOperationsView mode={tab as 'reservations' | 'review' | 'repack'} session={session} products={data.products} lots={data.lots} locationOptions={[{id:'central',name:'Almacén central'}, ...data.warehouses.filter(item => item.active)]} />}
 
-    {tab === 'history' ? <div className="space-y-3">
+    {tab === 'history' && <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3"><button type="button" onClick={() => { setHistoryMode('batches'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'batches' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Elaboraciones</button><button type="button" onClick={() => { setHistoryMode('reviews'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reviews' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Revisiones</button><button type="button" onClick={() => { setHistoryMode('repackings'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'repackings' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reenvasados</button></div>
       {session.role === 'admin' && <Field label="Filtrar por almacén"><SelectInput value={historyWarehouse} onChange={event => setHistoryWarehouse(event.target.value)}><option value="all">Todos los almacenes</option>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field>}
       {historyMode === 'reviews' && <ProcessingOperationsView mode="history-reviews" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
@@ -288,7 +288,9 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
           <SecondaryButton full disabled={loadingHistory} onClick={() => void refreshHistory()}><RefreshCw size={15} />Actualizar</SecondaryButton>
         </div>}
       </> : null}
-    </div> : <div className="space-y-3">
+    </div>}
+
+    {tab === 'new' && <div className="space-y-3">
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-slate-100 p-1 sm:grid-cols-4">
         {['Origen', 'Producción', 'Materiales', 'Confirmación'].map((label, index) => <button key={label} type="button" onClick={() => setStep(index)} aria-current={step === index ? 'step' : undefined} className={`min-h-10 rounded-xl px-1 text-[11px] font-extrabold ${step === index ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>{index + 1}. {label}</button>)}
       </div>

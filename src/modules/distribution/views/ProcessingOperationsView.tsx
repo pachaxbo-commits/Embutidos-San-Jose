@@ -13,7 +13,7 @@ type Mode = 'reservations' | 'review' | 'repack' | 'history-reviews' | 'history-
 type Cursor = ProcessingBatchPage['cursor']
 type Props = { mode: Mode; session: DistributionSession; products: DistProduct[]; lots: DistLot[]; locationOptions: Array<{ id: string; name: string }> }
 type ReviewAction = RecordProcessingReviewInput['action']
-type ReviewDraft = { action: ReviewAction; packageCondition: RecordProcessingReviewInput['packageCondition']; productObservation: RecordProcessingReviewInput['productObservation']; physicalWeightG: string; observations: string; reason: string; evidenceRefs: string[] }
+type ReviewDraft = { action: ReviewAction; packageCondition: RecordProcessingReviewInput['packageCondition']; productObservation: RecordProcessingReviewInput['productObservation']; physicalWeightG: string; observations: string; reason: string; evidenceRefs: string[]; operationId: string; expectedRevision: number; operationPending?: boolean }
 type OutputDraft = { id: string; productId: string; commercialQuantity: string; measuredNetWeightG: string; lotCode: string; manufacturedOn: string; packagedOn: string; expiresOn: string }
 type MaterialDraft = { materialId: string; quantity: string; damaged: string; costBs: string }
 type RepackDraft = { repackId: string; operationId: string; sourceReservationId: string; openedCommercialQuantity: string; openedPhysicalWeightG: string; outputs: OutputDraft[]; materials: MaterialDraft[]; reason: string; operationPending?: boolean }
@@ -22,7 +22,15 @@ type SubmitState = 'idle' | 'sending' | 'unknown' | 'rejected' | 'confirmed'
 const todayKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const localKey = (uid: string) => `sanjose_processing_repack_draft_v1:${uid}`
 const freshOutput = (today: string): OutputDraft => ({ id: newOperationId('repack_output'), productId: '', commercialQuantity: '', measuredNetWeightG: '', lotCode: '', manufacturedOn: today, packagedOn: today, expiresOn: '' })
-const blankReview = (): ReviewDraft => ({ action: 'record_observation', packageCondition: 'unknown', productObservation: 'not_assessed', physicalWeightG: '', observations: '', reason: '', evidenceRefs: [] })
+const reviewKey = (uid: string, reservationId: string) => `sanjose_processing_review_draft_v1:${uid}:${reservationId}`
+const blankReview = (expectedRevision = 0): ReviewDraft => ({ action: 'record_observation', packageCondition: 'unknown', productObservation: 'not_assessed', physicalWeightG: '', observations: '', reason: '', evidenceRefs: [], operationId: newOperationId('processing_review'), expectedRevision })
+const readReviewDraft = (uid: string, reservationId: string): ReviewDraft | null => {
+  try {
+    const raw = localStorage.getItem(reviewKey(uid, reservationId))
+    const parsed = raw ? JSON.parse(raw) as ReviewDraft : null
+    return parsed?.operationId && Number.isSafeInteger(parsed.expectedRevision) && Array.isArray(parsed.evidenceRefs) ? parsed : null
+  } catch { return null }
+}
 const statusLabel: Record<string, string> = { pending_review: 'Pendiente de revisión', in_review: 'Revisión iniciada', authorized_for_repack: 'Autorizado para procedimiento', not_recoverable: 'No recuperable', pending_information: 'Información pendiente', pending_economic_disposition: 'Disposición económica pendiente', resolved_specialized: 'Procesado' }
 const purposeLabel: Record<string, string> = { repack_pending: 'Pendiente de reenvasado', review_hold: 'Inmovilizado para revisión', courtesy: 'Reservado para cortesía' }
 const dateTime = (value?: string) => value ? new Intl.DateTimeFormat('es-BO', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/La_Paz' }).format(new Date(value)) : '—'
@@ -54,7 +62,8 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
   const [evidence, setEvidence] = useState<ProcessingEvidenceRecord[]>([])
   const [authorization, setAuthorization] = useState<ProcessingQualityAuthorization | null>(null)
   const [reviewerAuthorization, setReviewerAuthorization] = useState<ProcessingQualityAuthorization | null>(null)
-  const [reviewDraft, setReviewDraft] = useState<ReviewDraft>(blankReview)
+  const [reviewDraft, setReviewDraft] = useState<ReviewDraft>(() => blankReview())
+  const [reviewState, setReviewState] = useState<SubmitState>('idle')
   const [reviewMessage, setReviewMessage] = useState('')
   const [reviewBusy, setReviewBusy] = useState(false)
   const [repackDraft, setRepackDraft] = useState<RepackDraft>(() => initialRepackDraft(session.uid))
@@ -63,6 +72,8 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
   const [repackMessage, setRepackMessage] = useState('')
   const [repackError, setRepackError] = useState('')
   const submitLock = useRef(false)
+  const reviewSelectionRevision = useRef(0)
+  const selectedReservationIdRef = useRef('')
   const canAdmin = session.role === 'admin'
   const warehouseLocation = session.warehouseId && session.warehouseId !== 'central' ? `warehouse__${session.warehouseId}` : 'central'
   const locationFilter = session.role === 'warehouse' ? warehouseLocation : undefined
@@ -111,6 +122,10 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
     try { localStorage.setItem(localKey(session.uid), JSON.stringify(repackDraft)) } catch { /* Keep the in-memory draft; no stock was changed. */ }
   }, [repackDraft, session.uid])
   useEffect(() => {
+    if (!selectedReservationId) return
+    try { localStorage.setItem(reviewKey(session.uid, selectedReservationId), JSON.stringify(reviewDraft)) } catch { /* Keep the review draft in memory; no operation was sent. */ }
+  }, [reviewDraft, selectedReservationId, session.uid])
+  useEffect(() => {
     if (mode !== 'repack' || !repackReservationLotId || !repackReview?.latestReviewId) return
     let active = true
     void loadProcessingReview(repackReview.latestReviewId).then(async row => {
@@ -141,16 +156,77 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
   }
 
   const selectReviewReservation = async (reservation: ProcessingReservation) => {
-    setSelectedReservationId(reservation.id); setSelectedReview(null); setEvidence([]); setReviewDraft(blankReview()); setReviewMessage(''); setError('')
+    const selectionRevision = ++reviewSelectionRevision.current
+    selectedReservationIdRef.current = reservation.id
     const lot = lots.find(row => row.id === reservation.lotId)
+    const expectedRevision = Number(lot?.processingReview?.revision || 0)
+    const savedDraft = readReviewDraft(session.uid, reservation.id)
+    setSelectedReservationId(reservation.id); setSelectedReview(null); setEvidence([]); setReviewerAuthorization(null)
+    setReviewDraft(savedDraft || blankReview(expectedRevision)); setReviewState(savedDraft?.operationPending ? 'unknown' : 'idle'); setReviewMessage(''); setError('')
+    if (savedDraft && savedDraft.expectedRevision !== expectedRevision) setError('Esta reserva cambió en otra sesión. Conservamos tus observaciones y el identificador; no envíes hasta comprobar el estado y revisar la versión actual.')
     if (lot?.processingReview?.latestReviewId) {
-      try { setSelectedReview(await loadProcessingReview(lot.processingReview.latestReviewId)) } catch (reason) { setError((reason as Error).message) }
+      try {
+        const latest = await loadProcessingReview(lot.processingReview.latestReviewId)
+        if (selectionRevision === reviewSelectionRevision.current) setSelectedReview(latest)
+      } catch (reason) { if (selectionRevision === reviewSelectionRevision.current) setError((reason as Error).message) }
     }
-    try { setEvidence(await loadProcessingEvidenceForReservation(reservation.location, reservation.id)) } catch { setEvidence([]) }
+    try {
+      const rows = await loadProcessingEvidenceForReservation(reservation.location, reservation.id)
+      if (selectionRevision === reviewSelectionRevision.current) setEvidence(rows)
+    } catch { if (selectionRevision === reviewSelectionRevision.current) setEvidence([]) }
+  }
+
+  const editReviewDraft = (patch: Partial<ReviewDraft>) => {
+    if (['sending','unknown','confirmed'].includes(reviewState)) return
+    setReviewDraft(current => ({ ...current, ...patch,
+      ...(reviewState === 'rejected' ? { operationId: newOperationId('processing_review'), operationPending: false } : {}),
+    }))
+    if (reviewState === 'rejected') setReviewState('idle')
+    setError('')
+  }
+
+  const finishReview = async (result: { reviewId?: string }, reservationId: string, expectedRevision: number) => {
+    try { localStorage.removeItem(reviewKey(session.uid, reservationId)) } catch { /* The server record remains authoritative. */ }
+    const stillSelected = selectedReservationIdRef.current === reservationId
+    if (stillSelected) {
+      setReviewState('confirmed')
+      setReviewMessage('Revisión registrada. La reserva, el inventario, los costos y el Kardex no se modificaron.')
+      setReviewDraft(blankReview(expectedRevision + 1))
+    }
+    const savedReview = result.reviewId ? await loadProcessingReview(result.reviewId).catch(() => null) : null
+    if (stillSelected && savedReview) setSelectedReview(savedReview)
+    await loadFirstPage()
+  }
+
+  const checkReview = async () => {
+    if (!reviewDraft.operationId || !selectedReservation) return
+    const reservationId = selectedReservation.id
+    const expectedRevision = reviewDraft.expectedRevision
+    setError(''); setReviewMessage('Consultando el estado definitivo en el servidor…')
+    try {
+      const state = await getProcessingOperationState(reviewDraft.operationId, 'recordProcessingReview')
+      if (state.status === 'confirmed') {
+        const result = state.result as { reviewId?: string }
+        await finishReview(result || {}, reservationId, expectedRevision)
+        return
+      }
+      if (state.status === 'queued') {
+        setReviewState('unknown'); setReviewMessage('La revisión sigue pendiente. No vuelvas a enviarla; consulta de nuevo con el mismo identificador.')
+        return
+      }
+      if (state.status === 'rejected') {
+        setReviewState('rejected'); setReviewDraft(current => ({ ...current, operationPending: false })); setReviewMessage('El servidor rechazó esta revisión. Corrige los datos para crear un intento nuevo.'); setError(state.error)
+        return
+      }
+      setReviewState('idle'); setReviewDraft(current => ({ ...current, operationPending: false })); setReviewMessage('El servidor no encuentra esta operación. Puedes reenviar el mismo borrador con el mismo identificador.')
+    } catch (reason) {
+      setReviewState('unknown'); setError((reason as Error).message || 'No se pudo comprobar el estado de la revisión.')
+      setReviewMessage('El resultado sigue siendo desconocido. Conservamos datos e identificador; consulta el estado antes de reintentar.')
+    }
   }
 
   const submitReview = async () => {
-    if (!selectedReservation || !selectedLot || reviewBusy) return
+    if (!selectedReservation || !selectedLot || reviewBusy || submitLock.current || ['sending','unknown','confirmed','rejected'].includes(reviewState)) return
     const observation = reviewDraft.observations.trim(), reasonText = reviewDraft.reason.trim()
     if (observation.length < 3 || reasonText.length < 3) { setError('Escribe observaciones y motivo (mínimo 3 caracteres).'); return }
     const physicalWeightG = reviewDraft.physicalWeightG.trim() === '' ? null : Number(reviewDraft.physicalWeightG)
@@ -159,19 +235,32 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
     if (reviewDraft.productObservation === 'confirmed_unfit' && reviewDraft.action !== 'declare_unrecoverable') { setError('Para declarar no apto se requiere la decisión autorizada de calidad; una observación sola no cambia ese estado.'); return }
     if (needsEvidence && reviewDraft.evidenceRefs.length === 0) { setError('Esta decisión requiere evidencia persistida y verificada para este lote y revisión.'); return }
     if (reviewDraft.action === 'authorize_repack' && (!activeAuthorization || reviewDraft.productObservation !== 'apparently_apt' || physicalWeightG === null)) { setError('Para autorizar reenvasado se requiere autorización de calidad vigente, evidencia, condición observada y peso medido.'); return }
-    const operationId = newOperationId('processing_review')
+    if (reviewDraft.expectedRevision !== currentReviewRevision) { setError('La revisión cambió en otra sesión. Tus observaciones se conservaron; actualiza la reserva antes de enviar.'); return }
+    const operationId = reviewDraft.operationId
+    const reservationId = selectedReservation.id
+    const expectedRevision = reviewDraft.expectedRevision
     const payload: RecordProcessingReviewInput = { lotId: selectedLot.id, reservationId: selectedReservation.id, location: selectedReservation.location,
-      expectedRevision: currentReviewRevision, action: reviewDraft.action, physicalWeightG, packageCondition: reviewDraft.packageCondition,
+      expectedRevision: reviewDraft.expectedRevision, action: reviewDraft.action, physicalWeightG, packageCondition: reviewDraft.packageCondition,
       productObservation: reviewDraft.productObservation, observations: observation, reason: reasonText,
       evidenceRefs: reviewDraft.evidenceRefs, ...(needsEvidence ? { qualityAuthorizationRef: authorization?.authorizationId || '' } : {}) }
-    setReviewBusy(true); setError(''); setReviewMessage('Enviando revisión al servidor; no cambia existencias.')
+    try { localStorage.setItem(reviewKey(session.uid, selectedReservation.id), JSON.stringify({ ...reviewDraft, operationPending: true })) }
+    catch { setError('No se pudo guardar el identificador seguro de esta revisión. No se envió nada.'); return }
+    submitLock.current = true; setReviewBusy(true); setReviewState('sending'); setReviewDraft(current => ({ ...current, operationPending: true })); setError(''); setReviewMessage('Enviando revisión al servidor; no cambia existencias.')
     try {
       const result = await recordProcessingReview(payload, operationId) as { reviewId?: string }
-      setReviewMessage('Revisión registrada. La reserva, el inventario, los costos y el Kardex no se modificaron.')
-      if (result.reviewId) setSelectedReview(await loadProcessingReview(result.reviewId).catch(() => null))
-      await loadFirstPage()
-    } catch (reason) { setError((reason as Error).message || 'El servidor rechazó la revisión. No se modificó inventario.') }
-    finally { setReviewBusy(false) }
+      await finishReview(result || {}, reservationId, expectedRevision)
+    } catch (reason) {
+      const message = (reason as Error).message || 'No se pudo registrar la revisión.'
+      try {
+        const state = await getProcessingOperationState(operationId, 'recordProcessingReview')
+        if (state.status === 'confirmed') { await finishReview((state.result || {}) as { reviewId?: string }, reservationId, expectedRevision); return }
+        if (state.status === 'queued') { setReviewState('unknown'); setReviewMessage('La operación sigue pendiente. No la vuelvas a enviar; consulta el estado con el mismo identificador.'); setError(message); return }
+        if (state.status === 'rejected') { setReviewState('rejected'); setReviewDraft(current => ({ ...current, operationPending: false })); setReviewMessage('El servidor rechazó esta revisión. Corrige los datos para crear un intento nuevo.'); setError(state.error); return }
+        setReviewState('idle'); setReviewDraft(current => ({ ...current, operationPending: false })); setReviewMessage('El servidor no encuentra esta operación. Puedes reenviar el mismo borrador con el mismo identificador.'); setError(message)
+      } catch {
+        setReviewState('unknown'); setReviewMessage('El resultado es desconocido. Conservamos identificador y observaciones; comprueba el estado antes de volver a enviar.'); setError(message)
+      }
+    } finally { submitLock.current = false; setReviewBusy(false) }
   }
 
   const updateRepack = (patch: Partial<RepackDraft>) => {
@@ -271,25 +360,28 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
 
     {mode === 'review' && <SectionCard title="Revisión física"><p className="mb-3 text-xs text-slate-600">Registrar una observación no cambia inventario, reservas, costos ni Kardex.</p>
       {loading && reservations.length === 0 ? <LoadingState label="Buscando producto inmovilizado…" /> : error && !selectedReservation ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : <>
-        <Field label="Reserva para revisar" required><SelectInput value={selectedReservationId} onChange={event => { const row = reservations.find(item => item.id === event.target.value); if (row) void selectReviewReservation(row) }}><option value="">Selecciona producto y lote</option>{reviewReservations.map(row => <option key={row.id} value={row.id}>{row.productName} · {row.lotCode} · {formatQty(row.remainingQuantity, row.unitType)} · {purposeLabel[row.purpose]}</option>)}</SelectInput></Field>
+        <Field label="Reserva para revisar" required><SelectInput disabled={reviewBusy} value={selectedReservationId} onChange={event => { const row = reservations.find(item => item.id === event.target.value); if (row) void selectReviewReservation(row) }}><option value="">Selecciona producto y lote</option>{reviewReservations.map(row => <option key={row.id} value={row.id}>{row.productName} · {row.lotCode} · {formatQty(row.remainingQuantity, row.unitType)} · {purposeLabel[row.purpose]}</option>)}</SelectInput></Field>
         {reservationHasMore && <SecondaryButton full disabled={loading} onClick={() => void loadMore()}>Buscar más reservas</SecondaryButton>}
         {selectedReservation && <div className="mt-3 space-y-3">
           <ReservationCard row={selectedReservation} lot={selectedLot} locationName={currentLocationName(selectedReservation.location)} />
           {selectedReview && <ReviewSummary review={selectedReview} />}
           <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs text-sky-950"><b>Autorización de calidad:</b> {canAdmin ? activeAuthorization ? `Activa para esta cuenta hasta ${dateTime(authorization?.expiresAt)}.` : 'Esta cuenta no tiene autorización vigente. Puede revisar, pero no aprobar.' : 'Almacén puede registrar observaciones; no puede aprobar aptitud ni reenvasado.'} No hay controles de concesión de permisos en esta pantalla.</div>
           <SectionCard title="Registrar observación o cambio de estado">
+            {reviewState === 'unknown' && <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Resultado pendiente de comprobación.</b> Conservamos observaciones e identificador. No edites ni envíes una segunda revisión hasta consultar el servidor.<div className="mt-2"><PrimaryButton full disabled={reviewBusy} onClick={() => void checkReview()}><RefreshCw size={15} />Comprobar estado de la revisión</PrimaryButton></div></div>}
+            {reviewState === 'rejected' && <p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-950">La operación fue rechazada. Corrige un dato para iniciar un intento nuevo; las observaciones permanecen guardadas.</p>}
+            {reviewState === 'confirmed' && <p role="status" className="mb-3 rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Revisión confirmada por el servidor.</p>}
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Acción"><SelectInput value={reviewDraft.action} onChange={event => setReviewDraft(row => ({ ...row, action: event.target.value as ReviewAction, evidenceRefs: [] }))}><option value="record_observation">Registrar observación</option><option value="start_review">Iniciar revisión</option><option value="request_information">Solicitar información</option>{canAdmin && <option value="mark_pending_economic_disposition">Marcar disposición económica pendiente</option>}{canAdmin && activeAuthorization && <><option value="authorize_repack">Autorizar procedimiento de reenvasado</option><option value="declare_unrecoverable">Declarar no recuperable</option></>}</SelectInput></Field>
-              <Field label="Condición del envase"><SelectInput value={reviewDraft.packageCondition} onChange={event => setReviewDraft(row => ({ ...row, packageCondition: event.target.value as ReviewDraft['packageCondition'] }))}><option value="unknown">No determinada</option><option value="sealed_intact">Sellado e íntegro</option><option value="package_damaged_content_intact">Envase dañado, contenido aparentemente íntegro</option><option value="package_damaged_partial">Envase dañado, contenido parcial</option><option value="no_package">Sin envase</option></SelectInput></Field>
-              <Field label="Estado observado del alimento"><SelectInput value={reviewDraft.productObservation} onChange={event => setReviewDraft(row => ({ ...row, productObservation: event.target.value as ReviewDraft['productObservation'] }))}><option value="not_assessed">No evaluado</option><option value="apparently_apt">Aparentemente apto</option><option value="uncertain">Aptitud incierta</option><option value="confirmed_unfit">No apto (requiere autorización)</option></SelectInput></Field>
-              <Field label="Peso físico medido (g)" hint="Déjalo vacío si no se pesó. No se reemplaza por peso nominal."><NumberInput min="0" step="1" value={reviewDraft.physicalWeightG} onChange={event => setReviewDraft(row => ({ ...row, physicalWeightG: event.target.value }))} placeholder="Sin medición" /></Field>
-              <Field label="Observaciones" required><TextArea maxLength={2000} value={reviewDraft.observations} onChange={event => setReviewDraft(row => ({ ...row, observations: event.target.value }))} placeholder="Describe lo observado; separa peso asignado y medido." /></Field>
-              <Field label="Motivo" required><TextArea maxLength={500} value={reviewDraft.reason} onChange={event => setReviewDraft(row => ({ ...row, reason: event.target.value }))} placeholder="Motivo de la revisión o solicitud" /></Field>
+              <Field label="Acción"><SelectInput disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} value={reviewDraft.action} onChange={event => editReviewDraft({ action: event.target.value as ReviewAction, evidenceRefs: [] })}><option value="record_observation">Registrar observación</option><option value="start_review">Iniciar revisión</option><option value="request_information">Solicitar información</option>{canAdmin && <option value="mark_pending_economic_disposition">Marcar disposición económica pendiente</option>}{canAdmin && activeAuthorization && <><option value="authorize_repack">Autorizar procedimiento de reenvasado</option><option value="declare_unrecoverable">Declarar no recuperable</option></>}</SelectInput></Field>
+              <Field label="Condición del envase"><SelectInput disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} value={reviewDraft.packageCondition} onChange={event => editReviewDraft({ packageCondition: event.target.value as ReviewDraft['packageCondition'] })}><option value="unknown">No determinada</option><option value="sealed_intact">Sellado e íntegro</option><option value="package_damaged_content_intact">Envase dañado, contenido aparentemente íntegro</option><option value="package_damaged_partial">Envase dañado, contenido parcial</option><option value="no_package">Sin envase</option></SelectInput></Field>
+              <Field label="Estado observado del alimento"><SelectInput disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} value={reviewDraft.productObservation} onChange={event => editReviewDraft({ productObservation: event.target.value as ReviewDraft['productObservation'] })}><option value="not_assessed">No evaluado</option><option value="apparently_apt">Aparentemente apto</option><option value="uncertain">Aptitud incierta</option><option value="confirmed_unfit">No apto (requiere autorización)</option></SelectInput></Field>
+              <Field label="Peso físico medido (g)" hint="Déjalo vacío si no se pesó. No se reemplaza por peso nominal."><NumberInput disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} min="0" step="1" value={reviewDraft.physicalWeightG} onChange={event => editReviewDraft({ physicalWeightG: event.target.value })} placeholder="Sin medición" /></Field>
+              <Field label="Observaciones" required><TextArea disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} maxLength={2000} value={reviewDraft.observations} onChange={event => editReviewDraft({ observations: event.target.value })} placeholder="Describe lo observado; separa peso asignado y medido." /></Field>
+              <Field label="Motivo" required><TextArea disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} maxLength={500} value={reviewDraft.reason} onChange={event => editReviewDraft({ reason: event.target.value })} placeholder="Motivo de la revisión o solicitud" /></Field>
             </div>
-            {['authorize_repack','declare_unrecoverable'].includes(reviewDraft.action) && <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Evidencia verificada requerida</b><p className="mt-1 text-xs">No se pueden cargar fotos desde esta pantalla. Solo se muestran referencias ya verificadas y vinculadas a esta reserva, revisión y ubicación.</p>{reviewEvidence.length === 0 ? <p className="mt-2 font-bold">No hay evidencia compatible; la decisión permanecerá bloqueada.</p> : <div className="mt-2 space-y-2">{reviewEvidence.map(row => <label key={row.id} className="flex min-h-11 items-center gap-2 rounded-lg bg-white p-2 text-xs"><input type="checkbox" checked={reviewDraft.evidenceRefs.includes(row.id)} onChange={event => setReviewDraft(current => ({ ...current, evidenceRefs: event.target.checked ? [...current.evidenceRefs, row.id] : current.evidenceRefs.filter(id => id !== row.id) }))} /><span className="break-all">{row.evidenceType} · {dateTime(row.recordedAt)} · {row.id}</span></label>)}</div>}</div>}
+            {['authorize_repack','declare_unrecoverable'].includes(reviewDraft.action) && <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Evidencia verificada requerida</b><p className="mt-1 text-xs">No se pueden cargar fotos desde esta pantalla. Solo se muestran referencias ya verificadas y vinculadas a esta reserva, revisión y ubicación.</p>{reviewEvidence.length === 0 ? <p className="mt-2 font-bold">No hay evidencia compatible; la decisión permanecerá bloqueada.</p> : <div className="mt-2 space-y-2">{reviewEvidence.map(row => <label key={row.id} className="flex min-h-11 items-center gap-2 rounded-lg bg-white p-2 text-xs"><input disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} type="checkbox" checked={reviewDraft.evidenceRefs.includes(row.id)} onChange={event => editReviewDraft({ evidenceRefs: event.target.checked ? [...reviewDraft.evidenceRefs, row.id] : reviewDraft.evidenceRefs.filter(id => id !== row.id) })} /><span className="break-all">{row.evidenceType} · {dateTime(row.recordedAt)} · {row.id}</span></label>)}</div>}</div>}
             {reviewMessage && <p role="status" className="mt-3 rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{reviewMessage}</p>}
             {error && selectedReservation && <ErrorBox message={error} />}
-      <div className="mt-3"><PrimaryButton full disabled={reviewBusy || (['authorize_repack','declare_unrecoverable'].includes(reviewDraft.action) && reviewDraft.evidenceRefs.length === 0) || (['authorize_repack','declare_unrecoverable'].includes(reviewDraft.action) && !activeAuthorization)} onClick={() => void submitReview()}>{reviewBusy ? 'Guardando revisión…' : 'Registrar revisión'}</PrimaryButton></div>
+      <div className="mt-3"><PrimaryButton full disabled={reviewBusy || ['unknown','sending','confirmed','rejected'].includes(reviewState) || (['authorize_repack','declare_unrecoverable'].includes(reviewDraft.action) && reviewDraft.evidenceRefs.length === 0) || (['authorize_repack','declare_unrecoverable'].includes(reviewDraft.action) && !activeAuthorization)} onClick={() => void submitReview()}>{reviewBusy || reviewState === 'sending' ? 'Guardando revisión…' : reviewState === 'confirmed' ? 'Revisión confirmada' : reviewState === 'rejected' ? 'Corrige para crear otro intento' : 'Registrar revisión'}</PrimaryButton></div>
           </SectionCard>
         </div>}
       </>}
