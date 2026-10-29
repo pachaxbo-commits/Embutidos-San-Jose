@@ -241,6 +241,33 @@ try {
   const voidedCreditReceipt = await read('distReceivables', voidCreditSaleId)
   pass(unpaidCreditVoid.status === 'confirmed' && voidedCreditReceipt.status === 'VOID' && voidedCreditReceipt.balance === 0 && (await read('distLots', voidCreditLot)).quantities.central === 2, 'anulación segura cancela crédito impago sin marcarlo pagado ni duplicar inventario')
 
+  const voidQrProduct = `${prefix}-void-qr-product`, voidQrLot = `${prefix}-void-qr-lot`, voidQrSaleId = `${prefix}-void-qr-sale`
+  await seedProduct(voidQrProduct, 'package', 999)
+  await seedPackageLot({ productId: voidQrProduct, lotId: voidQrLot, quantity: 2, weightG: 500, costCents: 250, batchId: `${prefix}-void-qr-batch` })
+  await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: voidQrProduct, quantity: 1, actualUnitPrice: 10 }], cashAmount: 0, qrAmount: 10 }), voidQrSaleId)
+  await root.collection('distQrVerifications').doc(`sale_${voidQrSaleId}`).set({ id: `sale_${voidQrSaleId}`, restaurantId: 'sanjose', routeId: 'administracion', sourceType: 'sale', sourceId: voidQrSaleId, sourceRevision: 0, amount: 10, reference: 'QA-INCOMING-QR-01', verifiedBy: ids.admin, verifiedAt: new Date().toISOString() })
+  const missingQrRefund = await command(ids.admin, 'voidSale', { saleId: voidQrSaleId, reason: 'Pago QR devuelto sin referencia', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Administración conserva el paquete sin entregar', cashRefundAmount: 0, qrRefundAmount: 10 }, `${prefix}-void-qr-missing-ref`, 'rejected')
+  pass(missingQrRefund.error.includes('devolución bancaria') && (await read('distLots', voidQrLot)).quantities.central === 1, 'anulación QR exige evidencia del pago original y referencia de devolución; rechazo sin restaurar stock')
+  const qrVerificationRef = root.collection('distQrVerifications').doc(`sale_${voidQrSaleId}`)
+  await qrVerificationRef.update({ sourceRevision: 1 })
+  const staleQrRefund = await command(ids.admin, 'voidSale', { saleId: voidQrSaleId, reason: 'Intento con verificación QR obsoleta', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Administración conserva el paquete sin entregar', cashRefundAmount: 0, qrRefundAmount: 10, qrRefundConfirmed: true, qrRefundReference: 'QA-QR-REFUND-STALE' }, `${prefix}-void-qr-stale-verification`, 'rejected')
+  pass(staleQrRefund.error.includes('verificación bancaria vigente') && (await read('distLots', voidQrLot)).quantities.central === 1, 'anulación QR rechaza la verificación de una revisión anterior sin tocar inventario')
+  await qrVerificationRef.update({ sourceRevision: 0 })
+  const qrVoid = await command(ids.admin, 'voidSale', { saleId: voidQrSaleId, reason: 'Venta QR registrada por error y nunca entregada', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Administración conserva el paquete sin entregar', cashRefundAmount: 0, qrRefundAmount: 10, qrRefundConfirmed: true, qrRefundReference: 'QA-QR-REFUND-2026-001' }, `${prefix}-void-qr-confirmed`)
+  const qrRefundRecord = await read('distClaims', qrVoid.operationId)
+  const qrVoidedLot = await read('distLots', voidQrLot)
+  pass(qrVoid.status === 'confirmed' && qrRefundRecord.qrOut === 10 && qrRefundRecord.qrRefundReference === 'QA-QR-REFUND-2026-001' && qrRefundRecord.qrRefundedBy === ids.admin && qrVoidedLot.quantities.central === 2, 'anulación con QR verificado registra el reembolso bancario auditado y devuelve el stock una sola vez')
+
+  const correctedQrProduct = `${prefix}-corrected-qr-product`, correctedQrLot = `${prefix}-corrected-qr-lot`, correctedQrSaleId = `${prefix}-corrected-qr-sale`
+  await seedProduct(correctedQrProduct, 'package', 999)
+  await seedPackageLot({ productId: correctedQrProduct, lotId: correctedQrLot, quantity: 2, weightG: 500, costCents: 250, batchId: `${prefix}-corrected-qr-batch` })
+  await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: correctedQrProduct, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), correctedQrSaleId)
+  await command(ids.admin, 'editSale', { saleId: correctedQrSaleId, reason: 'Corrección económica: pago QR confirmado', lines: [{ productId: correctedQrProduct, quantity: 1, actualUnitPrice: 10 }], paymentKind: 'qr', cashAmount: 0, qrAmount: 10, creditAmount: 0 }, `${prefix}-corrected-qr-edit`)
+  await root.collection('distQrVerifications').doc(`sale_${correctedQrSaleId}_r1`).set({ id: `sale_${correctedQrSaleId}_r1`, restaurantId: 'sanjose', routeId: 'administracion', sourceType: 'sale', sourceId: correctedQrSaleId, sourceRevision: 1, amount: 10, reference: 'QA-INCOMING-QR-R1', verifiedBy: ids.admin, verifiedAt: new Date().toISOString() })
+  const correctedQrVoid = await command(ids.admin, 'voidSale', { saleId: correctedQrSaleId, reason: 'Pago corregido a QR y venta nunca entregada', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Administración verificó el paquete sin entregar', cashRefundAmount: 0, qrRefundAmount: 10, qrRefundConfirmed: true, qrRefundReference: 'QA-QR-REFUND-R1-0001' }, `${prefix}-corrected-qr-void`)
+  const correctedQrRefund = await read('distClaims', correctedQrVoid.operationId)
+  pass(correctedQrVoid.status === 'confirmed' && correctedQrRefund.qrOut === 10 && correctedQrRefund.cashOut === 0 && (await read('distLots', correctedQrLot)).quantities.central === 2, 'anulación usa la forma de pago corregida y su verificación QR de la revisión vigente')
+
   const beforeRetry = await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()
   await processCommand(db, root.collection('distOperations').doc(routeSale.operationId))
   pass((await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size === beforeRetry.size && (await read('distLots', centralLot)).quantities[routeLoc] === 0, 'reintento del mismo operationId no duplica venta ni consumo')

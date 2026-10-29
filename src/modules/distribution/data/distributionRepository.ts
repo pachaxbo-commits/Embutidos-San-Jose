@@ -722,7 +722,7 @@ export async function correctSale(input: { saleId: string; reason: string; lines
   await submitOperation('editSale', input, newOperationId('sale-correction'))
 }
 
-export async function voidSale(input: { saleId: string; reason: string; voidScenario?: 'recorded_in_error_never_delivered' | 'delivered_then_returned'; physicalCustodyConfirmed?: boolean; custodyLocation?: string; physicalCustodyNote?: string; cashRefundAmount?: number }): Promise<void> {
+export async function voidSale(input: { saleId: string; reason: string; voidScenario?: 'recorded_in_error_never_delivered' | 'delivered_then_returned'; physicalCustodyConfirmed?: boolean; custodyLocation?: string; physicalCustodyNote?: string; cashRefundAmount?: number; qrRefundAmount?: number; qrRefundConfirmed?: boolean; qrRefundReference?: string }): Promise<void> {
   await submitOperation('voidSale', input, newOperationId('sale-void'))
 }
 

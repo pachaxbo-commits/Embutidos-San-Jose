@@ -2056,8 +2056,23 @@ async function voidDerivedSale(o, p, sale) {
     const closures = await o.query('distClosures', 'dispatchId', sale.dispatchId);
     check(!closures.some(row => row.warehouseClosedBy || row.status === 'closed'), 'La ruta ya tiene recepción o cierre confirmado.');
   }
-  check((await o.query('distQrVerifications', 'sourceId', sale.id)).every(row => row.sourceType !== 'sale'),
-    'La venta tiene un cobro QR verificado; usa el procedimiento de revisión del cobro antes de anular.');
+  const saleSnapshot = sale.effectiveSnapshot && typeof sale.effectiveSnapshot === 'object' ? sale.effectiveSnapshot : sale;
+  const rawQrAmount = saleSnapshot.qrAmount;
+  const qrRefundAmount = round(typeof rawQrAmount === 'number' && Number.isFinite(rawQrAmount) ? rawQrAmount : Number(sale.qrAmount || 0));
+  const qrVerifications = await o.query('distQrVerifications', 'sourceId', sale.id);
+  if (qrRefundAmount > 0) {
+    const revision = Number.isSafeInteger(sale.revision) && sale.revision >= 0 ? sale.revision : 0;
+    const expectedVerificationId = revision > 0 ? `sale_${sale.id}_r${revision}` : `sale_${sale.id}`;
+    check(qrVerifications.some(row => row.id === expectedVerificationId && row.sourceType === 'sale' && row.sourceId === sale.id
+      && Number(row.sourceRevision || 0) === revision && round(Number(row.amount) || 0) === qrRefundAmount
+      && row.routeId === sale.routeId && String(row.reference || '').trim().length > 0
+      && String(row.verifiedBy || '').trim().length > 0 && Boolean(row.verifiedAt)),
+    'El pago QR original no tiene verificación bancaria vigente y coincidente; no se puede registrar una devolución QR segura.');
+  } else check(qrVerifications.every(row => row.sourceType !== 'sale'), 'La verificación QR no coincide con el pago actual de esta venta.');
+  const declaredQrRefund = round(Number(p.qrRefundAmount || 0));
+  check(declaredQrRefund === qrRefundAmount && (qrRefundAmount === 0 || p.qrRefundConfirmed === true
+    && String(p.qrRefundReference || '').trim().length >= 8),
+  qrRefundAmount > 0 ? 'Confirma la devolución bancaria exacta y registra su referencia antes de anular la venta.' : 'El monto QR a devolver no coincide con el pago original.');
   const snapshot = await o.withDocumentedOrigins(sale, sale.effectiveSnapshot || sale);
   check(Array.isArray(snapshot.lines) && snapshot.lines.length > 0
     && snapshot.lines.every(line => Array.isArray(line.allocations) && line.allocations.length > 0
@@ -2068,8 +2083,9 @@ async function voidDerivedSale(o, p, sale) {
   const receipt = await o.read('distReceivables', sale.id);
   check(!receipt || Number(receipt.paidAmount || 0) === 0,
     'El crédito ya tiene abonos. No se puede anular ni revertir esos pagos mediante el flujo de anulación.');
-  check(Number(sale.qrAmount || 0) === 0, 'Los cobros QR requieren su procedimiento de reversión verificada antes de anular la venta.');
-  const cashAmount = round(Number(sale.cashAmount || 0));
+  const cashAmount = round(Number(saleSnapshot.cashAmount ?? sale.cashAmount) || 0);
+  const creditAmount = round(Number(saleSnapshot.creditAmount ?? sale.creditAmount) || 0);
+  const saleTotal = round(Number(saleSnapshot.total ?? sale.total) || 0);
   const cashRefundAmount = round(Number(p.cashRefundAmount || 0));
   check(cashRefundAmount === cashAmount,
     cashAmount > 0
@@ -2108,9 +2124,9 @@ async function voidDerivedSale(o, p, sale) {
   const correction = { id: o.id, ...o.base(), kind: 'derived_void', saleId: sale.id, sellerUid: sale.sellerUid,
     revision: Number(sale.revision || 0) + 1, reason, original: snapshot,
     voidScenario: p.voidScenario,
-    corrected: { lines: [], total: 0, paymentKind: sale.paymentKind, cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: sale.saleKind || 'sale' },
+    corrected: { lines: [], total: 0, paymentKind: saleSnapshot.paymentKind || sale.paymentKind, cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: sale.saleKind || 'sale' },
     stockDeltas: [...returnedByProduct].map(([productId, row]) => ({ productId, quantity: -row.quantity, allocations: row.allocations })),
-    moneyDelta: -round(Number(sale.total) || 0), creditDelta: -round(Number(sale.creditAmount) || 0),
+    moneyDelta: -saleTotal, creditDelta: -creditAmount,
     physicalCustodyConfirmed: true, custodyLocation: loc, custodyNote: String(p.physicalCustodyNote).trim(), cashRefundAmount,
     correctedByName: o.member.displayName || o.actor };
   o.put('distSaleCorrections', o.id, correction);
@@ -2121,12 +2137,15 @@ async function voidDerivedSale(o, p, sale) {
       custodyConfirmedAt: o.now, custodyNote: correction.custodyNote, cashRefundAmount } });
   // Dedicated cash-out record for closure cash reconciliation. It is deliberately
   // excluded from sales adjustments/profit: the sale itself is voided above.
-  if (cashRefundAmount > 0) o.put('distClaims', o.id, { id: o.id, ...o.base(), kind: 'return', isDerivedSaleVoid: true,
+  if (cashRefundAmount > 0 || qrRefundAmount > 0) o.put('distClaims', o.id, { id: o.id, ...o.base(), kind: 'return', isDerivedSaleVoid: true,
     saleId: sale.id, sellerUid: sale.sellerUid, sellerName: sale.sellerName, customerId: sale.customerId || '',
     customerName: sale.customerName || '', routeId: sale.routeId, productId: snapshot.lines[0].productId,
     productName: snapshot.lines[0].productNameSnapshot, unitType: snapshot.lines[0].unitType,
-    quantity: 0, reason, revenueDelta: 0, cashIn: 0, cashOut: cashRefundAmount, qrIn: 0, qrOut: 0,
-    method: 'cash', physicalReceiptConfirmed: true, inventoryRestoredByVoid: true, correctionId: o.id,
+    quantity: 0, reason, revenueDelta: 0, cashIn: 0, cashOut: cashRefundAmount, qrIn: 0, qrOut: qrRefundAmount,
+    method: cashRefundAmount > 0 && qrRefundAmount > 0 ? 'mixed' : qrRefundAmount > 0 ? 'qr' : 'cash',
+    qrRefundReference: qrRefundAmount > 0 ? String(p.qrRefundReference).trim() : '',
+    qrRefundConfirmed: qrRefundAmount > 0, qrRefundedBy: qrRefundAmount > 0 ? o.actor : '', qrRefundedAt: qrRefundAmount > 0 ? o.now : '',
+    physicalReceiptConfirmed: true, inventoryRestoredByVoid: true, correctionId: o.id,
     receivedAt: o.now, receivedBy: o.actor, receivedByName: o.member.displayName || o.actor });
   return correction;
 }
