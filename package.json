@@ -105,7 +105,9 @@
     "test:processing-batches": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingBatches.test.mjs\"",
     "test:processing-derived-dispatch": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingDerivedDispatch.test.mjs\"",
     "test:processing-derived-sale": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node --experimental-strip-types firebase/tests/processingDerivedSale.test.mjs\"",
-    "test:processing-review": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingReview.test.mjs\""
+    "test:processing-review": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingReview.test.mjs\"",
+    "test:processing-repack": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingRepack.test.mjs\"",
+    "test:processing-quality-auth": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth,functions \"node firebase/tests/processingQualityAuthorization.test.mjs\""
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

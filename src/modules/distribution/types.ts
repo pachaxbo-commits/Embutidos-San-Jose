@@ -793,10 +793,10 @@ export interface DistLot {
  /** Per-location remaining package/gram/cost segments; absent on legacy derived lots and required for movement. */
  processingByLocation?: Record<string, import('./domain/processing.ts').ProcessingLotLocationLedger>;
  /** Latest immutable inspection pointer; it never changes physical availability or release eligibility. */
- processingReview?: { latestReviewId: string; revision: number; status: import('./domain/processing.ts').ProcessingReviewStatus; updatedAt: string; updatedBy: string; economicDispositionStatus?: 'pending_quarantine_disposition' };
+ processingReview?: { caseId: string; latestReviewId: string; revision: number; status: import('./domain/processing.ts').ProcessingReviewStatus; updatedAt: string; updatedBy: string; economicDispositionStatus?: 'pending_quarantine_disposition' };
  processingSourceLotIds?: string[];
  processingSourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[];
- processingSourceAllocationBasis?: 'batch_blend_accounting_allocation';
+ processingSourceAllocationBasis?: 'batch_blend_accounting_allocation' | 'repack_origin_reference';
  packagedOn?: string;
  id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;

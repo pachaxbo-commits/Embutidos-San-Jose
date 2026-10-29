@@ -100,6 +100,9 @@ export const DIST_COLLECTIONS = {
   supplierPayments: 'distSupplierPayments',
   closures: 'distClosures',
   processingReviews: 'distProcessingReviews',
+  processingRepackings: 'distProcessingRepackings',
+  processingEvidence: 'distProcessingEvidence',
+  processingQualityAuthorizations: 'distProcessingQualityAuthorizations',
   adjustmentRequests: 'distAdjustmentRequests',
   quotes: 'distQuotes',
   saleCorrections: 'distSaleCorrections',
@@ -163,7 +166,7 @@ export type ProcessingOperationState =
   | { status: 'rejected'; error: string }
 
 /** Lee estado desde servidor, no del cache local, antes de reintentar una respuesta desconocida. */
-export async function getProcessingOperationState(operationId: string, expectedType: 'confirmProcessingBatch' | 'recordProcessingReview' = 'confirmProcessingBatch'): Promise<ProcessingOperationState> {
+export async function getProcessingOperationState(operationId: string, expectedType: 'confirmProcessingBatch' | 'recordProcessingReview' | 'confirmProcessingRepack' = 'confirmProcessingBatch'): Promise<ProcessingOperationState> {
   const context = await getContext()
   const snapshot = await getDocFromServer(docRef(context, 'distOperations', operationId))
   if (!snapshot.exists()) return { status: 'missing' }
@@ -182,6 +185,13 @@ export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput,
 /** Registra una inspección de producto inmovilizado sin tocar inventario ni liberar la reserva. */
 export async function recordProcessingReview(input: RecordProcessingReviewInput, operationId: string): Promise<unknown> {
   return submitOperation('recordProcessingReview', input, operationId)
+}
+
+/** Reenvasa una reserva aprobada mediante la única transacción del servidor. */
+export async function confirmProcessingRepack(input: RepackOperationInput): Promise<unknown> {
+  if (!input.operationId.trim()) throw new Error('El reenvasado requiere un identificador de operación estable.')
+  validateRepackOperationContract(input)
+  return submitOperation('confirmProcessingRepack', input, input.operationId)
 }
 
 /** Lee un informe de inspección desde servidor; el alcance por ubicación lo aplican Firestore Rules. */

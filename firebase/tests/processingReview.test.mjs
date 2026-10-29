@@ -7,6 +7,7 @@ import { doc, setDoc, getDoc } from 'firebase/firestore'
 
 const req = createRequire(new URL('../../functions/package.json', import.meta.url))
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+process.env.FUNCTIONS_EMULATOR = 'true'
 const { initializeApp } = req('firebase-admin/app')
 const { getFirestore } = req('firebase-admin/firestore')
 const { processCommand } = req('./operations.cjs')
@@ -40,10 +41,11 @@ const input = (lotId, reservationId, location, patch = {}) => ({ lotId, reservat
 
 try {
   await root.collection('members').doc(ids.admin).set({ role: 'admin', active: true, displayName: 'QA Admin' })
-  await root.collection('members').doc(ids.quality).set({ role: 'admin', active: true, displayName: 'QA Calidad', processingQualityAuthorized: true, processingQualityAuthorizationRef: 'QA-AUTH-2026' })
+  await root.collection('members').doc(ids.quality).set({ role: 'admin', active: true, displayName: 'QA Calidad' })
   await root.collection('members').doc(ids.warehouse).set({ role: 'warehouse', active: true, warehouseId: ids.warehouseId, displayName: 'QA Almacén' })
   await root.collection('members').doc(ids.otherWarehouse).set({ role: 'warehouse', active: true, warehouseId: ids.otherWarehouseId, displayName: 'Otro Almacén' })
   await root.collection('members').doc(ids.distributor).set({ role: 'distributor', active: true, routeId: ids.route, displayName: 'QA Distribuidor' })
+  await root.collection('distProcessingQualityAuthorizations').doc(ids.quality).set({ id: 'QA-AUTH-2026', authorizationId: 'QA-AUTH-2026', restaurantId: 'sanjose', status: 'active', beneficiaryUid: ids.quality, grantedBy: ids.admin, expiresAt: '2027-12-31T23:59:59.000Z' })
   for (const warehouseId of [ids.warehouseId, ids.otherWarehouseId]) await root.collection('distWarehouses').doc(warehouseId).set({ id: warehouseId, restaurantId: 'sanjose', active: true, name: 'QA' })
 
   const location = `warehouse__${ids.warehouseId}`
@@ -54,6 +56,7 @@ try {
   const observation = await command(ids.warehouse, 'recordProcessingReview', input(lotId, reservationId, location, { physicalWeightG: 1900, packageCondition: 'no_package', productObservation: 'uncertain' }), `${prefix}-observe`)
   const reviewId = observation.result.reviewId
   let review = (await root.collection('distProcessingReviews').doc(reviewId).get()).data()
+  const addEvidence = (evidenceId, caseId, evidenceLotId, evidenceReservationId, evidenceLocation, reviewRevision) => root.collection('distProcessingEvidence').doc(evidenceId).set({ id: evidenceId, restaurantId: 'sanjose', status: 'verified', evidenceType: 'photo', lotId: evidenceLotId, reservationId: evidenceReservationId, reviewCaseId: caseId, reviewRevision, location: evidenceLocation, uploadedBy: ids.warehouse, recordedAt: new Date().toISOString(), bucket: 'qa-fixture', objectPath: `processing-evidence/sanjose/${evidenceId}.jpg`, objectGeneration: '1', sha256: 'a'.repeat(64), byteSize: 128, contentType: 'image/jpeg', viewers: [ids.quality], verificationMethod: 'emulator_fixture', objectExists: true })
   let lot = (await root.collection('distLots').doc(lotId).get()).data()
   let reservation = (await root.collection('distStockReservations').doc(reservationId).get()).data()
   pass(observation.result.status === 'pending_review' && review.commercialQuantity === 10 && review.historicalAssignedWeightG === 2000 && review.physicalWeightG === 1900 && review.weightDifferenceG === 100 && review.costCents === 5000, 'revisión registra cantidad, gramos históricos, medida, diferencia y costo sin confundirlos')
@@ -67,7 +70,7 @@ try {
   const unauthorizedApproval = await command(ids.admin, 'recordProcessingReview', input(lotId, reservationId, location, { expectedRevision: 1, action: 'authorize_repack', physicalWeightG: 1900, packageCondition: 'no_package', productObservation: 'apparently_apt', evidenceRefs: ['evidence-1'], qualityAuthorizationRef: 'fake-client-flag' }), `${prefix}-unauthorized-decision`, 'rejected')
   pass(unauthorizedApproval.error.includes('autorización de calidad') && (await root.collection('distLots').doc(lotId).get()).data().processingReview.revision === 1, 'Administración sin autorización de calidad no aprueba reenvasado ni cambia revisión')
   const noQualityClaim = await command(ids.warehouse, 'recordProcessingReview', input(lotId, reservationId, location, { expectedRevision: 1, action: 'record_observation', productObservation: 'confirmed_unfit' }), `${prefix}-warehouse-unfit`, 'rejected')
-  pass(noQualityClaim.error.includes('autorizada') && (await root.collection('distLots').doc(lotId).get()).data().processingReview.revision === 1, 'Almacén no puede certificar no aptitud sanitaria')
+  pass(noQualityClaim.error.includes('observación') && (await root.collection('distLots').doc(lotId).get()).data().processingReview.revision === 1, 'Almacén no puede certificar no aptitud sanitaria')
 
   const concurrent = await Promise.all([
     command(ids.admin, 'recordProcessingReview', input(lotId, reservationId, location, { expectedRevision: 1, action: 'start_review' }), `${prefix}-review-race-a`, null),
@@ -76,6 +79,7 @@ try {
   pass(concurrent.filter(row => row.status === 'confirmed').length === 1 && concurrent.filter(row => row.status === 'rejected').length === 1, 'revisiones concurrentes con revisión esperada idéntica no sobrescriben la decisión')
   lot = (await root.collection('distLots').doc(lotId).get()).data()
   const currentRevision = lot.processingReview.revision
+  await addEvidence('qa-evidence-ref', lot.processingReview.caseId, lotId, reservationId, location, currentRevision)
   const decision = await command(ids.quality, 'recordProcessingReview', input(lotId, reservationId, location, { expectedRevision: currentRevision, action: 'authorize_repack', physicalWeightG: 1900, packageCondition: 'no_package', productObservation: 'apparently_apt', observations: 'Autorización ficticia del entorno de pruebas', evidenceRefs: ['qa-evidence-ref'], qualityAuthorizationRef: 'QA-AUTH-2026' }), `${prefix}-authorize-repack`)
   lot = (await root.collection('distLots').doc(lotId).get()).data()
   reservation = (await root.collection('distStockReservations').doc(reservationId).get()).data()
@@ -86,8 +90,9 @@ try {
 
   const unfitLotId = `${prefix}-unfit-lot`, unfitProductId = `${prefix}-unfit-product`
   const unfitReservationId = await seedReviewLot({ lotId: unfitLotId, productId: unfitProductId, location, quantity: 1, unitType: 'package', purpose: 'review_hold', weightG: null, costCents: null, extraLot: { quarantined: true, processingCommercialBlocked: true, processingDestinationKind: 'review_hold' } })
-  await command(ids.warehouse, 'recordProcessingReview', input(unfitLotId, unfitReservationId, location, { packageCondition: 'package_damaged_partial', productObservation: 'uncertain' }), `${prefix}-unfit-observe`)
+  const unfitObserve = await command(ids.warehouse, 'recordProcessingReview', input(unfitLotId, unfitReservationId, location, { packageCondition: 'package_damaged_partial', productObservation: 'uncertain' }), `${prefix}-unfit-observe`)
   await command(ids.admin, 'recordProcessingReview', input(unfitLotId, unfitReservationId, location, { expectedRevision: 1, action: 'start_review' }), `${prefix}-unfit-start`)
+  await addEvidence('qa-unfit-evidence', unfitObserve.result.reviewId, unfitLotId, unfitReservationId, location, 2)
   const unfit = await command(ids.quality, 'recordProcessingReview', input(unfitLotId, unfitReservationId, location, { expectedRevision: 2, action: 'declare_unrecoverable', packageCondition: 'package_damaged_partial', productObservation: 'confirmed_unfit', observations: 'No apto según revisión sintética QA', evidenceRefs: ['qa-unfit-evidence'], qualityAuthorizationRef: 'QA-AUTH-2026' }), `${prefix}-unfit-decision`)
   const unfitLot = (await root.collection('distLots').doc(unfitLotId).get()).data()
   pass(unfit.result.status === 'not_recoverable' && unfitLot.processingReview.economicDispositionStatus === 'pending_quarantine_disposition', 'no apto requiere cuenta QA y queda pendiente de disposición económica, no descartado')

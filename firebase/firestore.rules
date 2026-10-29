@@ -248,7 +248,7 @@ service cloud.firestore {
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','correctDispatch','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
           || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
-          || (request.resource.data.type in ['reserveProcessingStock','confirmProcessingBatch','recordProcessingReview'] && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
+          || (request.resource.data.type in ['reserveProcessingStock','confirmProcessingBatch','recordProcessingReview','confirmProcessingRepack'] && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
           || (request.resource.data.type in ['releaseProcessingReservation','deliverReservedCourtesy'] && distAdmin(restaurantId))
           || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','saveExpenseGroup','saveExpenseSupplier','registerSupplierPurchase','paySupplierPayable','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
       allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
@@ -277,6 +277,22 @@ service cloud.firestore {
     }
     match /restaurants/{restaurantId}/distProcessingReviews/{reviewId} {
       allow read: if distAdmin(restaurantId) || distOwnsProcessingLocation(restaurantId, resource.data.location);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distProcessingRepackings/{repackId} {
+      allow read: if distAdmin(restaurantId) || distOwnsProcessingLocation(restaurantId, resource.data.location);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distProcessingEvidence/{evidenceId} {
+      allow read: if distAdmin(restaurantId) || distOwnsProcessingLocation(restaurantId, resource.data.location);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distProcessingQualityAuthorizations/{beneficiaryUid} {
+      allow read: if distAdmin(restaurantId) || (isActiveMember(restaurantId) && request.auth.uid == beneficiaryUid);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distProcessingQualityAuthorizationEvents/{eventId} {
+      allow read: if distAdmin(restaurantId);
       allow write: if false;
     }
     match /restaurants/{restaurantId}/distCourtesyDeliveries/{deliveryId} {

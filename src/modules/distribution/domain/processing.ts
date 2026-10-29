@@ -10,11 +10,12 @@ export type ProcessingReversalStatus = 'clear' | 'blocked' | 'approved'
 export type ProcessingReviewStatus = 'pending_review' | 'in_review' | 'authorized_for_repack' | 'not_recoverable' | 'pending_information' | 'pending_economic_disposition' | 'resolved_specialized'
 export type ProcessingPackageCondition = 'sealed_intact' | 'package_damaged_content_intact' | 'package_damaged_partial' | 'no_package' | 'unknown'
 export type ProcessingProductObservation = 'apparently_apt' | 'uncertain' | 'confirmed_unfit' | 'not_assessed'
-export type ProcessingReviewAction = 'record_observation' | 'start_review' | 'request_information' | 'authorize_repack' | 'declare_unrecoverable' | 'mark_pending_economic_disposition'
+export type ProcessingReviewAction = 'record_observation' | 'start_review' | 'request_information' | 'authorize_repack' | 'declare_unrecoverable' | 'mark_pending_economic_disposition' | 'repack_consumed'
 
 /** Immutable audit event for inspection; it never mutates stock, reservations or historical cost. */
 export interface ProcessingReviewRecord {
   id: string
+  caseId: string
   operationId: string
   restaurantId: string
   branchId: string
@@ -73,19 +74,19 @@ export interface RecordProcessingReviewInput {
 export interface RepackOperationInput {
   operationId: string
   reviewId: string
+  repackId: string
   sourceLotId: string
   reservationId: string
   location: string
   expectedReviewRevision: number
-  sourceExpiryCeiling: string
+  expectedReservationQuantity: number
+  sourceKind: 'traditional_lot' | 'derived_lot'
   sourceUnitType: UnitType
   openedCommercialQuantity: number
-  sourceSegments: Array<{ lotId: string; batchId: string; segmentId: string; commercialQuantity: number; historicalWeightG: number | null; costCents: number | null }>
+  /** Segment IDs are selectors only. Server reads all quantities, weights and costs from the source lot. */
+  sourceSegments: Array<{ batchId: string; segmentId: string }>
   openedPhysicalWeightG: number
-  recoveredNetWeightG: number
-  confirmedDiscardWeightG: number
-  otherPhysicalDestinations: Array<{ kind: string; netWeightG: number; reference: string }>
-  outputs: Array<{ productId: string; commercialUnit: UnitType; commercialQuantity: number; measuredNetWeightG: number; lotCode: string; manufacturedOn: string; packagedOn: string; expiresOn: string }>
+  outputs: Array<{ id: string; productId: string; commercialUnit: UnitType; commercialQuantity: number; measuredNetWeightG: number; lotCode: string; manufacturedOn: string; packagedOn: string; expiresOn: string }>
   packagingMaterials: Array<{ materialId: string; quantityMilli: number; damagedQuantityMilli: number; costCents: number | null }>
   additionalCostComponents: ProcessingCostComponent[]
   authorizationReference: string
@@ -93,28 +94,61 @@ export interface RepackOperationInput {
   reason: string
 }
 
+export interface ProcessingQualityAuthorization {
+  id: string
+  authorizationId: string
+  restaurantId: string
+  status: 'active' | 'revoked'
+  beneficiaryUid: string
+  grantedBy: string
+  grantedAt: string
+  grantReason: string
+  expiresAt: string
+  revokedAt: string | null
+  revokedBy: string | null
+  revokeReason: string | null
+}
+
+export interface ProcessingEvidenceRecord {
+  id: string
+  restaurantId: string
+  status: 'verified' | 'pending' | 'rejected'
+  evidenceType: string
+  lotId: string
+  reservationId: string
+  reviewCaseId: string
+  reviewRevision: number
+  location: string
+  uploadedBy: string
+  recordedAt: string
+  bucket: string
+  objectPath: string
+  objectGeneration: string
+  sha256: string
+  byteSize: number
+  contentType: string
+  viewers: string[]
+}
+
 export function validateRepackOperationContract(input: RepackOperationInput): void {
   const fail = (message: string): never => { throw new Error(message) }
   const validCommercialQuantity = (quantity: number, unit: UnitType) => Number.isFinite(quantity) && quantity > 0 &&
     (unit === 'kg' ? Number.isSafeInteger(quantity * 1000) : Number.isSafeInteger(quantity))
-  const grams = [input.openedPhysicalWeightG, input.recoveredNetWeightG, input.confirmedDiscardWeightG,
-    ...input.otherPhysicalDestinations.map(destination => destination.netWeightG),
-    ...input.outputs.map(output => output.measuredNetWeightG)]
+  const grams = [input.openedPhysicalWeightG, ...input.outputs.map(output => output.measuredNetWeightG)]
   if (!grams.every(value => Number.isSafeInteger(value) && value >= 0)) fail('Los pesos del reenvasado deben ser gramos enteros medidos.')
   if (!validCommercialQuantity(input.openedCommercialQuantity, input.sourceUnitType)) fail('La cantidad comercial abierta no coincide con la precisión de su unidad.')
-  if (!input.operationId.trim() || !input.reviewId.trim() || !input.reservationId.trim() || !input.sourceLotId.trim()) fail('El reenvasado requiere referencias estables de operación, revisión, reserva y lote.')
+  if (!input.operationId.trim() || !input.repackId.trim() || !input.reviewId.trim() || !input.reservationId.trim() || !input.sourceLotId.trim()) fail('El reenvasado requiere referencias estables de operación, lote y revisión.')
+  if (!Number.isFinite(input.expectedReservationQuantity) || input.expectedReservationQuantity <= 0 || input.openedCommercialQuantity > input.expectedReservationQuantity) fail('La cantidad abierta debe estar cubierta por la reserva esperada.')
+  if (!['traditional_lot', 'derived_lot'].includes(input.sourceKind) || (input.sourceKind === 'traditional_lot' && input.sourceSegments.length !== 0) || (input.sourceKind === 'derived_lot' && input.sourceSegments.length === 0)) fail('Las referencias de segmentos deben coincidir con el tipo de lote de origen.')
   if (!input.authorizationReference.trim() || !input.reason.trim() || input.evidenceRefs.length === 0) fail('El reenvasado requiere autorización, motivo y evidencia.')
   const validDay = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value
-  if (!validDay(input.sourceExpiryCeiling)) fail('La fecha límite de vencimiento del origen debe estar documentada.')
-  if (input.sourceSegments.length === 0 || input.sourceSegments.some(segment => !segment.lotId.trim() || !segment.batchId.trim() || !segment.segmentId.trim() || !validCommercialQuantity(segment.commercialQuantity, input.sourceUnitType) || segment.historicalWeightG !== null && (!Number.isSafeInteger(segment.historicalWeightG) || segment.historicalWeightG < 0) || segment.costCents !== null && (!Number.isSafeInteger(segment.costCents) || segment.costCents < 0))) fail('Los segmentos originales requieren lote, elaboración, cantidades y costos verificables.')
-  if (input.outputs.some(output => !validCommercialQuantity(output.commercialQuantity, output.commercialUnit) || !output.productId.trim() || !output.lotCode.trim() || !validDay(output.manufacturedOn) || !validDay(output.packagedOn) || !validDay(output.expiresOn) || output.manufacturedOn > output.packagedOn || output.packagedOn > output.expiresOn || output.expiresOn > input.sourceExpiryCeiling)) fail('Cada presentación nueva requiere SKU, lote y fechas válidas; no se puede ampliar automáticamente el vencimiento del origen.')
+  if (input.sourceSegments.some(segment => !segment.batchId.trim() || !segment.segmentId.trim()) || new Set(input.sourceSegments.map(segment => `${segment.batchId}:${segment.segmentId}`)).size !== input.sourceSegments.length) fail('Los segmentos de origen deben ser únicos y verificables; no inventes segmentos para lotes tradicionales.')
+  if (input.outputs.length === 0 || input.outputs.length > 30 || input.outputs.some(output => !output.id.trim() || !output.productId.trim() || !output.lotCode.trim() || !validCommercialQuantity(output.commercialQuantity, output.commercialUnit) || !validDay(output.manufacturedOn) || !validDay(output.packagedOn) || !validDay(output.expiresOn) || output.manufacturedOn > output.packagedOn || output.packagedOn > output.expiresOn)) fail('Cada presentación nueva requiere un destino, SKU, cantidad y fechas válidas.')
+  if (new Set(input.outputs.map(output => output.id)).size !== input.outputs.length || new Set(input.outputs.map(output => `${output.productId}:${output.lotCode}:${output.manufacturedOn}`)).size !== input.outputs.length) fail('Los destinos y lotes nuevos deben ser únicos.')
+  if (input.outputs.reduce((sum, output) => sum + output.measuredNetWeightG, 0) !== input.openedPhysicalWeightG) fail('Esta primera fase solo permite recuperación total sin descarte: los gramos de salida deben igualar los gramos medidos al abrir.')
   if (input.packagingMaterials.some(material => !Number.isSafeInteger(material.quantityMilli) || material.quantityMilli < 0 || !Number.isSafeInteger(material.damagedQuantityMilli) || material.damagedQuantityMilli < 0 || material.damagedQuantityMilli > material.quantityMilli || (material.costCents !== null && (!Number.isSafeInteger(material.costCents) || material.costCents < 0)))) fail('Los materiales de envasado deben tener cantidades y costos enteros válidos.')
   if (input.additionalCostComponents.some(component => !component.id.trim() || !['source_inventory','packaging','labor','other'].includes(component.kind) || component.amountCents !== null && (!Number.isSafeInteger(component.amountCents) || component.amountCents < 0) || typeof component.alreadyRecognizedAsOperatingExpense !== 'boolean' || typeof component.capitalizable !== 'boolean' || component.alreadyRecognizedAsOperatingExpense && component.capitalizable)) fail('Los costos adicionales deben estar identificados en centavos y no pueden reconocerse dos veces.')
   if (new Set(input.additionalCostComponents.map(component => component.id)).size !== input.additionalCostComponents.length) fail('No repitas un componente de costo en el reenvasado.')
-  if (input.otherPhysicalDestinations.some(destination => !destination.kind.trim() || !destination.reference.trim())) fail('Cada destino físico adicional necesita tipo y referencia auditables.')
-  const accounted = input.recoveredNetWeightG + input.confirmedDiscardWeightG + input.otherPhysicalDestinations.reduce((sum, destination) => sum + destination.netWeightG, 0)
-  if (accounted !== input.openedPhysicalWeightG) fail('La masa medida abierta no concilia con producto recuperado, descarte confirmado y otros destinos físicos.')
-  if (input.outputs.reduce((sum, output) => sum + output.measuredNetWeightG, 0) !== input.recoveredNetWeightG) fail('El peso neto de los nuevos envases debe coincidir con el producto recuperado medido.')
 }
 
 export interface ProcessingSourceAllocation extends DistLotAllocation {

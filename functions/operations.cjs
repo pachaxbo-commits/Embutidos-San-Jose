@@ -2,6 +2,7 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { createHash } = require('node:crypto');
 const expensePresetRegistry = require("./expense-presets.json");
 const origins = require('./origin-traceability.cjs');
+const { activeQualityAuthorization, verifyProcessingEvidence, isProcessingRepackEmulator } = require('./processing-security.cjs');
 const expenseCategoryDefaults = expensePresetRegistry.defaults;
 const expenseBuiltinGroups = {
   administration: { name: "Gastos de administración", economicType: "operating_expense" },
@@ -29,6 +30,7 @@ const canonicalJson = value => JSON.stringify(value, (_key, item) => {
 });
 const sha256 = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const processingDerivedSalesEmulatorOnly = () => process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST === 'true' && process.env.FUNCTIONS_EMULATOR === 'true' && /^(localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST || '');
+const processingRepackEmulatorOnly = () => process.env.SANJOSE_PROCESSING_REPACK_EMULATOR_TEST === 'true' && isProcessingRepackEmulator();
 const integerShare = (total, offset, quantity, whole) => {
   if (total === null || total === undefined) return null;
   check(Number.isSafeInteger(total) && total >= 0 && Number.isSafeInteger(offset) && Number.isSafeInteger(quantity) && Number.isSafeInteger(whole) && whole > 0 && offset >= 0 && quantity >= 0 && offset + quantity <= whole, 'Asignación entera de peso o costo inválida.');
@@ -322,11 +324,11 @@ class Operation {
   }
   processingMovementAllowed(lot, loc, options) {
     if (!lot.processingCommercialBlocked) return true;
-    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true || options.processingReturn === true && loc.startsWith('route__') || options.processingSale === true && processingDerivedSalesEmulatorOnly();
+    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true || options.processingReturn === true && loc.startsWith('route__') || options.processingSale === true && processingDerivedSalesEmulatorOnly() || options.processingRepack === true && processingRepackEmulatorOnly();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
     if (origins.pending(lot, loc) > 0 || !lot.processingSourceAllocationBasis) return false;
     const unavailable = lot.processingUnavailable?.[loc] || {};
-    if (Number(unavailable.courtesy || 0) + Number(unavailable.repackPending || 0) + Number(unavailable.reviewHold || 0) > 0) return false;
+    if (Number(unavailable.courtesy || 0) + Number(unavailable.reviewHold || 0) > 0 || options.processingRepack !== true && Number(unavailable.repackPending || 0) > 0) return false;
     this.assertProcessingLocation(lot, loc);
     return true;
   }
@@ -406,7 +408,7 @@ class Operation {
     if (lot.processingCostCentsRemaining !== null) lot.processingCostCentsRemaining -= part.costCents;
     this.assertProcessingLocation(lot, loc);
   }
-  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false, processingReturn = false, processingSale = false } = {}) {
+  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false, processingReturn = false, processingSale = false, processingRepack = false } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
@@ -422,7 +424,7 @@ class Operation {
       if (!lot.processingCommercialBlocked) return true;
       const proof = processingCourtesyReservation;
       const courtesyAllowed = Boolean(proof && proof.purpose === 'courtesy' && proof.location === loc && proof.lotId === lot.id && proof.batchId && proof.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy');
-      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer, processingReturn, processingSale });
+      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingRepack });
     };
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
@@ -487,7 +489,7 @@ class Operation {
       remaining = roundAt(remaining - q, precision);
       if (l.processingCommercialBlocked) {
         if (!processingCourtesyReservation) {
-          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingReturn, processingSale }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
+          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingRepack }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
           const processingAllocations = this.takeProcessingAllocation(l, loc, q, this.id);
           const parts = origins.take(l, loc, q, allowPendingOrigin);
           check(parts.length === 1 && !parts[0].originReferences, 'El despacho del lote derivado requiere asignación de origen completa.');
@@ -3966,7 +3968,7 @@ function reservationEvent(o, reservation, action, quantity, reason = '') {
   return { ...reservation, history, updatedAt: o.now, updatedBy: o.actor };
 }
 
-async function reservationContext(o, p, { allowProcessingOutput = false } = {}) {
+async function reservationContext(o, p, { allowProcessingOutput = false, allowProcessingRepack = false } = {}) {
   const product = await o.product(safeId(p.productId));
   const loc = String(p.location || '');
   check(loc === 'central' || loc.startsWith('warehouse__'), 'La reserva debe pertenecer a un almacén autorizado.');
@@ -3978,7 +3980,9 @@ async function reservationContext(o, p, { allowProcessingOutput = false } = {}) 
   const e = await o.loadStock(product.id, loc);
   const lot = e.lots.find(row => row.id === safeId(p.lotId));
   check(lot && lot.productId === product.id, 'El lote no corresponde al producto.');
-  check(!lot.processingCommercialBlocked || allowProcessingOutput && lot.processingDestinationKind === 'courtesy', 'El lote derivado de elaboración sigue bloqueado para nuevas reservas comerciales.');
+  const repackableDerived = allowProcessingRepack && p.purpose === 'repack_pending' && lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished' && Array.isArray(lot.processingByLocation?.[loc]?.segments) && !lot.derivedReturn;
+  check(!lot.processingCommercialBlocked || allowProcessingOutput && lot.processingDestinationKind === 'courtesy' || repackableDerived, 'El lote derivado de elaboración sigue bloqueado para nuevas reservas comerciales.');
+  if (repackableDerived) o.assertProcessingLocation(lot, loc);
   check(!lot.legacy && !/^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`), 'No se puede reservar un lote sintético o anterior sin fechas.');
   check(!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= o.today), 'El lote está vencido o en cuarentena.');
   check(!origins.pending(lot, loc) && !Object.keys(lot.pendingOrigins || {}).some(key => origins.pending(lot, key) > 0), 'El lote tiene origen físico pendiente.');
@@ -3989,7 +3993,7 @@ async function reservationContext(o, p, { allowProcessingOutput = false } = {}) 
 
 handlers.reserveProcessingStock = async (o, p) => {
   check(['admin','warehouse'].includes(o.member.role), 'Solo Almacén o Administración pueden reservar producto.');
-  const { product, loc, lot, rows } = await reservationContext(o, p);
+  const { product, loc, lot, rows } = await reservationContext(o, p, { allowProcessingRepack: p.purpose === 'repack_pending' });
   const purpose = p.purpose;
   check(['courtesy','repack_pending','review_hold'].includes(purpose), 'La finalidad de la reserva no es válida.');
   const quantity = o.amount(Number(p.quantity), product, false, quantityPrecision(product));
@@ -4000,16 +4004,48 @@ handlers.reserveProcessingStock = async (o, p) => {
   check(free >= quantity, `Stock libre insuficiente; disponible ${free}.`);
   const reservationId = safeId(p.reservationId || `${o.id}__reservation`);
   check(!rows.some(r => r.id === reservationId) && !await o.read('distStockReservations', reservationId), 'La reserva ya existe.');
-  const physicalWeightG = product.unitType === 'kg'
+  let processingSegments;
+  let physicalWeightG = product.unitType === 'kg'
     ? Math.round(quantity * 1000)
     : Number.isSafeInteger(p.physicalWeightG) && p.physicalWeightG > 0 ? p.physicalWeightG : null;
+  let remainingCostCents = null;
+  if (purpose === 'repack_pending') {
+    check(!rows.some(row => row.lotId === lot.id && row.location === loc && row.purpose === 'repack_pending' && ['active','partially_consumed'].includes(row.status) && Number(row.remainingQuantity) > 0),
+      'Completa o procesa la reserva de reenvasado activa de este lote antes de crear otra.');
+    if (!lot.processingCommercialBlocked && typeof lot.productionCost === 'number' && Number.isFinite(lot.productionCost) && lot.productionCost >= 0) {
+      const costCents = Math.round((Number(quantity) * lot.productionCost + Number.EPSILON) * 100);
+      remainingCostCents = Number.isSafeInteger(costCents) && costCents >= 0 ? costCents : null;
+    }
+  }
+  if (lot.processingCommercialBlocked && purpose === 'repack_pending') {
+    let quantityLeft = quantity;
+    let costKnown = true;
+    let costTotal = 0;
+    processingSegments = [];
+    for (const segment of lot.processingByLocation[loc].segments) {
+      if (quantityLeft <= 0) break;
+      const segmentQuantity = Number(segment.remainingQuantity || 0);
+      const selectedQuantity = Math.min(quantityLeft, segmentQuantity);
+      if (selectedQuantity <= 0) continue;
+      const selectedWeightG = integerShare(segment.remainingWeightG, 0, selectedQuantity, segmentQuantity);
+      const selectedCostCents = integerShare(segment.remainingCostCents, 0, selectedQuantity, segmentQuantity);
+      processingSegments.push({ batchId: segment.batchId, segmentId: segment.segmentId, quantity: selectedQuantity, remainingWeightG: selectedWeightG, remainingCostCents: selectedCostCents });
+      if (selectedCostCents === null) costKnown = false; else costTotal += selectedCostCents;
+      quantityLeft = roundAt(quantityLeft - selectedQuantity, 0);
+    }
+    check(quantityLeft === 0 && processingSegments.length > 0, 'No se pudo reservar una asignación completa de segmentos derivados.');
+    const segmentWeight = processingSegments.reduce((sum, segment) => sum + segment.remainingWeightG, 0);
+    check(Number.isSafeInteger(segmentWeight) && segmentWeight > 0, 'Los segmentos reservados no conservan gramos físicos medidos.');
+    physicalWeightG = segmentWeight;
+    remainingCostCents = costKnown ? costTotal : null;
+  }
   check(product.unitType === 'kg' || physicalWeightG !== null || p.physicalWeightG == null, 'El peso físico informado no es válido.');
   const reservation = {
     id: reservationId, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1,
     productId: product.id, productName: product.name, lotId: lot.id, lotCode: lot.lotCode,
     unitType: product.unitType, location: loc, purpose, originalQuantity: quantity,
     remainingQuantity: quantity, consumedQuantity: 0, physicalWeightG,
-    remainingWeightG: physicalWeightG, status: 'active', source: String(p.source || 'manual').slice(0,80),
+    remainingWeightG: physicalWeightG, ...(purpose === 'repack_pending' || lot.processingCommercialBlocked ? { remainingCostCents } : {}), ...(processingSegments ? { processingSegments } : {}), status: 'active', source: String(p.source || 'manual').slice(0,80),
     ...(p.batchId ? { batchId: safeId(p.batchId) } : {}),
     createdAt: o.now, createdBy: o.actor, createdByName: o.member.displayName || o.actor,
     history: [{ id: `${o.id}__created`, action: 'created', quantity, at: o.now, by: o.actor, byName: o.member.displayName || o.actor, reason: String(p.reason || '').trim() }],
@@ -4060,8 +4096,12 @@ handlers.recordProcessingReview = async (o, p) => {
   check(Array.isArray(p.evidenceRefs) && p.evidenceRefs.length <= 10 && p.evidenceRefs.every(ref => typeof ref === 'string' && ref.trim().length > 0 && ref.length <= 240), 'Las referencias de evidencia no son válidas.');
   const physicalWeightG = p.physicalWeightG;
   check(physicalWeightG === null || Number.isSafeInteger(physicalWeightG) && physicalWeightG >= 0, 'El peso físico debe ser un entero de gramos medidos o null si no se midió.');
-  if (p.productObservation === 'confirmed_unfit') check(o.member.role === 'admin' && o.member.processingQualityAuthorized === true,
-    'Solo una cuenta de Administración autorizada para revisión de calidad puede confirmar que el producto no es apto.');
+  const caseId = lot.processingReview?.caseId || o.id;
+  const qualityAction = ['authorize_repack','declare_unrecoverable'].includes(p.action);
+  const qualityAuthorization = qualityAction ? await activeQualityAuthorization(o, String(p.qualityAuthorizationRef || '').trim()) : null;
+  if (qualityAction) check(o.member.role === 'admin' && qualityAuthorization, 'La decisión requiere una autorización de calidad vigente concedida por el mecanismo privilegiado.');
+  if (p.evidenceRefs.length) check(await verifyProcessingEvidence(o, p.evidenceRefs, { lotId, reservationId, reviewCaseId: caseId, reviewRevision: p.expectedRevision, location: loc }),
+    'La evidencia no existe, no está verificada o no corresponde a este lote, revisión, reserva y ubicación.');
   let status = lot.processingReview?.status || 'pending_review';
   let qualityDecision;
   let economicDispositionStatus = lot.processingReview?.economicDispositionStatus;
@@ -4081,12 +4121,8 @@ handlers.recordProcessingReview = async (o, p) => {
     economicDispositionStatus = 'pending_quarantine_disposition';
   }
   if (p.action === 'authorize_repack' || p.action === 'declare_unrecoverable') {
-    check(o.member.role === 'admin' && o.member.processingQualityAuthorized === true,
-      'La decisión requiere una cuenta de Administración con autorización de calidad registrada en su membresía.');
-    const authorizationRef = String(p.qualityAuthorizationRef || '').trim();
-    check(authorizationRef && authorizationRef === String(o.member.processingQualityAuthorizationRef || '').trim(),
-      'La referencia de autorización de calidad no coincide con la autorización vigente de esta cuenta.');
-    check(Array.isArray(p.evidenceRefs) && p.evidenceRefs.length > 0, 'Una decisión de calidad requiere al menos una referencia de evidencia.');
+    check(o.member.role === 'admin' && qualityAuthorization, 'La decisión requiere una autorización de calidad vigente concedida por el mecanismo privilegiado.');
+    check(Array.isArray(p.evidenceRefs) && p.evidenceRefs.length > 0, 'Una decisión de calidad requiere evidencia persistida y verificada.');
     check(currentStatus === 'in_review', 'Primero inicia y documenta la revisión física antes de decidir el destino.');
     if (p.action === 'authorize_repack') {
       check(p.productObservation === 'apparently_apt' && p.packageCondition !== 'unknown' && physicalWeightG !== null,
@@ -4119,7 +4155,7 @@ handlers.recordProcessingReview = async (o, p) => {
   const revisionId = o.id;
   check(!await o.read('distProcessingReviews', revisionId), 'La revisión ya existe.');
   const review = {
-    id: revisionId, operationId: o.id, ...o.base(), lotId, productId: product.id, productName: product.name,
+    id: revisionId, caseId, operationId: o.id, ...o.base(), lotId, productId: product.id, productName: product.name,
     ...(product.sku || product.code ? { sku: product.sku || product.code } : {}), lotCode: lot.lotCode || lot.id,
     ...(reservation.batchId || lot.processingBatchId ? { batchId: reservation.batchId || lot.processingBatchId } : {}),
     ...(lot.derivedReturn?.sourceSaleId ? { sourceSaleId: lot.derivedReturn.sourceSaleId } : {}),
@@ -4129,14 +4165,277 @@ handlers.recordProcessingReview = async (o, p) => {
     historicalAssignedWeightG, physicalWeightG, weightDifferenceG, costCents,
     packageCondition: p.packageCondition, productObservation: p.productObservation,
     status, action: p.action, observations, reason, evidenceRefs: p.evidenceRefs.map(ref => ref.trim()), revision,
-    ...(qualityDecision ? { qualityDecision, qualityAuthorizationRef: String(p.qualityAuthorizationRef).trim() } : {}),
+    ...(qualityDecision ? { qualityDecision, qualityAuthorizationRef: qualityAuthorization.id } : {}),
+    ...(p.evidenceRefs.length ? { evidenceRevision: p.expectedRevision } : {}),
     ...(economicDispositionStatus ? { economicDispositionStatus } : {}),
     previousStatus: currentStatus, reviewedAt: o.now, reviewedBy: o.actor, reviewedByName: o.member.displayName || o.actor,
   };
-  const updatedLot = { ...lot, processingReview: { latestReviewId: revisionId, revision, status, updatedAt: o.now, updatedBy: o.actor, ...(economicDispositionStatus ? { economicDispositionStatus } : {}) } };
+  const updatedLot = { ...lot, processingReview: { caseId, latestReviewId: revisionId, revision, status, updatedAt: o.now, updatedBy: o.actor, ...(economicDispositionStatus ? { economicDispositionStatus } : {}) } };
   o.put('distProcessingReviews', revisionId, review);
   o.put('distLots', lot.id, updatedLot);
   return { reviewId: revisionId, revision, status, commercialQuantity: review.commercialQuantity, historicalAssignedWeightG, physicalWeightG, weightDifferenceG, costCents, stockChanged: false, reservationChanged: false, movementCreated: false };
+};
+
+handlers.confirmProcessingRepack = async (o, p) => {
+  check(processingRepackEmulatorOnly(), 'El reenvasado está aislado a QA en Firebase Emulator; no está habilitado para producción.');
+  check(['admin','warehouse'].includes(o.member.role), 'Solo Administración o Almacén pueden confirmar un reenvasado autorizado.');
+  const repackId = safeId(p.repackId), operationId = o.id;
+  check(typeof p.reason === 'string' && p.reason.trim().length >= 3 && p.reason.trim().length <= 500,
+    'El motivo del reenvasado debe tener entre 3 y 500 caracteres.');
+  const repackRef = o.ref('distProcessingRepackings', repackId);
+  const prior = await o.tx.get(repackRef);
+  const payloadHash = sha256({ ...p, operationId: undefined });
+  if (prior.exists) {
+    const saved = prior.data();
+    check(saved.payloadHash === payloadHash, 'El repackId ya fue utilizado con datos diferentes.');
+    return { ...saved.result, duplicate: true };
+  }
+  const existingBatch = await o.tx.get(o.ref('distProcessingBatches', repackId));
+  check(!existingBatch.exists, 'El repackId ya existe como otra elaboración.');
+  const lotId = safeId(p.sourceLotId), reservationId = safeId(p.reservationId), reviewId = safeId(p.reviewId), loc = String(p.location || '');
+  check(loc === 'central' || /^warehouse__[^/]+$/.test(loc), 'La ubicación del reenvasado no es válida.');
+  o.owns(loc);
+  if (loc !== 'central') {
+    const warehouse = await o.read('distWarehouses', safeId(loc.slice('warehouse__'.length)));
+    check(warehouse && warehouse.active !== false, 'El almacén de origen no está disponible.');
+  }
+  const lot = await o.read('distLots', lotId);
+  check(lot && !lot.legacy && !lot.synthetic && !/^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`), 'El lote de origen no es verificable o requiere conciliación.');
+  check(!lot.quarantined && !lot.derivedReturn && !lot.pendingEconomicDisposition && !lot.processingReview?.economicDispositionStatus,
+    'La devolución o cuarentena tiene una disposición económica pendiente y no puede reenvasarse.');
+  check(validDate(lot.manufacturedOn) && validDate(lot.expiresOn) && lot.expiresOn >= o.today && lot.expiresOn >= lot.manufacturedOn,
+    'El lote está vencido o carece de fechas verificables.');
+  check(!origins.pending(lot, loc), 'El lote tiene procedencia física pendiente.');
+  const product = await o.product(lot.productId);
+  check(product.unitType === p.sourceUnitType, 'La unidad de origen cambió; actualiza la solicitud.');
+  const reservation = await o.read('distStockReservations', reservationId);
+  check(reservation && reservation.id === reservationId && reservation.lotId === lotId && reservation.productId === product.id && reservation.location === loc
+    && reservation.purpose === 'repack_pending' && ['active','partially_consumed'].includes(reservation.status),
+  'El producto no tiene una reserva activa de reenvasado en esa ubicación.');
+  check(Number.isFinite(p.expectedReservationQuantity) && reservation.remainingQuantity === p.expectedReservationQuantity,
+    'La reserva cambió desde que se preparó el reenvasado. Actualiza sus cantidades.');
+  const review = await o.read('distProcessingReviews', reviewId);
+  check(review && review.id === reviewId && review.lotId === lotId && review.reservationId === reservationId && review.location === loc
+    && review.caseId === lot.processingReview?.caseId && lot.processingReview?.latestReviewId === reviewId
+    && review.status === 'authorized_for_repack' && review.qualityDecision === 'authorized_for_repack'
+    && review.revision === p.expectedReviewRevision && lot.processingReview?.revision === p.expectedReviewRevision,
+  'La revisión no está autorizada o cambió desde su aprobación.');
+  check(Number.isSafeInteger(review.physicalWeightG) && review.physicalWeightG >= p.openedPhysicalWeightG,
+    'La revisión no contiene una medición física suficiente para esta porción.');
+  const authorization = await activeQualityAuthorization(o, p.authorizationReference, review.reviewedBy);
+  check(authorization && authorization.id === review.qualityAuthorizationRef, 'La autorización de calidad de la revisión fue revocada, venció o ya no corresponde.');
+  check(await verifyProcessingEvidence(o, p.evidenceRefs, { lotId, reservationId, reviewCaseId: review.caseId, reviewRevision: review.evidenceRevision, location: loc }),
+    'La evidencia del reenvasado no existe, no está verificada o no corresponde a este caso y ubicación.');
+  const reservations = await o.processingReservations(lotId);
+  o.assertReservationAggregate(lot, loc, reservations);
+  const expectedReservationQuantity = o.amount(Number(p.expectedReservationQuantity), product, false, quantityPrecision(product));
+  check(expectedReservationQuantity <= reservation.remainingQuantity, 'La cantidad solicitada excede la reserva activa.');
+  const quantityPrecisionForSource = quantityPrecision(product);
+  const openedQuantity = o.amount(Number(p.openedCommercialQuantity), product, false, quantityPrecisionForSource);
+  check(openedQuantity <= reservation.remainingQuantity, 'La cantidad comercial abierta supera la reserva.');
+  const physicalWeightG = Number(p.openedPhysicalWeightG);
+  check(Number.isSafeInteger(physicalWeightG) && physicalWeightG > 0, 'Registra el peso neto realmente medido al abrir el producto, en gramos enteros.');
+  if (product.unitType === 'kg') check(physicalWeightG === Math.round(openedQuantity * 1000), 'Para producto a granel, el peso medido debe coincidir con la cantidad en kg abierta.');
+  check(reservation.remainingWeightG !== null && Number.isSafeInteger(reservation.remainingWeightG), 'La reserva no tiene peso físico verificable; no se pueden inventar gramos para reenvasar.');
+  check(physicalWeightG <= reservation.remainingWeightG, 'El peso medido supera el peso histórico asignado a la reserva; hay una diferencia de procedencia pendiente.');
+
+  const derivedSource = lot.processingCommercialBlocked === true;
+  check((p.sourceKind === 'derived_lot') === derivedSource, 'El tipo de origen no coincide con el lote guardado en el servidor.');
+  const e = await o.loadStock(product.id, loc);
+  const sourceLot = e.lots.find(row => row.id === lotId);
+  check(sourceLot && Number(sourceLot.quantities?.[loc] || 0) >= openedQuantity, 'El lote no conserva cantidad física suficiente.');
+  const currentUnavailable = sourceLot.processingUnavailable?.[loc] || { courtesy: 0, repackPending: 0, reviewHold: 0 };
+  const repackHeld = roundAt(Number(currentUnavailable.repackPending || 0) - openedQuantity, quantityPrecisionForSource);
+  check(repackHeld >= 0, 'El agregado de producto reservado no cubre el reenvasado.');
+
+  let expectedWeightG;
+  let expectedCostCents = null;
+  let selectedProcessingSegments = [];
+  if (derivedSource) {
+    check(sourceLot.processingDestinationKind === 'finished' && sourceLot.processingSourceAllocationBasis
+      && !sourceLot.derivedReturn && Array.isArray(p.sourceSegments) && p.sourceSegments.length > 0 && p.sourceSegments.length <= 100,
+    'Solo se puede reenvasar inventario derivado no vendido con segmentos verificables; devoluciones comerciales requieren política económica aprobada.');
+    o.assertProcessingLocation(sourceLot, loc);
+    const remainingSegments = sourceLot.processingByLocation?.[loc]?.segments || [];
+    check(Array.isArray(reservation.processingSegments) && reservation.processingSegments.length > 0, 'La reserva derivada no conserva sus segmentos de origen. Libérala solo mediante revisión autorizada.');
+    check(reservation.processingSegments.reduce((sum, segment) => sum + Number(segment.quantity || 0), 0) === reservation.remainingQuantity
+      && reservation.processingSegments.reduce((sum, segment) => sum + Number(segment.remainingWeightG || 0), 0) === reservation.remainingWeightG,
+    'La asignación de segmentos de la reserva no concilia con su cantidad o peso.');
+    const reservedCostCents = reservation.processingSegments.some(segment => segment.remainingCostCents === null || segment.remainingCostCents === undefined)
+      ? null : reservation.processingSegments.reduce((sum, segment) => sum + segment.remainingCostCents, 0);
+    if (reservation.remainingCostCents !== undefined) check(reservedCostCents === reservation.remainingCostCents,
+      'El costo de los segmentos reservados no concilia con el costo agregado de la reserva.');
+    const seen = new Set();
+    let remainingCommercial = openedQuantity;
+    let selectedWeightG = 0;
+    let selectedCostCents = 0;
+    let selectedCostKnown = true;
+    const expectedRefs = [];
+    for (const reservedSegment of reservation.processingSegments) {
+      if (remainingCommercial <= 0) break;
+      const segment = remainingSegments.find(item => item.segmentId === reservedSegment.segmentId && item.batchId === reservedSegment.batchId);
+      check(segment, 'Un segmento reservado ya no existe en el lote.');
+      const count = Math.min(remainingCommercial, Number(reservedSegment.quantity || 0));
+      if (count <= 0) continue;
+      const refKey = `${segment.batchId}:${segment.segmentId}`;
+      check(!seen.has(refKey), 'El lote contiene segmentos duplicados.'); seen.add(refKey);
+      const weight = integerShare(segment.remainingWeightG, 0, count, segment.remainingQuantity);
+      const cost = integerShare(segment.remainingCostCents, 0, count, segment.remainingQuantity);
+      if (count === reservedSegment.quantity) check(weight === reservedSegment.remainingWeightG && cost === reservedSegment.remainingCostCents, 'Los segmentos de la reserva no coinciden con las asignaciones vigentes del lote.');
+      selectedProcessingSegments.push({ batchId: segment.batchId, segmentId: segment.segmentId, quantity: count, weightG: weight, costCents: cost });
+      selectedWeightG += weight;
+      if (cost === null) selectedCostKnown = false; else selectedCostCents += cost;
+      expectedRefs.push({ batchId: segment.batchId, segmentId: segment.segmentId });
+      remainingCommercial = roundAt(remainingCommercial - count, 0);
+    }
+    check(remainingCommercial === 0 && JSON.stringify(expectedRefs) === JSON.stringify(p.sourceSegments), 'Las referencias de segmentos no coinciden en orden y cantidad con el origen vigente.');
+    expectedWeightG = selectedWeightG;
+    expectedCostCents = selectedCostKnown ? selectedCostCents : null;
+    if (reservation.remainingCostCents !== undefined && openedQuantity === reservation.remainingQuantity) check(reservation.remainingCostCents === expectedCostCents,
+      'El costo completo retenido en la reserva no concilia con los segmentos seleccionados.');
+  } else {
+    check(!sourceLot.processingByLocation && !sourceLot.processingBatchId && !sourceLot.derivedReturn, 'El lote tradicional contiene rastros de una elaboración y requiere revisión especializada.');
+    if (product.unitType === 'kg') expectedWeightG = Math.round(openedQuantity * 1000);
+    else {
+      check(openedQuantity === reservation.remainingQuantity, 'Para reenvasar parcialmente un lote tradicional por paquetes se requiere una asignación de peso verificada por paquete.');
+      expectedWeightG = reservation.remainingWeightG;
+    }
+    if (typeof sourceLot.productionCost === 'number' && Number.isFinite(sourceLot.productionCost) && sourceLot.productionCost >= 0) {
+      const wholeCost = Number.isSafeInteger(reservation.remainingCostCents) ? reservation.remainingCostCents
+        : Math.round(Number(reservation.remainingQuantity) * sourceLot.productionCost * 100);
+      const quantityScale = product.unitType === 'kg' ? 1000 : 1;
+      const wholeQuantityTicks = Math.round(Number(reservation.remainingQuantity) * quantityScale);
+      const openedQuantityTicks = Math.round(openedQuantity * quantityScale);
+      expectedCostCents = integerShare(wholeCost, 0, openedQuantityTicks, wholeQuantityTicks);
+      check(Number.isSafeInteger(expectedCostCents) && expectedCostCents >= 0, 'El costo histórico del lote no se pudo asignar exactamente.');
+    }
+  }
+  check(expectedWeightG === physicalWeightG, `El peso medido (${physicalWeightG} g) no coincide con los ${expectedWeightG} g asignados al origen. La diferencia debe permanecer pendiente; no se creó stock.`);
+  check(review.physicalWeightG === reservation.remainingWeightG, 'La medición de la revisión no coincide con el saldo físico reservado. Registra una revisión actualizada.');
+
+  const outputs = p.outputs;
+  check(Array.isArray(outputs) && outputs.length > 0 && outputs.length <= 30, 'Agrega entre 1 y 30 presentaciones de salida.');
+  const seenOutputIds = new Set();
+  const seenOutputLotKeys = new Set();
+  const targetEntries = new Map();
+  let outputWeightG = 0;
+  for (const output of outputs) {
+    const outputId = safeId(output.id), productId = safeId(output.productId);
+    check(!seenOutputIds.has(outputId), 'No repitas destinos de reenvasado.'); seenOutputIds.add(outputId);
+    const target = await o.product(productId);
+    check(target.unitType === output.commercialUnit, `La unidad de ${target.name} cambió; actualiza la presentación.`);
+    const outQty = o.amount(Number(output.commercialQuantity), target, false, quantityPrecision(target));
+    check(Number.isSafeInteger(output.measuredNetWeightG) && output.measuredNetWeightG > 0, `Indica el peso neto medido de ${target.name}.`);
+    if (target.unitType === 'kg') check(Math.round(outQty * 1000) === output.measuredNetWeightG, `El peso de ${target.name} no coincide con su cantidad en kg.`);
+    check(validDate(output.manufacturedOn) && validDate(output.packagedOn) && validDate(output.expiresOn)
+      && output.manufacturedOn <= output.packagedOn && output.packagedOn <= o.today && output.packagedOn <= output.expiresOn
+      && output.expiresOn <= sourceLot.expiresOn, `Revisa las fechas del lote ${output.lotCode}; no puede superar el vencimiento del origen.`);
+    check(output.manufacturedOn === sourceLot.manufacturedOn,
+      `La fecha de elaboración de ${target.name} debe conservar la fecha original del lote ${sourceLot.lotCode || sourceLot.id}.`);
+    const lotCode = String(output.lotCode || '').trim();
+    check(lotCode.length > 0 && lotCode.length <= 80, 'Cada lote de salida requiere un código válido.');
+    const outputLotKey = `${productId}:${lotCode}:${output.manufacturedOn}`;
+    check(!seenOutputLotKeys.has(outputLotKey), 'No repitas el código y la fecha de elaboración de un lote entre las salidas.');
+    seenOutputLotKeys.add(outputLotKey);
+    const targetEntry = await o.loadStock(productId, loc);
+    check(!targetEntry.lots.some(item => item.lotCode === lotCode && item.manufacturedOn === output.manufacturedOn), `Ya existe el lote ${lotCode} para ${target.name}.`);
+    check(!targetEntry.lots.some(item => item.legacy || item.synthetic || /^legacy_|ANTERIOR SIN FECHAS/i.test(`${item.id} ${item.lotCode || ''}`)), `El SKU ${target.name} tiene saldo histórico sin conciliar.`);
+    outputWeightG += output.measuredNetWeightG;
+    check(Number.isSafeInteger(outputWeightG), 'El peso de salida supera el rango seguro.');
+    targetEntries.set(outputId, { target, targetEntry, outQty, output, lotCode });
+  }
+  check(outputWeightG === physicalWeightG, 'La masa medida no concilia exactamente. En esta fase no se autorizan descartes ni otros destinos sin aprobación económica y física.');
+  check(p.packagingMaterials.length <= 100 && p.packagingMaterials.every(item => typeof item.materialId === 'string' && item.materialId.trim().length > 0 && item.materialId.length <= 120 && Number.isSafeInteger(item.quantityMilli) && item.quantityMilli >= 0 && Number.isSafeInteger(item.damagedQuantityMilli) && item.damagedQuantityMilli >= 0 && item.damagedQuantityMilli <= item.quantityMilli && (item.costCents === null || Number.isSafeInteger(item.costCents) && item.costCents >= 0)), 'Las cantidades o costos informativos de empaque no son válidos.');
+  check(p.additionalCostComponents.length === 0, 'Los costos adicionales y su capitalización están pendientes de política; esta fase conserva solo el costo histórico del inventario.');
+
+  const currentBalance = await o.read('distBalances', balanceId(loc, product.id));
+  const balanceBefore = Number(currentBalance?.quantity || 0);
+  const held = { ...currentUnavailable, repackPending: repackHeld };
+  sourceLot.processingUnavailable = { ...(sourceLot.processingUnavailable || {}), [loc]: held };
+  const remainingQuantity = roundAt(reservation.remainingQuantity - openedQuantity, quantityPrecisionForSource);
+  const consumedWeightG = physicalWeightG;
+  const remainingWeightG = reservation.remainingWeightG - consumedWeightG;
+  const nextReservation = reservationEvent(o, { ...reservation, remainingQuantity, consumedQuantity: roundAt(Number(reservation.consumedQuantity || 0) + openedQuantity, quantityPrecisionForSource), remainingWeightG,
+    ...(Number.isSafeInteger(reservation.remainingCostCents) || !derivedSource ? { remainingCostCents: expectedCostCents === null ? null : Math.max(0, (Number(reservation.remainingCostCents ?? review.costCents ?? expectedCostCents) - expectedCostCents)) } : {}),
+    status: remainingQuantity === 0 ? 'consumed' : 'partially_consumed' }, 'repack_consumed', openedQuantity, String(p.reason).trim());
+  if (derivedSource) {
+    let quantityToRemove = openedQuantity;
+    nextReservation.processingSegments = (reservation.processingSegments || []).flatMap(segment => {
+      if (quantityToRemove <= 0) return [segment];
+      const matching = selectedProcessingSegments.find(item => item.batchId === segment.batchId && item.segmentId === segment.segmentId);
+      if (!matching) return [segment];
+      const removed = Math.min(quantityToRemove, matching.quantity);
+      const nextQuantity = segment.quantity - removed;
+      const weightRemoved = integerShare(segment.remainingWeightG, 0, removed, segment.quantity);
+      const costRemoved = integerShare(segment.remainingCostCents, 0, removed, segment.quantity);
+      quantityToRemove = roundAt(quantityToRemove - removed, 0);
+      return nextQuantity > 0 ? [{ ...segment, quantity: nextQuantity, remainingWeightG: segment.remainingWeightG - weightRemoved, remainingCostCents: segment.remainingCostCents === null ? null : segment.remainingCostCents - costRemoved }] : [];
+    });
+    check(quantityToRemove === 0, 'No se pudo actualizar la asignación de la reserva derivada.');
+  }
+  nextReservation.history[nextReservation.history.length - 1] = { ...nextReservation.history.at(-1), repackId, openedPhysicalWeightG: physicalWeightG, costCents: expectedCostCents };
+  o.put('distStockReservations', reservationId, nextReservation);
+  const consumedAllocations = await o.take(product.id, loc, openedQuantity, { lotId, precision: quantityPrecisionForSource, allowExpired: false, allowPendingOrigin: false, processingRepack: true });
+  check(consumedAllocations.length > 0 && consumedAllocations.every(allocation => allocation.lotId === lotId), 'El consumo intentó usar otro lote; no se creó el reenvasado.');
+  const derivedConsumedWeight = consumedAllocations.reduce((sum, allocation) => sum + Number(allocation.processingAllocation?.physicalWeightG || 0), 0);
+  const derivedCosts = consumedAllocations.map(allocation => allocation.processingAllocation?.costCents);
+  const actualWeightG = derivedSource ? derivedConsumedWeight : physicalWeightG;
+  const actualCostCents = derivedSource
+    ? (derivedCosts.some(value => value === null || value === undefined) ? null : derivedCosts.reduce((sum, value) => sum + value, 0))
+    : expectedCostCents;
+  check(actualWeightG === physicalWeightG && actualCostCents === expectedCostCents, 'Las asignaciones del origen cambiaron durante la transacción; no se aplicó el reenvasado.');
+  const inputMovementId = o.ledger(product.id, openedQuantity, loc, null, 'processing_repack_input', { repackId, reviewId, reservationId, allocations: consumedAllocations, physicalWeightG, costCents: actualCostCents, costTotal: actualCostCents === null ? null : actualCostCents / 100, note: String(p.reason).trim() }, quantityPrecisionForSource);
+  const outputCosts = actualCostCents === null ? outputs.map(() => null) : allocateCentsByWeight(actualCostCents, outputs.map(output => output.measuredNetWeightG));
+  const outputRows = [];
+  const movementIds = [inputMovementId];
+  for (let index = 0; index < outputs.length; index++) {
+    const output = outputs[index], { target, targetEntry, outQty, lotCode } = targetEntries.get(output.id);
+    const outputId = safeId(output.id), lotOutputId = `processing_${sha256(`${repackId}:${outputId}`).slice(0, 40)}`;
+    check(!await o.read('distLots', lotOutputId), 'El identificador estable del lote de salida ya existe.');
+    const costCents = outputCosts[index];
+    const sourceAllocations = [{ sourceLotId: lotId, sourceLotCode: sourceLot.lotCode || sourceLot.id, sourceProductId: product.id,
+      quantityMilli: output.measuredNetWeightG, weightG: output.measuredNetWeightG, costCents, originStatus: 'accounting_allocation_not_physical_identification' }];
+    const outLot = { id: lotOutputId, restaurantId: 'sanjose', productId: target.id, productName: target.name, unitType: target.unitType,
+      lotCode, manufacturedOn: output.manufacturedOn, packagedOn: output.packagedOn, expiresOn: output.expiresOn,
+      productionCost: costCents === null ? null : roundAt((costCents / 100) / outQty, 6), quantities: { [loc]: outQty }, quarantined: false, legacy: false,
+      processingCommercialBlocked: true, processingBatchId: repackId, processingDestinationId: outputId, processingDestinationKind: 'finished',
+      processingPhysicalWeightGRemaining: output.measuredNetWeightG, processingCostCentsRemaining: costCents, processingCostTotalCents: costCents,
+      processingSourceLotIds: [lotId], processingSourceAllocations: sourceAllocations, processingSourceAllocationBasis: 'repack_origin_reference',
+      ...(target.unitType === 'kg' ? {} : { processingPackageWeightLedger: { packageCount: outQty, measuredNetWeightG: output.measuredNetWeightG, consumedCount: 0, consumedWeightG: 0, nextPackageIndex: 0, weightBasis: 'documented_average' } }),
+      ...(target.unitType === 'kg' ? {} : { processingByLocation: { [loc]: { segments: [{ segmentId: `${repackId}:${outputId}`, batchId: repackId, destinationId: outputId, sourceMovementId: '', weightBasis: 'documented_average', remainingQuantity: outQty, remainingWeightG: output.measuredNetWeightG, remainingCostCents: costCents }] } } }),
+      processingRepackId: repackId, processingReviewId: reviewId, processingSourceReservationId: reservationId, createdAt: o.now, createdBy: o.actor, branchId: 'main', dayKey: o.today, schemaVersion: 1 };
+    targetEntry.lots.push(outLot);
+    o.stockSnapshots.get(`lots:${target.id}`).set(lotOutputId, null);
+    o.move(targetEntry, loc, outQty, quantityPrecision(target));
+    o.put('distLots', lotOutputId, outLot);
+    const movementId = o.ledger(target.id, outQty, null, loc, 'processing_repack_output', { repackId, reviewId, sourceLotId: lotId, lotId: lotOutputId, lotCode, destinationId: outputId, physicalWeightG: output.measuredNetWeightG, commercialQuantity: outQty, costCents, costTotal: costCents === null ? null : costCents / 100, processingCommercialBlocked: true, sourceAllocations, sourceAllocationBasis: 'repack_origin_reference', note: String(p.reason).trim() }, quantityPrecision(target));
+    if (outLot.processingByLocation?.[loc]?.segments?.length) { outLot.processingByLocation[loc].segments[0].sourceMovementId = movementId; o.put('distLots', lotOutputId, outLot); }
+    movementIds.push(movementId);
+    outputRows.push({ id: outputId, lotId: lotOutputId, productId: target.id, productName: target.name, lotCode, commercialQuantity: outQty, commercialUnit: target.unitType, netWeightG: output.measuredNetWeightG, costCents, movementId, sourceAllocations });
+  }
+  const reviewEventId = `${repackId}__review_transition`;
+  const finalReviewStatus = remainingQuantity === 0 ? 'resolved_specialized' : 'pending_review';
+  const transition = { ...review, id: reviewEventId, operationId, action: 'repack_consumed', previousStatus: 'authorized_for_repack', status: finalReviewStatus, reviewedAt: o.now, reviewedBy: o.actor, reviewedByName: o.member.displayName || o.actor, reason: String(p.reason).trim(), repackId, consumedQuantity: openedQuantity, consumedWeightG: physicalWeightG, costCents: actualCostCents };
+  check(!await o.read('distProcessingReviews', reviewEventId), 'El evento de cierre de revisión ya existe.');
+  o.put('distProcessingReviews', reviewEventId, transition);
+  sourceLot.processingReview = { ...sourceLot.processingReview, latestReviewId: reviewEventId, revision: Number(sourceLot.processingReview.revision || 0) + 1, status: finalReviewStatus, updatedAt: o.now, updatedBy: o.actor };
+  o.put('distLots', lotId, sourceLot);
+  // take() updates the in-memory stock entry; balance writes are buffered until flush().
+  const balanceAfter = Number(e.balances.get(loc)?.quantity || 0);
+  const result = { repackId, reviewId, sourceLotId: lotId, reservationId, openedQuantity, openedPhysicalWeightG: physicalWeightG, costCents: actualCostCents, remainingReservationQuantity: remainingQuantity, sourceBalanceBefore: balanceBefore, sourceBalanceAfter: balanceAfter, outputLots: outputRows, movementIds, commercialBlocked: true, duplicate: false };
+  const repackRecord = { id: repackId, operationId, ...o.base(), payloadHash, status: 'confirmed', sourceLotId: lotId, sourceProductId: product.id, sourceProductName: product.name, sourceUnitType: product.unitType, location: loc, reservationId, reviewId, reviewCaseId: review.caseId, authorizationId: authorization.id, evidenceRefs: p.evidenceRefs, openedCommercialQuantity: openedQuantity, openedPhysicalWeightG: physicalWeightG, sourceCostCents: actualCostCents, outputLots: outputRows, packagingMaterials: p.packagingMaterials.map(item => ({ ...item, costTreatment: 'informational_only_no_additional_result_charge' })), additionalCostComponents: [], inputMovementId, movementIds, responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, confirmedAt: o.now, confirmedBy: o.actor, result, reversal: { status: 'blocked', dependencyIds: outputRows.map(row => row.lotId), reason: 'El reenvasado requiere reversión especializada; no se permite restauración genérica.' } };
+  o.put('distProcessingRepackings', repackId, repackRecord);
+  const batch = { id: repackId, operationId, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, payloadHash, status: 'confirmed', processType: 'repackaging', repackId,
+    sourceProductId: product.id, sourceProductName: product.name, sourceUnitType: product.unitType, sourceLocation: loc, sourceAllocations: consumedAllocations,
+    inputWeightG: physicalWeightG, outputWeightG, sourceCostCents: actualCostCents, destinations: outputRows, packagingMaterials: repackRecord.packagingMaterials,
+    costComponents: [], auxiliaryCostsCapitalized: false, costPolicy: 'Costo histórico transferido una sola vez; materiales y egresos asociados son informativos y no se capitalizan.',
+    responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, createdAt: o.now, dayKey: o.today, confirmedAt: o.now, confirmedBy: o.actor,
+    movementIds, auditEventIds: [], reversal: repackRecord.reversal, result };
+  o.put('distProcessingBatches', repackId, batch);
+  const auditId = `processing_audit_${sha256(`${repackId}:repacked`).slice(0, 40)}`;
+  o.put('distProcessingBatchAudit', auditId, { id: auditId, ...o.base(), batchId: repackId, repackId, operationId, location: loc, sourceLocation: loc, event: 'repacked', inputWeightG: physicalWeightG, outputWeightG, sourceCostCents: actualCostCents, reservationId, reviewId, movementIds, createdAt: o.now, createdBy: o.actor });
+  batch.auditEventIds.push(auditId); o.put('distProcessingBatches', repackId, batch);
+  return result;
 };
 
 handlers.releaseProcessingReservation = async (o, p) => {
