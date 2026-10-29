@@ -322,7 +322,7 @@ class Operation {
   }
   processingMovementAllowed(lot, loc, options) {
     if (!lot.processingCommercialBlocked) return true;
-    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true && processingDerivedSalesEmulatorOnly();
+    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true || options.processingReturn === true && loc.startsWith('route__') || options.processingSale === true && processingDerivedSalesEmulatorOnly();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
     if (origins.pending(lot, loc) > 0 || !lot.processingSourceAllocationBasis) return false;
     const unavailable = lot.processingUnavailable?.[loc] || {};
@@ -406,7 +406,7 @@ class Operation {
     if (lot.processingCostCentsRemaining !== null) lot.processingCostCentsRemaining -= part.costCents;
     this.assertProcessingLocation(lot, loc);
   }
-  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false, processingSale = false } = {}) {
+  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false, processingReturn = false, processingSale = false } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
@@ -422,7 +422,7 @@ class Operation {
       if (!lot.processingCommercialBlocked) return true;
       const proof = processingCourtesyReservation;
       const courtesyAllowed = Boolean(proof && proof.purpose === 'courtesy' && proof.location === loc && proof.lotId === lot.id && proof.batchId && proof.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy');
-      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer, processingSale });
+      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer, processingReturn, processingSale });
     };
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
@@ -487,7 +487,7 @@ class Operation {
       remaining = roundAt(remaining - q, precision);
       if (l.processingCommercialBlocked) {
         if (!processingCourtesyReservation) {
-          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingSale }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
+          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingReturn, processingSale }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
           const processingAllocations = this.takeProcessingAllocation(l, loc, q, this.id);
           const parts = origins.take(l, loc, q, allowPendingOrigin);
           check(parts.length === 1 && !parts[0].originReferences, 'El despacho del lote derivado requiere asignación de origen completa.');
@@ -972,6 +972,22 @@ function splitAllocationsByAmounts(allocations, amounts) {
   check(Math.abs(roundAt(allocations.reduce((sum, part) => sum + part.quantity, 0), 3) - roundAt(amounts.reduce((sum, value) => sum + value, 0), 3)) < 0.001,
     "Las asignaciones de lotes no coinciden con las cantidades recibidas.");
   return groups;
+}
+function historicalAllocationCostCents(allocations) {
+  let derivedCents = 0;
+  let ordinaryCost = 0;
+  for (const allocation of allocations || []) {
+    const derived = allocation.processingAllocation;
+    if (derived) {
+      if (!Number.isSafeInteger(derived.costCents)) return null;
+      derivedCents += derived.costCents;
+    } else {
+      if (allocation.productionCost === null || allocation.productionCost === undefined || !Number.isFinite(Number(allocation.productionCost))) return null;
+      ordinaryCost += Number(allocation.quantity) * Number(allocation.productionCost);
+    }
+  }
+  const cents = derivedCents + Math.round((ordinaryCost + Number.EPSILON) * 100);
+  return Number.isSafeInteger(cents) && cents >= 0 ? cents : null;
 }
 async function revertLineStock(o, d, line, returnQty, reason) {
   if (returnQty <= 0) return [];
@@ -2006,15 +2022,63 @@ function saleContainsDerivedProcessingAllocation(sale) {
 function assertNoDerivedSaleMutation(sale, action) {
   check(!saleContainsDerivedProcessingAllocation(sale), `La venta de sachets derivados no admite ${action} todavía; requiere el flujo comercial especializado de la Fase 3D.2B.`);
 }
-function assertNoDerivedSalesInDispatch(sales, action) {
-  check(!(sales || []).some(saleContainsDerivedProcessingAllocation), `El despacho tiene ventas de sachets derivados. ${action} requiere el ciclo comercial especializado de la Fase 3D.2B.`);
+async function editDerivedSaleEconomicsOnly(o, p, sale) {
+  check(o.member.role === 'admin' || sale.sellerUid === o.actor, 'Solo puedes corregir tus propias ventas.');
+  check(!sale.voidedAt && !sale.pendingConfirmation, 'La venta no está vigente para corregir.');
+  check(sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy', 'La cortesía no puede corregirse como venta comercial.');
+  const qrVerifications = await o.query('distQrVerifications', 'sourceId', sale.id);
+  check(!qrVerifications.some(row => row.sourceType === 'sale'), 'La venta tiene una verificación bancaria QR. Requiere revisión administrativa antes de corregirla.');
+  const dispatch = sale.dispatchId ? await o.read('distDispatches', sale.dispatchId) : null;
+  check(!dispatch || dispatch.status === 'open', 'La ruta ya está cerrada. Usa un flujo administrativo posterior al cierre.');
+  check((await o.query('distClaims', 'saleId', sale.id)).length === 0, 'La venta tiene cambios o devoluciones; requiere el flujo especializado de 3D.2B.');
+  const previous = await o.withDocumentedOrigins(sale, sale.effectiveSnapshot || sale);
+  check(Array.isArray(previous.lines) && previous.lines.length > 0 && previous.lines.every(line => Array.isArray(line.allocations) && line.allocations.length > 0), 'La venta derivada no conserva asignaciones completas; no puede corregirse.');
+  check(Array.isArray(p.lines) && p.lines.length === previous.lines.length, 'La corrección económica debe conservar todos los productos vendidos.');
+  const requested = new Map();
+  for (const input of p.lines) {
+    check(input?.productId && !requested.has(input.productId), 'No repitas productos en la corrección.');
+    requested.set(input.productId, input);
+  }
+  const lines = [];
+  for (const previousLine of previous.lines) {
+    const input = requested.get(previousLine.productId);
+    check(input, 'La corrección económica no puede quitar ni agregar productos.');
+    const product = await o.product(previousLine.productId);
+    const precision = quantityPrecision(product);
+    check(Number(input.quantity) === Number(previousLine.quantity), 'La corrección de sachets no puede cambiar paquetes ni cantidades físicas; registra una devolución física con el flujo especializado.');
+    check(Number(input.physicalQuantity ?? previousLine.physicalQuantity ?? previousLine.quantity) === Number(previousLine.physicalQuantity ?? previousLine.quantity), 'La corrección de sachets no puede cambiar peso físico ni cantidades entregadas.');
+    check(Number.isFinite(input.actualUnitPrice) && input.actualUnitPrice > 0, 'Precio inválido.');
+    const actualUnitPrice = round(input.actualUnitPrice);
+    const referenceUnitPrice = round(previousLine.referenceUnitPrice ?? product.referencePrice);
+    const promotional = actualUnitPrice !== referenceUnitPrice;
+    check(o.member.role === 'admin' || !promotional || input.isPromotional === true, 'Marca la venta como promocional para modificar el precio.');
+    lines.push({ ...previousLine, quantity: o.amount(Number(previousLine.quantity), product, false, precision), actualUnitPrice, referenceUnitPrice, isPromotional: promotional, subtotal: round(Number(previousLine.quantity) * actualUnitPrice), allocations: structuredClone(previousLine.allocations) });
+    requested.delete(previousLine.productId);
+  }
+  check(requested.size === 0, 'La corrección económica no puede agregar productos.');
+  const total = round(lines.reduce((sum, line) => sum + line.subtotal, 0));
+  const cashAmount = round(Number(p.cashAmount) || 0), qrAmount = round(Number(p.qrAmount) || 0), creditAmount = round(Number(p.creditAmount) || 0);
+  check(['cash','qr','credit','mixed'].includes(p.paymentKind), 'Forma de pago inválida.');
+  check(Math.abs(total - cashAmount - qrAmount - creditAmount) < 0.01 && [cashAmount,qrAmount,creditAmount].every(value => value >= 0), 'Los pagos corregidos no coinciden con el total.');
+  check(!creditAmount || sale.customerId, 'El crédito necesita un cliente.');
+  const receivable = await o.read('distReceivables', sale.id);
+  const alreadyPaid = round(Number(receivable?.paidAmount) || 0);
+  check(creditAmount >= alreadyPaid, 'El crédito corregido no puede ser menor a lo ya cobrado.');
+  if (creditAmount > 0) o.put('distReceivables', sale.id, { ...(receivable || { id: sale.id, ...o.base(), saleId: sale.id, sourceType: 'sale', customerId: sale.customerId, customerName: sale.customerName, customerCode: sale.customerCode, routeId: sale.routeId, distributorUid: sale.sellerUid, distributorName: sale.sellerName, paidAmount: 0 }), saleLines: lines, originalAmount: creditAmount, balance: round(creditAmount - alreadyPaid), status: creditAmount === alreadyPaid ? 'PAID' : alreadyPaid > 0 ? 'PARTIAL' : 'OPEN' });
+  else if (receivable) o.put('distReceivables', sale.id, { ...receivable, originalAmount: 0, balance: 0, status: 'PAID', saleLines: lines });
+  const revision = Number(sale.revision || 0) + 1;
+  const corrected = { lines, total, paymentKind: p.paymentKind, cashAmount, qrAmount, creditAmount, saleKind: 'sale', originDocumentationIds: previous.originDocumentationIds || [] };
+  const correction = { id: o.id, ...o.base(), saleId: sale.id, sellerUid: sale.sellerUid, revision, reason: p.reason.trim(), original: previous, corrected, stockDeltas: [], moneyDelta: round(total - previous.total), creditDelta: round(creditAmount - previous.creditAmount), correctedByName: o.member.displayName || o.actor, physicalEffect: false };
+  o.put('distSaleCorrections', o.id, correction);
+  o.put('distSales', sale.id, { ...sale, effectiveSnapshot: corrected, latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(), revision });
+  return correction;
 }
 async function editSale(o, p) {
   check(["admin", "distributor"].includes(o.member.role), "Sin permiso para corregir ventas.");
   check(p.reason?.trim(), "La razón de la edición es obligatoria.");
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
-  assertNoDerivedSaleMutation(sale, 'correcciones');
+  if (saleContainsDerivedProcessingAllocation(sale)) return editDerivedSaleEconomicsOnly(o, p, sale);
   await assertNotReservedCourtesy(o, sale);
   check(o.member.role === "admin" || sale.sellerUid === o.actor, "Solo puedes corregir tus propias ventas.");
   const qrVerifications = await o.query("distQrVerifications", "sourceId", sale.id);
@@ -3013,7 +3077,6 @@ async function closure(o, p) {
     .map((sale) =>
       sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
     );
-  assertNoDerivedSalesInDispatch(sales, 'La recepción y el cierre');
   if (p.mode === "warehouse") {
     o.owns(warehouse);
     check(!previous.warehouseClosedBy, "El retorno ya se confirmó.");
@@ -3080,6 +3143,11 @@ async function closure(o, p) {
         : quantityRound(Math.min(recoverableMerma, Math.max(0, expected - normalApt)));
       const wasteFromRoute = quantityRound(Math.min(waste, Math.max(0, expected - normalApt - recoverableFromRoute)));
       const productDispatchLines = activeDispatchLines.filter((line) => line.productId === pid);
+      const hasDerivedPackages = productDispatchLines.some((line) => (line.allocations || []).some(allocation => allocation.processingAllocation));
+      if (hasDerivedPackages) {
+        check(e.p.unitType === 'package' || e.p.unitType === 'unit', `El retorno de sachets derivados de ${e.p.name || pid} requiere una presentación de paquetes o unidades.`);
+        check(waste === 0 && recoverableMerma === 0, `Los sachets derivados de ${e.p.name || pid} no usan la merma por kg. Registra paquetes completos recibidos; daños, producto no apto y faltantes requieren su clasificación especializada.`);
+      }
       const normalLoaded = quantityRound(productDispatchLines.reduce((sum, line) => {
         const merma = Number(line.dispatchMerma) || 0;
         return sum + (Number.isFinite(Number(line.normalQuantity))
@@ -3167,7 +3235,7 @@ async function closure(o, p) {
         ? quantityRound(normalApt + waste)
         : quantityRound(normalApt + recoverableFromRoute + wasteFromRoute);
       const receivedParts = accountedRouteQuantity > 0
-        ? await o.take(pid, route, accountedRouteQuantity, { allowExpired: true, precision })
+        ? await o.take(pid, route, accountedRouteQuantity, { allowExpired: true, precision, processingReturn: hasDerivedPackages })
         : [];
       const [returnParts, recoverableMermaParts, wasteParts] = splitAllocationsByAmounts(
         receivedParts,
@@ -3177,6 +3245,7 @@ async function closure(o, p) {
         const lot = e.lots.find((x) => x.id === a.lotId);
         check(lot, "No se encontró el lote del producto retornado.");
         origins.restore(lot, warehouse, a);
+        o.restoreProcessingAllocation(lot, warehouse, a);
       }
       if (normalApt > 0) {
         o.move(e, warehouse, normalApt, precision);
@@ -3238,11 +3307,13 @@ async function closure(o, p) {
       }
       let shortageMovementId;
       if (shortage > 0) {
-        const loss = await o.take(pid, route, shortage, { allowExpired: true, precision });
-        const knownCost = loss.every((a) => a.productionCost !== null);
+        const loss = await o.take(pid, route, shortage, { allowExpired: true, precision, processingReturn: hasDerivedPackages });
+        const lossCostCents = historicalAllocationCostCents(loss);
+        const lossCost = lossCostCents === null ? null : lossCostCents / 100;
         shortageMovementId = o.ledger(pid, shortage, route, null, "shortage", {
           allocations: loss,
-          lossCost: knownCost ? round(loss.reduce((sum, a) => sum + a.quantity * a.productionCost, 0)) : null,
+          lossCost,
+          ...(loss.some(allocation => allocation.processingAllocation) ? { lossCostCents } : {}),
           dispatchId: d.id,
         }, precision);
       }
@@ -4257,7 +4328,6 @@ handlers.reopen = async (o, p) => {
   check(!c?.rectification, "Este cierre tiene una rectificación auditada y requiere revisión administrativa especializada antes de reabrirlo.");
   check(c?.status === "closed", "Solo se puede reabrir un cierre finalizado.");
   const d = c.dispatchId ? await o.read("distDispatches", c.dispatchId) : null;
-  if (d) assertNoDerivedSalesInDispatch(await o.query('distSales', 'dispatchId', d.id), 'La reapertura');
   let reversedMovementIds = [];
   if (d) {
     check(d.status === "closed", "El despacho no está cerrado.");
@@ -4297,7 +4367,9 @@ handlers.reopen = async (o, p) => {
           check(lot, "No se puede reabrir: falta el lote retornado.");
           await o.assertNoActiveReservation(lot, warehouse, "No se puede reabrir: el lote recibido tiene una reserva activa; revisar antes de revertir físicamente la recepción.");
           origins.remove(lot, warehouse, part);
+          o.removeProcessingAllocation(lot, warehouse, part);
           origins.restore(lot, route, part);
+          o.restoreProcessingAllocation(lot, route, part);
         }
         o.move(e, warehouse, -movement.quantity);
         o.move(e, route, movement.quantity);
@@ -4311,6 +4383,7 @@ handlers.reopen = async (o, p) => {
           const lot = e.lots.find((item) => item.id === part.lotId);
           check(lot, "No se puede reabrir: falta un lote original de la ruta.");
           origins.restore(lot, route, part);
+          o.restoreProcessingAllocation(lot, route, part);
         }
         o.move(e, route, movement.quantity);
       } else if (movement.type === "dispatch_merma_sale") {

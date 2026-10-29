@@ -89,13 +89,47 @@ try {
   pass(profit.totals.costBs === 8.75 && profit.totals.salesBs === 70 && profit.totals.profitBs === 61.25, 'rentabilidad reconoce una sola vez el costo histórico exacto de Bs 8,75')
   pass(opResult.costOfSales === 8.75 && opResult.operatingResult === 61.25, 'Resultado del negocio incluye el costo vendido una vez, sin tratar despacho como gasto')
 
+  const receive = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId, warehouseResponsibleName: 'QA Almacén', products: [{ productId: ids.product, actualReturn: 3, returnWaste: 0 }] } }, `${prefix}-warehouse-return`)
+  let receivedLot = await read('distLots', centralLot)
+  pass(receive.status === 'confirmed' && receivedLot.quantities[routeLoc] === 0 && receivedLot.quantities.central === 29 && receivedLot.processingByLocation.central.segments[0].remainingWeightG === 7250 && receivedLot.processingByLocation.central.segments[0].remainingCostCents === 3625, 'recepción de 3 sachets devuelve exactamente 750 g/Bs 3,75; central queda con 29, 7.250 g y Bs 36,25')
+  const receiveMovement = (await root.collection('distStockMovements').where('refId', '==', receive.operationId).get()).docs.map(row => row.data()).find(row => row.type === 'return')
+  pass(receiveMovement.processingAllocations[0].physicalWeightG === 750 && receiveMovement.processingAllocations[0].costCents === 375 && receiveMovement.dispatchId === dispatchId, 'movimiento de recepción enlaza despacho, segmento y costo/peso exactos')
+  const routeClose = await command(ids.admin, 'closure', { mode: 'final', closure: { dispatchId, physicalCashDeclared: 70 } }, `${prefix}-route-close`)
+  pass(routeClose.status === 'confirmed' && (await read('distDispatches', dispatchId)).status === 'closed', 'cierre monetario finaliza después de la recepción física confirmada')
+  const reopened = await command(ids.admin, 'reopen', { closureId: `closure_${dispatchId}`, reason: 'QA validar reversión trazable de retorno de sachets' }, `${prefix}-route-reopen`)
+  receivedLot = await read('distLots', centralLot)
+  pass(reopened.status === 'confirmed' && (await read('distDispatches', dispatchId)).status === 'open' && receivedLot.quantities.central === 26 && receivedLot.quantities[routeLoc] === 3 && receivedLot.processingByLocation.central.segments[0].remainingWeightG === 6500 && receivedLot.processingByLocation[routeLoc].segments[0].remainingCostCents === 375, 'reapertura revierte solo el retorno exacto: central 26 paquetes y ruta 3/750 g/Bs 3,75')
+  const dispatchCorrection = await command(ids.admin, 'correctDispatch', { dispatchId, reason: 'QA corrección de una unidad de carga', changes: [{ targetType: 'initial', productId: ids.product, newQuantity: 9, newDispatchMerma: 0 }] }, `${prefix}-derived-dispatch-correction`)
+  const correctionMovement = (await root.collection('distStockMovements').where('refId', '==', dispatchCorrection.operationId).get()).docs.map(row => row.data()).find(row => row.type === 'dispatch_correction')
+  receivedLot = await read('distLots', centralLot)
+  pass(dispatchCorrection.status === 'confirmed' && correctionMovement.processingAllocations[0].physicalWeightG === 250 && correctionMovement.processingAllocations[0].costCents === 125 && receivedLot.quantities.central === 27 && receivedLot.quantities[routeLoc] === 2 && receivedLot.processingByLocation.central.segments[0].remainingWeightG === 6750, 'corrección de despacho devuelve un paquete, 250 g y Bs 1,25 a la asignación original')
+  const damageAttempt = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId, warehouseResponsibleName: 'QA Almacén', products: [{ productId: ids.product, actualReturn: 1, returnWaste: 1, returnWasteReason: 'Envase dañado' }] } }, `${prefix}-derived-damage`, 'rejected')
+  pass(damageAttempt.error.includes('no usan la merma por kg') && (await read('distLots', centralLot)).quantities[routeLoc] === 2 && !(await read('distClosures', `closure_${dispatchId}`))?.warehouseClosedBy, 'retorno dañado de sachets se rechaza para clasificación especializada, sin escrituras parciales')
+  const partialReceive = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId, warehouseResponsibleName: 'QA Almacén', products: [{ productId: ids.product, actualReturn: 1, returnWaste: 0 }] } }, `${prefix}-partial-warehouse-return`)
+  const shortageMovement = (await root.collection('distStockMovements').where('refId', '==', partialReceive.operationId).get()).docs.map(row => row.data()).find(row => row.type === 'shortage')
+  receivedLot = await read('distLots', centralLot)
+  pass(shortageMovement?.quantity === 1 && shortageMovement.lossCostCents === 125 && shortageMovement.lossCost === 1.25 && shortageMovement.processingAllocations[0].physicalWeightG === 250 && receivedLot.quantities.central === 28 && receivedLot.quantities[routeLoc] === 0 && receivedLot.processingByLocation.central.segments[0].remainingWeightG === 7000 && receivedLot.processingByLocation.central.segments[0].remainingCostCents === 3500, 'faltante físico registra un paquete/250 g/Bs 1,25 como pérdida única; un paquete retorna y central queda con 28')
+  const shortageResult = computeOperatingResult([sale], [], [], [saleMovement, shortageMovement], [sale.dayKey])
+  pass(shortageResult.costOfSales === 8.75 && shortageResult.losses === 1.25 && shortageResult.operatingResult === 60, 'Resultado separa Bs 8,75 de costo vendido y Bs 1,25 de faltante comprobado')
+  await command(ids.admin, 'closure', { mode: 'final', closure: { dispatchId, physicalCashDeclared: 70 } }, `${prefix}-route-close-after-shortage`)
+  await command(ids.admin, 'reopen', { closureId: `closure_${dispatchId}`, reason: 'QA revertir cierre con faltante derivado' }, `${prefix}-route-reopen-after-shortage`)
+  receivedLot = await read('distLots', centralLot)
+  const reversedShortage = await read('distStockMovements', shortageMovement.id)
+  const reopenedResult = computeOperatingResult([sale], [], [], [saleMovement, reversedShortage], [sale.dayKey])
+  pass(receivedLot.quantities.central === 27 && receivedLot.quantities[routeLoc] === 2 && receivedLot.processingByLocation.central.segments[0].remainingWeightG === 6750 && receivedLot.processingByLocation[routeLoc].segments[0].remainingCostCents === 250 && reopenedResult.losses === 0, 'reapertura revierte retorno y faltante por segmentos sin duplicar stock, costo ni pérdida')
+  const beforeEconomicEditLot = await read('distLots', centralLot)
+  const beforeEconomicEditMovements = (await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size
+  const economicEdit = await command(ids.admin, 'editSale', { saleId: routeSale.operationId, reason: 'Corrección económica de prueba', lines: [{ productId: ids.product, quantity: 7, actualUnitPrice: 9.5 }], paymentKind: 'cash', cashAmount: 66.5, qrAmount: 0, creditAmount: 0 }, `${prefix}-economic-edit`)
+  const economicallyCorrected = await read('distSales', routeSale.operationId)
+  pass(economicEdit.status === 'confirmed' && economicallyCorrected.effectiveSnapshot.total === 66.5 && economicallyCorrected.effectiveSnapshot.lines[0].costCents === 875 && JSON.stringify(await read('distLots', centralLot)) === JSON.stringify(beforeEconomicEditLot) && (await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size === beforeEconomicEditMovements, 'corrección económica conserva asignaciones/costo y no toca paquetes, gramos ni Kardex')
+
   await command(ids.seller, 'sale', salePayload({ role: 'distributor', routeId: ids.route, dispatchId, lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 0, qrAmount: 10 }), `${prefix}-sale-qr`)
   const qrSale = await read('distSales', `${prefix}-sale-qr`)
-  pass(qrSale.qrAmount === 10 && qrSale.cashAmount === 0 && (await read('distLots', centralLot)).processingByLocation[routeLoc].segments[0].remainingQuantity === 2, 'pago QR registra ingreso QR y descuenta un paquete una sola vez')
+  pass(qrSale.qrAmount === 10 && qrSale.cashAmount === 0 && (await read('distLots', centralLot)).processingByLocation[routeLoc].segments[0].remainingQuantity === 1, 'pago QR registra ingreso QR y descuenta un paquete una sola vez')
   const creditSaleId = `${prefix}-sale-credit`
   await command(ids.seller, 'sale', salePayload({ role: 'distributor', routeId: ids.route, dispatchId, lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 0, creditAmount: 10, customerId: ids.customer }), creditSaleId)
   const receivable = await read('distReceivables', creditSaleId)
-  pass(receivable.balance === 10 && receivable.saleLines[0].costCents === 125 && (await read('distLots', centralLot)).processingByLocation[routeLoc].segments[0].remainingQuantity === 1, 'crédito crea una sola cuenta por cobrar y mantiene costo/consumo histórico con un paquete restante')
+  pass(receivable.balance === 10 && receivable.saleLines[0].costCents === 125 && (await read('distLots', centralLot)).quantities[routeLoc] === 0, 'crédito crea una sola cuenta por cobrar y mantiene costo/consumo histórico; ruta queda sin paquetes')
 
   const directLot = `${prefix}-direct-lot`
   await seedPackageLot({ productId: adminProduct, lotId: directLot, quantity: 2, weightG: 600, costCents: 301, batchId: `${prefix}-batch-direct`, expiresOn: '2027-02-01' })
@@ -158,19 +192,13 @@ try {
   const edit = await command(ids.admin, 'editSale', { saleId: routeSale.operationId, reason: 'QA no implementado', lines: [] }, `${prefix}-edit-derived`, 'rejected')
   const voided = await command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA no implementado' }, `${prefix}-void-derived`, 'rejected')
   const claim = await command(ids.admin, 'claim', { saleId: routeSale.operationId, productId: ids.product, quantity: 1, kind: 'return', reason: 'QA no implementado' }, `${prefix}-claim-derived`, 'rejected')
-  pass(edit.error.includes('3D.2B') && voided.error.includes('3D.2B') && claim.error.includes('3D.2B'), 'corrección, anulación y devolución de venta derivada se rechazan con mensaje de fase especializada')
+  pass(edit.error.includes('conservar todos los productos') && voided.error.includes('3D.2B') && claim.error.includes('3D.2B'), 'edición física, anulación y devolución derivada sin evidencia siguen bloqueadas')
   const movementCountAfterBlockedActions = (await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size
-  pass((await read('distLots', centralLot)).quantities[routeLoc] === 1 && movementCountAfterBlockedActions === movementCountBeforeBlockedActions, 'rechazos de corrección/anulación/devolución no modifican físico ni agregan movimientos')
-  const closureBlocked = await command(ids.warehouse, 'closure', { closure: { mode: 'warehouse', dispatchId, warehouseResponsibleName: 'QA Almacén' } }, `${prefix}-closure-derived`, 'rejected')
-  pass(closureBlocked.error.includes('3D.2B') && !(await read('distClosures', `closure_${dispatchId}`))?.warehouseClosedBy, 'recepción/cierre de ruta con venta derivada se bloquea hasta integrar su retorno, sin confirmar warehouse_done')
-  await root.collection('distClosures').doc(`closure_${dispatchId}`).set({ id: `closure_${dispatchId}`, restaurantId: 'sanjose', dispatchId, routeId: ids.route, status: 'closed' })
-  await root.collection('distDispatches').doc(dispatchId).update({ status: 'closed' })
-  const reopenBlocked = await command(ids.admin, 'reopen', { closureId: `closure_${dispatchId}`, reason: 'QA retorno de sachets aún no integrado' }, `${prefix}-reopen-derived`, 'rejected')
-  pass(reopenBlocked.error.includes('3D.2B') && (await read('distDispatches', dispatchId)).status === 'closed', 'reapertura de ruta con venta derivada se bloquea antes de revertir movimientos')
+  pass((await read('distLots', centralLot)).quantities[routeLoc] === 0 && movementCountAfterBlockedActions === movementCountBeforeBlockedActions, 'rechazos de edición física/anulación/devolución no modifican stock ni agregan movimientos')
 
   const beforeRetry = await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()
   await processCommand(db, root.collection('distOperations').doc(routeSale.operationId))
-  pass((await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size === beforeRetry.size && (await read('distLots', centralLot)).quantities[routeLoc] === 1, 'reintento del mismo operationId no duplica venta ni consumo')
+  pass((await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size === beforeRetry.size && (await read('distLots', centralLot)).quantities[routeLoc] === 0, 'reintento del mismo operationId no duplica venta ni consumo')
 
   const racingLot = `${prefix}-race-lot`, raceProduct = `${prefix}-race-product`
   await seedProduct(raceProduct, 'package', 3)
@@ -185,14 +213,16 @@ try {
   await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), 'restaurants', 'sanjose', 'distOperations', `${prefix}-anon-sale`), { id: `${prefix}-anon-sale`, restaurantId: 'sanjose', createdBy: ids.admin, type: 'sale', payload: {}, status: 'queued' }))
   pass(true, 'Firestore Rules bloquean la creación anónima de operaciones de venta')
   const distributorWrongRoute = `${prefix}-rules-distributor-sale`
+  const wrongRouteCentralBefore = (await read('distLots', centralLot)).quantities.central
   await setDoc(doc(authDb(ids.seller), 'restaurants', 'sanjose', 'distOperations', distributorWrongRoute), { id: distributorWrongRoute, restaurantId: 'sanjose', createdBy: ids.seller, createdAt: new Date().toISOString(), type: 'sale', payload: salePayload({ role: 'distributor', routeId: 'otra-ruta', dispatchId, lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), status: 'queued' })
   await processCommand(db, root.collection('distOperations').doc(distributorWrongRoute))
   const wrongRouteResult = await read('distOperations', distributorWrongRoute)
-  pass(wrongRouteResult.status === 'rejected' && wrongRouteResult.error.includes('no corresponde a tu ruta') && (await read('distLots', centralLot)).quantities.central === 25, 'Rules autentican la solicitud y el backend rechaza otra ruta antes de consumir inventario')
+  pass(wrongRouteResult.status === 'rejected' && wrongRouteResult.error.includes('no corresponde a tu ruta') && (await read('distLots', centralLot)).quantities.central === wrongRouteCentralBefore, 'Rules autentican la solicitud y el backend rechaza otra ruta antes de consumir inventario')
   delete process.env.FUNCTIONS_EMULATOR
   delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
+  const beforeGateDisable = (await read('distLots', centralLot)).quantities.central
   const disabledAfterTests = await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), `${prefix}-gate-after`, 'rejected')
-  pass(disabledAfterTests.error.includes('bloqueado') && (await read('distLots', centralLot)).quantities.central === 25, 'al retirar la marca de Functions Emulator el servidor vuelve a bloquear el consumo derivado, sin escrituras')
+  pass(disabledAfterTests.error.includes('bloqueado') && (await read('distLots', centralLot)).quantities.central === beforeGateDisable, 'al retirar la marca de Functions Emulator el servidor vuelve a bloquear el consumo derivado, sin escrituras')
 
   const multiProduct = `${prefix}-multi-product`, multiLotA = `${prefix}-multi-a`, multiLotB = `${prefix}-multi-b`
   await seedProduct(multiProduct, 'package', 999)
