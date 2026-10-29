@@ -493,7 +493,11 @@ class Operation {
       remaining = roundAt(remaining - q, precision);
       if (l.processingCommercialBlocked) {
         if (!processingCourtesyReservation) {
-          check(this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingRepack }), 'El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
+          if (!this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingRepack })) {
+            const error = new Error('El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
+            if (processingDispatch || processingTransfer) error.code = 'processing/logistics-not-authorized';
+            throw error;
+          }
           const processingAllocations = this.takeProcessingAllocation(l, loc, q, this.id);
           const parts = origins.take(l, loc, q, allowPendingOrigin);
           check(parts.length === 1 && !parts[0].originReferences, 'El despacho del lote derivado requiere asignación de origen completa.');
@@ -1244,7 +1248,7 @@ async function correctDispatch(o, p) {
           }
         } catch (lotErr) {
           if (c.lotId || line.lotId) {
-            if (/lote derivado de elaboración sigue bloqueado/i.test(String(lotErr?.message || ''))) throw lotErr;
+            if (lotErr?.code === 'processing/logistics-not-authorized') throw lotErr;
             allocationsAdded = await o.moveStock(
               line.productId,
               warehouse,
@@ -1404,7 +1408,6 @@ async function correctDispatch(o, p) {
           let allocationsAdded;
           try {
             if (c.lotId || line.lotId) {
-              if (/lote derivado de elaboración sigue bloqueado/i.test(String(lotErr?.message || ''))) throw lotErr;
               allocationsAdded = await o.moveStock(
                 line.productId,
                 warehouse,
@@ -1422,6 +1425,7 @@ async function correctDispatch(o, p) {
               );
             }
           } catch (lotErr) {
+            if (lotErr?.code === 'processing/logistics-not-authorized') throw lotErr;
             if (c.lotId || line.lotId) {
               allocationsAdded = await o.moveStock(
                 line.productId,
