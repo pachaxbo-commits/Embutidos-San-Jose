@@ -62,13 +62,23 @@ try {
   const centralLot = `${prefix}-central-lot`
   await seedPackageLot({ productId: ids.product, lotId: centralLot, quantity: 36, weightG: 9000, costCents: 4500, batchId: `${prefix}-batch-36` })
   const dispatchId = `${prefix}-dispatch`
+  // Seed an already mobilized route only through the trusted Emulator gate;
+  // subsequent negative cases prove the gate cannot be requested by payload.
+  process.env.FUNCTIONS_EMULATOR = 'true'
+  process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
   const dispatchOp = await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: ids.route, routeName: 'QA Ruta', distributorUid: ids.seller, distributorName: 'QA Seller', lines: [{ productId: ids.product, productName: 'QA sachets', unitType: 'package', quantity: 10, normalQuantity: 10, dispatchMerma: 0, allocationsRequested: [{ lotId: centralLot, quantity: 10 }] }] }, dispatchId)
   assert.equal(dispatchOp.status, 'confirmed')
+  delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
   const dispatchMovement = (await root.collection('distStockMovements').where('refId', '==', dispatchOp.operationId).get()).docs.map(row => row.data()).find(row => row.type === 'dispatch')
   pass(dispatchMovement.processingAllocations[0].physicalWeightG === 2500 && dispatchMovement.processingAllocations[0].costCents === 1250, 'fixture: despacho real asigna 10 paquetes, 2.500 g y 1.250 centavos a la ruta')
 
   const productionBlocked = await command(ids.seller, 'sale', salePayload({ role: 'distributor', routeId: ids.route, dispatchId, lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), `${prefix}-prod-gate`, 'rejected')
   pass(productionBlocked.error.includes('bloqueado') && (await read('distLots', centralLot)).quantities[`route__${ids.route}`] === 10, 'venta derivada continúa bloqueada si el servidor no tiene la marca de Functions Emulator, aunque el payload solicite activarla')
+  await root.collection('distWarehouses').doc(`${prefix}-warehouse`).set({ id: `${prefix}-warehouse`, restaurantId: 'sanjose', active: true, name: 'QA almacén destino' })
+  const noFlagTransfer = await command(ids.admin, 'transfer', { from: 'central', to: `${prefix}-warehouse`, line: { productId: ids.product, quantity: 1 } }, `${prefix}-prod-transfer-gate`, 'rejected')
+  pass(Boolean(noFlagTransfer.error) && (await read('distLots', centralLot)).quantities.central === 26, 'traslado derivado se rechaza sin flag confiable y conserva el saldo')
+  const noFlagAddition = await command(ids.admin, 'addition', { dispatch: { id: dispatchId }, lines: [{ productId: ids.product, quantity: 1, normalQuantity: 1, dispatchMerma: 0, allocationsRequested: [{ lotId: centralLot, quantity: 1 }] }] }, `${prefix}-prod-addition-gate`, 'rejected')
+  pass(Boolean(noFlagAddition.error) && (await read('distLots', centralLot)).quantities.central === 26, 'aumento derivado se rechaza sin flag confiable y no toma otro lote')
 
   process.env.FUNCTIONS_EMULATOR = 'true'
   process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'

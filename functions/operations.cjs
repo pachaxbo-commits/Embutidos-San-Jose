@@ -324,7 +324,11 @@ class Operation {
   }
   processingMovementAllowed(lot, loc, options) {
     if (!lot.processingCommercialBlocked) return true;
-    const authorizedMovement = options.processingDispatch === true || options.processingTransfer === true || options.processingReturn === true && loc.startsWith('route__') || options.processingSale === true && processingDerivedSalesEmulatorOnly() || options.processingRepack === true && processingRepackEmulatorOnly();
+    // The option identifies the logistics action; only the trusted Emulator
+    // switch authorizes moving protected derived stock out of its location.
+    const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && processingDerivedSalesEmulatorOnly()
+      || options.processingReturn === true && loc.startsWith('route__')
+      || options.processingRepack === true && processingRepackEmulatorOnly();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
     if (origins.pending(lot, loc) > 0 || !lot.processingSourceAllocationBasis) return false;
     const unavailable = lot.processingUnavailable?.[loc] || {};
@@ -1240,6 +1244,7 @@ async function correctDispatch(o, p) {
           }
         } catch (lotErr) {
           if (c.lotId || line.lotId) {
+            if (/lote derivado de elaboración sigue bloqueado/i.test(String(lotErr?.message || ''))) throw lotErr;
             allocationsAdded = await o.moveStock(
               line.productId,
               warehouse,
@@ -1399,6 +1404,7 @@ async function correctDispatch(o, p) {
           let allocationsAdded;
           try {
             if (c.lotId || line.lotId) {
+              if (/lote derivado de elaboración sigue bloqueado/i.test(String(lotErr?.message || ''))) throw lotErr;
               allocationsAdded = await o.moveStock(
                 line.productId,
                 warehouse,
