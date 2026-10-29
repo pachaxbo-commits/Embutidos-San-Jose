@@ -1834,6 +1834,11 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                               )}
                             </p>
                           )}
+                          {detail.costAccountingStatus === 'pending_quarantine_disposition' && (
+                            <p className="mt-1 text-[10px] font-semibold text-amber-800">
+                              Costo histórico en cuarentena pendiente de disposición: {detail.pendingQuarantineCostBs === null || detail.pendingQuarantineCostBs === undefined ? 'no disponible' : formatBs(detail.pendingQuarantineCostBs)}. No se revirtió ni se duplicó en Resultado.
+                            </p>
+                          )}
                         </div>
                       </div>
                     </div>

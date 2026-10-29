@@ -340,6 +340,32 @@ console.log('=== Iniciando pruebas unitarias: Reporte de Ganancias por Producto 
   ok(item?.profitBs === 48, 'Caso 7: Ganancia neta = 160 - 112 = 48 Bs')
 }
 
+// El costo de un sachet devuelto a cuarentena se informa, pero no revierte COGS ni se vuelve a sumar como pérdida.
+{
+  const sale = makeSale({
+    id: 'sale-derived-pending-return',
+    total: 70,
+    lines: [{
+      productId: 'prod-derived', productName: 'Viena sachet', quantity: 7, unitType: 'package',
+      actualUnitPrice: 10, subtotal: 70, costTotal: 8.75,
+      allocations: [{ lotId: 'lot-derived', quantity: 7, productionCost: null,
+        processingAllocation: { batchId: 'batch-a', segmentId: 'seg-a', quantity: 7, physicalWeightG: 1750, costCents: 875 } }],
+    } as unknown as DistSaleLine],
+  })
+  const pendingReturn = {
+    id: 'claim-derived-pending-return', kind: 'return', saleId: sale.id, customerId: 'customer-a', customerName: 'Cliente',
+    productId: 'prod-derived', productName: 'Viena sachet', quantity: 2, unitType: 'package', reason: 'Retorno recibido',
+    routeId: 'route-1', createdAt: '2026-10-24T12:00:00Z', dayKey: '2026-10-24', revenueDelta: -20,
+    additionalCost: 0, returnedCostCents: 250, costAccountingStatus: 'pending_quarantine_disposition',
+    debtReduction: 0, cashIn: 0, cashOut: 20, qrIn: 0, qrOut: 0, replacement: null,
+  } as DistClaim
+  const report = computeProductProfitReport([sale], [pendingReturn], [], [], ['2026-10-24'])
+  const item = report.items.find(row => row.productId === 'prod-derived')
+  const claimDetail = report.allLineDetails.find(row => row.saleId === sale.id && row.isClaimRelated)
+  ok(item?.costBs === 8.75, 'Retorno derivado en cuarentena no revierte el costo histórico vendido')
+  ok(claimDetail?.costBs === 0 && claimDetail.pendingQuarantineCostBs === 2.5 && claimDetail.costAccountingStatus === 'pending_quarantine_disposition', 'reporte separa costo informativo pendiente sin contabilizarlo otra vez como costo o pérdida')
+}
+
 // -------------------------------------------------------------
 // CASO 8: Reclamo por Cambio (kind: exchange)
 // -------------------------------------------------------------

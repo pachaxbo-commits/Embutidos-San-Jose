@@ -18,6 +18,7 @@ export interface OperatingResult {
   operatingResult: number | null; costsKnown: boolean; report: ProductProfitReport; details: OperatingResultDetail[]
   expenses: OperatingResultExpenseRow[]; salesByOrigin: Array<{ origin: string; amount: number }>
   pendingClassificationCount: number; pendingEconomicDecisionCount: number
+  pendingQuarantineDispositionCount: number; pendingQuarantineCostBs: number | null
 }
 
 const ZERO: Record<string, number> = { administration: 0, indirect: 0, equipment: 0, other: 0, production_additional: 0, production_input: 0 }
@@ -34,6 +35,11 @@ export function computeOperatingResult(
   const productionInputs = allScopedActiveExpenses.filter((expense) => effectiveExpenseEconomicType(expense) === 'production_input')
   const pendingClassificationCount = allScopedActiveExpenses.filter(isExpenseReviewPending).length
   const pendingEconomicDecisionCount = pendingClassificationCount
+  const pendingQuarantineClaims = scopedClaims.filter((claim) => claim.costAccountingStatus === 'pending_quarantine_disposition')
+  const pendingQuarantineCostKnown = pendingQuarantineClaims.every((claim) => typeof claim.returnedCostCents === 'number' && Number.isFinite(claim.returnedCostCents))
+  const pendingQuarantineCostBs = pendingQuarantineCostKnown
+    ? round2(pendingQuarantineClaims.reduce((sum, claim) => sum + (claim.returnedCostCents ?? 0), 0) / 100)
+    : null
   const scopedMovements = movements.filter((movement) => !movement.reversedAt && inScope(movement.dayKey || toDayKey(movement.createdAt), movement.routeId))
   const routeNames = new Map(routes.map((route) => [route.id, route.name]))
   for (const sale of scopedSales) {
@@ -127,6 +133,16 @@ export function computeOperatingResult(
     origen: displayOrigin(sale.routeId, sale.routeName), responsable: sale.sellerName, monto: courtesyCostBySale[index] ?? 'Costo no registrado' }))
   courtesyRows.push(...unlinkedCourtesyMovements.map((movement) => ({ fecha: movement.dayKey || toDayKey(movement.createdAt), motivo: 'Cortesía sin venta vinculada', origen: displayOrigin(movement.routeId), responsable: movement.responsibleName || 'Sin responsable', monto: movement.lossCost ?? 'Costo no registrado' })))
   const details: OperatingResultDetail[] = [
+    ...(pendingQuarantineClaims.length ? [{
+      key: 'quarantineDisposition', label: 'Costo histórico en cuarentena pendiente de disposición',
+      amount: pendingQuarantineCostBs,
+      rows: pendingQuarantineClaims.map((claim) => ({
+        fecha: claim.dayKey || toDayKey(claim.createdAt), producto: claim.productName,
+        cliente: claim.customerName, estado: 'Pendiente de disposición; no ajusta Resultado',
+        costo: typeof claim.returnedCostCents === 'number' ? round2(claim.returnedCostCents / 100) : 'Costo histórico no disponible',
+      })),
+      explanation: 'Importe informativo. No se suma ni resta nuevamente: el costo de venta original se conserva hasta definir la disposición económica de la cuarentena.',
+    }] : []),
     { key: 'grossSales', label: 'Ventas brutas', amount: grossSales, rows: saleRows },
     { key: 'adjustments', label: 'Cambios y devoluciones', amount: adjustments, rows: claimRows },
     { key: 'netSales', label: 'Ventas netas', amount: netSales, rows: [...saleRows, ...claimRows] },
@@ -144,5 +160,5 @@ export function computeOperatingResult(
     ] },
   ]
   const expenseGroupLabels = [...new Map(expenseRows.map((row) => [row.group, row.groupLabel])).entries()].map(([id, label]) => ({ id, label }))
-  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, expenseGroupLabels, productionInputTotal, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin, pendingClassificationCount, pendingEconomicDecisionCount }
+  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, expenseGroupLabels, productionInputTotal, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin, pendingClassificationCount, pendingEconomicDecisionCount, pendingQuarantineDispositionCount: pendingQuarantineClaims.length, pendingQuarantineCostBs }
 }

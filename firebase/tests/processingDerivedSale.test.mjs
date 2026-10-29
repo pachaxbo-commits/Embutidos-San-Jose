@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { initializeTestEnvironment, assertFails } from '@firebase/rules-unit-testing'
+import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import { doc, setDoc } from 'firebase/firestore'
 import { computeProductProfitReport } from '../../src/modules/distribution/domain/productProfit.ts'
 import { computeOperatingResult } from '../../src/modules/distribution/domain/operatingResult.ts'
@@ -192,7 +192,7 @@ try {
   const edit = await command(ids.admin, 'editSale', { saleId: routeSale.operationId, reason: 'QA no implementado', lines: [] }, `${prefix}-edit-derived`, 'rejected')
   const voided = await command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA no implementado' }, `${prefix}-void-derived`, 'rejected')
   const claim = await command(ids.admin, 'claim', { saleId: routeSale.operationId, productId: ids.product, quantity: 1, kind: 'return', reason: 'QA no implementado' }, `${prefix}-claim-derived`, 'rejected')
-  pass(edit.error.includes('conservar todos los productos') && voided.error.includes('3D.2B') && claim.error.includes('Confirma que recibiste físicamente'), 'edición física y anulación siguen bloqueadas; una devolución sin evidencia física se rechaza')
+  pass(edit.error.includes('conservar todos los productos') && voided.error.includes('recepción física verificable') && claim.error.includes('Confirma que recibiste físicamente'), 'edición física permanece económica únicamente; anulación sin evidencia y devolución sin recibo físico se rechazan')
   const movementCountAfterBlockedActions = (await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size
   pass((await read('distLots', centralLot)).quantities[routeLoc] === 0 && movementCountAfterBlockedActions === movementCountBeforeBlockedActions, 'rechazos de edición física/anulación/devolución no modifican stock ni agregan movimientos')
 
@@ -333,6 +333,42 @@ try {
   const mixedSkuQuarantine = await read('distLots', mixedSkuClosure.products[0].damagedQuarantineLots[0].lotId)
   pass(mixedSkuReceive.status === 'confirmed' && (await read('distLots', mixedSkuNormalLot)).quantities.central === 1, 'SKU mixto conserva la devolución normal en su lote tradicional sin transformarla en sachet')
   pass(mixedSkuQuarantine.derivedReturn.sourceLotId === mixedSkuDerivedLot && mixedSkuQuarantine.processingByLocation.central.segments[0].remainingWeightG === 250 && mixedSkuQuarantine.processingByLocation.central.segments[0].remainingCostCents === 125 && mixedSkuQuarantine.processingMeasuredWeightGRemaining === null, 'el paquete dañado toma solo el lote derivado y mantiene el peso histórico mientras la medición queda desconocida')
+
+  const ownReturnId = `${prefix}-seller-own-derived-return`
+  const ownReturn = await command(ids.seller, 'claim', { saleId: routeSale.operationId, productId: ids.product, kind: 'return', quantity: 1, reason: 'QA devolución propia recibida en ruta', method: 'cash', physicalReceiptConfirmed: true, derivedReturnCondition: 'sealed_intact', measuredPhysicalWeightG: null, expectedReturnedQuantity: 0 }, ownReturnId)
+  const ownReturnRecord = await read('distClaims', ownReturnId)
+  const ownReturnQuarantine = await read('distLots', `${ownReturnId}__quarantine_0`)
+  pass(ownReturn.status === 'confirmed' && ownReturnRecord.returnedCostCents === 125 && ownReturnRecord.receivedBy === ids.seller && ownReturnQuarantine?.processingUnavailable?.[routeLoc]?.reviewHold === 1, 'distribuidor registra devolución física de su venta en su ruta; el paquete queda en cuarentena con su costo histórico')
+  const routeBalanceBeforeVoidAfterReturn = await read('distBalances', `${routeLoc}__${ids.product}`)
+  const claimCashOutBeforeVoid = ownReturnRecord.cashOut
+  const saleCorrectionsBeforeVoid = (await root.collection('distSaleCorrections').where('saleId', '==', routeSale.operationId).get()).size
+  const voidAfterReturn = await command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA anulación luego de devolución' }, `${prefix}-void-after-derived-return`, 'rejected')
+  pass(voidAfterReturn.error.includes('devolución(es) o cambio(s) registrado(s)') && !(await read('distSales', routeSale.operationId)).voidedAt && (await read('distBalances', `${routeLoc}__${ids.product}`)).quantity === routeBalanceBeforeVoidAfterReturn.quantity && (await read('distClaims', ownReturnId)).cashOut === claimCashOutBeforeVoid, 'anulación posterior a devolución parcial no restaura ni reembolsa otra vez; conserva venta, balance y reclamo')
+  await processCommand(db, root.collection('distOperations').doc(voidAfterReturn.operationId))
+  const repeatedVoidResults = await Promise.all([
+    command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA segundo intento concurrente A' }, `${prefix}-void-after-return-race-a`, null),
+    command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA segundo intento concurrente B' }, `${prefix}-void-after-return-race-b`, null),
+  ])
+  const saleAfterVoidAttempts = await read('distSales', routeSale.operationId)
+  const balanceAfterVoidAttempts = await read('distBalances', `${routeLoc}__${ids.product}`)
+  const claimsAfterVoidAttempts = await root.collection('distClaims').where('saleId', '==', routeSale.operationId).get()
+  const correctionsAfterVoidAttempts = await root.collection('distSaleCorrections').where('saleId', '==', routeSale.operationId).get()
+  pass(repeatedVoidResults.every(row => row.status === 'rejected') && !saleAfterVoidAttempts.voidedAt && balanceAfterVoidAttempts.quantity === routeBalanceBeforeVoidAfterReturn.quantity && claimsAfterVoidAttempts.size === 1 && correctionsAfterVoidAttempts.size === saleCorrectionsBeforeVoid, `reintento idempotente y anulaciones concurrentes no cambian stock, reclamos ni correcciones (${repeatedVoidResults.map(row => row.status).join(', ')})`)
+  const editAfterClaim = await command(ids.admin, 'editSale', { saleId: routeSale.operationId, reason: 'QA corrección tras reclamo', lines: [] }, `${prefix}-edit-after-derived-return`, 'rejected')
+  pass(editAfterClaim.error.includes('cambios o devoluciones') && !(await read('distSales', routeSale.operationId)).voidedAt && (await read('distBalances', `${routeLoc}__${ids.product}`)).quantity === routeBalanceBeforeVoidAfterReturn.quantity, 'la corrección posterior a devolución se rechaza y conserva el stock y el estado de la venta')
+  const foreignSaleId = `${prefix}-admin-sale-for-claim-rule`
+  await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), foreignSaleId)
+  const claimOperation = (actor, id, saleId) => ({ id, restaurantId: 'sanjose', createdBy: actor, createdAt: new Date().toISOString(), type: 'claim', payload: { saleId, productId: ids.product, kind: 'return', quantity: 1, reason: 'Rules QA', physicalReceiptConfirmed: true }, status: 'queued' })
+  const ownClaimDoc = claimOperation(ids.seller, `${prefix}-rules-claim-own`, routeSale.operationId)
+  await assertSucceeds(setDoc(doc(authDb(ids.seller), 'restaurants', 'sanjose', 'distOperations', ownClaimDoc.id), ownClaimDoc))
+  pass(true, 'Rules permiten encolar claim para una venta propia en la ruta asignada')
+  const foreignClaimDoc = claimOperation(ids.seller, `${prefix}-rules-claim-foreign`, foreignSaleId)
+  await assertFails(setDoc(doc(authDb(ids.seller), 'restaurants', 'sanjose', 'distOperations', foreignClaimDoc.id), foreignClaimDoc))
+  const warehouseClaimDoc = claimOperation(ids.warehouse, `${prefix}-rules-claim-warehouse`, routeSale.operationId)
+  await assertFails(setDoc(doc(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distOperations', warehouseClaimDoc.id), warehouseClaimDoc))
+  const anonymousClaimDoc = claimOperation('anonymous', `${prefix}-rules-claim-anonymous`, routeSale.operationId)
+  await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), 'restaurants', 'sanjose', 'distOperations', anonymousClaimDoc.id), anonymousClaimDoc))
+  pass(true, 'Rules bloquean claim de venta ajena, Almacén y usuario anónimo')
 
   const centsProduct = `${prefix}-cents-product`
   await seedProduct(centsProduct, 'package', 900)

@@ -474,7 +474,7 @@ class Operation {
       );
     const ordinaryAvailable = roundAt(lots.reduce((sum, lot) => sum + usable(lot), 0), precision);
     if (processingSale && ordinaryAvailable < quantity && !processingDerivedSalesEmulatorOnly() && e.lots.some(lot => lot.processingCommercialBlocked && usable(lot) > 0))
-      check(false, 'La venta comercial de sachets derivados todavía no está habilitada para usuarios reales; el stock permanece bloqueado hasta completar la Fase 3D.2B y la auditoría de activación.');
+      check(false, 'La venta comercial de sachets derivados todavía no está habilitada para usuarios reales; el stock permanece bloqueado hasta completar y auditar todo el ciclo comercial.');
     check(
       roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
       `Stock disponible insuficiente de ${e.p.name}. Revisa cantidades, vencimientos y reservas por origen pendiente; esas reservas no se pueden vender ni despachar.`,
@@ -2020,7 +2020,15 @@ function saleContainsDerivedProcessingAllocation(sale) {
   return snapshots.some(snapshot => (snapshot.lines || []).some(line => (line.allocations || []).some(allocation => allocation.processingAllocation)));
 }
 function assertNoDerivedSaleMutation(sale, action) {
-  check(!saleContainsDerivedProcessingAllocation(sale), `La venta de sachets derivados no admite ${action} todavía; requiere el flujo comercial especializado de la Fase 3D.2B.`);
+  check(!saleContainsDerivedProcessingAllocation(sale), `La venta de sachets derivados no admite ${action} por el flujo tradicional; requiere el procedimiento especializado y su auditoría.`);
+}
+async function voidDerivedSale(o, sale) {
+  const claims = await o.query('distClaims', 'saleId', sale.id);
+  if (claims.length) {
+    const returned = claims.reduce((sum, claim) => sum + Number(claim.quantity || 0), 0);
+    check(false, `La venta derivada ya tiene ${claims.length} devolución(es) o cambio(s) registrado(s) (${returned} unidades). No se puede anular ni repetir reembolsos; la cantidad recibida sigue en cuarentena.`);
+  }
+  check(false, 'La anulación de sachets derivados sigue bloqueada: no hay un registro de recepción física verificable que pruebe que los paquetes de esta venta permanecen bajo control del negocio. No se restauró inventario; registra una devolución mediante claim si el producto fue recibido físicamente.');
 }
 async function editDerivedSaleEconomicsOnly(o, p, sale) {
   check(o.member.role === 'admin' || sale.sellerUid === o.actor, 'Solo puedes corregir tus propias ventas.');
@@ -2030,7 +2038,7 @@ async function editDerivedSaleEconomicsOnly(o, p, sale) {
   check(!qrVerifications.some(row => row.sourceType === 'sale'), 'La venta tiene una verificación bancaria QR. Requiere revisión administrativa antes de corregirla.');
   const dispatch = sale.dispatchId ? await o.read('distDispatches', sale.dispatchId) : null;
   check(!dispatch || dispatch.status === 'open', 'La ruta ya está cerrada. Usa un flujo administrativo posterior al cierre.');
-  check((await o.query('distClaims', 'saleId', sale.id)).length === 0, 'La venta tiene cambios o devoluciones; requiere el flujo especializado de 3D.2B.');
+  check((await o.query('distClaims', 'saleId', sale.id)).length === 0, 'La venta tiene cambios o devoluciones; requiere revisión especializada antes de corregirla.');
   const previous = await o.withDocumentedOrigins(sale, sale.effectiveSnapshot || sale);
   check(Array.isArray(previous.lines) && previous.lines.length > 0 && previous.lines.every(line => Array.isArray(line.allocations) && line.allocations.length > 0), 'La venta derivada no conserva asignaciones completas; no puede corregirse.');
   check(Array.isArray(p.lines) && p.lines.length === previous.lines.length, 'La corrección económica debe conservar todos los productos vendidos.');
@@ -2234,6 +2242,7 @@ async function voidSale(o, p) {
   check(p.reason?.trim(), "La razón de la anulación es obligatoria.");
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
+  if (saleContainsDerivedProcessingAllocation(sale)) return voidDerivedSale(o, sale);
   assertNoDerivedSaleMutation(sale, 'anulaciones');
   await assertNotReservedCourtesy(o, sale);
   check(!sale.voidedAt, "La venta ya fue anulada.");
@@ -3743,12 +3752,15 @@ async function claimDerivedSale(o, p, sale) {
   const costValues = sourceAllocations.map(allocation => allocation.processingAllocation.costCents);
   const returnedCostCents = costValues.some(value => value === null || value === undefined) ? null : costValues.reduce((sum, value) => sum + value, 0);
   const isDistributor = o.member.role === 'distributor';
-  if (isDistributor) check(sale.sellerUid === o.actor, 'Solo puedes devolver productos de tus propias ventas.');
+  if (isDistributor) {
+    check(sale.sellerUid === o.actor, 'Solo puedes devolver productos de tus propias ventas.');
+    check(sale.routeId && sale.routeId === o.member.routeId, 'La venta ya no corresponde a tu ruta asignada; Administración debe recibir la devolución.');
+  }
   else check(o.member.role === 'admin' || o.member.role === 'warehouse', 'Sin permiso para recibir devoluciones.');
   const dispatch = sale.dispatchId ? await o.read('distDispatches', sale.dispatchId) : null;
   if (isDistributor) check(!dispatch || dispatch.status === 'open', 'La ruta está cerrada; Administración debe recibir la devolución.');
   const locationId = isDistributor ? location('route', sale.routeId) : location('warehouse', p.warehouseId || 'central');
-  o.owns(locationId);
+  if (!isDistributor) o.owns(locationId);
   if (!isDistributor && locationId !== 'central') {
     const warehouse = await o.read('distWarehouses', safeId(p.warehouseId));
     check(warehouse && warehouse.active !== false, 'Almacén no disponible.');
@@ -3816,6 +3828,7 @@ async function claim(o, p) {
   const isDistributor = o.member.role === "distributor";
   if (isDistributor) {
     check(s.sellerUid === o.actor, "Solo puedes registrar cambios o devoluciones de tus propias ventas.");
+    check(s.routeId && s.routeId === o.member.routeId, "La venta ya no corresponde a tu ruta asignada. Requiere revisión de administración.");
     const dispatch = s.dispatchId ? await o.read("distDispatches", s.dispatchId) : null;
     check(!dispatch || dispatch.status === "open", "La ruta ya está cerrada. Requiere revisión de administración.");
   }

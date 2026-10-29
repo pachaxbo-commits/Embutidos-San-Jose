@@ -109,6 +109,15 @@ service cloud.firestore {
       return distDistributor(restaurantId) && routeId != '' && routeId == distMyRoute(restaurantId);
     }
 
+    function distributorCanClaimSale(restaurantId) {
+      let saleId = request.resource.data.payload.get('saleId', '');
+      return distDistributor(restaurantId)
+        && saleId is string && saleId != ''
+        && exists(/databases/$(database)/documents/restaurants/$(restaurantId)/distSales/$(saleId))
+        && get(/databases/$(database)/documents/restaurants/$(restaurantId)/distSales/$(saleId)).data.get('sellerUid', '') == request.auth.uid
+        && get(/databases/$(database)/documents/restaurants/$(restaurantId)/distSales/$(saleId)).data.get('routeId', '') == distMyRoute(restaurantId);
+    }
+
     function distTenantMatches(restaurantId) {
       return request.resource.data.restaurantId == restaurantId;
     }
@@ -232,6 +241,7 @@ service cloud.firestore {
           || (request.resource.data.type == 'resolveQuarantine' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyQuarantineInputError' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyClosureAttribution' && distAdmin(restaurantId))
+          || (request.resource.data.type == 'claim' && (distAdmin(restaurantId) || distributorCanClaimSale(restaurantId)))
           || (request.resource.data.type in ['quoteCreate','quoteUpdate','quoteCancel','quoteDelete'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type in ['editSale','voidSale'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type == 'warehouseShift' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
@@ -240,7 +250,7 @@ service cloud.firestore {
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
           || (request.resource.data.type in ['reserveProcessingStock','confirmProcessingBatch'] && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
           || (request.resource.data.type in ['releaseProcessingReservation','deliverReservedCourtesy'] && distAdmin(restaurantId))
-          || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','saveExpenseGroup','saveExpenseSupplier','registerSupplierPurchase','paySupplierPayable','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
+          || (request.resource.data.type in ['adjustment','reviewAdjustmentRequest','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','saveExpenseGroup','saveExpenseSupplier','registerSupplierPurchase','paySupplierPayable','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
       allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged']) && request.resource.data.acknowledged == true;
       allow delete: if false;

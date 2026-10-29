@@ -30,6 +30,8 @@ export interface ProductProfitLineDetail {
   isClaimRelated: boolean
   claimKind?: 'return' | 'exchange'
   claimReason?: string
+  pendingQuarantineCostBs?: number | null
+  costAccountingStatus?: string
   isDispatchMermaCost?: boolean
 }
 
@@ -209,6 +211,10 @@ export function computeProductProfitReport(
         isClaimRelated: true,
         claimKind: 'return',
         claimReason: claim.reason,
+        pendingQuarantineCostBs: claim.costAccountingStatus === 'pending_quarantine_disposition'
+          ? (typeof claim.returnedCostCents === 'number' ? round2(claim.returnedCostCents / 100) : null)
+          : undefined,
+        costAccountingStatus: claim.costAccountingStatus,
       })
     } else if (claim.kind === 'exchange') {
       // Cambio con reemplazo:

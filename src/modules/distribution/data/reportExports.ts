@@ -1173,6 +1173,7 @@ export async function exportExcel(
         "Precio unitario (Bs)",
         "Venta (Bs)",
         "Costo (Bs)",
+        "Costo en cuarentena pendiente (informativo, Bs)",
         "Ganancia (Bs)",
         "Margen (%)",
         "Estado / Observación",
@@ -1191,6 +1192,9 @@ export async function exportExcel(
         d.actualUnitPrice,
         d.saleBs,
         d.costBs !== null ? d.costBs : "Incompleto",
+        d.costAccountingStatus === "pending_quarantine_disposition"
+          ? (d.pendingQuarantineCostBs !== null && d.pendingQuarantineCostBs !== undefined ? d.pendingQuarantineCostBs : "Costo no disponible")
+          : "",
         d.profitBs !== null ? d.profitBs : "No disponible",
         d.marginPct !== null ? d.marginPct / 100 : null,
         d.isClaimRelated ? (d.claimKind === "return" ? "Devolución" : "Cambio") : d.isCorrected ? "Venta corregida" : "Normal",
