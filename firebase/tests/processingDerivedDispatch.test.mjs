@@ -7,6 +7,8 @@ import { doc, setDoc } from 'firebase/firestore'
 
 const req = createRequire(new URL('../../functions/package.json', import.meta.url))
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+process.env.FUNCTIONS_EMULATOR = 'true'
+process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
 const { initializeApp } = req('firebase-admin/app')
 const { getFirestore } = req('firebase-admin/firestore')
 const { processCommand } = req('./operations.cjs')
@@ -63,6 +65,15 @@ try {
   const derivedLot = await read('distLots', derivedLotId)
   pass(derivedLot.processingByLocation.central.segments[0].remainingQuantity === 36 && derivedLot.processingByLocation.central.segments[0].remainingWeightG === 9000 && derivedLot.processingByLocation.central.segments[0].remainingCostCents === 4500, 'elaboración crea segmentos de lote por ubicación con 36 paquetes, 9.000 g y 4.500 centavos')
 
+  const noFlagBeforeLot = await read('distLots', derivedLotId)
+  const noFlagBeforeBalance = await read('distBalances', `central__${ids.product}`)
+  const noFlagBeforeMovements = await root.collection('distStockMovements').get()
+  delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
+  const blockedDispatch = await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: ids.route, routeName: 'QA Ruta', distributorUid: ids.seller, distributorName: 'QA Vendedor', lines: [{ productId: ids.product, quantity: 1, allocationsRequested: [{ lotId: derivedLotId, quantity: 1 }] }] }, `${prefix}-blocked-derived-dispatch`, 'rejected')
+  const noFlagAfterMovements = await root.collection('distStockMovements').get()
+  pass(blockedDispatch.error.includes('bloqueado') && JSON.stringify(await read('distLots', derivedLotId)) === JSON.stringify(noFlagBeforeLot) && JSON.stringify(await read('distBalances', `central__${ids.product}`)) === JSON.stringify(noFlagBeforeBalance) && noFlagAfterMovements.size === noFlagBeforeMovements.size, 'despacho derivado sin autorización confiable se rechaza sin cambiar lote, balance ni Kardex')
+  process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
+
   const dispatchId = `${prefix}-dispatch`
   const dispatchPayload = { warehouseId: 'central', routeId: ids.route, routeName: 'QA Ruta', distributorUid: ids.seller, distributorName: 'QA Vendedor', warehouseResponsibleName: 'QA Almacén', lines: [{ productId: ids.product, productName: 'QA Sachets', unitType: 'package', quantity: 10, normalQuantity: 10, dispatchMerma: 0, allocationsRequested: [{ lotId: derivedLotId, quantity: 10 }] }] }
   await command(ids.admin, 'dispatch', dispatchPayload, dispatchId)
@@ -77,6 +88,15 @@ try {
   const otherLocation = `warehouse__${ids.otherWarehouseId}`
   pass(lot.quantities.central === 22 && lot.quantities[otherLocation] === 4 && lot.processingByLocation.central.segments[0].remainingWeightG === 5500 && lot.processingByLocation[otherLocation].segments[0].remainingWeightG === 1000 && lot.processingByLocation.central.segments[0].remainingCostCents === 2750 && lot.processingByLocation[otherLocation].segments[0].remainingCostCents === 500, 'traslado entre almacenes conserva los paquetes, asigna 1.000 g y 500 centavos, sin gastar inventario')
 
+  const beforeBlockedIncreaseLot = await read('distLots', derivedLotId)
+  const beforeBlockedIncreaseBalance = await read('distBalances', `central__${ids.product}`)
+  const beforeBlockedIncreaseDispatch = await read('distDispatches', dispatchId)
+  const beforeBlockedIncreaseMovements = await root.collection('distStockMovements').where('refId', '==', `${prefix}-blocked-correct-increase`).get()
+  delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
+  const blockedIncrease = await command(ids.admin, 'correctDispatch', { dispatchId, reason: 'QA aumento debe bloquearse sin permiso', changes: [{ targetType: 'initial', productId: ids.product, newQuantity: 12, lotId: derivedLotId }] }, `${prefix}-blocked-correct-increase`, 'rejected')
+  pass(Boolean(blockedIncrease.error) && JSON.stringify(await read('distLots', derivedLotId)) === JSON.stringify(beforeBlockedIncreaseLot) && JSON.stringify(await read('distBalances', `central__${ids.product}`)) === JSON.stringify(beforeBlockedIncreaseBalance) && JSON.stringify(await read('distDispatches', dispatchId)) === JSON.stringify(beforeBlockedIncreaseDispatch) && (await root.collection('distStockMovements').where('refId', '==', `${prefix}-blocked-correct-increase`).get()).size === beforeBlockedIncreaseMovements.size, 'correctDispatch no aumenta un despacho derivado sin autorización ni cambia lotes, segmentos, costos, balance, despacho o Kardex')
+  process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
+
   const correctionId = `${prefix}-correction`
   await command(ids.admin, 'correctDispatch', { dispatchId, reason: 'QA retorno de 4 paquetes no utilizados', changes: [{ targetType: 'initial', productId: ids.product, newQuantity: 6 }] }, correctionId)
   lot = await read('distLots', derivedLotId)
@@ -86,8 +106,10 @@ try {
   await processCommand(db, root.collection('distOperations').doc(correctionId))
   pass((await root.collection('distStockMovements').where('refId', '==', correctionId).get()).size === movementCount, 'reintento del mismo operationId no duplica corrección ni movimientos')
 
+  delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
   const saleAttempt = await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración', lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-sale-attempt`, 'rejected')
   pass(saleAttempt.status === 'rejected' && (await read('distLots', derivedLotId)).quantities.central === 26, 'venta comercial permanece bloqueada después de habilitar movimientos logísticos')
+  process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
 
   const centSource = `${prefix}-cent-source`, centSourceLot = `${prefix}-cent-source-lot`, centBatch = `${prefix}-cent-batch`
   await seedProduct(centSource, 'kg', 5.01)
