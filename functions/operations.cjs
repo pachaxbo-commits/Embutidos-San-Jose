@@ -2038,7 +2038,7 @@ async function voidDerivedSale(o, sale) {
   const claims = await o.query('distClaims', 'saleId', sale.id);
   if (claims.length) {
     const returned = claims.reduce((sum, claim) => sum + Number(claim.quantity || 0), 0);
-    check(false, `La venta derivada ya tiene ${claims.length} devolución(es) o cambio(s) registrado(s) (${returned} unidades). No se puede anular ni repetir reembolsos; la cantidad recibida sigue en cuarentena.`);
+    check(false, `La venta derivada ya tiene ${claims.length} devolución(es) o cambio(s) registrado(s) (${returned} unidades). El reclamo ya conserva la recepción física, la cuarentena y el ajuste de dinero/crédito; no se aplica una anulación separada ni un segundo reembolso.`);
   }
   check(false, 'La anulación de sachets derivados sigue bloqueada: no hay un registro de recepción física verificable que pruebe que los paquetes de esta venta permanecen bajo control del negocio. No se restauró inventario; registra una devolución mediante claim si el producto fue recibido físicamente.');
 }
@@ -3098,6 +3098,11 @@ async function closure(o, p) {
     .map((sale) =>
       sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale,
     );
+  const dispatchSaleIds = new Set(sales.map(sale => sale.id));
+  const routeClaims = p.mode === 'warehouse'
+    ? (await o.query('distClaims', 'routeId', d.routeId)).filter(claim => dispatchSaleIds.has(claim.saleId))
+    : [];
+  const derivedClaimQuarantineReceipts = [];
   if (p.mode === "warehouse") {
     o.owns(warehouse);
     check(!previous.warehouseClosedBy, "El retorno ya se confirmó.");
@@ -3116,6 +3121,30 @@ async function closure(o, p) {
     for (const pid of ids) {
       const e = await o.loadStock(pid, route);
       await o.loadStock(pid, warehouse);
+      for (const claim of routeClaims.filter(row => row.productId === pid && Array.isArray(row.returnedProcessingAllocations))) {
+        const receivedLocation = claim.receivedLocation || (claim.warehouseId === '' ? route : location('warehouse', claim.warehouseId || 'central'));
+        if (receivedLocation !== route) continue;
+        check(claim.physicalReceiptConfirmed === true && claim.kind === 'return' || claim.physicalReceiptConfirmed === true && claim.kind === 'exchange',
+          `El reclamo ${claim.id} no conserva una recepción física verificable; no se cerró la ruta.`);
+        const groups = claim.returnedProcessingAllocations;
+        check(groups.length > 0 && groups.every(group => group.lotId && group.reservationId && Number.isSafeInteger(group.quantity) && group.quantity > 0 && Array.isArray(group.allocations) && group.allocations.length > 0),
+          `El reclamo ${claim.id} no conserva lotes, reservas y asignaciones completos; no se cerró la ruta.`);
+        check(groups.reduce((sum, group) => sum + group.quantity, 0) === claim.quantity,
+          `Las asignaciones en cuarentena del reclamo ${claim.id} no concilian con su cantidad.`);
+        const receiptRows = [];
+        for (const group of groups) {
+          receiptRows.push(await moveDerivedReturnQuarantine(o, e, {
+            lotId: group.lotId, reservationId: group.reservationId, claimId: claim.id,
+            quantity: group.quantity, allocations: group.allocations, from: route, to: warehouse,
+            dispatchId: d.id, sourceSaleId: claim.saleId,
+          }));
+        }
+        const movementIds = receiptRows.map(row => row.movementId);
+        o.put('distClaims', claim.id, { ...claim, quarantineTransferredAt: o.now, quarantineTransferredBy: o.actor,
+          quarantineTransferredByName: o.member.displayName || o.actor, quarantineTransferredTo: warehouse,
+          quarantineTransferMovementIds: movementIds });
+        derivedClaimQuarantineReceipts.push(...receiptRows);
+      }
       const expected = e.balances.get(route).quantity;
       const returnRow = requested.products?.find((r) => r.productId === pid);
       const previousProduct = previous.products?.find((row) => row.productId === pid);
@@ -3519,6 +3548,7 @@ async function closure(o, p) {
       warehouseClosedBy: o.actor,
       warehouseClosedAt: o.now,
       warehouseResponsibleName: p.warehouseResponsibleName?.trim() || o.responsibleName(),
+      derivedClaimQuarantineReceipts,
     };
     o.put("distClosures", id, c);
     return c;
@@ -3728,6 +3758,75 @@ function putDerivedReturnQuarantine(o, entry, sourceAllocations, { location: loc
   return result;
 }
 
+async function moveDerivedReturnQuarantine(o, entry, { lotId, reservationId, claimId, quantity, allocations, from, to, dispatchId, sourceSaleId }) {
+  const lot = entry.lots.find(row => row.id === lotId);
+  check(lot && lot.quarantined === true && lot.processingCommercialBlocked === true
+    && lot.processingDestinationKind === 'review_hold' && lot.derivedReturn?.claimId === claimId
+    && lot.derivedReturn?.reservationId === reservationId,
+  'La devolución en cuarentena no coincide con su reclamo; no se movió inventario.');
+  const reservation = o.writes.get(`distStockReservations/${reservationId}`)?.data
+    || o.reservationRows.get(lot.id)?.find(row => row.id === reservationId)
+    || await o.read('distStockReservations', reservationId);
+  check(reservation && reservation.lotId === lot.id && reservation.productId === entry.p.id
+    && reservation.purpose === 'review_hold' && ['active','partially_consumed'].includes(reservation.status)
+    && reservation.location === from && reservation.remainingQuantity === quantity,
+  'La reserva de revisión de la devolución cambió; no se movió inventario.');
+  check(Number(lot.quantities?.[from] || 0) === quantity && Number(lot.quantities?.[to] || 0) === 0,
+    'La cantidad física de la cuarentena no coincide con el reclamo o ya existe en destino.');
+  const sourceSegments = lot.processingByLocation?.[from]?.segments;
+  check(Array.isArray(sourceSegments) && sourceSegments.length > 0 && !lot.processingByLocation?.[to]?.segments?.length,
+    'Los segmentos de la devolución no están disponibles exclusivamente en la ubicación esperada.');
+  const quantityTotal = sourceSegments.reduce((sum, segment) => sum + Number(segment.remainingQuantity || 0), 0);
+  const weightTotal = sourceSegments.some(segment => !Number.isSafeInteger(segment.remainingWeightG)) ? null
+    : sourceSegments.reduce((sum, segment) => sum + segment.remainingWeightG, 0);
+  const costTotal = sourceSegments.some(segment => segment.remainingCostCents === null || segment.remainingCostCents === undefined) ? null
+    : sourceSegments.reduce((sum, segment) => sum + segment.remainingCostCents, 0);
+  check(quantityTotal === quantity && (weightTotal === null || weightTotal === lot.processingPhysicalWeightGRemaining)
+    && costTotal === (lot.processingCostCentsRemaining ?? null),
+  'Los segmentos de la devolución no concilian con los paquetes, gramos o costo del lote.');
+  const reservations = await o.processingReservations(lot.id);
+  o.assertReservationAggregate(lot, from, reservations);
+  check(reservations.filter(row => row.location === from && ['active','partially_consumed'].includes(row.status))
+    .every(row => row.id === reservationId), 'La cuarentena tiene otras reservas activas en origen; requiere revisión.');
+  check(!reservations.some(row => row.location === to && ['active','partially_consumed'].includes(row.status)),
+    'Ya existe una reserva activa de esta cuarentena en destino.');
+  const destinationHeld = lot.processingUnavailable?.[to] || {};
+  check(['courtesy','repackPending','reviewHold'].every(key => Number(destinationHeld[key] || 0) === 0),
+    'El destino ya tiene cantidades inmovilizadas para este lote; requiere revisión.');
+
+  lot.quantities = { ...(lot.quantities || {}), [from]: 0, [to]: quantity };
+  lot.processingByLocation = { ...(lot.processingByLocation || {}) };
+  delete lot.processingByLocation[from];
+  lot.processingByLocation[to] = { segments: structuredClone(sourceSegments) };
+  lot.processingUnavailable = { ...(lot.processingUnavailable || {}) };
+  const held = lot.processingUnavailable[from] || {};
+  lot.processingUnavailable[from] = { ...held, reviewHold: 0 };
+  lot.processingUnavailable[to] = { ...(lot.processingUnavailable[to] || {}), courtesy: 0, repackPending: 0, reviewHold: quantity };
+  const updatedReservation = { ...reservation, location: to, updatedAt: o.now, updatedBy: o.actor,
+    history: [...(reservation.history || []), { id: `${o.id}__quarantine_transfer_${claimId}`, action: 'location_transferred', quantity,
+      from, to, at: o.now, by: o.actor, byName: o.member.displayName || o.actor,
+      reason: 'Traslado de cuarentena física de reclamo durante recepción/cierre de ruta.' }] };
+  o.put('distStockReservations', reservationId, updatedReservation);
+  const cachedReservations = o.reservationRows.get(lot.id);
+  if (cachedReservations) o.reservationRows.set(lot.id, cachedReservations.map(row => row.id === reservationId ? updatedReservation : row));
+  o.move(entry, from, -quantity, quantityPrecision(entry.p));
+  o.move(entry, to, quantity, quantityPrecision(entry.p));
+  const movedReservations = o.reservationRows.get(lot.id) || reservations.map(row => row.id === reservationId ? updatedReservation : row);
+  o.assertReservationAggregate(lot, from, movedReservations);
+  o.assertReservationAggregate(lot, to, movedReservations);
+  o.assertProcessingLocation(lot, to);
+  o.put('distLots', lot.id, lot);
+  const movementId = o.ledger(entry.p.id, quantity, from, to, 'derived_claim_quarantine_transfer', {
+    lotId, quarantineReservationId: reservationId, claimId, sourceSaleId, dispatchId,
+    allocations, batchId: lot.processingBatchId,
+    historicalAssignedWeightG: weightTotal, measuredPhysicalWeightG: lot.processingMeasuredWeightGRemaining ?? null,
+    costCents: costTotal, quarantined: true, physicalEffect: true,
+    traceabilityStatus: 'accounting_lot_reference_physical_origin_unconfirmed',
+    note: 'Traslado de la misma devolución en cuarentena desde ruta a Almacén; sin liberar ni duplicar paquetes, gramos o costo.',
+  }, quantityPrecision(entry.p));
+  return { lotId, reservationId, claimId, quantity, assignedWeightG: weightTotal, costCents: costTotal, movementId };
+}
+
 async function claimDerivedSale(o, p, sale) {
   check(p.kind === 'return' || p.kind === 'exchange', 'Tipo de reclamo inválido.');
   check(p.physicalReceiptConfirmed === true, 'Confirma que recibiste físicamente los sachets antes de registrar la devolución.');
@@ -3812,6 +3911,7 @@ async function claimDerivedSale(o, p, sale) {
   const claim = { id: o.id, ...o.base(), kind: p.kind, saleId: sale.id, sellerUid: sale.sellerUid, sellerName: sale.sellerName,
     customerId: sale.customerId || '', customerName: sale.customerName || '', routeId: sale.routeId, productId: product.id,
     productName: product.name, unitType: product.unitType, quantity, reason, warehouseId: isDistributor ? '' : p.warehouseId || 'central',
+    dispatchId: sale.dispatchId || '', receivedLocation: locationId,
     returnedValue, replacement, revenueDelta, additionalCost: additionalCostCents === null ? null : additionalCostCents / 100,
     additionalCostCents, debtReduction, cashIn: p.method === 'cash' ? Math.max(0, revenueDelta) : 0,
     cashOut: p.method === 'cash' ? refund : 0, qrIn: p.method === 'qr' ? Math.max(0, revenueDelta) : 0,
@@ -5082,7 +5182,7 @@ handlers.reopen = async (o, p) => {
     const movementsById = new Map();
     for (const operation of closureOperations) {
       for (const movement of await o.query("distStockMovements", "refId", operation.id)) {
-        if (["return", "return_merma", "return_waste", "return_waste_unassigned", "shortage", "overage", "dispatch_merma_sale"].includes(movement.type)) movementsById.set(movement.id, movement);
+        if (["return", "return_merma", "return_waste", "return_waste_unassigned", "shortage", "overage", "dispatch_merma_sale", "derived_claim_quarantine_transfer"].includes(movement.type)) movementsById.set(movement.id, movement);
       }
     }
     const movements = [...movementsById.values()].filter((movement) => !reversed.has(movement.id) && !movement.reversedAt);
@@ -5097,7 +5197,19 @@ handlers.reopen = async (o, p) => {
     for (const movement of [...movements].reverse()) {
       const e = await o.loadStock(movement.productId, route);
       await o.loadStock(movement.productId, warehouse);
-      if (movement.type === "return" || movement.type === "return_merma") {
+      if (movement.type === 'derived_claim_quarantine_transfer') {
+        const moved = await moveDerivedReturnQuarantine(o, e, {
+          lotId: movement.lotId, reservationId: movement.quarantineReservationId, claimId: movement.claimId,
+          quantity: movement.quantity, allocations: movement.allocations || [], from: warehouse, to: route,
+          dispatchId: d.id, sourceSaleId: movement.sourceSaleId,
+        });
+        const claim = await o.read('distClaims', movement.claimId);
+        check(claim && claim.saleId === movement.sourceSaleId && claim.quarantineTransferMovementIds?.includes(movement.id),
+          'No se puede reabrir: el traslado de cuarentena ya no corresponde al reclamo original.');
+        o.put('distClaims', claim.id, { ...claim, quarantineTransferredAt: '', quarantineTransferredBy: '', quarantineTransferredTo: route,
+          quarantineTransferMovementIds: (claim.quarantineTransferMovementIds || []).filter(id => id !== movement.id),
+          quarantineTransferReversalMovementIds: [...(claim.quarantineTransferReversalMovementIds || []), moved.movementId] });
+      } else if (movement.type === "return" || movement.type === "return_merma") {
         const allocations = movement.allocations || [];
         check(allocations.length > 0, "No se puede reabrir: faltan lotes del retorno confirmado.");
         for (const part of allocations) {

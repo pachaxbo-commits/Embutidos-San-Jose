@@ -389,6 +389,45 @@ try {
   await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), 'restaurants', 'sanjose', 'distOperations', anonymousClaimDoc.id), anonymousClaimDoc))
   pass(true, 'Rules bloquean claim de venta ajena, Almacén y usuario anónimo')
 
+  const closeClaimProduct = `${prefix}-claim-close-product`, closeClaimLot = `${prefix}-claim-close-lot`
+  const closeClaimRoute = `${prefix}-claim-close-route`, closeClaimSeller = `${prefix}-claim-close-seller`
+  await seedProduct(closeClaimProduct, 'package', 999)
+  await root.collection('distRoutes').doc(closeClaimRoute).set({ id: closeClaimRoute, restaurantId: 'sanjose', active: true, name: 'QA claim close route' })
+  await root.collection('members').doc(closeClaimSeller).set({ role: 'distributor', active: true, routeId: closeClaimRoute, displayName: 'QA Claim Close Seller' })
+  await seedPackageLot({ productId: closeClaimProduct, lotId: closeClaimLot, quantity: 2, weightG: 501, costCents: 301, batchId: `${prefix}-claim-close-batch` })
+  const closeClaimDispatchId = `${prefix}-claim-close-dispatch`
+  process.env.FUNCTIONS_EMULATOR = 'true'
+  process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
+  await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: closeClaimRoute, routeName: 'QA claim close', distributorUid: closeClaimSeller, distributorName: 'QA Claim Close Seller', lines: [{ productId: closeClaimProduct, productName: 'QA claim close', unitType: 'package', quantity: 2, normalQuantity: 2, dispatchMerma: 0, allocationsRequested: [{ lotId: closeClaimLot, quantity: 2 }] }] }, closeClaimDispatchId)
+  const closeClaimSaleId = `${prefix}-claim-close-sale`
+  await command(closeClaimSeller, 'sale', salePayload({ role: 'distributor', routeId: closeClaimRoute, dispatchId: closeClaimDispatchId, lines: [{ productId: closeClaimProduct, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), closeClaimSaleId)
+  delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
+  const closeClaimId = `${prefix}-claim-close-return`
+  await command(closeClaimSeller, 'claim', { saleId: closeClaimSaleId, productId: closeClaimProduct, kind: 'return', quantity: 1, reason: 'Devolución física recibida en ruta para prueba de cierre', method: 'cash', physicalReceiptConfirmed: true, derivedReturnCondition: 'sealed_intact', measuredPhysicalWeightG: null, expectedReturnedQuantity: 0 }, closeClaimId)
+  const closeClaimBefore = await read('distClaims', closeClaimId)
+  const closeClaimQuarantineId = closeClaimBefore.returnedProcessingAllocations[0].lotId
+  const closeClaimReservationId = closeClaimBefore.returnedProcessingAllocations[0].reservationId
+  const fullReturnedVoid = await command(ids.admin, 'voidSale', { saleId: closeClaimSaleId, reason: 'QA evitar segunda reversión tras devolución completa' }, `${prefix}-claim-close-full-void`, 'rejected')
+  pass(fullReturnedVoid.error.includes('devolución(es) o cambio(s) registrado(s)') && !(await read('distSales', closeClaimSaleId)).voidedAt && (await read('distClaims', closeClaimId)).cashOut === 10 && (await read('distBalances', `route__${closeClaimRoute}__${closeClaimProduct}`)).quantity === 2, 'venta totalmente devuelta no se anula otra vez: conserva el único reembolso, stock y reclamo')
+  const closeClaimReceiveId = `${prefix}-claim-close-receive`
+  const closeClaimReceipt = await command(ids.warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: closeClaimDispatchId, warehouseResponsibleName: 'QA Warehouse', products: [{ productId: closeClaimProduct, actualReturn: 1, returnMerma: 0, returnWaste: 0, physicalReturn: 1 }] } }, closeClaimReceiveId)
+  const closeClaimAfter = await read('distClaims', closeClaimId)
+  const closeClaimQuarantine = await read('distLots', closeClaimQuarantineId)
+  const closeClaimReservation = await read('distStockReservations', closeClaimReservationId)
+  const closeClaimClosure = await read('distClosures', `closure_${closeClaimDispatchId}`)
+  pass(closeClaimReceipt.status === 'confirmed' && closeClaimAfter.quarantineTransferredTo === 'central' && closeClaimAfter.quarantineTransferMovementIds.length === 1, 'cierre de Almacén recoge la devolución derivada ya recibida en ruta y la deja enlazada al reclamo')
+  pass((await read('distBalances', `route__${closeClaimRoute}__${closeClaimProduct}`)).quantity === 0 && (await read('distBalances', `central__${closeClaimProduct}`)).quantity === 2 && closeClaimQuarantine.quantities.central === 1 && closeClaimQuarantine.processingByLocation.central.segments[0].remainingWeightG === 250 && closeClaimQuarantine.processingByLocation.central.segments[0].remainingCostCents === 150 && closeClaimReservation.location === 'central', 'recepción mueve la misma unidad en cuarentena con gramos/costo y reserva exactos; no deja stock en ruta ni duplica inventario')
+  pass(closeClaimClosure.derivedClaimQuarantineReceipts[0].claimId === closeClaimId && closeClaimClosure.products[0].actualReturn === 1 && closeClaimClosure.products[0].shortage === 0, 'el cierre separa el retorno normal de la devolución en cuarentena y no la imputa como faltante')
+  await command(ids.admin, 'closure', { closure: { dispatchId: closeClaimDispatchId, physicalCashDeclared: 0 } }, `${prefix}-claim-close-finalize`)
+  const closeClaimFinal = await read('distClosures', `closure_${closeClaimDispatchId}`)
+  pass(closeClaimFinal.status === 'closed' && closeClaimFinal.cashSales === 10 && closeClaimFinal.claimCash === -10 && closeClaimFinal.expectedCash === 0 && (await read('distClaims', closeClaimId)).cashOut === 10, 'cierre conserva venta y devolución como movimientos compensados sin segundo reembolso')
+  const closeClaimReopenId = `${prefix}-claim-close-reopen`
+  const closeClaimReopen = await command(ids.admin, 'reopen', { closureId: `closure_${closeClaimDispatchId}`, reason: 'QA reapertura compatible de devolución en cuarentena' }, closeClaimReopenId)
+  const closeClaimAfterReopen = await read('distClaims', closeClaimId)
+  pass(closeClaimReopen.status === 'confirmed' && (await read('distBalances', `route__${closeClaimRoute}__${closeClaimProduct}`)).quantity === 2 && (await read('distBalances', `central__${closeClaimProduct}`)).quantity === 0 && (await read('distLots', closeClaimQuarantineId)).processingByLocation[`route__${closeClaimRoute}`].segments[0].remainingWeightG === 250 && (await read('distStockReservations', closeClaimReservationId)).location === `route__${closeClaimRoute}` && closeClaimAfterReopen.quarantineTransferMovementIds.length === 0 && (await read('distClaims', closeClaimId)).cashOut === 10, 'reapertura devuelve la misma cuarentena y reserva a ruta, con gramos intactos y sin revertir el reclamo económico')
+
+  process.env.FUNCTIONS_EMULATOR = 'true'
+  process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
   const centsProduct = `${prefix}-cents-product`
   await seedProduct(centsProduct, 'package', 900)
   const centsLot = `${prefix}-cents-lot`
