@@ -792,6 +792,8 @@ export interface DistLot {
  processingPackageWeightLedger?: import('./domain/processing.ts').PackageWeightLedger;
  /** Per-location remaining package/gram/cost segments; absent on legacy derived lots and required for movement. */
  processingByLocation?: Record<string, import('./domain/processing.ts').ProcessingLotLocationLedger>;
+ /** Latest immutable inspection pointer; it never changes physical availability or release eligibility. */
+ processingReview?: { latestReviewId: string; revision: number; status: import('./domain/processing.ts').ProcessingReviewStatus; updatedAt: string; updatedBy: string; economicDispositionStatus?: 'pending_quarantine_disposition' };
  processingSourceLotIds?: string[];
  processingSourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[];
  processingSourceAllocationBasis?: 'batch_blend_accounting_allocation';
@@ -806,6 +808,7 @@ export interface DistLot {
  quarantineDestinationLotId?: string; quarantineDestinationLotCode?: string; quarantineLossCost?: number | null;
 }
 export type DistStockReservation = import('./domain/processing.ts').ProcessingReservation
+export type DistProcessingReview = import('./domain/processing.ts').ProcessingReviewRecord
 export interface OriginReference {
  historicalUnitCost?: number | null;
  exceptionId: string; accountingLotId: string; sourceMovementId: string;

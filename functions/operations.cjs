@@ -4023,6 +4023,122 @@ handlers.reserveProcessingStock = async (o, p) => {
   return { reservationId, quantity, physicalQuantity: Number(lot.quantities?.[loc] || 0), availableQuantity: roundAt(free - quantity, quantityPrecision(product)) };
 };
 
+handlers.recordProcessingReview = async (o, p) => {
+  check(['admin','warehouse'].includes(o.member.role), 'Solo Administración o Almacén pueden registrar una revisión física.');
+  const lotId = safeId(p.lotId), reservationId = safeId(p.reservationId);
+  const loc = p.location;
+  check(loc === 'central' || typeof loc === 'string' && loc.startsWith('warehouse__'), 'La ubicación de revisión no es válida.');
+  o.owns(loc);
+  const lot = await o.read('distLots', lotId);
+  check(lot, 'No existe el lote inmovilizado indicado.');
+  const product = await o.read('distProducts', lot.productId);
+  check(product && product.active !== false, 'El producto de la revisión no está disponible.');
+  const reservation = await o.read('distStockReservations', reservationId);
+  check(reservation && reservation.lotId === lot.id && reservation.productId === product.id && reservation.location === loc,
+    'La reserva no corresponde al lote, producto y ubicación seleccionados.');
+  check(['active','partially_consumed'].includes(reservation.status) && ['repack_pending','review_hold'].includes(reservation.purpose) && Number(reservation.remainingQuantity) > 0,
+    'La reserva no tiene producto inmovilizado pendiente de revisión.');
+  check(Number(lot.quantities?.[loc] || 0) >= Number(reservation.remainingQuantity), 'La cantidad física del lote no cubre la reserva; requiere conciliación antes de revisarlo.');
+  if (lot.derivedReturn) check(lot.derivedReturn.reservationId === reservation.id && reservation.purpose === 'review_hold',
+    'La devolución derivada no coincide con su reserva de revisión.');
+  const reservations = await o.processingReservations(lot.id);
+  o.assertReservationAggregate(lot, loc, reservations);
+  const balance = await o.read('distBalances', balanceId(loc, product.id));
+  const productLots = await o.query('distLots', 'productId', product.id);
+  const physicalTotal = roundAt(Number(balance?.quantity || 0), quantityPrecision(product));
+  const lotTotal = roundAt(productLots.reduce((sum, item) => sum + Number(item.quantities?.[loc] || 0), 0), quantityPrecision(product));
+  check(Math.abs(physicalTotal - lotTotal) < 0.5 / (10 ** quantityPrecision(product)), 'El balance físico y sus lotes no concilian. No se guardó la revisión.');
+  check(Number.isSafeInteger(p.expectedRevision) && p.expectedRevision === Number(lot.processingReview?.revision || 0),
+    'La revisión cambió en otra sesión. Actualiza el lote antes de guardar.');
+  const actions = ['record_observation','start_review','request_information','authorize_repack','declare_unrecoverable','mark_pending_economic_disposition'];
+  check(actions.includes(p.action), 'La acción de revisión no es válida.');
+  const packageConditions = ['sealed_intact','package_damaged_content_intact','package_damaged_partial','no_package','unknown'];
+  const observationsAllowed = ['apparently_apt','uncertain','confirmed_unfit','not_assessed'];
+  check(packageConditions.includes(p.packageCondition) && observationsAllowed.includes(p.productObservation), 'Describe la condición observada del envase y del producto.');
+  const observations = String(p.observations || '').trim(), reason = String(p.reason || '').trim();
+  check(observations.length >= 3 && observations.length <= 2000 && reason.length >= 3 && reason.length <= 500, 'Registra observaciones y motivo (3 a 500 caracteres; observación hasta 2.000).');
+  check(Array.isArray(p.evidenceRefs) && p.evidenceRefs.length <= 10 && p.evidenceRefs.every(ref => typeof ref === 'string' && ref.trim().length > 0 && ref.length <= 240), 'Las referencias de evidencia no son válidas.');
+  const physicalWeightG = p.physicalWeightG;
+  check(physicalWeightG === null || Number.isSafeInteger(physicalWeightG) && physicalWeightG >= 0, 'El peso físico debe ser un entero de gramos medidos o null si no se midió.');
+  if (p.productObservation === 'confirmed_unfit') check(o.member.role === 'admin' && o.member.processingQualityAuthorized === true,
+    'Solo una cuenta de Administración autorizada para revisión de calidad puede confirmar que el producto no es apto.');
+  let status = lot.processingReview?.status || 'pending_review';
+  let qualityDecision;
+  let economicDispositionStatus = lot.processingReview?.economicDispositionStatus;
+  const currentStatus = status;
+  if (p.action === 'start_review') {
+    check(['pending_review','in_review','pending_information'].includes(currentStatus), 'Una decisión ya registrada no se puede reabrir desde la revisión genérica.');
+    status = 'in_review';
+  }
+  if (p.action === 'request_information') {
+    check(['pending_review','in_review','pending_information'].includes(currentStatus), 'La revisión ya tiene una decisión; no se puede cambiar mediante una solicitud genérica.');
+    status = 'pending_information';
+  }
+  if (p.action === 'mark_pending_economic_disposition') {
+    check(o.member.role === 'admin', 'Solo Administración puede marcar pendiente la disposición económica.');
+    check(['in_review','pending_information','not_recoverable','pending_economic_disposition'].includes(currentStatus), 'Primero debe existir una revisión que requiera decisión económica.');
+    status = 'pending_economic_disposition';
+    economicDispositionStatus = 'pending_quarantine_disposition';
+  }
+  if (p.action === 'authorize_repack' || p.action === 'declare_unrecoverable') {
+    check(o.member.role === 'admin' && o.member.processingQualityAuthorized === true,
+      'La decisión requiere una cuenta de Administración con autorización de calidad registrada en su membresía.');
+    const authorizationRef = String(p.qualityAuthorizationRef || '').trim();
+    check(authorizationRef && authorizationRef === String(o.member.processingQualityAuthorizationRef || '').trim(),
+      'La referencia de autorización de calidad no coincide con la autorización vigente de esta cuenta.');
+    check(Array.isArray(p.evidenceRefs) && p.evidenceRefs.length > 0, 'Una decisión de calidad requiere al menos una referencia de evidencia.');
+    check(currentStatus === 'in_review', 'Primero inicia y documenta la revisión física antes de decidir el destino.');
+    if (p.action === 'authorize_repack') {
+      check(p.productObservation === 'apparently_apt' && p.packageCondition !== 'unknown' && physicalWeightG !== null,
+        'Para autorizar el procedimiento de reenvasado se requiere condición observada, peso neto medido y evidencia; esto no libera producto para venta.');
+      check(!lot.expiresOn || lot.expiresOn >= o.today, 'El lote está vencido; no se puede autorizar reenvasado para uso comercial.');
+      status = 'authorized_for_repack';
+      qualityDecision = 'authorized_for_repack';
+    } else {
+      check(p.productObservation === 'confirmed_unfit', 'Confirma la no aptitud observada antes de solicitar disposición.');
+      status = 'not_recoverable';
+      economicDispositionStatus = 'pending_quarantine_disposition';
+      qualityDecision = 'not_recoverable';
+    }
+  }
+  if (p.productObservation === 'confirmed_unfit') check(p.action === 'declare_unrecoverable',
+    'La observación de no aptitud requiere una decisión de calidad autorizada; no se cambió el estado económico ni físico.');
+  const revision = Number(lot.processingReview?.revision || 0) + 1;
+  const historicalAssignedWeightG = Number.isSafeInteger(reservation.remainingWeightG)
+    ? reservation.remainingWeightG
+    : Number.isSafeInteger(lot.derivedReturn?.assignedWeightG) ? lot.derivedReturn.assignedWeightG : null;
+  const weightDifferenceG = historicalAssignedWeightG === null || physicalWeightG === null ? null : historicalAssignedWeightG - physicalWeightG;
+  let costCents = reservation.remainingCostCents;
+  if (costCents === undefined) {
+    const historicalUnitCost = lot.productionCost;
+    costCents = typeof historicalUnitCost === 'number' && Number.isFinite(historicalUnitCost) && historicalUnitCost >= 0
+      ? Math.round(Number(reservation.remainingQuantity) * historicalUnitCost * 100)
+      : null;
+  }
+  check(costCents === null || Number.isSafeInteger(costCents) && costCents >= 0, 'El costo histórico de la reserva no se puede verificar.');
+  const revisionId = o.id;
+  check(!await o.read('distProcessingReviews', revisionId), 'La revisión ya existe.');
+  const review = {
+    id: revisionId, operationId: o.id, ...o.base(), lotId, productId: product.id, productName: product.name,
+    ...(product.sku || product.code ? { sku: product.sku || product.code } : {}), lotCode: lot.lotCode || lot.id,
+    ...(reservation.batchId || lot.processingBatchId ? { batchId: reservation.batchId || lot.processingBatchId } : {}),
+    ...(lot.derivedReturn?.sourceSaleId ? { sourceSaleId: lot.derivedReturn.sourceSaleId } : {}),
+    sourceLotIds: lot.derivedReturn?.sourceLotId ? [lot.derivedReturn.sourceLotId] : lot.processingSourceLotIds || [],
+    reservationId, reservationPurpose: reservation.purpose, location: loc,
+    commercialQuantity: Number(reservation.remainingQuantity), commercialUnit: product.unitType,
+    historicalAssignedWeightG, physicalWeightG, weightDifferenceG, costCents,
+    packageCondition: p.packageCondition, productObservation: p.productObservation,
+    status, action: p.action, observations, reason, evidenceRefs: p.evidenceRefs.map(ref => ref.trim()), revision,
+    ...(qualityDecision ? { qualityDecision, qualityAuthorizationRef: String(p.qualityAuthorizationRef).trim() } : {}),
+    ...(economicDispositionStatus ? { economicDispositionStatus } : {}),
+    previousStatus: currentStatus, reviewedAt: o.now, reviewedBy: o.actor, reviewedByName: o.member.displayName || o.actor,
+  };
+  const updatedLot = { ...lot, processingReview: { latestReviewId: revisionId, revision, status, updatedAt: o.now, updatedBy: o.actor, ...(economicDispositionStatus ? { economicDispositionStatus } : {}) } };
+  o.put('distProcessingReviews', revisionId, review);
+  o.put('distLots', lot.id, updatedLot);
+  return { reviewId: revisionId, revision, status, commercialQuantity: review.commercialQuantity, historicalAssignedWeightG, physicalWeightG, weightDifferenceG, costCents, stockChanged: false, reservationChanged: false, movementCreated: false };
+};
+
 handlers.releaseProcessingReservation = async (o, p) => {
   o.admin();
   const id = safeId(p.reservationId), reservation = await o.read('distStockReservations', id);

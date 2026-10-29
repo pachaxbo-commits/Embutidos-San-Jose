@@ -27,7 +27,8 @@ import {
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
-import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput } from '../domain/processing'
+import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord } from '../domain/processing'
+import { validateRepackOperationContract } from '../domain/processing'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
 import { centralBalanceId, round2, toDayKey } from '../domain/engine'
 import type {
@@ -98,6 +99,7 @@ export const DIST_COLLECTIONS = {
   payables: 'distPayables',
   supplierPayments: 'distSupplierPayments',
   closures: 'distClosures',
+  processingReviews: 'distProcessingReviews',
   adjustmentRequests: 'distAdjustmentRequests',
   quotes: 'distQuotes',
   saleCorrections: 'distSaleCorrections',
@@ -161,20 +163,37 @@ export type ProcessingOperationState =
   | { status: 'rejected'; error: string }
 
 /** Lee estado desde servidor, no del cache local, antes de reintentar una respuesta desconocida. */
-export async function getProcessingOperationState(operationId: string): Promise<ProcessingOperationState> {
+export async function getProcessingOperationState(operationId: string, expectedType: 'confirmProcessingBatch' | 'recordProcessingReview' = 'confirmProcessingBatch'): Promise<ProcessingOperationState> {
   const context = await getContext()
   const snapshot = await getDocFromServer(docRef(context, 'distOperations', operationId))
   if (!snapshot.exists()) return { status: 'missing' }
   const data = snapshot.data()
-  if (data.type !== 'confirmProcessingBatch') throw new Error('El identificador corresponde a otra operación.')
+  if (data.type !== expectedType) throw new Error('El identificador corresponde a otra operación.')
   if (data.status === 'confirmed') return { status: 'confirmed', result: data.result }
-  if (data.status === 'rejected') return { status: 'rejected', error: String(data.error || 'El servidor rechazó la elaboración.') }
+  if (data.status === 'rejected') return { status: 'rejected', error: String(data.error || 'El servidor rechazó la operación.') }
   return { status: 'queued', ...(typeof data.createdAt === 'string' ? { createdAt: data.createdAt } : {}) }
 }
 
 /** Entrada oficial al backend; nunca modifica lotes ni balances desde el cliente. */
 export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput, operationId: string): Promise<unknown> {
   return submitOperation('confirmProcessingBatch', input, operationId)
+}
+
+/** Registra una inspección de producto inmovilizado sin tocar inventario ni liberar la reserva. */
+export async function recordProcessingReview(input: RecordProcessingReviewInput, operationId: string): Promise<unknown> {
+  return submitOperation('recordProcessingReview', input, operationId)
+}
+
+/** Lee un informe de inspección desde servidor; el alcance por ubicación lo aplican Firestore Rules. */
+export async function loadProcessingReview(reviewId: string): Promise<ProcessingReviewRecord | null> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, DIST_COLLECTIONS.processingReviews, reviewId))
+  return snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as ProcessingReviewRecord) : null
+}
+
+/** Contrato de la fase siguiente; solo valida en cliente y no envía ni modifica existencias. */
+export function validateRepackRequest(input: RepackOperationInput): void {
+  validateRepackOperationContract(input)
 }
 
 export function subscribeWarehouses(onData: (rows: DistWarehouse[]) => void, onError?: (error: Error) => void) {
