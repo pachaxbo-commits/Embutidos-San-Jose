@@ -2,26 +2,57 @@ import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { signInWithEmail } from '../src/lib/firebase'
 import { SacheteadoView } from '../src/modules/distribution/views/SacheteadoView'
+import { DistributionApp } from '../src/modules/distribution/views/DistributionApp'
 import type { DistributionSession } from '../src/modules/distribution/views/DistributionApp'
+import type { UserRole } from '../src/types'
 import type { DistributionData } from '../src/modules/distribution/state/useDistributionStore'
 import '../src/index.css'
 
 export function Harness() {
+  const params = new URLSearchParams(window.location.search)
+  const fullApp = params.get('app') === '1'
+  const role = (params.get('role') || 'admin') as UserRole
+  const qaUsers: Record<string, { email: string; password: string; uid: string; name: string }> = {
+    admin: { email: 'processing-ui-qa@example.test', password: 'QA-only-password-123!', uid: 'processing-ui-qa', name: 'Administración QA' },
+    warehouse: { email: 'processing-ui-warehouse@example.test', password: 'QA-only-password-123!', uid: 'processing-ui-warehouse', name: 'Almacén QA' },
+    distributor: { email: 'processing-ui-distributor@example.test', password: 'QA-only-password-123!', uid: 'processing-ui-distributor', name: 'Distribuidor QA' },
+  }
+  const qaUser = qaUsers[role] || qaUsers.admin
   const [uid, setUid] = useState('')
   const [error, setError] = useState('')
-  const [sourceLot, setSourceLot] = useState({ id: 'qa-source-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-ORIGEN-2KG', manufacturedOn: '2026-10-20', expiresOn: '2026-12-20', productionCost: 5, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 2, reviewHold: 0 } }, processingReview: { caseId: 'qa-processing-case', revision: 0, status: 'pending_review', updatedAt: '', updatedBy: '' } })
+  const [sourceLot, setSourceLot] = useState({ id: 'qa-source-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-ORIGEN-2KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 2, reviewHold: 0 } }, processingReview: { caseId: 'qa-processing-case', revision: 0, status: 'pending_review', updatedAt: '', updatedBy: '' } })
+  const [otherLot, setOtherLot] = useState({ id: 'qa-other-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-1KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 1 } }, processingReview: { caseId: 'qa-other-case', revision: 0, status: 'authorized_for_repack', updatedAt: '', updatedBy: '' } })
+  const [freeLot] = useState({ id: 'qa-free-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-LIBRE-1KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
   useEffect(() => {
-    Object.assign(window, { __qaUpdateSourceLot: (lot: typeof sourceLot) => setSourceLot(lot) })
-    return () => { delete (window as Window & { __qaUpdateSourceLot?: unknown }).__qaUpdateSourceLot }
+    Object.assign(window, {
+      __qaUpdateSourceLot: (lot: typeof sourceLot) => setSourceLot(lot),
+      __qaUpdateOtherLot: (lot: typeof otherLot) => setOtherLot(lot),
+    })
+    return () => {
+      delete (window as Window & { __qaUpdateSourceLot?: unknown }).__qaUpdateSourceLot
+      delete (window as Window & { __qaUpdateOtherLot?: unknown }).__qaUpdateOtherLot
+    }
   }, [])
   useEffect(() => {
-    void signInWithEmail('processing-ui-qa@example.test', 'QA-only-password-123!')
+    void signInWithEmail(qaUser.email, qaUser.password)
       .then(async credential => setUid(credential.user.uid))
       .catch(reason => setError((reason as Error).message))
-  }, [])
+  }, [qaUser.email, qaUser.password])
 
   if (error) return <main role="alert">No se pudo autenticar en Emulator: {error}</main>
   if (!uid) return <p role="status">Conectando sesión QA a Firebase Emulator…</p>
+
+  if (fullApp) return <DistributionApp
+    restaurantId="sanjose"
+    restaurantName="Embutidos San José"
+    uid={uid}
+    userName={qaUser.name}
+    role={role}
+    routeId={role === 'distributor' ? 'qa-route' : null}
+    warehouseId={role === 'warehouse' ? 'qa-warehouse' : 'central'}
+    onSignOut={async () => {}}
+    onOpenPrinterSettings={() => {}}
+  />
 
   const session: DistributionSession = {
     restaurantId: 'sanjose', restaurantName: 'Embutidos San José', uid,
@@ -33,7 +64,7 @@ export function Harness() {
       { id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', unitType: 'kg', active: true, productionCost: 5 },
       { id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 250 g', unitType: 'package', active: true, productionCost: 999 },
     ],
-    lots: [sourceLot, { id: 'qa-other-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-1KG', manufacturedOn: '2026-10-20', expiresOn: '2026-12-20', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 1 } } }, { id: 'qa-free-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-LIBRE-1KG', manufacturedOn: '2026-10-20', expiresOn: '2026-12-20', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } }],
+    lots: [sourceLot, otherLot, freeLot],
     balances: [{ id: 'central__qa-source-product', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-source-product', unitType: 'kg', quantity: 4 }],
     warehouses: [], stockMovements: [], operations: [],
   } as unknown as DistributionData
