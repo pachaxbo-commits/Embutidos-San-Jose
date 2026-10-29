@@ -181,6 +181,9 @@ export function computeProductProfitReport(
 
   // 2. Procesar cambios y devoluciones (DistClaim)
   for (const claim of claims) {
+    // Anulación de sachet con custodia verificada: la venta ya se excluye por
+    // voidedAt. El claim técnico solo conserva la salida de caja del reembolso.
+    if (claim.isDerivedSaleVoid) continue
     const dayKey = claim.dayKey || toDayKey(claim.createdAt)
     const voucher = `REC-${claim.id.slice(-5).toUpperCase()}`
 

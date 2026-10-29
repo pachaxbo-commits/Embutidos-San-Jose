@@ -189,6 +189,9 @@ export function SellView({ session, data }: DistributionViewProps) {
   const [correctionSuccessMessage, setCorrectionSuccessMessage] = useState<string | null>(null)
   const [voidTarget, setVoidTarget] = useState<DistSale | null>(null)
   const [voidReason, setVoidReason] = useState('')
+  const [voidScenario, setVoidScenario] = useState<'recorded_in_error_never_delivered' | 'delivered_then_returned' | ''>('')
+  const [voidCustodyConfirmed, setVoidCustodyConfirmed] = useState(false)
+  const [voidCashRefundConfirmed, setVoidCashRefundConfirmed] = useState(false)
   const [auditInspectingSale, setAuditInspectingSale] = useState<DistSale | null>(null)
   const [nowMs] = useState(() => Date.now())
 
@@ -811,11 +814,27 @@ export function SellView({ session, data }: DistributionViewProps) {
       setError('La razón de la anulación es obligatoria.')
       return
     }
+    const derived = (voidTarget.effectiveSnapshot?.lines || voidTarget.lines || []).some(line => line.allocations?.some(allocation => allocation.processingAllocation))
+    if (derived && voidScenario !== 'recorded_in_error_never_delivered') {
+      setError('La anulación directa es solo para una venta registrada por error y nunca entregada. Si fue entregada y luego volvió, registra el reclamo/devolución física.'); return
+    }
+    if (derived && (session.role !== 'admin' || !voidCustodyConfirmed || voidReason.trim().length < 10 || (Number(voidTarget.cashAmount || 0) > 0 && !voidCashRefundConfirmed))) {
+      setError('Para anular sachets, Administración debe confirmar que nunca se entregaron, documentar su custodia física y confirmar el reembolso en efectivo original.'); return
+    }
     setIsSubmitting(true)
     try {
-      await voidSale({ saleId: voidTarget.id, reason: voidReason.trim() })
+      await voidSale({ saleId: voidTarget.id, reason: voidReason.trim(), ...(derived ? {
+        voidScenario: 'recorded_in_error_never_delivered',
+        physicalCustodyConfirmed: voidCustodyConfirmed,
+        custodyLocation: voidTarget.sourceLocation === 'route' ? `route__${voidTarget.routeId}` : 'central',
+        physicalCustodyNote: voidReason.trim(),
+        cashRefundAmount: Number(voidTarget.cashAmount || 0),
+      } : {}) })
       setVoidTarget(null)
       setVoidReason('')
+      setVoidScenario('')
+      setVoidCustodyConfirmed(false)
+      setVoidCashRefundConfirmed(false)
       setCorrectionSuccessMessage('Venta anulada correctamente. Los productos volvieron al stock de origen.')
       setError(null)
     } catch (e) {
@@ -1449,6 +1468,9 @@ export function SellView({ session, data }: DistributionViewProps) {
                       onClick={() => {
                         setVoidTarget(sale)
                         setVoidReason('')
+                        setVoidScenario('')
+                        setVoidCustodyConfirmed(false)
+                        setVoidCashRefundConfirmed(false)
                         setError(null)
                       }}
                     >
@@ -1464,15 +1486,15 @@ export function SellView({ session, data }: DistributionViewProps) {
 
       <Modal
         isOpen={Boolean(voidTarget)}
-        onClose={() => { if (!isSubmitting) { setVoidTarget(null); setVoidReason(''); setError(null) } }}
+        onClose={() => { if (!isSubmitting) { setVoidTarget(null); setVoidReason(''); setVoidScenario(''); setVoidCustodyConfirmed(false); setVoidCashRefundConfirmed(false); setError(null) } }}
         title="Anular venta completa"
         subtitle="Esta acción queda registrada y no elimina el historial."
         footer={
           <div className="grid w-full grid-cols-2 gap-2">
-            <SecondaryButton disabled={isSubmitting} onClick={() => { setVoidTarget(null); setVoidReason(''); setError(null) }}>
+            <SecondaryButton disabled={isSubmitting} onClick={() => { setVoidTarget(null); setVoidReason(''); setVoidScenario(''); setVoidCustodyConfirmed(false); setVoidCashRefundConfirmed(false); setError(null) }}>
               Volver
             </SecondaryButton>
-            <PrimaryButton disabled={isSubmitting || !voidReason.trim()} onClick={() => void submitVoid()}>
+            <PrimaryButton disabled={isSubmitting || !voidReason.trim() || Boolean(voidTarget && (voidTarget.effectiveSnapshot?.lines || voidTarget.lines || []).some(line => line.allocations?.some(allocation => allocation.processingAllocation)) && (session.role !== 'admin' || voidScenario !== 'recorded_in_error_never_delivered' || !voidCustodyConfirmed || voidReason.trim().length < 10 || (Number(voidTarget.cashAmount || 0) > 0 && !voidCashRefundConfirmed)))} onClick={() => void submitVoid()}>
               {isSubmitting ? 'Anulando...' : 'Confirmar anulación'}
             </PrimaryButton>
           </div>
@@ -1490,6 +1512,17 @@ export function SellView({ session, data }: DistributionViewProps) {
               </p>
               {voidTarget.creditAmount > 0 && <p className="mt-2 text-xs font-bold">La deuda sin cobros quedará en cero. Si ya existe algún cobro, el servidor rechazará la anulación.</p>}
             </div>
+            {(voidTarget.effectiveSnapshot?.lines || voidTarget.lines || []).some(line => line.allocations?.some(allocation => allocation.processingAllocation)) && (
+              <div className="grid gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                <b>Anulación de sachets: sólo si el producto sigue bajo custodia del negocio</b>
+                <Field label="Qué ocurrió con esta venta"><select className="min-h-11 w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm" value={voidScenario} onChange={event => { setVoidScenario(event.target.value as typeof voidScenario); setError(null) }}><option value="">Selecciona el caso</option><option value="recorded_in_error_never_delivered">Registrada por error; nunca fue entregada</option><option value="delivered_then_returned">Fue entregada y luego devuelta físicamente</option></select></Field>
+                {voidScenario === 'delivered_then_returned' && <p role="status" className="rounded-lg border border-amber-400 bg-white p-2 text-xs font-bold">No la anules aquí. Registra el reclamo/devolución física en el flujo existente; si ya existe un reclamo, el servidor impedirá un segundo reembolso.</p>}
+                <label className="flex items-start gap-2"><input type="checkbox" checked={voidCustodyConfirmed} onChange={event => setVoidCustodyConfirmed(event.target.checked)} /><span>Administración verificó físicamente los paquetes en {voidTarget.sourceLocation === 'route' ? `la ruta ${voidTarget.routeName}` : 'Almacén central'}.</span></label>
+                {Number(voidTarget.cashAmount || 0) > 0 && <label className="flex items-start gap-2"><input type="checkbox" checked={voidCashRefundConfirmed} onChange={event => setVoidCashRefundConfirmed(event.target.checked)} /><span>Se devolvieron Bs {Number(voidTarget.cashAmount).toFixed(2)} en efectivo. Si el dinero no se devolvió, no confirmes la anulación.</span></label>}
+                {Number(voidTarget.qrAmount || 0) > 0 && <p className="font-bold">Esta venta incluye QR. El servidor la bloqueará hasta verificar el procedimiento de reversión del pago.</p>}
+                {session.role !== 'admin' && <p className="font-bold">La confirmación de custodia está reservada a Administración.</p>}
+              </div>
+            )}
             <Field label="Motivo obligatorio">
               <TextArea value={voidReason} onChange={event => setVoidReason(event.target.value)} placeholder="Ej.: venta registrada por error; la mercadería no fue entregada" />
             </Field>

@@ -59,7 +59,8 @@ export function computeOperatingResult(
     salesByOriginMap.set(origin, round2((salesByOriginMap.get(origin) || 0) + (sale.effectiveSnapshot?.total ?? sale.total)))
   }
   const salesByOrigin = [...salesByOriginMap.entries()].map(([origin, amount]) => ({ origin, amount }))
-  const adjustments = round2(scopedClaims.reduce((sum, claim) => sum + claim.revenueDelta, 0))
+  const economicClaims = scopedClaims.filter((claim) => !claim.isDerivedSaleVoid)
+  const adjustments = round2(economicClaims.reduce((sum, claim) => sum + claim.revenueDelta, 0))
   const netSales = round2(report.totals.salesBs)
   const costOfSales = report.totals.costBs
   const grossMargin = report.totals.profitBs
@@ -112,7 +113,7 @@ export function computeOperatingResult(
     fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, cliente: line.customerName,
     origen: displayOrigin(undefined, line.routeName), responsable: line.sellerName, monto: line.saleBs,
   }))
-  const claimRows = scopedClaims.map((claim) => ({ fecha: claim.dayKey || toDayKey(claim.createdAt), producto: claim.productName,
+  const claimRows = economicClaims.map((claim) => ({ fecha: claim.dayKey || toDayKey(claim.createdAt), producto: claim.productName,
     tipo: claim.kind === 'return' ? 'Devolución' : 'Cambio', cliente: claim.customerName,
     origen: displayOrigin(claim.routeId, scopedSales.find((sale) => sale.id === claim.saleId)?.routeName), monto: claim.revenueDelta }))
   const movementTypeLabel: Record<DistStockMovement['type'], string> = {

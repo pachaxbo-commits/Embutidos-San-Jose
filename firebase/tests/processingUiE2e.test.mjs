@@ -66,6 +66,7 @@ try {
   await root.collection('distWarehouses').doc('qa-warehouse').set({ id: 'qa-warehouse', restaurantId: 'sanjose', name: 'Almacén QA', active: true })
   await root.collection('distProducts').doc('qa-source-product').set({ id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', unitType: 'kg', active: true, productionCost: 5 })
   await root.collection('distProducts').doc('qa-sachet-product').set({ id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 250 g', unitType: 'package', active: true, productionCost: 999 })
+  await root.collection('distProducts').doc('qa-assessment-product').set({ id: 'qa-assessment-product', restaurantId: 'sanjose', name: 'QA Paquete para evaluación', unitType: 'package', active: true, productionCost: null })
   await root.collection('distLots').doc('qa-source-lot').set({ id: 'qa-source-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-ORIGEN-2KG', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 2, reviewHold: 0 } }, processingReview: { caseId: 'qa-processing-case', revision: 0, status: 'pending_review', updatedAt: date, updatedBy: uid } })
   await root.collection('distLots').doc('qa-other-lot').set({ id: 'qa-other-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-1KG', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 1 } }, processingReview: { caseId: 'qa-other-case', revision: 0, status: 'authorized_for_repack', updatedAt: date, updatedBy: uid } })
   await root.collection('distLots').doc('qa-free-lot').set({ id: 'qa-free-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-LIBRE-1KG', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
@@ -75,6 +76,11 @@ try {
   await root.collection('distLots').doc('qa-other-warehouse-lot').set({ id: 'qa-other-warehouse-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-ALMACEN-LOTE', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { 'warehouse__other-warehouse': 1 }, processingUnavailable: { 'warehouse__other-warehouse': { courtesy: 0, repackPending: 1, reviewHold: 0 } } })
   await root.collection('distStockReservations').doc('qa-other-warehouse-reservation').set({ id: 'qa-other-warehouse-reservation', restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, productId: 'qa-source-product', productName: 'QA Producto a granel', lotId: 'qa-other-warehouse-lot', lotCode: 'QA-OTRO-ALMACEN', unitType: 'kg', location: 'warehouse__other-warehouse', purpose: 'repack_pending', originalQuantity: 1, remainingQuantity: 1, consumedQuantity: 0, physicalWeightG: 1000, remainingWeightG: 1000, remainingCostCents: 500, status: 'active', source: 'qa', createdAt: date, createdBy: uid, createdByName: 'QA', history: [] })
   await root.collection('distStockReservations').doc('qa-source-reservation').set({ id: 'qa-source-reservation', restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, productId: 'qa-source-product', productName: 'QA Producto a granel', lotId: 'qa-source-lot', lotCode: 'QA-ORIGEN-2KG', unitType: 'kg', location: 'central', purpose: 'repack_pending', originalQuantity: 2, remainingQuantity: 2, consumedQuantity: 0, physicalWeightG: 2000, remainingWeightG: 2000, remainingCostCents: 1000, status: 'active', source: 'qa', createdAt: date, createdBy: uid, createdByName: 'Administración QA', history: [] })
+  await root.collection('distLots').doc('qa-assessment-lot').set({ id: 'qa-assessment-lot', restaurantId: 'sanjose', productId: 'qa-assessment-product', productName: 'QA Paquete para evaluación', unitType: 'package', lotCode: 'QA-ASSESSMENT', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: null, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 2 } }, processingPhysicalWeightGRemaining: 500, processingCostCentsRemaining: 250, processingCommercialBlocked: true, processingDestinationKind: 'review_hold', quarantined: true, processingReview: { caseId: 'qa-assessment-case', latestReviewId: 'qa-assessment-existing-review', revision: 1, status: 'in_review', updatedAt: date, updatedBy: uid } })
+  await root.collection('distBalances').doc('central__qa-assessment-product').set({ id: 'central__qa-assessment-product', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-assessment-product', unitType: 'package', quantity: 2 })
+  await root.collection('distStockReservations').doc('qa-assessment-reservation').set({ id: 'qa-assessment-reservation', restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, productId: 'qa-assessment-product', productName: 'QA Paquete para evaluación', lotId: 'qa-assessment-lot', lotCode: 'QA-ASSESSMENT', unitType: 'package', location: 'central', purpose: 'review_hold', originalQuantity: 2, remainingQuantity: 2, consumedQuantity: 0, physicalWeightG: 500, remainingWeightG: 500, remainingCostCents: 250, status: 'active', source: 'qa', createdAt: date, createdBy: uid, createdByName: 'Administración QA', history: [] })
+  await root.collection('distProcessingReviews').doc('qa-assessment-existing-review').set({ id: 'qa-assessment-existing-review', caseId: 'qa-assessment-case', restaurantId: 'sanjose', lotId: 'qa-assessment-lot', productId: 'qa-assessment-product', productName: 'QA Paquete para evaluación', lotCode: 'QA-ASSESSMENT', reservationId: 'qa-assessment-reservation', location: 'central', commercialQuantity: 2, commercialUnit: 'package', historicalAssignedWeightG: 500, physicalWeightG: null, weightDifferenceG: null, costCents: 250, packageCondition: 'package_damaged_partial', productObservation: 'uncertain', status: 'in_review', action: 'start_review', observations: 'Revisión previa de QA', reason: 'Caso sintético para validar evaluación', evidenceRefs: [], revision: 1, reviewedAt: date, reviewedBy: uid, reviewedByName: 'Administración QA' })
+  await root.collection('distProcessingEvidence').doc('qa-disposition-evidence').set({ id: 'qa-disposition-evidence', restaurantId: 'sanjose', status: 'verified', evidenceType: 'measurement_record', lotId: 'qa-assessment-lot', reservationId: 'qa-assessment-reservation', reviewCaseId: 'qa-assessment-case', reviewRevision: 1, location: 'central', uploadedBy: uid, recordedAt: date, bucket: 'qa-fixture', objectPath: 'processing-evidence/sanjose/ui-fixture/qa-assessment.pdf', objectGeneration: '1', sha256: 'd'.repeat(64), byteSize: 512, contentType: 'application/pdf', viewers: [uid], verificationMethod: 'emulator_fixture', objectExists: true })
   await root.collection('distStockReservations').doc('qa-other-reservation').set({ id: 'qa-other-reservation', restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, productId: 'qa-source-product', productName: 'QA Producto a granel', lotId: 'qa-other-lot', lotCode: 'QA-OTRO-1KG', unitType: 'kg', location: 'central', purpose: 'review_hold', originalQuantity: 1, remainingQuantity: 1, consumedQuantity: 0, physicalWeightG: null, remainingWeightG: null, remainingCostCents: 500, status: 'active', source: 'qa', createdAt: date, createdBy: uid, createdByName: 'Administración QA', history: [] })
   await root.collection('distProcessingQualityAuthorizations').doc(uid).set({ id: 'qa-auth', authorizationId: 'qa-auth', restaurantId: 'sanjose', status: 'active', beneficiaryUid: uid, grantedBy: 'qa-system-fixture', grantedByName: 'Emulator fixture', expiresAt: '2999-12-31T23:59:59.000Z' })
 
@@ -263,6 +269,35 @@ try {
   await page.getByRole('button', { name: 'Reenvasados', exact: true }).click()
   await page.getByText(/Reenvasado de QA Producto a granel/).waitFor({ timeout: 30000 })
   await page.getByText(/QA-SACHET-8-UI/).waitFor()
+
+  // La evaluación documenta una propuesta de destino, sin alterar inventario ni costo.
+  const assessmentEvidenceId = 'qa-disposition-evidence'
+  const assessmentLotForUi = (await root.collection('distLots').doc('qa-assessment-lot').get()).data()
+  await page.evaluate(lot => window.__qaUpdateAssessmentLot?.(lot), assessmentLotForUi)
+  await page.getByRole('button', { name: 'Revisión de producto', exact: true }).click()
+  await page.getByLabel('Reserva para revisar').selectOption('qa-assessment-reservation')
+  await page.getByText('Lote QA-ASSESSMENT · Almacén central').waitFor({ timeout: 10000 })
+  await page.getByLabel('Acción').selectOption('record_disposition_assessment')
+  await page.getByLabel('Evaluación de Calidad').selectOption('partially_recoverable')
+  await page.getByLabel('Peso físico medido (g)').fill('470')
+  await page.getByLabel('Gramos recuperables propuestos').fill('300')
+  await page.getByLabel('Gramos de descarte pendientes').fill('170')
+  await page.getByPlaceholder('Describe lo observado; separa peso asignado y medido.').fill('Medición de cuarentena ingresada en la interfaz de QA')
+  await page.getByPlaceholder('Motivo de la revisión o solicitud').fill('Registrar propuesta sin modificar inventario')
+  await page.locator('label').filter({ hasText: assessmentEvidenceId }).locator('input[type="checkbox"]').check()
+  await page.getByRole('button', { name: 'Registrar revisión' }).click()
+  try { await page.getByText(/parcialmente recuperable propuesto/).waitFor({ timeout: 30000 }) }
+  catch (error) {
+    console.error('QA assessment lot state:', JSON.stringify((await root.collection('distLots').doc('qa-assessment-lot').get()).data()?.processingReview))
+    console.error('QA assessment UI:', (await page.locator('body').innerText()).slice(-2200))
+    throw error
+  }
+  const assessmentLotAfter = (await root.collection('distLots').doc('qa-assessment-lot').get()).data()
+  assert.equal(assessmentLotAfter.processingReview.status, 'pending_economic_disposition')
+  assert.equal(assessmentLotAfter.quantities.central, 2)
+  assert.equal((await root.collection('distStockReservations').doc('qa-assessment-reservation').get()).data().remainingQuantity, 2)
+  assert.equal((await root.collection('distBalances').doc('central__qa-assessment-product').get()).data().quantity, 2)
+  assert.equal((await root.collection('distStockMovements').where('productId', '==', 'qa-assessment-product').get()).size, 0)
 
   // Navegación habitual de DistributionApp con cuentas ficticias autenticadas en Emulator.
   await page.goto('http://127.0.0.1:5174/scripts/processing-ui-harness.html?app=1&role=admin')

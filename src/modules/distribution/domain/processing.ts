@@ -10,7 +10,8 @@ export type ProcessingReversalStatus = 'clear' | 'blocked' | 'approved'
 export type ProcessingReviewStatus = 'pending_review' | 'in_review' | 'authorized_for_repack' | 'not_recoverable' | 'pending_information' | 'pending_economic_disposition' | 'resolved_specialized'
 export type ProcessingPackageCondition = 'sealed_intact' | 'package_damaged_content_intact' | 'package_damaged_partial' | 'no_package' | 'unknown'
 export type ProcessingProductObservation = 'apparently_apt' | 'uncertain' | 'confirmed_unfit' | 'not_assessed'
-export type ProcessingReviewAction = 'record_observation' | 'start_review' | 'request_information' | 'authorize_repack' | 'declare_unrecoverable' | 'mark_pending_economic_disposition' | 'repack_consumed'
+export type ProcessingReviewAction = 'record_observation' | 'start_review' | 'request_information' | 'authorize_repack' | 'declare_unrecoverable' | 'mark_pending_economic_disposition' | 'record_disposition_assessment' | 'repack_consumed'
+export type ProcessingDispositionAssessmentOutcome = 'recoverable' | 'partially_recoverable' | 'discard_pending' | 'undetermined'
 
 /** Immutable audit event for inspection; it never mutates stock, reservations or historical cost. */
 export interface ProcessingReviewRecord {
@@ -52,6 +53,19 @@ export interface ProcessingReviewRecord {
   reviewedBy: string
   reviewedByName: string
   qualityDecision?: 'authorized_for_repack' | 'not_recoverable'
+  /** Quality assessment only: never changes stock or settles economic policy. */
+  dispositionAssessment?: {
+    outcome: ProcessingDispositionAssessmentOutcome
+    measuredWeightG: number | null
+    recoverableWeightG: number | null
+    discardWeightG: number | null
+    status: 'pending_owner_policy'
+    recordedAt: string
+    recordedBy: string
+    recordedByName: string
+    qualityAuthorizationRef: string
+    evidenceRefs: string[]
+  }
 }
 
 export interface RecordProcessingReviewInput {
@@ -68,6 +82,9 @@ export interface RecordProcessingReviewInput {
   /** References to evidence already stored by an approved service; never raw files. */
   evidenceRefs: string[]
   qualityAuthorizationRef?: string
+  dispositionOutcome?: ProcessingDispositionAssessmentOutcome
+  recoverableWeightG?: number | null
+  discardWeightG?: number | null
 }
 
 /** Schema contract for future repacking. Validation does not perform the conversion. */

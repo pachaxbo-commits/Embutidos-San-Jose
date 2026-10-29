@@ -22,15 +22,18 @@ export function Harness() {
   const [error, setError] = useState('')
   const [sourceLot, setSourceLot] = useState({ id: 'qa-source-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-ORIGEN-2KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 2, reviewHold: 0 } }, processingReview: { caseId: 'qa-processing-case', revision: 0, status: 'pending_review', updatedAt: '', updatedBy: '' } })
   const [otherLot, setOtherLot] = useState({ id: 'qa-other-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-1KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 1 } }, processingReview: { caseId: 'qa-other-case', revision: 0, status: 'authorized_for_repack', updatedAt: '', updatedBy: '' } })
+  const [assessmentLot, setAssessmentLot] = useState({ id: 'qa-assessment-lot', restaurantId: 'sanjose', productId: 'qa-assessment-product', productName: 'QA Paquete para evaluación', unitType: 'package', lotCode: 'QA-ASSESSMENT', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: null, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 2 } }, processingPhysicalWeightGRemaining: 500, processingCostCentsRemaining: 250, processingCommercialBlocked: true, processingDestinationKind: 'review_hold', quarantined: true })
   const [freeLot] = useState({ id: 'qa-free-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-LIBRE-1KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
   useEffect(() => {
     Object.assign(window, {
       __qaUpdateSourceLot: (lot: typeof sourceLot) => setSourceLot(lot),
       __qaUpdateOtherLot: (lot: typeof otherLot) => setOtherLot(lot),
+      __qaUpdateAssessmentLot: (lot: typeof assessmentLot) => setAssessmentLot(lot),
     })
     return () => {
       delete (window as Window & { __qaUpdateSourceLot?: unknown }).__qaUpdateSourceLot
       delete (window as Window & { __qaUpdateOtherLot?: unknown }).__qaUpdateOtherLot
+      delete (window as Window & { __qaUpdateAssessmentLot?: unknown }).__qaUpdateAssessmentLot
     }
   }, [])
   useEffect(() => {
@@ -63,8 +66,9 @@ export function Harness() {
     products: [
       { id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', unitType: 'kg', active: true, productionCost: 5 },
       { id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 250 g', unitType: 'package', active: true, productionCost: 999 },
+      { id: 'qa-assessment-product', restaurantId: 'sanjose', name: 'QA Paquete para evaluación', unitType: 'package', active: true, productionCost: null },
     ],
-    lots: [sourceLot, otherLot, freeLot],
+    lots: [sourceLot, otherLot, assessmentLot, freeLot],
     balances: [{ id: 'central__qa-source-product', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-source-product', unitType: 'kg', quantity: 4 }],
     warehouses: [], stockMovements: [], operations: [],
   } as unknown as DistributionData

@@ -64,6 +64,8 @@ import type {
 } from '../types'
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from './supportMaintenance'
 import { recordQrVerification, type QrSourceType } from './qrVerification'
+import { connectStorageEmulator, getStorage, ref as storageRef, uploadBytes, getMetadata as getStorageMetadata } from 'firebase/storage'
+import type { FirebaseApp } from 'firebase/app'
 
 /**
  * Repositorio de distribucion movil.
@@ -109,6 +111,7 @@ export const DIST_COLLECTIONS = {
 } as const
 
 const SCHEMA_VERSION = 1
+let processingStorageEmulatorConnected = false
 
 export function warehouseBalanceId(warehouseId: string, productId: string): string {
   return warehouseId === 'central' ? centralBalanceId(productId) : `warehouse__${warehouseId}__${productId}`
@@ -225,6 +228,35 @@ export async function recordProcessingReview(input: RecordProcessingReviewInput,
   return submitOperation('recordProcessingReview', input, operationId)
 }
 
+/** Sube evidencia con metadatos acotados y registra su verificación por el servidor. */
+export async function uploadProcessingEvidence(input: { lotId: string; reservationId: string; location: string; reviewCaseId: string; reviewRevision: number; evidenceType: 'photo' | 'measurement_record' | 'signed_quality_record'; file: File; evidenceId: string; operationId: string }): Promise<unknown> {
+  const context = await getContext(true)
+  const { file } = input
+  if (!['image/jpeg','image/png','application/pdf'].includes(file.type) || file.size <= 0 || file.size > 15 * 1024 * 1024) throw new Error('Adjunta una foto JPG/PNG o PDF de hasta 15 MB.')
+  if (!/^[A-Za-z0-9_-]{8,120}$/.test(input.evidenceId) || !/^[A-Za-z0-9_-]{8,120}$/.test(input.operationId)) throw new Error('Los identificadores de la carga no son válidos.')
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+  const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  const objectPath = `processing-evidence/sanjose/${input.location}/${input.reservationId}/${input.reviewCaseId}/${input.reviewRevision}/${context.uid}/${input.evidenceId}`
+  const storage = getStorage(context.app)
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !processingStorageEmulatorConnected) {
+    connectStorageEmulator(storage, window.location.hostname || '127.0.0.1', 9199)
+    processingStorageEmulatorConnected = true
+  }
+  const object = storageRef(storage, objectPath)
+  const customMetadata = { restaurantId: 'sanjose', lotId: input.lotId, reservationId: input.reservationId,
+    reviewCaseId: input.reviewCaseId, reviewRevision: String(input.reviewRevision), location: input.location,
+    uploadedBy: context.uid, evidenceType: input.evidenceType, sha256, evidenceId: input.evidenceId }
+  let alreadyUploaded = false
+  try {
+    const existing = await getStorageMetadata(object)
+    alreadyUploaded = existing.customMetadata?.sha256 === sha256 && existing.customMetadata?.lotId === input.lotId
+      && existing.customMetadata?.reviewCaseId === input.reviewCaseId && existing.customMetadata?.reviewRevision === String(input.reviewRevision)
+  } catch { /* The object is not present yet; upload below. */ }
+  if (!alreadyUploaded) await uploadBytes(object, file, { contentType: file.type, customMetadata })
+  return submitOperation('recordProcessingEvidence', { lotId: input.lotId, reservationId: input.reservationId, location: input.location,
+    reviewCaseId: input.reviewCaseId, reviewRevision: input.reviewRevision, evidenceType: input.evidenceType, evidenceId: input.evidenceId }, input.operationId)
+}
+
 /** Reenvasa una reserva aprobada mediante la única transacción del servidor. */
 export async function confirmProcessingRepack(input: RepackOperationInput): Promise<unknown> {
   if (!input.operationId.trim()) throw new Error('El reenvasado requiere un identificador de operación estable.')
@@ -336,6 +368,7 @@ export function isOperationApplied(operationId: string): boolean {
 }
 
 interface RepoContext {
+  app: FirebaseApp
   db: Firestore
   restaurantId: string
   uid: string
@@ -347,6 +380,7 @@ async function getContext(forWrite = false): Promise<RepoContext> {
   if (forWrite) assertFirebaseWritesAllowed(context.app.options.projectId)
   if (!context.auth.currentUser) throw new Error('Inicia sesion para registrar operaciones.')
   return {
+    app: context.app,
     db: context.db,
     restaurantId: context.restaurantId,
     uid: context.auth.currentUser?.uid ?? '',
@@ -688,7 +722,7 @@ export async function correctSale(input: { saleId: string; reason: string; lines
   await submitOperation('editSale', input, newOperationId('sale-correction'))
 }
 
-export async function voidSale(input: { saleId: string; reason: string }): Promise<void> {
+export async function voidSale(input: { saleId: string; reason: string; voidScenario?: 'recorded_in_error_never_delivered' | 'delivered_then_returned'; physicalCustodyConfirmed?: boolean; custodyLocation?: string; physicalCustodyNote?: string; cashRefundAmount?: number }): Promise<void> {
   await submitOperation('voidSale', input, newOperationId('sale-void'))
 }
 

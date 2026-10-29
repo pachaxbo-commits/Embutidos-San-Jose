@@ -209,11 +209,37 @@ try {
 
   const movementCountBeforeBlockedActions = (await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size
   const edit = await command(ids.admin, 'editSale', { saleId: routeSale.operationId, reason: 'QA no implementado', lines: [] }, `${prefix}-edit-derived`, 'rejected')
-  const voided = await command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA no implementado' }, `${prefix}-void-derived`, 'rejected')
+  const voided = await command(ids.admin, 'voidSale', { saleId: routeSale.operationId, reason: 'QA no implementado', voidScenario: 'recorded_in_error_never_delivered' }, `${prefix}-void-derived`, 'rejected')
   const claim = await command(ids.admin, 'claim', { saleId: routeSale.operationId, productId: ids.product, quantity: 1, kind: 'return', reason: 'QA no implementado' }, `${prefix}-claim-derived`, 'rejected')
-  pass(edit.error.includes('conservar todos los productos') && voided.error.includes('recepción física verificable') && claim.error.includes('Confirma que recibiste físicamente'), 'edición física permanece económica únicamente; anulación sin evidencia y devolución sin recibo físico se rechazan')
+  pass(edit.error.includes('conservar todos los productos') && voided.error.includes('custodia física') && claim.error.includes('Confirma que recibiste físicamente'), 'edición física permanece económica únicamente; anulación sin custodia y devolución sin recibo físico se rechazan')
   const movementCountAfterBlockedActions = (await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()).size
   pass((await read('distLots', centralLot)).quantities[routeLoc] === 0 && movementCountAfterBlockedActions === movementCountBeforeBlockedActions, 'rechazos de edición física/anulación/devolución no modifican stock ni agregan movimientos')
+
+  const voidProduct = `${prefix}-custody-void-product`, voidLotId = `${prefix}-custody-void-lot`, voidSaleId = `${prefix}-custody-void-sale`
+  await seedProduct(voidProduct, 'package', 999)
+  await seedPackageLot({ productId: voidProduct, lotId: voidLotId, quantity: 2, weightG: 501, costCents: 301, batchId: `${prefix}-custody-void-batch` })
+  await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: voidProduct, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10 }), voidSaleId)
+  const noCustodyVoid = await command(ids.admin, 'voidSale', { saleId: voidSaleId, reason: 'Error de registro en prueba', voidScenario: 'recorded_in_error_never_delivered', cashRefundAmount: 10 }, `${prefix}-void-no-custody`, 'rejected')
+  pass(Boolean(noCustodyVoid.error) && (await read('distLots', voidLotId)).quantities.central === 1, 'anulación derivada sin confirmación de custodia se rechaza sin restaurar stock')
+  const wrongVoidScenario = await command(ids.admin, 'voidSale', { saleId: voidSaleId, reason: 'Entregada y devuelta al almacén', voidScenario: 'delivered_then_returned', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Paquete observado en central', cashRefundAmount: 10 }, `${prefix}-void-wrong-scenario`, 'rejected')
+  pass(wrongVoidScenario.error.includes('nunca entregada') && (await read('distLots', voidLotId)).quantities.central === 1, 'venta entregada y luego devuelta se enruta al reclamo existente, sin restitución ni reembolso duplicado por anulación')
+  const custodyVoid = await command(ids.admin, 'voidSale', { saleId: voidSaleId, reason: 'Venta registrada por error y nunca entregada', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Administración comprobó el paquete sellado en central', cashRefundAmount: 10 }, `${prefix}-void-with-custody`)
+  const voidedSale = await read('distSales', voidSaleId)
+  const voidedLot = await read('distLots', voidLotId)
+  const voidMovement = (await root.collection('distStockMovements').where('saleId', '==', voidSaleId).get()).docs.map(row => row.data()).find(row => row.type === 'sale_void')
+  const voidCashClaim = await read('distClaims', custodyVoid.operationId)
+  const voidedReceivable = await read('distReceivables', voidSaleId)
+  const voidResult = computeOperatingResult([voidedSale], [voidCashClaim], [], [voidMovement], [voidCashClaim.dayKey])
+  pass(custodyVoid.status === 'confirmed' && voidedSale.voidedAt && voidedSale.derivedVoid.custodyConfirmedBy === ids.admin && voidedLot.quantities.central === 2 && voidedLot.processingPhysicalWeightGRemaining === 501 && voidedLot.processingCostCentsRemaining === 301 && (!voidedReceivable || voidedReceivable.status === 'VOID'), 'anulación con custodia verificada restaura una vez paquetes, gramos y centavos, y no marca una deuda anulada como pagada')
+  pass(voidMovement?.physicalCustodyConfirmed === true && voidCashClaim.cashOut === 10 && voidCashClaim.isDerivedSaleVoid && voidResult.grossSales === 0 && voidResult.adjustments === 0, 'Kardex documenta la custodia; el reembolso entra a arqueo y no duplica ingresos o devoluciones en Resultado')
+
+  const voidCreditProduct = `${prefix}-void-credit-product`, voidCreditLot = `${prefix}-void-credit-lot`, voidCreditSaleId = `${prefix}-void-credit-sale`
+  await seedProduct(voidCreditProduct, 'package', 999)
+  await seedPackageLot({ productId: voidCreditProduct, lotId: voidCreditLot, quantity: 2, weightG: 500, costCents: 250, batchId: `${prefix}-void-credit-batch` })
+  await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: voidCreditProduct, quantity: 1, actualUnitPrice: 10 }], cashAmount: 0, creditAmount: 10, customerId: ids.customer }), voidCreditSaleId)
+  const unpaidCreditVoid = await command(ids.admin, 'voidSale', { saleId: voidCreditSaleId, reason: 'Crédito registrado por error y nunca entregado', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Administración comprobó paquete sin entregar en central', cashRefundAmount: 0 }, `${prefix}-void-unpaid-credit`)
+  const voidedCreditReceipt = await read('distReceivables', voidCreditSaleId)
+  pass(unpaidCreditVoid.status === 'confirmed' && voidedCreditReceipt.status === 'VOID' && voidedCreditReceipt.balance === 0 && (await read('distLots', voidCreditLot)).quantities.central === 2, 'anulación segura cancela crédito impago sin marcarlo pagado ni duplicar inventario')
 
   const beforeRetry = await root.collection('distStockMovements').where('refId', '==', routeSale.operationId).get()
   await processCommand(db, root.collection('distOperations').doc(routeSale.operationId))
@@ -270,6 +296,9 @@ try {
   pass(returned.status === 'confirmed' && returnRecord.quantity === 2 && returnRecord.returnedCostCents === 250 && returnRecord.historicalAssignedWeightG === 500 && returnRecord.measuredPhysicalWeightG === 430 && returnRecord.unresolvedWeightDifferenceG === 70, 'devolución de dos sachets conserva 500 g/250 centavos asignados y registra 430 g medidos con 70 g pendientes')
   pass(quarantinedReturn.quarantined && quarantinedReturn.processingUnavailable.central.reviewHold === 2 && quarantinedReturn.quantities.central === 2 && quarantinedReturn.processingByLocation.central.segments[0].remainingWeightG === 500 && quarantinedReturn.processingByLocation.central.segments[0].remainingCostCents === 250 && quarantinedReturn.processingMeasuredWeightGRemaining === 430 && returnBalance.quantity === 31, 'dos paquetes quedan físicamente contados en cuarentena; el stock vendible permanece 29 y el balance total es 31')
   pass(quarantineReservation.purpose === 'review_hold' && quarantineReservation.status === 'active' && quarantineReservation.remainingQuantity === 2 && quarantineReservation.remainingWeightG === 500 && (await read('distSales', returnSaleId)).derivedReturnedQuantityByProduct[returnProduct] === 2, 'reserva review_hold enlaza devolución y venta; su contador transaccional evita sobredevoluciones')
+  const movementsBeforeClaimedSaleVoid = (await root.collection('distStockMovements').where('productId', '==', returnProduct).get()).size
+  const voidAfterClaim = await command(ids.admin, 'voidSale', { saleId: returnSaleId, reason: 'Intento de anular además del reclamo', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Paquetes en cuarentena central', cashRefundAmount: 70 }, `${prefix}-void-after-claim`, 'rejected')
+  pass(voidAfterClaim.error.includes('ya tiene 1 devolución') && (await root.collection('distStockMovements').where('productId', '==', returnProduct).get()).size === movementsBeforeClaimedSaleVoid && (await root.collection('distStockReservations').doc(quarantineReservation.id).get()).data().remainingQuantity === 2, 'una venta con reclamo no acepta anulación ni reembolso duplicado y conserva la devolución en cuarentena')
   const resolvedUnsafe = await command(ids.admin, 'resolveQuarantine', { lotId: quarantineId, location: 'central', resolution: 'released_new_lot', newLotCode: 'QA-RELEASE', manufacturedOn: '2026-10-10', expiresOn: '2027-01-01', productionCost: 1, reason: 'intento inseguro' }, `${prefix}-resolve-derived-return`, 'rejected')
   pass(resolvedUnsafe.error.includes('procedimiento especializado') && (await read('distLots', quarantineId)).quantities.central === 2 && (await read('distStockReservations', quarantineReservation.id)).remainingQuantity === 2, 'resolveQuarantine genérico no libera ni altera una devolución derivada en revisión')
   const returnMovesBeforeRetry = (await root.collection('distStockMovements').where('claimId', '==', returnOperationId).get()).size

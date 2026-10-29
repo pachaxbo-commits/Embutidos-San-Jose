@@ -2,7 +2,7 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { createHash } = require('node:crypto');
 const expensePresetRegistry = require("./expense-presets.json");
 const origins = require('./origin-traceability.cjs');
-const { activeQualityAuthorization, verifyProcessingEvidence, isProcessingRepackEmulator } = require('./processing-security.cjs');
+const { activeQualityAuthorization, verifyProcessingEvidence, verifyProcessingEvidenceObject, isProcessingRepackEmulator } = require('./processing-security.cjs');
 const expenseCategoryDefaults = expensePresetRegistry.defaults;
 const expenseBuiltinGroups = {
   administration: { name: "Gastos de administración", economicType: "operating_expense" },
@@ -31,6 +31,8 @@ const canonicalJson = value => JSON.stringify(value, (_key, item) => {
 const sha256 = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const processingDerivedSalesEmulatorOnly = () => process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST === 'true' && process.env.FUNCTIONS_EMULATOR === 'true' && /^(localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST || '');
 const processingRepackEmulatorOnly = () => process.env.SANJOSE_PROCESSING_REPACK_EMULATOR_TEST === 'true' && isProcessingRepackEmulator();
+const processingRepackAvailable = () => processingRepackEmulatorOnly()
+  || process.env.SANJOSE_PROCESSING_REPACK_ENABLED === 'true' && Boolean(process.env.SANJOSE_PROCESSING_EVIDENCE_BUCKET);
 const integerShare = (total, offset, quantity, whole) => {
   if (total === null || total === undefined) return null;
   check(Number.isSafeInteger(total) && total >= 0 && Number.isSafeInteger(offset) && Number.isSafeInteger(quantity) && Number.isSafeInteger(whole) && whole > 0 && offset >= 0 && quantity >= 0 && offset + quantity <= whole, 'Asignación entera de peso o costo inválida.');
@@ -328,7 +330,7 @@ class Operation {
     // switch authorizes moving protected derived stock out of its location.
     const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && processingDerivedSalesEmulatorOnly()
       || options.processingReturn === true && loc.startsWith('route__')
-      || options.processingRepack === true && processingRepackEmulatorOnly();
+      || options.processingRepack === true && processingRepackAvailable();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
     if (origins.pending(lot, loc) > 0 || !lot.processingSourceAllocationBasis) return false;
     const unavailable = lot.processingUnavailable?.[loc] || {};
@@ -2034,13 +2036,99 @@ function saleContainsDerivedProcessingAllocation(sale) {
 function assertNoDerivedSaleMutation(sale, action) {
   check(!saleContainsDerivedProcessingAllocation(sale), `La venta de sachets derivados no admite ${action} por el flujo tradicional; requiere el procedimiento especializado y su auditoría.`);
 }
-async function voidDerivedSale(o, sale) {
+async function voidDerivedSale(o, p, sale) {
   const claims = await o.query('distClaims', 'saleId', sale.id);
   if (claims.length) {
     const returned = claims.reduce((sum, claim) => sum + Number(claim.quantity || 0), 0);
     check(false, `La venta derivada ya tiene ${claims.length} devolución(es) o cambio(s) registrado(s) (${returned} unidades). El reclamo ya conserva la recepción física, la cuarentena y el ajuste de dinero/crédito; no se aplica una anulación separada ni un segundo reembolso.`);
   }
-  check(false, 'La anulación de sachets derivados sigue bloqueada: no hay un registro de recepción física verificable que pruebe que los paquetes de esta venta permanecen bajo control del negocio. No se restauró inventario; registra una devolución mediante claim si el producto fue recibido físicamente.');
+  check(!sale.voidedAt && !sale.pendingConfirmation, 'La venta derivada ya está anulada o pendiente de confirmación.');
+  check(o.member.role === 'admin', 'Solo Administración puede anular una venta derivada tras verificar la custodia física.');
+  check(p.voidScenario === 'recorded_in_error_never_delivered',
+    'Solo puede anularse por esta vía una venta registrada por error y nunca entregada. Si el producto se entregó y volvió, registra el reclamo/devolución física; no se procesa como error de registro.');
+  check(p.physicalCustodyConfirmed === true && String(p.physicalCustodyNote || '').trim().length >= 10,
+    'Confirma quién verificó la custodia física y registra una observación concreta antes de anular.');
+  const loc = sale.sourceLocation === 'route' ? location('route', sale.routeId) : 'central';
+  check(p.custodyLocation === loc, 'La ubicación de la mercadería bajo custodia no coincide con el origen de la venta.');
+  if (sale.dispatchId) {
+    const dispatch = await o.read('distDispatches', sale.dispatchId);
+    check(dispatch?.status === 'open', 'La ruta ya no está abierta; la anulación requiere revisión posterior al cierre.');
+    const closures = await o.query('distClosures', 'dispatchId', sale.dispatchId);
+    check(!closures.some(row => row.warehouseClosedBy || row.status === 'closed'), 'La ruta ya tiene recepción o cierre confirmado.');
+  }
+  check((await o.query('distQrVerifications', 'sourceId', sale.id)).every(row => row.sourceType !== 'sale'),
+    'La venta tiene un cobro QR verificado; usa el procedimiento de revisión del cobro antes de anular.');
+  const snapshot = await o.withDocumentedOrigins(sale, sale.effectiveSnapshot || sale);
+  check(Array.isArray(snapshot.lines) && snapshot.lines.length > 0
+    && snapshot.lines.every(line => Array.isArray(line.allocations) && line.allocations.length > 0
+      && line.allocations.every(allocation => allocation.processingAllocation
+        && allocation.processingAllocation.saleId === sale.id
+        && allocation.processingAllocation.saleMovementId)),
+  'La venta no conserva segmentos derivados completos para restituir paquetes, gramos y costo sin inventar existencias.');
+  const receipt = await o.read('distReceivables', sale.id);
+  check(!receipt || Number(receipt.paidAmount || 0) === 0,
+    'El crédito ya tiene abonos. No se puede anular ni revertir esos pagos mediante el flujo de anulación.');
+  check(Number(sale.qrAmount || 0) === 0, 'Los cobros QR requieren su procedimiento de reversión verificada antes de anular la venta.');
+  const cashAmount = round(Number(sale.cashAmount || 0));
+  const cashRefundAmount = round(Number(p.cashRefundAmount || 0));
+  check(cashRefundAmount === cashAmount,
+    cashAmount > 0
+      ? `Confirma el reembolso físico exacto de Bs ${cashAmount.toFixed(2)} para anular esta venta.`
+      : 'El monto de reembolso declarado no coincide con el pago original.');
+  const expectedPackages = snapshot.lines.flatMap(line => line.allocations.map(allocation => ({ productId: line.productId, allocation })))
+  check(expectedPackages.length > 0, 'La venta no contiene segmentos recuperables.');
+  for (const { productId, allocation } of expectedPackages) {
+    const part = allocation.processingAllocation;
+    const movement = await o.read('distStockMovements', part.saleMovementId);
+    check(movement?.type === 'sale' && movement.productId === productId
+      && (movement.processingAllocations || []).some(saved => saved.saleId === sale.id && saved.segmentId === part.segmentId && saved.batchId === part.batchId
+        && saved.quantity === part.quantity && saved.physicalWeightG === part.physicalWeightG && saved.costCents === part.costCents),
+    'Un segmento no coincide con el movimiento original de la venta. No se modificó inventario.');
+  }
+  const returnedByProduct = new Map();
+  for (const line of snapshot.lines) {
+    await o.restore(line.productId, loc, line.allocations);
+    const current = returnedByProduct.get(line.productId) || { quantity: 0, allocations: [] };
+    current.quantity += line.allocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0);
+    current.allocations.push(...line.allocations);
+    returnedByProduct.set(line.productId, current);
+  }
+  for (const [productId, restored] of returnedByProduct) {
+    o.ledger(productId, restored.quantity, null, loc, 'sale_void', {
+      saleId: sale.id, allocations: restored.allocations, costCents: restored.allocations.every(a => Number.isSafeInteger(a.processingAllocation.costCents))
+        ? restored.allocations.reduce((sum, a) => sum + a.processingAllocation.costCents, 0) : null,
+      physicalCustodyConfirmed: true, physicalCustodyNote: String(p.physicalCustodyNote).trim(),
+      responsibleName: o.member.displayName || o.actor,
+      note: String(p.reason || '').trim(),
+    });
+  }
+  const reason = String(p.reason || '').trim();
+  check(reason.length >= 3 && reason.length <= 500, 'La razón de la anulación debe tener entre 3 y 500 caracteres.');
+  if (receipt) o.put('distReceivables', receipt.id, { ...receipt, originalAmount: 0, balance: 0, status: 'VOID', saleLines: [], voidedAt: o.now, voidedBy: o.actor, voidReason: reason });
+  const correction = { id: o.id, ...o.base(), kind: 'derived_void', saleId: sale.id, sellerUid: sale.sellerUid,
+    revision: Number(sale.revision || 0) + 1, reason, original: snapshot,
+    voidScenario: p.voidScenario,
+    corrected: { lines: [], total: 0, paymentKind: sale.paymentKind, cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: sale.saleKind || 'sale' },
+    stockDeltas: [...returnedByProduct].map(([productId, row]) => ({ productId, quantity: -row.quantity, allocations: row.allocations })),
+    moneyDelta: -round(Number(sale.total) || 0), creditDelta: -round(Number(sale.creditAmount) || 0),
+    physicalCustodyConfirmed: true, custodyLocation: loc, custodyNote: String(p.physicalCustodyNote).trim(), cashRefundAmount,
+    correctedByName: o.member.displayName || o.actor };
+  o.put('distSaleCorrections', o.id, correction);
+  o.put('distSales', sale.id, { ...sale, effectiveSnapshot: correction.corrected, latestCorrectionId: o.id,
+    editedAt: o.now, editedBy: o.actor, editReason: reason, voidedAt: o.now, voidedBy: o.actor,
+    voidedByName: o.member.displayName || o.actor, voidReason: reason, revision: correction.revision,
+    derivedVoid: { correctionId: o.id, voidScenario: p.voidScenario, custodyLocation: loc, custodyConfirmedBy: o.actor, custodyConfirmedByName: o.member.displayName || o.actor,
+      custodyConfirmedAt: o.now, custodyNote: correction.custodyNote, cashRefundAmount } });
+  // Dedicated cash-out record for closure cash reconciliation. It is deliberately
+  // excluded from sales adjustments/profit: the sale itself is voided above.
+  if (cashRefundAmount > 0) o.put('distClaims', o.id, { id: o.id, ...o.base(), kind: 'return', isDerivedSaleVoid: true,
+    saleId: sale.id, sellerUid: sale.sellerUid, sellerName: sale.sellerName, customerId: sale.customerId || '',
+    customerName: sale.customerName || '', routeId: sale.routeId, productId: snapshot.lines[0].productId,
+    productName: snapshot.lines[0].productNameSnapshot, unitType: snapshot.lines[0].unitType,
+    quantity: 0, reason, revenueDelta: 0, cashIn: 0, cashOut: cashRefundAmount, qrIn: 0, qrOut: 0,
+    method: 'cash', physicalReceiptConfirmed: true, inventoryRestoredByVoid: true, correctionId: o.id,
+    receivedAt: o.now, receivedBy: o.actor, receivedByName: o.member.displayName || o.actor });
+  return correction;
 }
 async function editDerivedSaleEconomicsOnly(o, p, sale) {
   check(o.member.role === 'admin' || sale.sellerUid === o.actor, 'Solo puedes corregir tus propias ventas.');
@@ -2254,7 +2342,7 @@ async function voidSale(o, p) {
   check(p.reason?.trim(), "La razón de la anulación es obligatoria.");
   const sale = await o.read("distSales", p.saleId);
   check(sale, "Venta inexistente.");
-  if (saleContainsDerivedProcessingAllocation(sale)) return voidDerivedSale(o, sale);
+  if (saleContainsDerivedProcessingAllocation(sale)) return voidDerivedSale(o, p, sale);
   assertNoDerivedSaleMutation(sale, 'anulaciones');
   await assertNotReservedCourtesy(o, sale);
   check(!sale.voidedAt, "La venta ya fue anulada.");
@@ -4196,7 +4284,7 @@ handlers.recordProcessingReview = async (o, p) => {
   check(Math.abs(physicalTotal - lotTotal) < 0.5 / (10 ** quantityPrecision(product)), 'El balance físico y sus lotes no concilian. No se guardó la revisión.');
   check(Number.isSafeInteger(p.expectedRevision) && p.expectedRevision === Number(lot.processingReview?.revision || 0),
     'La revisión cambió en otra sesión. Actualiza el lote antes de guardar.');
-  const actions = ['record_observation','start_review','request_information','authorize_repack','declare_unrecoverable','mark_pending_economic_disposition'];
+  const actions = ['record_observation','start_review','request_information','authorize_repack','declare_unrecoverable','mark_pending_economic_disposition','record_disposition_assessment'];
   check(actions.includes(p.action), 'La acción de revisión no es válida.');
   const packageConditions = ['sealed_intact','package_damaged_content_intact','package_damaged_partial','no_package','unknown'];
   const observationsAllowed = ['apparently_apt','uncertain','confirmed_unfit','not_assessed'];
@@ -4207,7 +4295,7 @@ handlers.recordProcessingReview = async (o, p) => {
   const physicalWeightG = p.physicalWeightG;
   check(physicalWeightG === null || Number.isSafeInteger(physicalWeightG) && physicalWeightG >= 0, 'El peso físico debe ser un entero de gramos medidos o null si no se midió.');
   const caseId = lot.processingReview?.caseId || o.id;
-  const qualityAction = ['authorize_repack','declare_unrecoverable'].includes(p.action);
+  const qualityAction = ['authorize_repack','declare_unrecoverable','record_disposition_assessment'].includes(p.action);
   const qualityAuthorization = qualityAction ? await activeQualityAuthorization(o, String(p.qualityAuthorizationRef || '').trim()) : null;
   if (qualityAction) check(o.member.role === 'admin' && qualityAuthorization, 'La decisión requiere una autorización de calidad vigente concedida por el mecanismo privilegiado.');
   if (p.evidenceRefs.length) check(await verifyProcessingEvidence(o, p.evidenceRefs, { lotId, reservationId, reviewCaseId: caseId, reviewRevision: p.expectedRevision, location: loc }),
@@ -4215,6 +4303,7 @@ handlers.recordProcessingReview = async (o, p) => {
   let status = lot.processingReview?.status || 'pending_review';
   let qualityDecision;
   let economicDispositionStatus = lot.processingReview?.economicDispositionStatus;
+  let dispositionAssessment;
   const currentStatus = status;
   if (p.action === 'start_review') {
     check(['pending_review','in_review','pending_information'].includes(currentStatus), 'Una decisión ya registrada no se puede reabrir desde la revisión genérica.');
@@ -4227,6 +4316,33 @@ handlers.recordProcessingReview = async (o, p) => {
   if (p.action === 'mark_pending_economic_disposition') {
     check(o.member.role === 'admin', 'Solo Administración puede marcar pendiente la disposición económica.');
     check(['in_review','pending_information','not_recoverable','pending_economic_disposition'].includes(currentStatus), 'Primero debe existir una revisión que requiera decisión económica.');
+    status = 'pending_economic_disposition';
+    economicDispositionStatus = 'pending_quarantine_disposition';
+  }
+  if (p.action === 'record_disposition_assessment') {
+    check(o.member.role === 'admin' && qualityAuthorization, 'La evaluación de destino requiere una autorización de calidad vigente concedida por el mecanismo privilegiado.');
+    check(['in_review','pending_information','not_recoverable','pending_economic_disposition'].includes(currentStatus), 'Primero debe existir una revisión física documentada.');
+    check(p.evidenceRefs.length > 0, 'Una evaluación de destino requiere evidencia persistida y verificada.');
+    const outcome = String(p.dispositionOutcome || '');
+    check(['recoverable','partially_recoverable','discard_pending','undetermined'].includes(outcome), 'Selecciona el resultado de evaluación permitido.');
+    const recoverableWeightG = p.recoverableWeightG;
+    const discardWeightG = p.discardWeightG;
+    if (outcome === 'undetermined') {
+      check(recoverableWeightG == null && discardWeightG == null, 'Una evaluación indeterminada no puede asignar gramos a recuperación o descarte.');
+    } else {
+      check(physicalWeightG !== null && Number.isSafeInteger(recoverableWeightG) && recoverableWeightG >= 0
+        && Number.isSafeInteger(discardWeightG) && discardWeightG >= 0
+        && recoverableWeightG + discardWeightG === physicalWeightG,
+      'Los gramos medidos deben distribuirse exactamente entre la evaluación recuperable y el descarte pendiente.');
+      if (outcome === 'recoverable') check(recoverableWeightG === physicalWeightG && discardWeightG === 0, 'La evaluación recuperable debe asignar todo el peso medido a recuperación.');
+      if (outcome === 'partially_recoverable') check(recoverableWeightG > 0 && discardWeightG > 0, 'La evaluación parcial requiere gramos positivos en ambos destinos propuestos.');
+      if (outcome === 'discard_pending') check(recoverableWeightG === 0 && discardWeightG === physicalWeightG, 'El descarte pendiente debe corresponder al peso medido completo.');
+    }
+    const assessedAt = o.now;
+    dispositionAssessment = { outcome, measuredWeightG: physicalWeightG, recoverableWeightG: recoverableWeightG ?? null,
+      discardWeightG: discardWeightG ?? null, status: 'pending_owner_policy', recordedAt: assessedAt,
+      recordedBy: o.actor, recordedByName: o.member.displayName || o.actor, qualityAuthorizationRef: qualityAuthorization.id,
+      evidenceRefs: p.evidenceRefs.map(ref => ref.trim()) };
     status = 'pending_economic_disposition';
     economicDispositionStatus = 'pending_quarantine_disposition';
   }
@@ -4247,7 +4363,7 @@ handlers.recordProcessingReview = async (o, p) => {
       qualityDecision = 'not_recoverable';
     }
   }
-  if (p.productObservation === 'confirmed_unfit') check(p.action === 'declare_unrecoverable',
+  if (p.productObservation === 'confirmed_unfit') check(['declare_unrecoverable','record_disposition_assessment'].includes(p.action),
     'La observación de no aptitud requiere una decisión de calidad autorizada; no se cambió el estado económico ni físico.');
   const revision = Number(lot.processingReview?.revision || 0) + 1;
   const historicalAssignedWeightG = Number.isSafeInteger(reservation.remainingWeightG)
@@ -4276,6 +4392,7 @@ handlers.recordProcessingReview = async (o, p) => {
     packageCondition: p.packageCondition, productObservation: p.productObservation,
     status, action: p.action, observations, reason, evidenceRefs: p.evidenceRefs.map(ref => ref.trim()), revision,
     ...(qualityDecision ? { qualityDecision, qualityAuthorizationRef: qualityAuthorization.id } : {}),
+    ...(dispositionAssessment ? { dispositionAssessment } : {}),
     ...(p.evidenceRefs.length ? { evidenceRevision: p.expectedRevision } : {}),
     ...(economicDispositionStatus ? { economicDispositionStatus } : {}),
     previousStatus: currentStatus, reviewedAt: o.now, reviewedBy: o.actor, reviewedByName: o.member.displayName || o.actor,
@@ -4286,8 +4403,38 @@ handlers.recordProcessingReview = async (o, p) => {
   return { reviewId: revisionId, revision, status, commercialQuantity: review.commercialQuantity, historicalAssignedWeightG, physicalWeightG, weightDifferenceG, costCents, stockChanged: false, reservationChanged: false, movementCreated: false };
 };
 
+handlers.recordProcessingEvidence = async (o, p) => {
+  check(['admin','warehouse'].includes(o.member.role), 'Solo Administración o Almacén pueden adjuntar evidencia de calidad.');
+  const lotId = safeId(p.lotId), reservationId = safeId(p.reservationId), evidenceId = safeId(p.evidenceId);
+  const locationId = String(p.location || ''), caseId = safeId(p.reviewCaseId);
+  check(locationId === 'central' || /^warehouse__[^/]+$/.test(locationId), 'La ubicación de la evidencia no es válida.');
+  o.owns(locationId);
+  check(Number.isSafeInteger(p.reviewRevision) && p.reviewRevision >= 1, 'La evidencia debe vincularse a una revisión existente.');
+  check(['photo','measurement_record','signed_quality_record'].includes(p.evidenceType), 'El tipo de evidencia no es válido.');
+  const lot = await o.read('distLots', lotId);
+  const reservation = await o.read('distStockReservations', reservationId);
+  const review = lot?.processingReview?.latestReviewId ? await o.read('distProcessingReviews', lot.processingReview.latestReviewId) : null;
+  check(lot && reservation && review && reservation.lotId === lotId && reservation.location === locationId
+    && ['active','partially_consumed'].includes(reservation.status) && ['repack_pending','review_hold'].includes(reservation.purpose)
+    && lot.processingReview.caseId === caseId && review.caseId === caseId && review.reservationId === reservationId
+    && review.location === locationId && review.revision === p.reviewRevision && lot.processingReview.revision === p.reviewRevision,
+  'La evidencia no corresponde a la revisión vigente de esta reserva y ubicación.');
+  const bucket = process.env.SANJOSE_PROCESSING_EVIDENCE_BUCKET;
+  check(bucket, 'Falta configurar el bucket oficial de evidencias; no se registró la referencia.');
+  const objectPath = `processing-evidence/sanjose/${locationId}/${reservationId}/${caseId}/${p.reviewRevision}/${o.actor}/${evidenceId}`;
+  const verified = await verifyProcessingEvidenceObject(bucket, objectPath,
+    { lotId, reservationId, reviewCaseId: caseId, reviewRevision: p.reviewRevision, location: locationId, evidenceType: p.evidenceType }, o.actor);
+  check(verified, 'El archivo no existe, excede el límite, tiene metadatos incompatibles o su SHA-256 no coincide.');
+  check(!await o.read('distProcessingEvidence', evidenceId), 'El identificador de evidencia ya está registrado.');
+  const record = { id: evidenceId, ...o.base(), restaurantId: 'sanjose', status: 'verified', evidenceType: p.evidenceType,
+    lotId, reservationId, reviewCaseId: caseId, reviewRevision: p.reviewRevision, location: locationId,
+    uploadedBy: o.actor, recordedAt: o.now, ...verified, viewers: [o.actor], verificationMethod: 'server_sha256_generation' };
+  o.put('distProcessingEvidence', evidenceId, record);
+  return { evidenceId, status: 'verified', objectGeneration: verified.objectGeneration, sha256: verified.sha256 };
+};
+
 handlers.confirmProcessingRepack = async (o, p) => {
-  check(processingRepackEmulatorOnly(), 'El reenvasado está aislado a QA en Firebase Emulator; no está habilitado para producción.');
+  check(processingRepackAvailable(), 'El reenvasado requiere la configuración server-side de su bucket y activación; en producción permanece bloqueado hasta que ambas estén validadas.');
   check(['admin','warehouse'].includes(o.member.role), 'Solo Administración o Almacén pueden confirmar un reenvasado autorizado.');
   const repackId = safeId(p.repackId), operationId = o.id;
   check(typeof p.reason === 'string' && p.reason.trim().length >= 3 && p.reason.trim().length <= 500,

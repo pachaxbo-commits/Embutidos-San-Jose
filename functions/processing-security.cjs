@@ -36,10 +36,10 @@ async function verifyProcessingEvidence(operation, evidenceRefs, expected) {
     const uploaderOwnsLocation = uploader?.role === 'warehouse'
       && (expected.location === 'central' ? !uploader.warehouseId || uploader.warehouseId === 'central' : expected.location === `warehouse__${uploader.warehouseId}`);
     if (!uploader || uploader.active !== true || (uploader.role !== 'admin' && !uploaderOwnsLocation)) return null;
-    if (emulator()) {
-      if (row.verificationMethod !== 'emulator_fixture' || row.objectExists !== true || !/^processing-evidence\/sanjose\/[A-Za-z0-9/_.-]+$/.test(row.objectPath) || row.objectPath.includes('..')) return null;
+    if (emulator() && row.verificationMethod === 'emulator_fixture') {
+      if (row.objectExists !== true || !/^processing-evidence\/sanjose\/[A-Za-z0-9/_.-]+$/.test(row.objectPath) || row.objectPath.includes('..')) return null;
     } else {
-      const bucketName = process.env.SANJOSE_PROCESSING_EVIDENCE_BUCKET;
+      const bucketName = emulator() ? row.bucket : process.env.SANJOSE_PROCESSING_EVIDENCE_BUCKET;
       if (!bucketName || row.bucket !== bucketName || !/^processing-evidence\/sanjose\/[A-Za-z0-9/_.-]+$/.test(row.objectPath) || row.objectPath.includes('..')) return null;
       try {
         const file = getStorage().bucket(bucketName).file(row.objectPath, { generation: String(row.objectGeneration) });
@@ -48,7 +48,11 @@ async function verifyProcessingEvidence(operation, evidenceRefs, expected) {
           || String(metadata.metadata?.sha256 || '').toLowerCase() !== String(row.sha256).toLowerCase()
           || metadata.metadata?.restaurantId !== 'sanjose'
           || metadata.metadata?.lotId !== expected.lotId
-          || metadata.metadata?.reviewCaseId !== expected.reviewCaseId) return null;
+          || metadata.metadata?.reservationId !== expected.reservationId
+          || metadata.metadata?.reviewCaseId !== expected.reviewCaseId
+          || Number(metadata.metadata?.reviewRevision) !== expected.reviewRevision
+          || metadata.metadata?.location !== expected.location
+          || metadata.contentType !== row.contentType || Number(metadata.size) !== row.byteSize) return null;
         const [content] = await file.download();
         if (content.length !== row.byteSize || createHash('sha256').update(content).digest('hex') !== String(row.sha256).toLowerCase()) return null;
       } catch {
@@ -60,4 +64,25 @@ async function verifyProcessingEvidence(operation, evidenceRefs, expected) {
   return rows;
 }
 
-module.exports = { activeQualityAuthorization, verifyProcessingEvidence, isProcessingRepackEmulator: emulator };
+async function verifyProcessingEvidenceObject(bucketName, objectPath, expected, uploadedBy) {
+  if (!bucketName || typeof objectPath !== 'string' || !objectPath.startsWith('processing-evidence/sanjose/') || objectPath.includes('..')) return null;
+  try {
+    const file = getStorage().bucket(bucketName).file(objectPath);
+    const [metadata] = await file.getMetadata();
+    const custom = metadata.metadata || {};
+    const byteSize = Number(metadata.size);
+    const contentType = metadata.contentType;
+    if (!metadata.generation || custom.restaurantId !== 'sanjose' || custom.lotId !== expected.lotId
+      || custom.reservationId !== expected.reservationId || custom.reviewCaseId !== expected.reviewCaseId
+      || Number(custom.reviewRevision) !== expected.reviewRevision || custom.location !== expected.location
+      || custom.uploadedBy !== uploadedBy || custom.evidenceType !== expected.evidenceType
+      || !sha256Pattern.test(String(custom.sha256 || '')) || !Number.isSafeInteger(byteSize) || byteSize <= 0 || byteSize > 15 * 1024 * 1024
+      || !['image/jpeg','image/png','application/pdf'].includes(contentType)) return null;
+    const [content] = await file.download();
+    const sha256 = createHash('sha256').update(content).digest('hex');
+    if (content.length !== byteSize || sha256 !== String(custom.sha256).toLowerCase()) return null;
+    return { bucket: bucketName, objectPath, objectGeneration: String(metadata.generation), sha256, byteSize, contentType };
+  } catch { return null; }
+}
+
+module.exports = { activeQualityAuthorization, verifyProcessingEvidence, verifyProcessingEvidenceObject, isProcessingRepackEmulator: emulator };

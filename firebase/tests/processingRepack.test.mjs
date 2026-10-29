@@ -9,6 +9,8 @@ const req = createRequire(new URL('../../functions/package.json', import.meta.ur
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
 process.env.FUNCTIONS_EMULATOR = 'true'
 delete process.env.SANJOSE_PROCESSING_REPACK_EMULATOR_TEST
+delete process.env.SANJOSE_PROCESSING_REPACK_ENABLED
+delete process.env.SANJOSE_PROCESSING_EVIDENCE_BUCKET
 delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
 const { initializeApp } = req('firebase-admin/app')
 const { getFirestore } = req('firebase-admin/firestore')
@@ -59,7 +61,7 @@ try {
   const full = await seedBase()
   const request = makeInput(full)
   const blockedProduction = await command(ids.admin, 'confirmProcessingRepack', request, `${prefix}-prod-gate`, 'rejected')
-  pass(blockedProduction.error.includes('aislado a QA') && (await root.collection('distBalances').doc(`central__${full.sourceProductId}`).get()).data().quantity === 2, 'reenvasado permanece bloqueado fuera del interruptor de QA del servidor')
+  pass(blockedProduction.error.includes('bucket y activación') && (await root.collection('distBalances').doc(`central__${full.sourceProductId}`).get()).data().quantity === 2, 'reenvasado permanece bloqueado sin configuración server-side y conserva inventario')
   process.env.SANJOSE_PROCESSING_REPACK_EMULATOR_TEST = 'true'
   const confirmed = await command(ids.admin, 'confirmProcessingRepack', request, `${prefix}-confirm`)
   const sourceBalance = (await root.collection('distBalances').doc(`central__${full.sourceProductId}`).get()).data()
