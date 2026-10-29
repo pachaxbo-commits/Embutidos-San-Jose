@@ -322,6 +322,7 @@ export function SellView({ session, data }: DistributionViewProps) {
         productNameSnapshot: editingProduct.name,
         presentationSnapshot: getProductPresentation(editingProduct),
         descriptionSnapshot: editingProduct.description || '',
+        ...(editingProduct.unitType === 'package' && editingProduct.documentedPackageWeightKg ? { documentedPackageWeightKgSnapshot: editingProduct.documentedPackageWeightKg } : {}),
         quantity: qty,
         ...(physicalQty > qty ? { physicalQuantity: physicalQty, excessWeightQuantity: roundSaleQuantity(physicalQty - qty, editingProduct.unitType) } : {}),
         unitType: editingProduct.unitType,

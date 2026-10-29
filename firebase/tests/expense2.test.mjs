@@ -5,13 +5,14 @@ import { createRequire } from 'node:module'
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
 import { doc, setDoc } from 'firebase/firestore'
 
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+process.env.FIRESTORE_EMULATOR_HOST ||= '127.0.0.1:8085'
+const [emulatorHost, emulatorPort] = process.env.FIRESTORE_EMULATOR_HOST.split(':')
 const req = createRequire(new URL('../../functions/package.json', import.meta.url))
 const { initializeApp } = req('firebase-admin/app')
 const { getFirestore } = req('firebase-admin/firestore')
 const { processCommand } = req('./operations.cjs')
 const projectId = 'demo-pachax-audit'
-const env = await initializeTestEnvironment({ projectId, firestore: { host: '127.0.0.1', port: 8085, rules: fs.readFileSync('firebase/firestore.rules', 'utf8') } })
+const env = await initializeTestEnvironment({ projectId, firestore: { host: emulatorHost, port: Number(emulatorPort), rules: fs.readFileSync('firebase/firestore.rules', 'utf8') } })
 const adminApp = initializeApp({ projectId }, `expense2-${Date.now()}`)
 const db = getFirestore(adminApp)
 const root = db.doc('restaurants/sanjose')
@@ -49,7 +50,7 @@ try {
   await root.collection('distRoutes').doc(routeId).set({ id: routeId, name: 'Ruta QA', active: true })
 
   // Security Rules are tested with authenticated client SDKs, not the Admin SDK.
-  for (const type of ['saveExpenseGroup', 'saveExpenseSupplier', 'registerSupplierPurchase', 'paySupplierPayable', 'voidSupplierPayment', 'voidSupplierPurchase']) {
+  for (const type of ['saveExpenseGroup', 'deleteExpenseGroup', 'saveExpenseCategory', 'deleteExpenseCategory', 'saveExpenseSupplier', 'registerSupplierPurchase', 'paySupplierPayable', 'voidSupplierPayment', 'voidSupplierPurchase']) {
     await assertSucceeds(queuedFrom(admin, type, { sample: true })); checks++
     await assertFails(queuedFrom(warehouse, type, { sample: true })); checks++
     await assertFails(queuedFrom(distributor, type, { sample: true })); checks++
@@ -85,9 +86,13 @@ try {
   await command(admin, 'saveExpenseCategory', { categoryId, group: groupId, name: 'Harina QA', active: true, order: 1 })
 
   const purchaseId = `${prefix}-purchase-credit`
-  const creditPurchase = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Materia prima a crédito', amount: 2_000, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20' }, 'confirmed', purchaseId)
+  const purchaseLines = [{ description: 'Carne QA', quantity: 100, unit: 'kg', unitPrice: 20, total: 2_000, wasteQuantity: 3, netUsableQuantity: 97 }]
+  const creditPurchase = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Materia prima a crédito', amount: 2_000, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseLines }, 'confirmed', purchaseId)
   const payableId = creditPurchase.result.payable.id
   ok((await read('distPayables', payableId)).balance === 2_000 && (await read('distExpenses', purchaseId)).cashPaidAmount === 0, 'compra de Bs 2.000 a crédito crea cuenta por pagar sin salida de caja')
+  ok((await read('distExpenses', purchaseId)).amount === 2_000 && (await read('distExpenses', purchaseId)).purchaseLines[0].wasteQuantity === 3 && (await read('distExpenses', purchaseId)).purchaseLines[0].netUsableQuantity === 97 && (await read('distPayables', payableId)).purchaseLines[0].total === 2_000, 'detalle conserva cantidad, unidad, precio, merma y neto sin reducir total ni duplicar inventario')
+  await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Línea inconsistente QA', amount: 2_000, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseLines: [{ ...purchaseLines[0], wasteQuantity: 101, netUsableQuantity: -1 }] }, 'rejected')
+  await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Total inconsistente QA', amount: 1_999, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseLines }, 'rejected')
   const purchaseDocs = await root.collection('distExpenses').where('supplierId', '==', supplierId).get()
   const balanceDocs = await root.collection('distBalances').where('productId', '==', `${prefix}-product`).get()
   ok(purchaseDocs.docs.filter(row => row.data().transactionKind === 'supplier_purchase').length === 1 && balanceDocs.empty, 'compra financiera no crea inventario ni duplica la compra económica')
@@ -118,6 +123,28 @@ try {
   await command(admin, 'classifyExpense', { expenseId: purchaseId, group: 'administration', categoryId: 'administration-1', economicType: 'operating_expense' }, 'rejected')
   await command(admin, 'deleteExpense', { expenseId: paymentId, reason: 'Intento de borrar pago' }, 'rejected')
   ok(true, 'compras y pagos de proveedor no se pueden reclasificar ni anular mediante herramientas de egreso genéricas')
+
+  await command(admin, 'deleteExpenseCategory', { categoryId }, 'rejected')
+  const emptyCategoryId = `${prefix}-unused-category`
+  await command(admin, 'saveExpenseCategory', { categoryId: emptyCategoryId, group: groupId, name: 'Categoría sin historial QA', active: true, order: 20 })
+  await command(admin, 'deleteExpenseCategory', { categoryId: emptyCategoryId })
+  const unusedGroupId = `custom-${prefix}-unused`
+  await command(admin, 'saveExpenseGroup', { groupId: unusedGroupId, name: `Grupo sin historial ${prefix}`, economicType: 'operating_expense', active: true, order: 80 })
+  await command(admin, 'deleteExpenseGroup', { groupId: unusedGroupId })
+  await command(admin, 'deleteExpenseGroup', { groupId }, 'rejected')
+  ok(true, 'se permite el borrado definitivo solo de categorías y grupos personalizados sin referencias; el historial bloquea el borrado')
+
+  const movedCategoryId = `${prefix}-commercial-category`
+  await command(admin, 'saveExpenseCategory', { categoryId: movedCategoryId, group: 'indirect', name: 'Peaje histórico QA', active: true, order: 99 })
+  const historicalExpense = await command(admin, 'expense', { presetId: `group-category:${movedCategoryId}`, groupId: 'indirect', amount: 25, paymentMethod: 'cash', routeId: 'administracion', routeName: 'Administración', concept: 'Peaje histórico QA' })
+  await command(admin, 'saveExpenseCategory', { categoryId: movedCategoryId, group: 'commercialization', name: 'Peaje histórico QA', active: true, order: 1 })
+  const storedHistoricalExpense = await read('distExpenses', historicalExpense.id)
+  ok(storedHistoricalExpense.group === 'indirect' && (await read('distExpenseCategories', movedCategoryId)).group === 'commercialization', 'mover categoría cambia su grupo para nuevos egresos y conserva los registros históricos')
+  await command(admin, 'saveExpenseCategory', { categoryId: 'indirect-7', group: 'indirect', name: 'Peaje legado QA', active: true, order: 99 })
+  await command(admin, 'expense', { presetId: 'group-category:indirect-7', groupId: 'indirect', amount: 25, paymentMethod: 'cash', routeId: 'administracion', routeName: 'Administración' }, 'rejected')
+  await command(admin, 'saveExpenseCategory', { categoryId: 'indirect-7', group: 'commercialization', name: 'Peaje legado QA', active: true, order: 1 })
+  const movedLegacyExpense = await command(admin, 'expense', { presetId: 'group-category:indirect-7', groupId: 'commercialization', amount: 25, paymentMethod: 'cash', routeId: 'administracion', routeName: 'Administración' })
+  ok((await read('distExpenses', movedLegacyExpense.id)).group === 'commercialization', 'los IDs antiguos de peaje, viáticos y reparación no se pueden seguir usando en Gastos indirectos')
 
   const exactPartialId = `${prefix}-purchase-2000-partial`
   const exactPartial = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Compra parcial exacta QA', amount: 2_000, initialPayment: 500, paymentMethod: 'cash', dayKey: '2026-10-22' }, 'confirmed', exactPartialId)

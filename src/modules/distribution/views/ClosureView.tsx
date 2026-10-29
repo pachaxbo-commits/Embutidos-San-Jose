@@ -4,7 +4,7 @@ import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { buildReconciliation, computeMoneySummary, isSaleForDispatch, matchesRoute, round2, toDayKey } from '../domain/engine'
+import { buildReconciliation, computeMoneySummary, isSaleForDispatchSettlement, matchesRoute, round2, toDayKey } from '../domain/engine'
 import { previewDispatchMermaSettlement } from '../domain/dispatchMermaSettlement'
 import { expenseCashPaidAmount } from '../domain/expenseAccounting'
 import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
@@ -240,6 +240,11 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const routeSales = salesSnapshot.dispatchId === dispatchKey ? salesSnapshot.rows : []
   const routeCollections = collectionsSnapshot.dispatchId === dispatchKey ? collectionsSnapshot.rows : []
   const routeExpenses = expensesSnapshot.dispatchId === dispatchKey ? expensesSnapshot.rows : []
+  const dispatchCandidateKey = JSON.stringify(data.openDispatches.map(candidate => ({ id: candidate.id, routeId: candidate.routeId, createdAt: candidate.createdAt, status: candidate.status, closedAt: candidate.closedAt || '' })))
+  const ambiguousLegacySaleCount = salesSnapshot.dispatchId === dispatchKey
+    ? salesSnapshot.rows.filter(sale => !sale.dispatchId && sale.routeId === dispatchRoute && sale.createdAt >= dispatchCreated
+      && data.openDispatches.filter(candidate => candidate.routeId === dispatchRoute && candidate.createdAt <= sale.createdAt).length > 1).length
+    : 0
   const [readyDispatch, setReadyDispatch] = useState('')
   const loaded = readyDispatch === dispatchKey
   useEffect(() => {
@@ -250,13 +255,14 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const mark = (key: string) => { ready.add(key); if (ready.size >= expected) setReadyDispatch(dispatchKey) }
     const fail = (e: Error) => setError(e.message)
     const ownerUid = session.role === 'distributor' ? session.uid : undefined
-    const stop = [subscribeSales(days, dispatchRoute, rows => { setSalesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(s => isSaleForDispatch(s, dispatchRoute) && !s.voidedAt && !s.pendingConfirmation && (s.dispatchId === dispatchKey || (!s.dispatchId && s.createdAt >= dispatchCreated))).map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s) }); mark('sales') }, fail, ownerUid)]
+    const dispatchCandidates = JSON.parse(dispatchCandidateKey)
+    const stop = [subscribeSales(days, dispatchRoute, rows => { setSalesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(s => isSaleForDispatchSettlement(s, dispatchKey, dispatchRoute, dispatchCreated, dispatchCandidates) && !s.voidedAt && !s.pendingConfirmation).map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s) }); mark('sales') }, fail, ownerUid)]
     if (session.role !== 'warehouse') {
       stop.push(subscribeCollections(days, dispatchRoute, rows => { setCollectionsSnapshot({ dispatchId: dispatchKey, rows: rows.filter(c => c.createdAt >= dispatchCreated) }); mark('collections') }, fail, ownerUid))
       stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.createdAt >= dispatchCreated) }); mark('expenses') }, fail, ownerUid))
     }
     return () => stop.forEach(fn => fn())
-  }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid])
+  }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid, dispatchCandidateKey])
 
   /** La declaración y la recepción son independientes; cada rol completa su propio dato. */
   const isDeclared = (productId: string) => {
@@ -1341,6 +1347,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         <p className="rounded-2xl bg-amber-50 p-3 text-xs font-semibold leading-relaxed text-amber-900">{isDistributor ? 'Escribe únicamente la cantidad normal que devuelves. Almacén verificará la recepción; después podrás completar el cierre del efectivo.' : 'El distribuidor declara la cantidad normal. Almacén confirma la recepción física y registra por separado la merma recuperable o el producto no apto; después se habilita el cierre final. Confirmar y cerrar requieren conexión.'}</p>
         <SectionCard title="Productos devueltos">
           {!isDistributor && <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm font-bold text-indigo-900" role="status">{reviewedReceiptIds.size} de {productRows.length} productos revisados</div>}
+          {ambiguousLegacySaleCount > 0 && <div role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm font-semibold text-amber-950">
+            Hay {ambiguousLegacySaleCount} venta(s) histórica(s) de esta ruta sin despacho vinculado y coinciden con más de un cierre pendiente. No se atribuyen automáticamente para evitar duplicar ventas; Administración debe conciliarlas antes de cerrar.
+          </div>}
           <div className="relative mb-3"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={productSearch} onChange={event => setProductSearch(event.target.value)} placeholder="Buscar producto sin perder cantidades..." className="pl-9" /></div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {productRows.filter(row => row.productName.toLowerCase().includes(productSearch.trim().toLowerCase())).map((row) => {

@@ -27,6 +27,7 @@ export function ProductsView({ data }: DistributionViewProps) {
   const [unitType, setUnitType] = useState<UnitType>('package')
   const [price, setPrice] = useState('0')
   const [weight, setWeight] = useState('')
+  const [documentedPackageWeight, setDocumentedPackageWeight] = useState('')
   const [cost, setCost] = useState('0')
   const [minimum, setMinimum] = useState('0')
   const [photoDataUrl, setPhotoDataUrl] = useState('')
@@ -55,6 +56,7 @@ export function ProductsView({ data }: DistributionViewProps) {
     setUnitType('package')
     setPrice('0')
     setWeight('')
+    setDocumentedPackageWeight('')
     setCost('0'); setMinimum('0')
     setPhotoDataUrl('')
     setActive(true)
@@ -72,6 +74,7 @@ export function ProductsView({ data }: DistributionViewProps) {
     setCost(String(product.productionCost || 0)); setMinimum(String(product.minimumStock || 0))
     setPhotoDataUrl(product.photoDataUrl || '')
     setWeight(product.approximateWeightKg ? String(product.approximateWeightKg) : '')
+    setDocumentedPackageWeight(product.documentedPackageWeightKg ? String(product.documentedPackageWeightKg) : '')
     setActive(product.active !== false)
     setError(null)
     setIsOpen(true)
@@ -100,6 +103,7 @@ export function ProductsView({ data }: DistributionViewProps) {
         .slice(0, 40)}-${Date.now().toString(36)}`
 
     if ([price, cost, minimum].some(v => !Number.isFinite(Number(v)) || Number(v) < 0)) { setError('Precio, costo y mínimo deben ser números positivos o cero.'); return }
+    if (documentedPackageWeight && (!Number.isFinite(Number(documentedPackageWeight)) || Number(documentedPackageWeight) <= 0 || unitType === 'kg')) { setError('El peso documentado debe ser mayor que cero y solo aplica a paquetes o unidades.'); return }
     try {
     if (editing && unitType !== editing.unitType) await changeProductUnit(editing.id, unitType)
     const cleanPresentation = presentation.trim()
@@ -114,6 +118,7 @@ export function ProductsView({ data }: DistributionViewProps) {
       referencePrice: round2(Number(price)),
       productionCost: round2(Number(cost)), minimumStock: round2(Number(minimum)),
       approximateWeightKg: weight ? round2(Number(weight)) : undefined,
+      documentedPackageWeightKg: unitType === 'package' && documentedPackageWeight ? Math.round((Number(documentedPackageWeight) + Number.EPSILON) * 1000) / 1000 : undefined,
       active,
       sortOrder: editing?.sortOrder ?? data.products.length,
       createdAt: editing?.createdAt,
@@ -259,6 +264,7 @@ export function ProductsView({ data }: DistributionViewProps) {
               <NumberInput value={weight} min={0} step={0.05} onChange={(event) => setWeight(event.target.value)} />
             </Field>
           )}
+          {unitType === 'package' && <Field label="Peso neto documentado por sachet (kg)" hint="Solo si está respaldado por el empaque o ficha del producto. Se guarda en futuras ventas; los registros anteriores conservan su peso aproximado o no disponible."><NumberInput value={documentedPackageWeight} min={0} step={0.001} onChange={event => setDocumentedPackageWeight(event.target.value)} /></Field>}
           <label className="flex min-h-[44px] items-center gap-2 text-xs font-bold text-slate-700">
             <input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} className="h-5 w-5" />
             Producto activo

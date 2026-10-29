@@ -98,8 +98,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   }, [mainCategory, dineroSubTab, ventasSubTab, inventarioSubTab])
 
   const allSellers = useMemo(
-    () => computeSellerBreakdown(data.sales, data.collections, data.expenses, data.claims),
-    [data.sales, data.collections, data.expenses, data.claims],
+    () => computeSellerBreakdown(data.sales, data.collections, data.expenses, data.claims, data.products),
+    [data.sales, data.collections, data.expenses, data.claims, data.products],
   )
   const sellerOptions = useMemo(() => {
     const sellers = new Map(allSellers.map((seller) => [seller.sellerUid, seller.sellerName]))
@@ -224,8 +224,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   }, [sales, collections, expenses, claims])
 
   const sellers = useMemo(
-    () => computeSellerBreakdown(sales, collections, expenses, claims),
-    [sales, collections, expenses, claims],
+    () => computeSellerBreakdown(sales, collections, expenses, claims, data.products),
+    [sales, collections, expenses, claims, data.products],
   )
 
   const productRows = useMemo(() => {
@@ -643,8 +643,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       <KpiCard label="Crédito" value={formatBs(seller.creditGenerated)} tone="warning" />
                       <KpiCard label="Cobró cartera" value={formatBs(seller.collected)} tone="positive" />
                       <KpiCard label="Gastos" value={formatBs(seller.expenses)} tone="danger" />
-                      <KpiCard label="Granel" value={`${seller.kilograms} kg`} />
-                      <KpiCard label="Paquetes" value={String(seller.packages)} />
+                      <KpiCard label="Kg vendidos a granel" value={`${seller.kilograms.toFixed(3)} kg`} />
+                      <KpiCard label="Kg en sachets documentados" value={`${seller.documentedSachetKilograms.toFixed(3)} kg`} />
+                      <KpiCard label="Total kg documentados" value={`${seller.totalDocumentedKilograms.toFixed(3)} kg`} tone="positive" />
+                      <KpiCard label="Sachets (peso estimado)" value={seller.estimatedSachetKilograms > 0 ? `≈ ${seller.estimatedSachetKilograms.toFixed(3)} kg` : '—'} />
+                      <KpiCard label="Paquetes vendidos" value={String(seller.packages)} />
+                      <KpiCard label="Paquetes sin peso fiable" value={seller.unknownWeightPackages > 0 ? `${seller.unknownWeightPackages} · peso no disponible` : '0'} />
                     </div>
                     {(() => {
                       const sellerClosures = closures.filter((c) => c.distributorUid === seller.sellerUid)
