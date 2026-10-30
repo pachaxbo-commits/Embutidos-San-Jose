@@ -2996,7 +2996,19 @@ async function saveExpenseSupplier(o, p) {
   const previous = await o.read("distSuppliers", id);
   const all = await o.all("distSuppliers");
   check(!all.some((item) => item.id !== id && item.name?.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es")), "Ya existe un proveedor con ese nombre.");
-  const supplier = { id, ...o.base(), name, active: p.active !== false, contactName: String(p.contactName || "").trim(), phone: String(p.phone || "").trim(), note: String(p.note || "").trim(), ...(previous ? { createdAt: previous.createdAt, createdBy: previous.createdBy } : {}), updatedAt: o.now, updatedBy: o.actor };
+  const optionalText = (key, max, pattern) => {
+    const value = String(p[key] === undefined ? previous?.[key] || "" : p[key]).trim();
+    check(value.length <= max && (!pattern || !value || pattern.test(value)), `El campo ${key} no tiene un formato válido.`);
+    return value;
+  };
+  const legalName = optionalText("legalName", 160);
+  const nit = optionalText("nit", 30, /^[\p{L}\p{N}./ -]+$/u);
+  const address = optionalText("address", 300);
+  const contactName = optionalText("contactName", 100);
+  const phone = optionalText("phone", 40, /^[+\p{N}() ./-]+$/u);
+  const email = optionalText("email", 254, /^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+  const note = optionalText("note", 1000);
+  const supplier = { id, ...o.base(), name, active: p.active === undefined ? previous?.active !== false : p.active === true, legalName, nit, address, contactName, phone, email, note, ...(previous ? { createdAt: previous.createdAt, createdBy: previous.createdBy } : {}), updatedAt: o.now, updatedBy: o.actor };
   o.put("distSuppliers", id, supplier);
   return supplier;
 }
@@ -3042,6 +3054,11 @@ async function registerSupplierPurchase(o, p) {
       "El monto de compra debe coincidir con la suma de los artículos.");
   }
   check(Number.isFinite(paid) && paid >= 0 && paid <= total, "El adelanto debe estar entre cero y el total de compra.");
+  const receiptType = p.purchaseReceiptType === undefined || p.purchaseReceiptType === "" ? undefined : String(p.purchaseReceiptType);
+  check(receiptType === undefined || ["invoice", "receipt", "other"].includes(receiptType), "Selecciona un tipo de comprobante de compra válido.");
+  const receiptNumber = String(p.purchaseReceiptNumber || "").trim();
+  check(receiptNumber.length <= 100 && !/[\u0000-\u001f\u007f]/.test(receiptNumber), "El número de comprobante debe tener hasta 100 caracteres válidos.");
+  check(!receiptNumber || Boolean(receiptType), "Selecciona el tipo de comprobante de compra.");
   check(validDate(p.dayKey), "La fecha de compra no es válida.");
   check(!p.dueDayKey || (validDate(p.dueDayKey) && p.dueDayKey >= p.dayKey), "La fecha de vencimiento no es válida.");
   const groupId = safeId(p.groupId), categoryId = safeId(p.categoryId);
@@ -3064,6 +3081,7 @@ async function registerSupplierPurchase(o, p) {
     cashPaidAmount: p.paymentMethod === "cash" ? paid : 0, transferPaidAmount: p.paymentMethod === "transfer" ? paid : 0, otherPaidAmount: p.paymentMethod === "other" ? paid : 0, initialPaymentMethod: p.paymentMethod,
     routeId: "administracion", routeName: "Administración", registeredByUid: o.actor, registeredByName: o.member.displayName || o.actor,
     supplierId: supplier.id, supplierName: supplier.name, note: String(p.note || "").trim(),
+    ...(receiptType ? { purchaseReceiptType: receiptType } : {}), ...(receiptNumber ? { purchaseReceiptNumber: receiptNumber } : {}),
     ...(purchaseLines ? { purchaseLines } : {}),
   };
   const balance = round(total - paid);
@@ -3073,6 +3091,8 @@ async function registerSupplierPurchase(o, p) {
     totalAmount: total, paidAmount: paid, balance, status: balance === 0 ? "paid" : paid > 0 ? "partial" : "pending",
     ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}), note: String(p.note || "").trim(), ...(purchaseLines ? { purchaseLines } : {}), routeId: "administracion", routeName: "Administración",
   };
+  if (receiptType) payable.purchaseReceiptType = receiptType;
+  if (receiptNumber) payable.purchaseReceiptNumber = receiptNumber;
   o.put("distExpenses", expense.id, expense);
   o.put("distPayables", payable.id, payable);
   if (paid > 0) o.put("distSupplierPayments", `${o.id}__initial`, {

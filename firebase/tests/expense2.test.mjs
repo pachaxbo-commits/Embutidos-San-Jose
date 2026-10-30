@@ -73,7 +73,13 @@ try {
   const categoryId = `${prefix}-flour`
   await command(admin, 'saveExpenseCategory', { categoryId, group: groupId, name: 'Harina QA', active: true, order: 1 })
   const supplierId = `${prefix}-supplier`
-  await command(admin, 'saveExpenseSupplier', { supplierId, name: `Proveedor QA ${prefix}`, active: true })
+  const supplierName = `Proveedor QA ${prefix}`
+  const supplier = await command(admin, 'saveExpenseSupplier', { supplierId, name: supplierName, legalName: `Razón social ${prefix}`, nit: '00123-0000456', address: 'Av. QA 123', contactName: 'Contacto QA', phone: '+591 70000000', email: 'proveedor@example.test', note: 'Registro sintético', active: true })
+  ok(supplier.result.legalName === `Razón social ${prefix}` && supplier.result.nit === '00123-0000456' && (await read('distSuppliers', supplierId)).address === 'Av. QA 123', 'proveedor persiste razón social, NIT textual con cero inicial y dirección')
+  await command(admin, 'saveExpenseSupplier', { supplierId, name: supplierName, phone: '+591 71111111', active: true })
+  const updatedSupplier = await read('distSuppliers', supplierId)
+  ok(updatedSupplier.nit === '00123-0000456' && updatedSupplier.legalName === `Razón social ${prefix}` && updatedSupplier.phone === '+591 71111111' && updatedSupplier.updatedBy === admin, 'editar proveedor conserva campos omitidos y audita responsable/fecha')
+  await command(admin, 'saveExpenseSupplier', { supplierId: `${prefix}-invalid-supplier`, name: 'Proveedor QA inválido', nit: 'NIT ? inv@lido', email: 'correo-invalido', active: true }, 'rejected')
 
   const directAdminExpense = await command(admin, 'expense', { presetId: `group-category:${categoryId}`, groupId, amount: 50, paymentMethod: 'cash', routeId: 'administracion', routeName: 'Administración', concept: 'Harina para lote QA' })
   ok(directAdminExpense.result.group === groupId && directAdminExpense.result.categoryId === categoryId && directAdminExpense.result.economicType === 'production_input' && directAdminExpense.result.classificationStatus === 'reviewed' && directAdminExpense.result.classificationSource === 'admin_review', 'categoría administrativa personalizada se registra directamente con clasificación revisada')
@@ -87,10 +93,13 @@ try {
 
   const purchaseId = `${prefix}-purchase-credit`
   const purchaseLines = [{ description: 'Carne QA', quantity: 100, unit: 'kg', unitPrice: 20, total: 2_000, wasteQuantity: 3, netUsableQuantity: 97 }]
-  const creditPurchase = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Materia prima a crédito', amount: 2_000, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseLines }, 'confirmed', purchaseId)
+  const creditPurchase = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Materia prima a crédito', amount: 2_000, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseReceiptType: 'invoice', purchaseReceiptNumber: '000-001-0000789', purchaseLines }, 'confirmed', purchaseId)
   const payableId = creditPurchase.result.payable.id
   ok((await read('distPayables', payableId)).balance === 2_000 && (await read('distExpenses', purchaseId)).cashPaidAmount === 0, 'compra de Bs 2.000 a crédito crea cuenta por pagar sin salida de caja')
   ok((await read('distExpenses', purchaseId)).amount === 2_000 && (await read('distExpenses', purchaseId)).purchaseLines[0].wasteQuantity === 3 && (await read('distExpenses', purchaseId)).purchaseLines[0].netUsableQuantity === 97 && (await read('distPayables', payableId)).purchaseLines[0].total === 2_000, 'detalle conserva cantidad, unidad, precio, merma y neto sin reducir total ni duplicar inventario')
+  ok((await read('distExpenses', purchaseId)).purchaseReceiptNumber === '000-001-0000789' && (await read('distPayables', payableId)).purchaseReceiptType === 'invoice', 'factura y serie con ceros iniciales quedan vinculadas a la compra y su cuenta por pagar')
+  await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Comprobante mal tipado', amount: 10, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseReceiptType: 'tax', purchaseReceiptNumber: '10' }, 'rejected')
+  await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Número sin tipo', amount: 10, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseReceiptNumber: '10' }, 'rejected')
   await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Línea inconsistente QA', amount: 2_000, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseLines: [{ ...purchaseLines[0], wasteQuantity: 101, netUsableQuantity: -1 }] }, 'rejected')
   await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Total inconsistente QA', amount: 1_999, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-20', purchaseLines }, 'rejected')
   const purchaseDocs = await root.collection('distExpenses').where('supplierId', '==', supplierId).get()
@@ -100,6 +109,7 @@ try {
   const partialId = `${prefix}-purchase-partial`
   const partial = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Compra parcial', amount: 500, initialPayment: 200, paymentMethod: 'transfer', dayKey: '2026-10-21' }, 'confirmed', partialId)
   ok(partial.result.payable.balance === 300 && partial.result.payable.paidAmount === 200 && (await read('distExpenses', partialId)).transferPaidAmount === 200, 'adelanto QR/transferencia reduce deuda sin descontar efectivo')
+  ok(!(await read('distPayables', partialId)).purchaseReceiptNumber, 'compra histórica/sin comprobante continúa válida y sin número inventado')
 
   const cashPurchaseId = `${prefix}-purchase-cash`
   const cashPurchase = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Compra pagada en efectivo', amount: 1_000, initialPayment: 1_000, paymentMethod: 'cash', dayKey: '2026-10-21' }, 'confirmed', cashPurchaseId)
@@ -115,6 +125,7 @@ try {
   const supplierPayments = await root.collection('distSupplierPayments').where('payableId', '==', payableId).get()
   const supplierPaymentExpenses = await root.collection('distExpenses').where('payableId', '==', payableId).get()
   ok(supplierPayments.size === 1 && supplierPaymentExpenses.size === 1 && (await read('distPayables', payableId)).balance === 1_200, 'reintentar la misma operación de pago no duplica movimiento ni vuelve a aplicar el saldo')
+  ok((await read('distPayables', payableId)).purchaseReceiptNumber === '000-001-0000789' && (await read('distExpenses', purchaseId)).purchaseReceiptNumber === '000-001-0000789', 'abonar la deuda no altera el comprobante documental de la compra original')
   await command(admin, 'paySupplierPayable', { payableId, amount: 1_201, paymentMethod: 'cash', dayKey: '2026-10-27' }, 'rejected')
   const paymentExpense = supplierPaymentExpenses.docs[0].data()
   const paymentId = payment.result.payment.id
@@ -183,6 +194,11 @@ try {
   const inactiveSupplierId = `${prefix}-inactive-supplier`
   await command(admin, 'saveExpenseSupplier', { supplierId: inactiveSupplierId, name: `Proveedor inactivo ${prefix}`, active: false })
   await command(admin, 'registerSupplierPurchase', { supplierId: inactiveSupplierId, groupId, categoryId, description: 'No autorizado', amount: 1, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-22' }, 'rejected')
+  await command(admin, 'saveExpenseSupplier', { supplierId, name: supplierName, active: false })
+  await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Proveedor inactivo', amount: 1, initialPayment: 0, paymentMethod: 'cash', dayKey: '2026-10-22' }, 'rejected')
+  ok((await read('distExpenses', purchaseId)).purchaseReceiptNumber === '000-001-0000789' && (await read('distPayables', payableId)).balance === 2_000, 'desactivar proveedor no modifica compras ni saldos históricos y bloquea compras nuevas')
+  await command(admin, 'saveExpenseSupplier', { supplierId, name: supplierName, active: true })
+  ok((await read('distSuppliers', supplierId)).active === true, 'Administración puede reactivar al mismo proveedor sin recrear su historial')
   const safeDistributorExpense = await command(distributor, 'expense', { presetId: 'fuel', amount: 25, paymentMethod: 'cash', routeId, routeName: 'Ruta QA' })
   ok(safeDistributorExpense.result.classificationSource === 'automatic' && safeDistributorExpense.result.routeId === routeId, 'distribuidor conserva acceso al preset seguro autorizado')
   ok(true, 'Egresos 2.0: pruebas de backend y reglas completadas')

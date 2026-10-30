@@ -1535,7 +1535,7 @@ export async function deleteExpenseGroup(input: { groupId: string }) {
   return submitOperation<{ id: string; deleted: true }>('deleteExpenseGroup', input, newOperationId('delete-expense-group'))
 }
 
-export async function saveExpenseSupplier(input: { supplierId: string; name: string; contactName?: string; phone?: string; note?: string; active: boolean }) {
+export async function saveExpenseSupplier(input: { supplierId: string; name: string; legalName?: string; nit?: string; address?: string; contactName?: string; phone?: string; email?: string; note?: string; active: boolean }) {
   return submitOperation<DistSupplier>('saveExpenseSupplier', input, newOperationId('expense-supplier'))
 }
 
@@ -1550,6 +1550,8 @@ export interface SupplierPurchaseInput {
   paymentMethod?: 'cash' | 'transfer' | 'other'
   dayKey: string
   dueDayKey?: string
+  purchaseReceiptType?: 'invoice' | 'receipt' | 'other'
+  purchaseReceiptNumber?: string
   note?: string
   purchaseLines?: SupplierPurchaseLine[]
 }
