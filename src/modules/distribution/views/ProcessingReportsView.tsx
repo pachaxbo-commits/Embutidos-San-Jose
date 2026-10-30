@@ -95,6 +95,10 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
   }, [mode, filteredBatches, productId, outputLot, reviews, repackings, products, lots, qualityRows, locationOptions])
 
   const exportReport = async (format: 'Excel' | 'PDF') => {
+    if (loading || hasMore || error) {
+      setError('El informe está incompleto. Completa la consulta antes de exportar.')
+      return
+    }
     try {
       const { exportExcel, exportPdf } = await import('../data/reportExports')
       const description = `San José · ${report.name} · ${from || 'sin inicio'} a ${to || 'sin fin'} · ${report.rows.length} registros filtrados de ${mode === 'batches' || mode === 'trace' ? batches.length : mode === 'reviews' ? reviews.length : repackings.length} cargados`

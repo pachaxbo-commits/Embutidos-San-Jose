@@ -33,4 +33,8 @@ assertEqual(filterProcessingReviews([review], { from: '2026-10-29', to: '2026-10
 assertEqual(filterProcessingReviews([review], { status: 'En revisión' }).length, 0, 'una etiqueta presentada no se acepta como valor interno')
 assertEqual(filterProcessingRepackings([repack], { productId: 'sachet', sourceLot: 'lot-r', location: 'central', responsible: 'Admin', status: 'confirmed' }).length, 1)
 assertEqual(filterProcessingRepackings([repack], { status: 'pending_review' }).length, 0)
+const lateReview = { ...review, reviewedAt: '2026-10-30T02:30:00.000Z' }
+assertEqual(filterProcessingReviews([lateReview], { from: '2026-10-29', to: '2026-10-29' }).length, 1, 'la madrugada UTC pertenece al día anterior en Bolivia')
+const transformed = { ...repack, sourceProductId: 'bulk', outputLots: repack.outputLots }
+assertEqual(filterProcessingRepackings([transformed], { productId: 'sachet' }).length, 1, 'el producto de salida también coincide aunque el origen sea distinto')
 console.log('PASS: reportes filtran y trazan lotes; pesos desconocidos y costo histórico no se duplican.')

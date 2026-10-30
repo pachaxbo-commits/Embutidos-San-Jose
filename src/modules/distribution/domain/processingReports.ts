@@ -13,7 +13,12 @@ export interface ProcessingReportFilters {
   status?: string
 }
 
-const dateKey = (value?: string) => value?.slice(0, 10) || ''
+const dateKey = (value?: string) => {
+  if (!value) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+}
 const money = (cents?: number | null) => cents == null ? 'No disponible' : `Bs ${(cents / 100).toFixed(2)}`
 const kg = (grams: number) => `${(grams / 1000).toFixed(3)} kg`
 const processName: Record<ProcessingBatch['processType'], string> = { bagging: 'Sacheteado y embolsado', portioning: 'Porcionado', repackaging: 'Reenvasado' }
@@ -58,7 +63,7 @@ export function filterProcessingRepackings(rows: ProcessingRepackRecord[], filte
   return rows.filter(row => {
     const productMatches = !filters.productId || row.sourceProductId === filters.productId || row.outputLots.some(output => output.productId === filters.productId)
     const lot = lots.find(candidate => candidate.id === row.sourceLotId)
-    return productMatches && matchesQualityRecord(row.confirmedAt, row.sourceProductId, `${lot?.lotCode || ''} ${row.sourceLotId}`, row.location, row.responsibleName, row.status, filters)
+    return productMatches && matchesQualityRecord(row.confirmedAt, row.sourceProductId, `${lot?.lotCode || ''} ${row.sourceLotId}`, row.location, row.responsibleName, row.status, { ...filters, productId: undefined })
   })
 }
 
