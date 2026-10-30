@@ -390,9 +390,9 @@ class Operation {
   }
   processingMovementAllowed(lot, loc, options) {
     if (!lot.processingCommercialBlocked) return true;
-    // The option identifies the logistics action; only the trusted Emulator
-    // switch authorizes moving protected derived stock out of its location.
-    const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && processingDerivedSalesEmulatorOnly()
+    // Commercial release is written only by the Quality-authorized transaction.
+    // Preserve the derived accounting path after release.
+    const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && (processingDerivedSalesEmulatorOnly() || lot.processingCommercialRelease?.status === 'released' && lot.processingCommercialRelease.batchId === lot.processingBatchId)
       || options.processingReturn === true && loc.startsWith('route__')
       || options.processingRepack === true && processingRepackAvailable();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
@@ -4506,6 +4506,44 @@ handlers.reserveProcessingStock = async (o, p) => {
   reservation.movementId = movementId;
   o.put('distStockReservations', reservation.id, reservation);
   return { reservationId, quantity, physicalQuantity: Number(lot.quantities?.[loc] || 0), availableQuantity: roundAt(free - quantity, quantityPrecision(product)) };
+};
+
+handlers.releaseProcessingLot = async (o, p) => {
+  o.admin();
+  const authorization = await activeQualityAuthorization(o, String(p.authorizationReference || ''));
+  check(authorization, 'La liberación requiere autorización vigente de Calidad.');
+  check(typeof p.reason === 'string' && p.reason.trim().length >= 10, 'Registra el fundamento de aptitud y liberación.');
+  const lot = await o.read('distLots', safeId(p.lotId));
+  check(lot && lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished' && !lot.quarantined && !lot.derivedReturn, 'El lote no es un producto terminado elegible.');
+  check(!lot.processingReview, 'El lote tiene revisión de Calidad; requiere resolver su procedimiento específico antes de liberar.');
+  const product = await o.read('distProducts', lot.productId);
+  check(product?.active !== false && product?.unitType === 'package', 'La liberación comercial requiere un SKU activo por paquetes.');
+  check(lot.manufacturedOn && lot.expiresOn && lot.expiresOn >= o.today && lot.manufacturedOn <= o.today, 'Las fechas del lote no permiten liberarlo.');
+  const batch = await o.read('distProcessingBatches', lot.processingBatchId);
+  check(batch?.status === 'confirmed' && ['bagging','portioning'].includes(batch.processType) && batch.result?.derivedLots?.some(row => row.lotId === lot.id && row.destinationKind === 'finished'), 'La elaboración original no acredita este lote terminado.');
+  check(Number.isSafeInteger(lot.processingCostCentsRemaining) && lot.processingCostCentsRemaining >= 0 && Number.isSafeInteger(lot.processingPhysicalWeightGRemaining) && lot.processingPhysicalWeightGRemaining > 0, 'Falta peso medido o costo histórico conciliado.');
+  const reservations = await o.processingReservations(lot.id);
+  check(!reservations.some(row => ['active','partially_consumed'].includes(row.status) && Number(row.remainingQuantity) > 0), 'El lote tiene reservas activas.');
+  const productLots = await o.query('distLots', 'productId', product.id);
+  for (const [location, quantity] of Object.entries(lot.quantities || {})) {
+    if (!(quantity > 0)) continue;
+    o.owns(location);
+    check(!location.startsWith('route__') && origins.pending(lot, location) === 0, 'El lote tiene destino u origen pendiente incompatible con la liberación.');
+    o.assertReservationAggregate(lot, location, reservations);
+    o.assertProcessingLocation(lot, location);
+    const balance = await o.read('distBalances', balanceId(location, product.id));
+    const physicalTotal = productLots.reduce((sum, item) => sum + Number(item.quantities?.[location] || 0), 0);
+    check(balance && Number(balance.quantity) === physicalTotal, 'El balance físico no concilia con los lotes del producto.');
+    const held = lot.processingUnavailable?.[location] || {};
+    check(!Object.values(held).some(value => Number(value) > 0), 'El lote conserva producto inmovilizado.');
+  }
+  if (lot.processingCommercialRelease) {
+    check(lot.processingCommercialRelease.status === 'released' && lot.processingCommercialRelease.batchId === batch.id, 'El estado comercial existente requiere revisión.');
+    return { id: lot.id, release: lot.processingCommercialRelease };
+  }
+  const release = { status: 'released', batchId: batch.id, authorizationId: authorization.id, approvedBy: o.actor, approvedAt: o.now, operationId: o.id, reason: p.reason.trim(), physicalWeightG: lot.processingPhysicalWeightGRemaining, costCents: lot.processingCostCentsRemaining };
+  o.put('distLots', lot.id, { ...lot, processingCommercialRelease: release });
+  return { id: lot.id, release };
 };
 
 handlers.recordProcessingReview = async (o, p) => {

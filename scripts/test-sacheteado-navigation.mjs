@@ -23,12 +23,14 @@ const vite = await createServer({
     name: 'sacheteado-navigation-test-doubles',
     enforce: 'pre',
     resolveId(id, importer) {
-      if (id === '../data/distributionRepository' && (importer?.includes('SacheteadoView.tsx') || importer?.includes('ProcessingReportsView.tsx'))) return '\0sacheteado-repository'
+      if (id === '../data/distributionRepository' && (importer?.includes('SacheteadoView.tsx') || importer?.includes('ProcessingReportsView.tsx') || importer?.includes('ProcessingCommercialRelease.tsx'))) return '\0sacheteado-repository'
       if (id === './ProcessingOperationsView' && importer?.includes('SacheteadoView.tsx')) return '\0sacheteado-operations-view'
       if (id === '../data/reportExports' && importer?.includes('ProcessingReportsView.tsx')) return '\0processing-report-exports'
     },
     load(id) {
       if (id === '\0sacheteado-repository') return `
+        export const loadMyProcessingQualityAuthorization = async () => null
+        export const releaseProcessingLot = async () => { throw new Error('unexpected release') }
         export const newOperationId = prefix => prefix + '-test'
         export const warehouseBalanceId = () => 'central'
         export const loadProcessingBatchPage = async () => ({ rows: globalThis.processingReportRows, cursor: null, hasMore: false })

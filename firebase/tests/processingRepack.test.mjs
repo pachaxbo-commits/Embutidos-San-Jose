@@ -62,7 +62,8 @@ try {
   const request = makeInput(full)
   const blockedProduction = await command(ids.admin, 'confirmProcessingRepack', request, `${prefix}-prod-gate`, 'rejected')
   pass(blockedProduction.error.includes('bucket y activación') && (await root.collection('distBalances').doc(`central__${full.sourceProductId}`).get()).data().quantity === 2, 'reenvasado permanece bloqueado sin configuración server-side y conserva inventario')
-  process.env.SANJOSE_PROCESSING_REPACK_EMULATOR_TEST = 'true'
+  process.env.SANJOSE_PROCESSING_REPACK_ENABLED = 'true'
+  process.env.SANJOSE_PROCESSING_EVIDENCE_BUCKET = 'qa-evidence-bucket'
   const confirmed = await command(ids.admin, 'confirmProcessingRepack', request, `${prefix}-confirm`)
   const sourceBalance = (await root.collection('distBalances').doc(`central__${full.sourceProductId}`).get()).data()
   const targetBalance = (await root.collection('distBalances').doc(`central__${full.targetId}`).get()).data()

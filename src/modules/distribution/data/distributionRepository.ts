@@ -244,6 +244,10 @@ export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput,
   return submitOperation('confirmProcessingBatch', input, operationId)
 }
 
+export async function releaseProcessingLot(input: { lotId: string; authorizationReference: string; reason: string }, operationId: string): Promise<unknown> {
+  return submitOperation('releaseProcessingLot', input, operationId)
+}
+
 /** Registra una inspección de producto inmovilizado sin tocar inventario ni liberar la reserva. */
 export async function recordProcessingReview(input: RecordProcessingReviewInput, operationId: string): Promise<unknown> {
   return submitOperation('recordProcessingReview', input, operationId)

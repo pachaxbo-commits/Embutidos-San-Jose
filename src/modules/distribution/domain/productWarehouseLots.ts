@@ -1,3 +1,4 @@
+import { processingCommerciallyAvailable } from './processingCommercialAvailability.ts'
 import { roundStockQuantity } from './stockAvailability.ts'
 import { originPendingQuantity } from './originTraceability.ts'
 import type { DistBalance, DistLot, UnitType } from '../types.ts'
@@ -29,7 +30,7 @@ export function productWarehouseLotRows(
       const traceIncomplete = !lot.lotCode?.trim() || !lot.manufacturedOn || !lot.expiresOn
       const held = lot.processingUnavailable?.[location]
       const heldQuantity = Number(held?.courtesy || 0) + Number(held?.repackPending || 0) + Number(held?.reviewHold || 0)
-      const status: WarehouseLotStatus = lot.processingCommercialBlocked
+      const status: WarehouseLotStatus = !processingCommerciallyAvailable(lot)
         ? 'Bloqueado · elaboración pendiente de integración comercial'
         : lot.quarantined
         ? 'Cuarentena'

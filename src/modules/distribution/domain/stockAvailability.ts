@@ -1,3 +1,4 @@
+import { processingCommerciallyAvailable } from './processingCommercialAvailability.ts'
 import type { DistBalance, DistLot, UnitType } from '../types.ts'
 import { originPendingQuantity } from './originTraceability.ts'
 
@@ -27,7 +28,7 @@ export function stockAvailability(
   for (const lot of lots) {
     if (lot.productId !== balance?.productId) continue
     const quantity = Math.max(0, Number(lot.quantities?.[location]) || 0)
-    if (lot.processingCommercialBlocked) processingBlocked += quantity
+    if (!processingCommerciallyAvailable(lot)) processingBlocked += quantity
     else if (lot.quarantined) quarantine += quantity
     else if (lot.expiresOn && lot.expiresOn < today) expired += quantity
     else {

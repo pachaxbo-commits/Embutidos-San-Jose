@@ -7,7 +7,7 @@ const GUIDES: Record<ProcessingGuideTopic, { title: string; steps: string[] }> =
       'Elige un producto a granel medido en kg y uno o varios lotes elegibles. Registra los kg realmente retirados de cada lote; el servidor vuelve a validar existencias y vencimiento.',
       'Para cada destino registra el peso neto real medido en gramos, la presentación y sus datos de lote. El peso nominal describe la presentación y no reemplaza la balanza.',
       'La suma de los pesos de origen y de todos los destinos debe coincidir exactamente. No se generan promedios desde el catálogo para completar pesos faltantes.',
-      'Al confirmar, el servidor registra la elaboración y sus movimientos en una transacción idempotente. Los lotes resultantes siguen bloqueados para venta y despacho hasta completar la integración comercial aprobada.',
+      'Al confirmar, el servidor registra la elaboración y sus movimientos una sola vez. Los lotes terminados quedan pendientes de liberación. Administración con autorización vigente de Calidad puede revisar el lote y autorizar su uso comercial desde el detalle del historial; las reservas y la cuarentena impiden liberarlo.',
     ],
   },
   materials: {

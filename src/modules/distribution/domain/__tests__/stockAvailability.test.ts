@@ -56,6 +56,11 @@ const processingBalance = { ...balance(36), unitType: 'package' as const }
 const processingAvailability = stockAvailability(projected(processingBalance, [processingLot]), [processingLot], 'central', today)
 assertEqual(processingAvailability.processingBlocked, 36)
 assertEqual(processingAvailability.available, 0)
+const releasedLot: DistLot = { ...processingLot, processingBatchId: 'batch-release', processingDestinationKind: 'finished', processingCommercialRelease: { status: 'released', batchId: 'batch-release', authorizationId: 'quality-1', approvedBy: 'quality-user', approvedAt: '2026-10-29T12:00:00Z', operationId: 'release-op', reason: 'Physical product approved' } }
+assertEqual(stockAvailability(projected(processingBalance, [releasedLot]), [releasedLot], 'central', today).available, 36)
+const mismatchedRelease = { ...releasedLot, processingBatchId: 'different-batch' }
+assertEqual(stockAvailability(projected(processingBalance, [mismatchedRelease]), [mismatchedRelease], 'central', today).available, 0)
+assertEqual(stockAvailability(projected(processingBalance, [{ ...releasedLot, quarantined: true }]), [{ ...releasedLot, quarantined: true }], 'central', today).available, 0)
 const courtesyProductId = `${productId}-courtesy`
 const courtesyLot = { ...lot('courtesy-stock', 0.7, { productId: courtesyProductId, processingUnavailable: { central: { courtesy: 0.7, repackPending: 0, reviewHold: 0 } } }) }
 const courtesyBalance = { ...balance(0.7), id: `central__${courtesyProductId}`, productId: courtesyProductId }
