@@ -33,11 +33,18 @@ try {
     ],
     movements: [], warehouses: [], transfers: [], routes: [], lots: [], balances: [], supportSettings: {}, operations: [],
   }
-  const row = reportSheets(data, ['2026-10-29']).find(sheet => sheet.id === 'sellerSummary')?.rows[0]
+  const sheet = reportSheets(data, ['2026-10-29']).find(sheet => sheet.id === 'sellerSummary')
+  assert.ok(sheet, 'PDF/Excel export contains sellerSummary sheet')
+  assert.equal(sheet.headers[0], 'Fecha', 'first column is Fecha')
+  assert.equal(sheet.headers[1], 'Chofer', 'second column is Chofer')
+  const row = sheet.rows[0]
   assert.ok(row, 'PDF/Excel export has a seller summary row for a return claim from an earlier sale')
-  assert.equal(row[2], 0, 'granel remains unchanged')
-  assert.equal(row[3], 0.083, 'the export uses 333 g historical replacement minus 250 g returned')
-  assert.equal(row[4], 0, 'catalog approximate weight does not replace historical grams')
+  assert.equal(row[0], '29/10/2026', 'row date matches Bolivia date format DD/MM/YYYY')
+  assert.equal(row[1], 'Vendedor QA', 'row has seller name')
+  assert.equal(row[2], 'Sin ruta', 'claim without routeName defaults to Sin ruta')
+  assert.equal(row[3], 0, 'granel remains unchanged')
+  assert.equal(row[4], 0.083, 'the export uses 333 g historical replacement minus 250 g returned')
+  assert.equal(row[6], 0, 'catalog approximate weight does not replace historical grams')
   console.log('PASS export Kg por vendedor: 333 g replacement allocation, 250 g returned, net 0.083 kg; no catalog estimate substituted')
   assert.equal(sellerKilogramReportError(data, ['2026-10-29']), null, 'complete data can be reported')
   assert.match(sellerKilogramReportError({ ...data, operations: [{ status: 'queued' }] }, ['2026-10-29']), /operaciones pendientes/i)

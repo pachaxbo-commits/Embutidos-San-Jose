@@ -2,7 +2,7 @@ import { jsPDF, autoTable, Workbook } from "../../../lib/documentLibraries.ts";
 import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
-import { cashMovementRouteId, cashMovementSellerUid, computeSellerBreakdown, computeVoidedSaleReceiptTotals, isSettledClaimCashMovement, matchesRoute, round2, toDayKey } from "../domain/engine";
+import { cashMovementRouteId, cashMovementSellerUid, computeSellerBreakdown, computeSellerDailyBreakdown, computeVoidedSaleReceiptTotals, isSettledClaimCashMovement, matchesRoute, round2, toDayKey } from "../domain/engine";
 import { roundStockQuantity } from "../domain/stockAvailability";
 import { originPendingQuantity } from '../domain/originTraceability';
 import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio, currentCustomerDisplayName } from "../domain/creditRoutes";
@@ -482,12 +482,85 @@ export function reportSheets(
   const voidedReceiptTotals = computeVoidedSaleReceiptTotals(voidedCashReceiptSales);
   const sellerBreakdown = computeSellerBreakdown([...sales, ...voidedCashReceiptSales], collections, expenses, claims, data.products)
     .filter(item => item.salesCount > 0 || item.kilograms !== 0 || item.documentedSachetKilograms !== 0 || item.estimatedSachetKilograms !== 0 || item.packages !== 0 || item.unknownWeightPackages !== 0);
-  const sellerKgRows = sellerBreakdown.length
-    ? [
-      ...sellerBreakdown.map(item => [item.sellerName, item.routeNames.join(' · '), item.kilograms, item.documentedSachetKilograms, item.estimatedSachetKilograms, item.totalDocumentedKilograms, item.totalEstimatedKilograms, item.packages, item.unknownWeightPackages]),
-      ["TOTAL GENERAL", "", roundKg(sellerBreakdown.reduce((sum, item) => sum + item.kilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.documentedSachetKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.estimatedSachetKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.totalDocumentedKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.totalEstimatedKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.packages, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.unknownWeightPackages, 0))],
-    ]
-    : [["Sin ventas en el período", "", "", "", "", "", "", "", ""]];
+  const dailyGroups = computeSellerDailyBreakdown(days, [...sales, ...voidedCashReceiptSales], claims, data.products, route, seller);
+  const sellerKgRows: (string | number)[][] = [];
+
+  if (dailyGroups.length === 0) {
+    sellerKgRows.push(["Sin ventas en el período", "", "", "", "", "", "", "", "", ""]);
+  } else {
+    for (const group of dailyGroups) {
+      for (const row of group.rows) {
+        sellerKgRows.push([
+          row.dateFormatted,
+          row.sellerName,
+          row.routeNames.join(' · ') || 'Sin ruta',
+          row.granelKilograms,
+          row.documentedSachetKilograms,
+          row.totalDocumentedKilograms,
+          row.estimatedSachetKilograms,
+          row.totalEstimatedKilograms,
+          row.packages,
+          row.unknownWeightPackages,
+        ]);
+      }
+      if (group.rows.length > 1 || dailyGroups.length > 1) {
+        sellerKgRows.push([
+          `Subtotal ${group.dateFormatted}`,
+          "",
+          "",
+          group.subtotal.granelKilograms,
+          group.subtotal.documentedSachetKilograms,
+          group.subtotal.totalDocumentedKilograms,
+          group.subtotal.estimatedSachetKilograms,
+          group.subtotal.totalEstimatedKilograms,
+          group.subtotal.packages,
+          group.subtotal.unknownWeightPackages,
+        ]);
+      }
+    }
+
+    if (dailyGroups.length > 1) {
+      sellerKgRows.push([
+        "RESUMEN DEL PERÍODO",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+      ]);
+      for (const item of sellerBreakdown) {
+        sellerKgRows.push([
+          "Total período",
+          item.sellerName,
+          item.routeNames.join(' · ') || 'Sin ruta',
+          item.kilograms,
+          item.documentedSachetKilograms,
+          item.totalDocumentedKilograms,
+          item.estimatedSachetKilograms,
+          item.totalEstimatedKilograms,
+          item.packages,
+          item.unknownWeightPackages,
+        ]);
+      }
+    }
+
+    sellerKgRows.push([
+      "TOTAL GENERAL",
+      "",
+      "",
+      roundKg(sellerBreakdown.reduce((sum, item) => sum + item.kilograms, 0)),
+      roundKg(sellerBreakdown.reduce((sum, item) => sum + item.documentedSachetKilograms, 0)),
+      roundKg(sellerBreakdown.reduce((sum, item) => sum + item.totalDocumentedKilograms, 0)),
+      roundKg(sellerBreakdown.reduce((sum, item) => sum + item.estimatedSachetKilograms, 0)),
+      roundKg(sellerBreakdown.reduce((sum, item) => sum + item.totalEstimatedKilograms, 0)),
+      roundKg(sellerBreakdown.reduce((sum, item) => sum + item.packages, 0)),
+      roundKg(sellerBreakdown.reduce((sum, item) => sum + item.unknownWeightPackages, 0)),
+    ]);
+  }
   return [
     {
       id: 'summary',
@@ -526,7 +599,7 @@ export function reportSheets(
     {
       id: 'sellerSummary',
       name: "Kg por vendedor",
-      headers: ["Vendedor", "Rutas", "Granel (kg)", "Sachets documentados (kg)", "Sachets estimados (kg)", "Total documentado (kg)", "Total incluyendo estimados (kg)", "Paquetes", "Paquetes sin peso fiable"],
+      headers: ["Fecha", "Chofer", "Rutas", "Granel (kg)", "Sachets documentados (kg)", "Total documentado (kg)", "Sachets estimados (kg)", "Total incluyendo estimados (kg)", "Paquetes", "Paquetes sin peso fiable"],
       rows: sellerKgRows,
     },
     {
