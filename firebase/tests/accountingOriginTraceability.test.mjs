@@ -61,7 +61,11 @@ try{
  assert((await accountingMermaRectification(db,f.input,{execute:true,backup(){throw Error('no second backup');}})).alreadyApplied);
  assert.deepEqual(await get('distSales',f.sale.id),f.sale);
  pass('default read-only, approval/backup guards, central unchanged, reference-only route credit and idempotence');
- const receipt=await run('closure',{mode:'warehouse',closure:{dispatchId:f.id,products:[{productId:f.pid,actualReturn:3,returnMerma:.1,returnWaste:0,physicalReturn:3.1}]}});
+ const unconfirmedReceipt={mode:'warehouse',closure:{dispatchId:f.id,products:[{productId:f.pid,actualReturn:3,returnMerma:.1,returnWaste:0,physicalReturn:3.1}]}};
+ const rejectedReceipt=await run('closure',unconfirmedReceipt,'rejected');
+ assert.match(rejectedReceipt.error,/0\.1 kg de merma adicional/);
+ assert.equal(await get('distClosures','closure_'+f.id),undefined,'unconfirmed physical merma must not create a receipt');
+ const receipt=await run('closure',{mode:'warehouse',closure:{dispatchId:f.id,products:[{...unconfirmedReceipt.closure.products[0],dispatchMermaEmbeddedInSalesConfirmed:true,dispatchMermaEmbeddedInSalesReason:'Synthetic warehouse physical verification of the sold bags.'}]}});
  const closure=await get('distClosures','closure_'+f.id),row=closure.products[0];
  assert.equal(row.overage,0);assert.equal(row.shortage,0);assert.equal(row.dispatchMermaIncludedInSales,.1);
  assert.equal(row.originPendingReceived,.2);assert.equal(closureReturnSummary(row).returnsToSellableStock,2.9);

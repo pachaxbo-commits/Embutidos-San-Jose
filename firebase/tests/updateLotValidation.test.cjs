@@ -18,6 +18,8 @@ const operation = {
   today: '2026-10-19',
   member: { role: 'admin', displayName: 'QA' },
   admin() {},
+  async processingReservations() { return [] },
+  assertReservationAggregate() {},
   async read(collection, id) {
     assert.equal(collection, 'distLots')
     assert.equal(id, originalLot.id)

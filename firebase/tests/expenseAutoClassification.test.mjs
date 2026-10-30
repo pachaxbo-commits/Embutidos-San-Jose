@@ -34,9 +34,9 @@ try {
 
   const automaticCases = [
     ['fuel', 'indirect', 'indirect-1', 'operating_expense'],
-    ['toll_parking', 'indirect', 'indirect-7', 'operating_expense'],
-    ['refreshments_travel', 'indirect', 'indirect-8', 'operating_expense'],
-    ['maintenance_repair', 'indirect', 'indirect-9', 'operating_expense'],
+    ['toll_parking', 'commercialization', 'commercialization-1', 'operating_expense'],
+    ['refreshments_travel', 'commercialization', 'commercialization-2', 'operating_expense'],
+    ['maintenance_repair', 'commercialization', 'commercialization-3', 'operating_expense'],
     ['tools_equipment', 'equipment', 'equipment-6', 'operating_expense'],
     ['production_meat', 'production_input', 'production_input-1', 'production_input'],
     ['production_seasonings', 'production_input', 'production_input-2', 'production_input'],

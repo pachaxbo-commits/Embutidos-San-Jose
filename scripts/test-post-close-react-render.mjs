@@ -26,7 +26,9 @@ const vite = await createServer({
     },
     load(id) {
       if (id !== '\0post-close-react-repository') return
-      return `export const subscribeSales = (days, routeId, callback) => globalThis.__postCloseSubscribe('sales', days, routeId, callback)
+      return `export const subscribeClosedDispatchesForRoute = (_route, callback) => { callback([]); return () => {} }
+export const subscribeDispatchSettlementSales = (routeId, _dispatch, callback) => globalThis.__postCloseSubscribe('sales', [], routeId, callback)
+export const subscribeSales = (days, routeId, callback) => globalThis.__postCloseSubscribe('sales', days, routeId, callback)
 export const subscribeCollections = (days, routeId, callback) => globalThis.__postCloseSubscribe('collections', days, routeId, callback)
 export const subscribeExpenses = (days, routeId, callback) => globalThis.__postCloseSubscribe('expenses', days, routeId, callback)
 export const newOperationId = (prefix) => prefix + '-test-id'

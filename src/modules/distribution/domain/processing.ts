@@ -406,4 +406,3 @@ export interface ProcessingAvailabilityInput {
   courtesyReservedG?: number
   otherUnavailableG?: number
 }
-

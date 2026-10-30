@@ -20,7 +20,7 @@ const expectedByRole: Record<UserRole, string[]> = {
     'distBalances', 'distDispatches', 'distSales', 'distExpenses', 'distClosures',
     'distCreditStatus', 'distCreditOverrides', 'distClaims', 'distQrVerifications',
     'distReceivables', 'distCollections', 'distReceivableAdjustments', 'distCustomers',
-    'distExpenseCategories', 'distStockMovements', 'distTransfers', 'distAdjustmentRequests',
+    'distExpenseCategories', 'distExpenseGroups', 'distStockMovements', 'distTransfers', 'distAdjustmentRequests',
   ],
   warehouse: [
     'supportConfig', 'distLots', 'distOperations', 'distWarehouses', 'distProducts', 'distRoutes',
@@ -31,7 +31,7 @@ const expectedByRole: Record<UserRole, string[]> = {
     'supportConfig', 'distLots', 'distOperations', 'distWarehouses', 'distProducts', 'distRoutes',
     'distBalances', 'distDispatches', 'distSales', 'distExpenses', 'distClosures',
     'distCreditStatus', 'distCreditOverrides', 'distClaims', 'distQrVerifications',
-    'distReceivables', 'distCollections', 'distCustomers', 'distExpenseCategories',
+    'distReceivables', 'distCollections', 'distCustomers', 'distExpenseCategories', 'distExpenseGroups',
   ],
   support: [],
 }

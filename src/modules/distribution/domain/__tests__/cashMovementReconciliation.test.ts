@@ -83,5 +83,3 @@ assert.equal(sellerRows.find(row => row.sellerUid === 'seller-a')?.expectedCash,
 assert.equal(sellerRows.find(row => row.sellerUid === 'admin-1')?.expectedCash, -10, 'refund is assigned to the responsible administrator')
 
 console.log('PASS cash movement reconciliation: same/later day, QR, mixed, partial, pending, corrected split, responsible route and seller attribution')
-
-
