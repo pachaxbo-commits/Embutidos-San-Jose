@@ -30,7 +30,7 @@ import {
 import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord, ProcessingRepackRecord, ProcessingEvidenceRecord, ProcessingQualityAuthorization } from '../domain/processing'
 import { validateRepackOperationContract } from '../domain/processing'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
-import { centralBalanceId, round2, toDayKey } from '../domain/engine'
+import { centralBalanceId, resolveVoidedSaleReceiptSnapshot, round2, toDayKey } from '../domain/engine'
 import type {
   DistBalance,
   DistWarehouse,
@@ -547,6 +547,7 @@ function subscribeQuery<T>(
 ): () => void {
   let unsubscribe: Unsubscribe | null = null
   let cancelled = false
+  let emission = 0
   const queryKey = `q${querySequence++}`
 
   void (async () => {
@@ -558,7 +559,21 @@ function subscribeQuery<T>(
         { includeMetadataChanges: true },
         (snapshot) => {
           reportPendingWrites(queryKey, snapshot.metadata.hasPendingWrites)
-          onData(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as T))
+          const version = ++emission
+          void Promise.all(snapshot.docs.map(async entry => {
+            const row = { id: entry.id, ...entry.data() }
+            if (entry.ref.parent.id !== DIST_COLLECTIONS.sales) return row as T
+            const sale = row as unknown as DistSale
+            if (!sale.voidedAt || !sale.derivedVoid) return row as T
+            const correctionId = sale.derivedVoid.correctionId
+            const correction = correctionId
+              ? await getDocFromServer(docRef(context, DIST_COLLECTIONS.saleCorrections, correctionId))
+              : undefined
+            const evidence = correction?.data() as DistSaleCorrection | undefined
+            const receipt = resolveVoidedSaleReceiptSnapshot(sale, evidence)
+            return { ...row, derivedVoid: { ...sale.derivedVoid, cashReceiptSnapshot: receipt } } as T
+          })).then(rows => { if (!cancelled && version === emission) onData(rows) })
+            .catch(error => { if (!cancelled && version === emission) onError?.(error as Error) })
         },
         (error) => {
           console.error('[distribution] error de suscripcion', error)

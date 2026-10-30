@@ -2,7 +2,7 @@ import { jsPDF, autoTable, Workbook } from "../../../lib/documentLibraries.ts";
 import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
-import { cashMovementRouteId, cashMovementSellerUid, computeSellerBreakdown, isSettledClaimCashMovement, matchesRoute, round2, toDayKey } from "../domain/engine";
+import { cashMovementRouteId, cashMovementSellerUid, computeSellerBreakdown, computeVoidedSaleReceiptTotals, isSettledClaimCashMovement, matchesRoute, round2, toDayKey } from "../domain/engine";
 import { roundStockQuantity } from "../domain/stockAvailability";
 import { originPendingQuantity } from '../domain/originTraceability';
 import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio, currentCustomerDisplayName } from "../domain/creditRoutes";
@@ -465,6 +465,7 @@ export function reportSheets(
   };
   const voidedCashReceiptSales = data.sales.filter((sale) => inScope(sale) && sale.voidedAt && sale.derivedVoid
     && !sale.pendingConfirmation && sale.saleKind !== 'courtesy' && (!seller || sale.sellerUid === seller));
+  const voidedReceiptTotals = computeVoidedSaleReceiptTotals(voidedCashReceiptSales);
   const sellerBreakdown = computeSellerBreakdown([...sales, ...voidedCashReceiptSales], collections, expenses, claims, data.products);
   return [
     {
@@ -689,14 +690,14 @@ export function reportSheets(
       headers: ["Concepto", "Efectivo (Bs)", "QR (Bs)", "Total (Bs)"],
       rows: [
         ["Cobros de ventas", round2(sales.reduce((n, s) => n + s.cashAmount, 0)), round2(sales.reduce((n, s) => n + s.qrAmount, 0)), round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0))],
-        ["Cobros originales de ventas anuladas", round2(voidedCashReceiptSales.reduce((n, s) => n + Number(s.derivedVoid?.cashReceiptSnapshot?.cashAmount ?? s.cashAmount ?? 0), 0)), round2(voidedCashReceiptSales.reduce((n, s) => n + Number(s.derivedVoid?.cashReceiptSnapshot?.qrAmount ?? s.qrAmount ?? 0), 0)), round2(voidedCashReceiptSales.reduce((n, s) => n + Number(s.derivedVoid?.cashReceiptSnapshot?.cashAmount ?? s.cashAmount ?? 0) + Number(s.derivedVoid?.cashReceiptSnapshot?.qrAmount ?? s.qrAmount ?? 0), 0))],
+        ["Cobros originales de ventas anuladas", voidedReceiptTotals.cash, voidedReceiptTotals.qr, voidedReceiptTotals.total],
         ["Cobros de cartera", round2(collections.reduce((n, c) => n + (c.cashAmount ?? (c.method === "cash" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + (c.qrAmount ?? (c.method === "qr" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + c.amount, 0))],
         ["Cambios y devoluciones", round2(claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut, 0)), round2(claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.qrIn - c.qrOut, 0)), round2(claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0))],
         ["Gastos", -spent, 0, -spent],
-        ["FLUJO NETO", "", "", round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + voidedCashReceiptSales.reduce((n, s) => n + Number(s.derivedVoid?.cashReceiptSnapshot?.cashAmount ?? s.cashAmount ?? 0) + Number(s.derivedVoid?.cashReceiptSnapshot?.qrAmount ?? s.qrAmount ?? 0), 0) + collections.reduce((n, c) => n + c.amount, 0) + claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent)],
+        ["FLUJO NETO", "", "", round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + voidedReceiptTotals.total + collections.reduce((n, c) => n + c.amount, 0) + claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent)],
       ],
       meta: {
-        netFlow: round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + voidedCashReceiptSales.reduce((n, s) => n + Number(s.derivedVoid?.cashReceiptSnapshot?.cashAmount ?? s.cashAmount ?? 0) + Number(s.derivedVoid?.cashReceiptSnapshot?.qrAmount ?? s.qrAmount ?? 0), 0) + collections.reduce((n, c) => n + c.amount, 0) + claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent),
+        netFlow: round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + voidedReceiptTotals.total + collections.reduce((n, c) => n + c.amount, 0) + claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent),
       },
     },
     {

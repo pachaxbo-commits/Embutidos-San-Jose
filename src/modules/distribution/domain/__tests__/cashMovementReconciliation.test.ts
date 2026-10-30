@@ -1,6 +1,12 @@
-const assert = { equal(actual: unknown, expected: unknown, message?: string) { if (actual !== expected) throw new Error(`${message || 'assertion failed'}: ${String(actual)} !== ${String(expected)}`) } }
-import { computeMoneySummary, computeSellerBreakdown, cashMovementRouteId, cashMovementSellerUid } from '../engine.ts'
-import type { DistClaim, DistSale } from '../../types.ts'
+const assert = {
+  equal(actual: unknown, expected: unknown, message?: string) { if (actual !== expected) throw new Error(`${message || 'assertion failed'}: ${String(actual)} !== ${String(expected)}`) },
+  throws(run: () => unknown, expression: RegExp, message: string) {
+    try { run() } catch (error) { if (expression.test((error as Error).message)) return; throw error }
+    throw new Error(message)
+  },
+}
+import { computeMoneySummary, computeSellerBreakdown, computeVoidedSaleReceiptTotals, resolveVoidedSaleReceiptSnapshot, cashMovementRouteId, cashMovementSellerUid } from '../engine.ts'
+import type { DistClaim, DistSale, DistSaleCorrection } from '../../types.ts'
 
 const baseSale = (patch: Partial<DistSale> = {}) => ({
   id: 'sale-1', operationId: 'sale-1', restaurantId: 'sanjose', branchId: 'main', createdAt: '2026-10-28T10:00:00.000Z', createdBy: 'seller', dayKey: '2026-10-28', schemaVersion: 2,
@@ -48,6 +54,25 @@ assert.equal(computeMoneySummary([partialSale], [], [], [{ ...partialClaim, cash
 
 const correctedBeforeVoid = baseSale({ id: 'corrected-sale', operationId: 'corrected-sale', cashAmount: 10, voidedAt: '2026-10-28T12:00:00.000Z', effectiveSnapshot: { lines: [], total: 0, paymentKind: 'qr', cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: 'sale' }, derivedVoid: { cashReceiptSnapshot: snapshot(0, 8) } })
 assert.equal(computeMoneySummary([correctedBeforeVoid], [], [], [voidClaim({ cashOut: 0, qrOut: 8 })]).expectedCash, 0, 'a documented corrected payment split is reconciled from its frozen snapshot, not the stale base split')
+
+const historicalCorrectedVoid = baseSale({ id: 'historical-corrected-void', operationId: 'historical-corrected-void', total: 10, cashAmount: 10, qrAmount: 0, voidedAt: '2026-10-28T12:00:00.000Z', latestCorrectionId: 'void-correction-2', effectiveSnapshot: { lines: [], total: 0, paymentKind: 'qr', cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: 'sale' }, derivedVoid: { correctionId: 'void-correction-2' } })
+const voidCorrection = { saleId: historicalCorrectedVoid.id, original: { lines: [], total: 8, cashAmount: 0, qrAmount: 8, creditAmount: 0, paymentKind: 'qr' } } as unknown as Pick<DistSaleCorrection, 'saleId' | 'original'>
+const verifiedHistoricalReceipt = resolveVoidedSaleReceiptSnapshot(historicalCorrectedVoid, voidCorrection)
+const hydratedHistoricalVoid = { ...historicalCorrectedVoid, derivedVoid: { ...historicalCorrectedVoid.derivedVoid, cashReceiptSnapshot: verifiedHistoricalReceipt } }
+assert.equal(verifiedHistoricalReceipt.cashAmount, 0, 'historical correction evidence overrides the stale original cash split')
+assert.equal(verifiedHistoricalReceipt.qrAmount, 8, 'the void correction original preserves the corrected QR receipt')
+const historicalSummary = computeMoneySummary([hydratedHistoricalVoid], [], [], [voidClaim({ saleId: historicalCorrectedVoid.id, cashOut: 0, qrOut: 8 })])
+assert.equal(historicalSummary.voidedCashReceipts, 0, 'historical corrected void does not invent cash receipt')
+assert.equal(historicalSummary.voidedQrReceipts, 8, 'historical corrected void retains the verified QR receipt')
+assert.equal(historicalSummary.expectedCash, 0, 'historical corrected QR refund does not create a cash variance')
+const exportedReceiptTotals = computeVoidedSaleReceiptTotals([hydratedHistoricalVoid])
+assert.equal(exportedReceiptTotals.cash, 0, 'cash-flow export totals use the verified corrected receipt')
+assert.equal(exportedReceiptTotals.qr, 8, 'cash-flow export preserves the corrected QR amount')
+assert.throws(() => resolveVoidedSaleReceiptSnapshot(historicalCorrectedVoid), /Conciliación pendiente/, 'missing receipt evidence blocks reconciliation instead of using the stale sale split')
+assert.throws(() => resolveVoidedSaleReceiptSnapshot(historicalCorrectedVoid, { ...voidCorrection, saleId: 'another-sale' }), /Conciliación pendiente/, 'correction evidence for a different sale is rejected')
+assert.throws(() => resolveVoidedSaleReceiptSnapshot(historicalCorrectedVoid, { ...voidCorrection, original: { ...voidCorrection.original, qrAmount: '8' } as unknown as DistSaleCorrection['original'] }), /Conciliación pendiente/, 'string amounts are invalid correction evidence')
+assert.throws(() => resolveVoidedSaleReceiptSnapshot(historicalCorrectedVoid, { ...voidCorrection, original: { ...voidCorrection.original, qrAmount: -8 } }), /Conciliación pendiente/, 'negative amounts are invalid correction evidence')
+assert.throws(() => resolveVoidedSaleReceiptSnapshot(historicalCorrectedVoid, { ...voidCorrection, original: { ...voidCorrection.original, total: 10 } }), /Conciliación pendiente/, 'inconsistent corrected totals are invalid evidence')
 
 const routeSale = baseSale({ id: 'route-sale', operationId: 'route-sale', routeId: 'route-a', routeName: 'Ruta A', sellerUid: 'seller-a', sellerName: 'Vendedor A', sourceLocation: 'route' })
 const adminRefund = voidClaim({ createdBy: 'admin-1', sellerUid: 'admin-1', sellerName: 'Admin 1', cashMovementResponsibleUid: 'admin-1', cashMovementRouteId: 'administracion', routeId: 'administracion', saleSellerUid: 'seller-a', originRouteId: 'route-a' })

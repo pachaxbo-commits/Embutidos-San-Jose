@@ -29,16 +29,22 @@ const isSettledCashMovement = (row) => row?.pendingConfirmation !== true && row?
 async function voidedSaleReceiptAmounts(o, sale) {
   if (!sale?.voidedAt || !sale?.derivedVoid) return { cash: 0, qr: 0 };
   let snapshot = sale.derivedVoid.cashReceiptSnapshot;
-  if (!snapshot && sale.derivedVoid.correctionId) {
-    const correction = await o.read('distSaleCorrections', sale.derivedVoid.correctionId);
-    snapshot = correction?.original;
+  if (!snapshot) {
+    const correctionId = sale.derivedVoid.correctionId;
+    check(typeof correctionId === 'string' && correctionId.length > 0,
+      `Conciliacion pendiente: falta evidencia verificable del cobro original de la venta ${sale.id}.`);
+    const correction = await o.read('distSaleCorrections', correctionId);
+    check(correction?.saleId === sale.id && correction.original,
+      `Conciliacion pendiente: falta evidencia verificable del cobro original de la venta ${sale.id}.`);
+    snapshot = correction.original;
   }
-  // Old documents retain the immutable sale payment split at the top level.
-  // New voids additionally persist an explicit, auditable receipt snapshot.
-  const source = snapshot || sale;
-  const cash = Number(source.cashAmount), qr = Number(source.qrAmount);
-  check(Number.isFinite(cash) && cash >= 0 && Number.isFinite(qr) && qr >= 0,
-    `La venta anulada ${sale.id} no conserva el desglose verificable de su cobro original; requiere conciliación antes del cierre.`);
+  const cash = snapshot.cashAmount, qr = snapshot.qrAmount, credit = snapshot.creditAmount;
+  const validTotal = snapshot.total === undefined || (typeof snapshot.total === 'number' && Number.isFinite(snapshot.total) && snapshot.total >= 0
+    && (credit === undefined || (typeof credit === 'number' && Number.isFinite(credit) && credit >= 0))
+    && Math.abs(round(cash + qr + (typeof credit === 'number' ? credit : 0)) - round(snapshot.total)) <= 0.01);
+  check(typeof cash === 'number' && Number.isFinite(cash) && cash >= 0
+    && typeof qr === 'number' && Number.isFinite(qr) && qr >= 0 && validTotal,
+    `La venta anulada ${sale.id} no conserva el desglose verificable de su cobro original; requiere conciliacion antes del cierre.`);
   return { cash: round(cash), qr: round(qr) };
 }
 function settledClaimCash(claims) {
@@ -2122,6 +2128,14 @@ async function voidDerivedSale(o, p, sale) {
     check(!closures.some(row => (row.closureType === 'admin' || isAdministrationRouteId(row.routeId)) && row.status === 'closed'),
       'La caja de Administración ya fue cerrada para la jornada de esta venta. Requiere una rectificación administrativa posterior al cierre.');
   }
+  // Derived-sale refunds are paid from Administration's cashbox on the day
+  // the void is executed, which can differ from the sale's original day.
+  // Read this inside the same transaction as closure() so a concurrent close
+  // and refund serialize instead of writing incompatible cash snapshots.
+  const refundDay = o.today;
+  const refundClosures = await o.query('distClosures', 'dayKey', refundDay);
+  check(!refundClosures.some(row => (row.closureType === 'admin' || isAdministrationRouteId(row.routeId)) && row.status === 'closed'),
+    'La caja de Administración ya está cerrada para hoy. No se puede registrar el reembolso; requiere el procedimiento autorizado de rectificación de caja.');
   const saleSnapshot = sale.effectiveSnapshot && typeof sale.effectiveSnapshot === 'object' ? sale.effectiveSnapshot : sale;
   const rawQrAmount = saleSnapshot.qrAmount;
   const qrRefundAmount = round(typeof rawQrAmount === 'number' && Number.isFinite(rawQrAmount) ? rawQrAmount : Number(sale.qrAmount || 0));

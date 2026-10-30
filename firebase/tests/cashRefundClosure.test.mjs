@@ -5,7 +5,8 @@ import { initializeTestEnvironment } from '@firebase/rules-unit-testing'
 import { doc, setDoc } from 'firebase/firestore'
 
 const req = createRequire(new URL('../../functions/package.json', import.meta.url))
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+process.env.FIRESTORE_EMULATOR_HOST ||= '127.0.0.1:8085'
+const [emulatorHost, emulatorPort] = process.env.FIRESTORE_EMULATOR_HOST.split(':')
 delete process.env.FUNCTIONS_EMULATOR
 delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
 const { initializeApp } = req('firebase-admin/app')
@@ -15,7 +16,7 @@ const projectId = 'demo-pachax-audit'
 const app = initializeApp({ projectId }, 'qa-cash-refund-closure')
 const db = getFirestore(app)
 const root = db.doc('restaurants/sanjose')
-const env = await initializeTestEnvironment({ projectId, firestore: { host: '127.0.0.1', port: 8085, rules: fs.readFileSync('firebase/firestore.rules', 'utf8') } })
+const env = await initializeTestEnvironment({ projectId, firestore: { host: emulatorHost, port: Number(emulatorPort), rules: fs.readFileSync('firebase/firestore.rules', 'utf8') } })
 const prefix = `cash-${Date.now().toString(36)}`
 const admin = `${prefix}-admin`
 let checks = 0
@@ -38,6 +39,33 @@ const seedEvent = async ({ saleId, saleDay, receiptAt, refundDay, cash, qr, refu
     customerId: 'qa-customer', customerName: 'QA', productId: 'qa-product', productName: 'QA', quantity: 0, unitType: 'package', reason: 'QA refund', revenueDelta: 0, additionalCost: 0, debtReduction: 0,
     cashIn: 0, cashOut: cash, qrIn: 0, qrOut: qr, replacement: null })
   return { sale, claimId }
+}
+const seedHistoricalCorrectedVoid = async (saleId, saleDay, evidenceMode = 'successive') => {
+  const voidCorrectionId = `${saleId}-void-correction`
+  const correctedPayment = { lines: [], total: 8, cashAmount: 0, qrAmount: 8, creditAmount: 0, paymentKind: 'qr' }
+  const sale = { id: saleId, operationId: saleId, restaurantId: 'sanjose', branchId: 'main', createdBy: admin, createdAt: `${saleDay}T10:00:00.000Z`, dayKey: saleDay, schemaVersion: 2,
+    saleKind: 'sale', sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración', sellerUid: admin, sellerName: 'QA', lines: [], total: 10, paymentKind: 'cash',
+    cashAmount: 10, qrAmount: 0, creditAmount: 0, voidedAt: `${saleDay}T12:00:00.000Z`, latestCorrectionId: voidCorrectionId,
+    effectiveSnapshot: { lines: [], total: 0, paymentKind: 'qr', cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: 'sale' },
+    derivedVoid: { correctionId: voidCorrectionId } }
+  await root.collection('distSales').doc(saleId).set(sale)
+  if (evidenceMode === 'successive') {
+    const editId = `${saleId}-edit-correction`
+    await root.collection('distSaleCorrections').doc(editId).set({ id: editId, restaurantId: 'sanjose', saleId, kind: 'edit', revision: 1,
+      original: { lines: [], total: 10, cashAmount: 10, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, corrected: correctedPayment })
+  }
+  if (evidenceMode !== 'missing') {
+    const original = evidenceMode === 'invalid' ? { ...correctedPayment, qrAmount: '8' } : correctedPayment
+    await root.collection('distSaleCorrections').doc(voidCorrectionId).set({ id: voidCorrectionId, restaurantId: 'sanjose', saleId: evidenceMode === 'wrong-sale' ? `${saleId}-other` : saleId,
+      kind: 'derived_void', revision: evidenceMode === 'successive' ? 2 : 1, original,
+      corrected: { lines: [], total: 0, cashAmount: 0, qrAmount: 0, creditAmount: 0, paymentKind: 'qr' } })
+  }
+  const claimId = `${saleId}-refund`
+  await root.collection('distClaims').doc(claimId).set({ id: claimId, restaurantId: 'sanjose', branchId: 'main', createdBy: admin, createdAt: `${saleDay}T12:05:00.000Z`, dayKey: saleDay,
+    schemaVersion: 2, kind: 'return', isDerivedSaleVoid: true, saleId, sellerUid: admin, sellerName: 'QA', saleSellerUid: admin, saleSellerName: 'QA',
+    customerId: 'qa-customer', customerName: 'QA', productId: 'qa-product', productName: 'QA', quantity: 0, unitType: 'package', reason: 'QA refund',
+    routeId: 'administracion', cashRefundStatus: 'executed', cashIn: 0, cashOut: 0, qrIn: 0, qrOut: 8, revenueDelta: 0, additionalCost: 0, debtReduction: 0, replacement: null })
+  return sale
 }
 const closeAdmin = async (dayKey, cash, id) => {
   const opRef = root.collection('distOperations').doc(id)
@@ -76,6 +104,28 @@ try {
   const mixedClosure = await read('distClosures', mixedResult.result.id)
   pass(mixedClosure.expectedCash === 0 && mixedClosure.voidedCashReceipts === 6 && mixedClosure.voidedQrReceipts === 4 && mixedClosure.claimCash === -6 && mixedClosure.claimQr === -4,
     'mixed refund persists cash and QR components separately; only the cash component affects expectedCash')
+
+  const correctedSaleId = `${prefix}-historical-corrected`
+  await seedHistoricalCorrectedVoid(correctedSaleId, '2026-10-22')
+  const correctedClose = await closeAdmin('2026-10-22', 0, `${prefix}-close-corrected`)
+  const correctedClosure = await read('distClosures', correctedClose.result.id)
+  pass(correctedClose.status === 'confirmed' && correctedClosure.cashSales === 0 && correctedClosure.voidedCashReceipts === 0
+    && correctedClosure.voidedQrReceipts === 8 && correctedClosure.claimCash === 0 && correctedClosure.claimQr === -8
+    && correctedClosure.expectedCash === 0,
+    'historical Bs 10 cash sale corrected to Bs 8 QR and voided without snapshot closes as Bs 0 cash and Bs 8 QR using the successive void correction original')
+
+  for (const [mode, day, label] of [
+    ['missing', '2026-10-21', 'missing correction evidence'],
+    ['invalid', '2026-10-20', 'invalid nonnumeric correction amount'],
+    ['wrong-sale', '2026-10-19', 'correction linked to another sale'],
+  ]) {
+    const saleId = `${prefix}-${mode}-evidence`
+    await seedHistoricalCorrectedVoid(saleId, day, mode)
+    const result = await closeAdmin(day, 0, `${prefix}-close-${mode}`)
+    const closuresForDay = await root.collection('distClosures').where('dayKey', '==', day).get()
+    pass(result.status === 'rejected' && /Conciliacion pendiente|desglose verificable/.test(result.error || '') && closuresForDay.empty,
+      `closure fails safely for ${label}; no unverifiable receipt is posted`)
+  }
 
   const pendingSaleId = `${prefix}-pending-sale`
   await seedEvent({ saleId: pendingSaleId, saleDay: '2026-10-24', receiptAt: '2026-10-24T10:00:00.000Z', refundDay: '2026-10-24', cash: 10, qr: 0, refundStatus: 'pending' })

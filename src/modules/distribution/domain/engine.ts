@@ -7,6 +7,7 @@ import type {
   DistLotAllocation,
   DistProduct,
   DistSale,
+  DistSaleCorrection,
   DistSaleLine,
   PaymentKind,
   UnitType,
@@ -339,14 +340,38 @@ export function cashMovementSellerUid(claim: DistClaim): string {
   return claim.cashMovementResponsibleUid || (claim.isDerivedSaleVoid ? claim.createdBy || claim.sellerUid || '' : claim.sellerUid || '')
 }
 
-function voidedReceiptSnapshot(sale: DistSale): { cash: number; qr: number } {
-  const snapshot = (sale as DistSale & { cashReceiptSnapshot?: { cashAmount?: number; qrAmount?: number } }).cashReceiptSnapshot
-    || sale.derivedVoid?.cashReceiptSnapshot
-  const source = snapshot || sale
-  return {
-    cash: Number.isFinite(Number(source.cashAmount)) ? round2(Number(source.cashAmount)) : 0,
-    qr: Number.isFinite(Number(source.qrAmount)) ? round2(Number(source.qrAmount)) : 0,
+export function resolveVoidedSaleReceiptSnapshot(
+  sale: DistSale,
+  correction?: Pick<DistSaleCorrection, 'saleId' | 'original'>,
+): { cashAmount: number; qrAmount: number } {
+  const snapshot = sale.derivedVoid?.cashReceiptSnapshot
+  const source = snapshot || correction?.original
+  const error = `Conciliación pendiente: falta evidencia verificable del cobro original de la venta ${sale.id}.`
+  if (!source || (correction && correction.saleId !== sale.id)) throw new Error(error)
+  const { cashAmount, qrAmount } = source
+  if (typeof cashAmount !== 'number' || !Number.isFinite(cashAmount) || cashAmount < 0
+    || typeof qrAmount !== 'number' || !Number.isFinite(qrAmount) || qrAmount < 0) throw new Error(error)
+  if ('total' in source && source.total !== undefined) {
+    const creditAmount = 'creditAmount' in source ? source.creditAmount : undefined
+    if (typeof source.total !== 'number' || !Number.isFinite(source.total) || source.total < 0
+      || (creditAmount !== undefined && (typeof creditAmount !== 'number' || !Number.isFinite(creditAmount) || creditAmount < 0))
+      || Math.abs(round2(cashAmount + qrAmount + (typeof creditAmount === 'number' ? creditAmount : 0)) - round2(source.total)) > 0.01) {
+      throw new Error(error)
+    }
   }
+  return { cashAmount: round2(cashAmount), qrAmount: round2(qrAmount) }
+}
+
+export function computeVoidedSaleReceiptTotals(sales: DistSale[]): { cash: number; qr: number; total: number } {
+  const totals = sales.filter(sale => sale.voidedAt && sale.derivedVoid && !sale.pendingConfirmation
+    && sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy')
+    .reduce((sum, sale) => {
+      const snapshot = resolveVoidedSaleReceiptSnapshot(sale)
+      return { cash: sum.cash + snapshot.cashAmount, qr: sum.qr + snapshot.qrAmount }
+    }, { cash: 0, qr: 0 })
+  const cash = round2(totals.cash)
+  const qr = round2(totals.qr)
+  return { cash, qr, total: round2(cash + qr) }
 }
 
 function settledClaimDelta(claims: DistClaim[], fieldIn: 'cashIn' | 'qrIn', fieldOut: 'cashOut' | 'qrOut'): number {
@@ -375,9 +400,9 @@ export function computeMoneySummary(
   for (const sale of sales) {
     if (sale.voidedAt) {
       if (!sale.pendingConfirmation && sale.derivedVoid && sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy') {
-        const receipt = voidedReceiptSnapshot(sale)
-        voidedCashReceipts += receipt.cash
-        voidedQrReceipts += receipt.qr
+        const receipt = resolveVoidedSaleReceiptSnapshot(sale)
+        voidedCashReceipts += receipt.cashAmount
+        voidedQrReceipts += receipt.qrAmount
       }
       continue
     }
@@ -626,9 +651,9 @@ export function computeSellerBreakdown(
     if (sale.voidedAt) {
       if (sale.derivedVoid && !sale.pendingConfirmation && sale.saleKind !== 'courtesy') {
         const entry = ensure(sale.sellerUid, sale.sellerName)
-        const receipt = voidedReceiptSnapshot(sale)
-        entry.voidedCashReceipts = round2(entry.voidedCashReceipts + receipt.cash)
-        entry.expectedCash = round2(entry.expectedCash + receipt.cash)
+        const receipt = resolveVoidedSaleReceiptSnapshot(sale)
+        entry.voidedCashReceipts = round2(entry.voidedCashReceipts + receipt.cashAmount)
+        entry.expectedCash = round2(entry.expectedCash + receipt.cashAmount)
       }
       continue
     }

@@ -4,7 +4,7 @@ import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { buildReconciliation, cashMovementRouteId, computeMoneySummary, partitionDispatchSettlementSales, matchesRoute, round2, toDayKey } from '../domain/engine'
+import { buildReconciliation, cashMovementRouteId, computeMoneySummary, partitionDispatchSettlementSales, matchesRoute, resolveVoidedSaleReceiptSnapshot, round2, toDayKey } from '../domain/engine'
 import { previewDispatchMermaSettlement } from '../domain/dispatchMermaSettlement'
 import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeDispatchSettlementSales, subscribeCollections, subscribeExpenses, subscribeClosedDispatchesForRoute } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
@@ -284,9 +284,12 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       mark('dispatches')
       stopSales = subscribeDispatchSettlementSales(dispatchRoute, dispatchKey, rows => {
         const scoped = partitionDispatchSettlementSales(rows, dispatchKey, dispatchRoute, dispatchCandidates)
-        const eligible = scoped.attributable.map(sale => sale.effectiveSnapshot
-          ? { ...sale, ...(sale.voidedAt ? { cashReceiptSnapshot: sale.derivedVoid?.cashReceiptSnapshot || { cashAmount: sale.cashAmount, qrAmount: sale.qrAmount } } : {}), ...sale.effectiveSnapshot }
-          : sale)
+        const eligible = scoped.attributable.map(sale => {
+          const receiptSnapshot = sale.voidedAt && sale.derivedVoid ? resolveVoidedSaleReceiptSnapshot(sale) : undefined
+          return sale.effectiveSnapshot
+            ? { ...sale, ...(receiptSnapshot ? { cashReceiptSnapshot: receiptSnapshot } : {}), ...sale.effectiveSnapshot }
+            : sale
+        })
         setSalesSnapshot({ dispatchId: dispatchKey, rows: eligible, ambiguousRows: scoped.ambiguous })
         mark('sales')
       }, fail, ownerUid)
