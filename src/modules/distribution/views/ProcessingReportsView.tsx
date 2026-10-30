@@ -1,3 +1,5 @@
+import { collectProcessingReportPages, ProcessingReportLimitError } from '../domain/processingReportPagination'
+import { recordErrorDiagnostic } from '../../../lib/errorDiagnostics'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, FileSpreadsheet, FileText, Printer, RefreshCw } from 'lucide-react'
 import { Field, SelectInput, TextInput } from '../../../components/ui/Form'
@@ -47,26 +49,18 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
     setLoading(true); setError('')
     try {
       setBatches([]); setReviews([]); setRepackings([]); setHasMore(true)
-      let cursor: Cursor = null
-      const records = new Map<string, Record<string, unknown>>()
-      for (;;) {
-        if (version !== requestVersion.current) return
-        const page = await loadProcessingReportPage(mode, locationKey, from, to, cursor)
-        if (version !== requestVersion.current) return
-        for (const row of page.rows) records.set(row.id, row)
-        if (records.size > 10000) throw new Error('El período supera 10.000 registros. Selecciona un período menor; no se exportaron resultados parciales.')
-        if (!page.hasMore) break
-        if (!page.cursor || page.cursor === cursor) throw new Error('No se pudo completar la paginación. Actualiza el informe.')
-        cursor = page.cursor
-      }
-      const rows = [...records.values()]
+      const rows = await collectProcessingReportPages((cursor: Cursor) => loadProcessingReportPage(mode, locationKey, from, to, cursor), () => version === requestVersion.current)
+      if (!rows) return
       if (mode === 'batches' || mode === 'trace') setBatches(rows as unknown as ProcessingBatch[])
       else if (mode === 'reviews') setReviews(rows as unknown as ProcessingReviewRecord[])
       else setRepackings(rows as unknown as ProcessingRepackRecord[])
       setHasMore(false)
       setCompletedScope(JSON.stringify([mode, locationKey, from, to]))
     } catch (reason) {
-      if (version === requestVersion.current) setError((reason as Error).message || 'No se pudo cargar el reporte.')
+      if (version === requestVersion.current) {
+        recordErrorDiagnostic({ error: reason instanceof Error ? reason : new Error(String(reason)), source: 'handled_operation_failure', view: 'dist.processing.reports' })
+        setError(reason instanceof ProcessingReportLimitError ? reason.message : 'No se completó el informe. Reintenta o selecciona un período menor; los resultados incompletos no pueden exportarse ni imprimirse.')
+      }
     } finally {
       if (version === requestVersion.current) setLoading(false)
     }
@@ -108,7 +102,10 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
       const description = `San José · ${report.name} · ${from || 'sin inicio'} a ${to || 'sin fin'} · ${report.rows.length} registros filtrados de ${mode === 'batches' || mode === 'trace' ? batches.length : mode === 'reviews' ? reviews.length : repackings.length} cargados`
       if (format === 'Excel') await exportExcel([report], description)
       else await exportPdf([report], description)
-    } catch (reason) { setError((reason as Error).message || `No se pudo generar el ${format}.`) }
+    } catch (reason) {
+      recordErrorDiagnostic({ error: reason instanceof Error ? reason : new Error(String(reason)), source: 'handled_operation_failure', view: 'dist.processing.reports.export' })
+      setError(`No se pudo generar el ${format}. Reintenta la exportación.`)
+    }
   }
 
   const buttons: Array<[ReportMode, string]> = [['batches', 'Elaboraciones'], ['trace', 'Trazabilidad por lote'], ['reviews', 'Revisiones'], ['repackings', 'Reenvasados']]
@@ -126,7 +123,7 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
       {(mode === 'batches' || mode === 'trace') && <Field label="Lote resultante"><TextInput value={outputLot} onChange={event => setOutputLot(event.target.value)} placeholder="Código o referencia" /></Field>}
       <Field label="Responsable"><TextInput value={responsible} onChange={event => setResponsible(event.target.value)} /></Field>
       {(mode === 'batches' || mode === 'trace') && <Field label="Tipo de proceso"><SelectInput value={processType} onChange={event => setProcessType(event.target.value)}><option value="">Todos</option><option value="bagging">Sacheteado y embolsado</option><option value="portioning">Porcionado</option><option value="repackaging">Reenvasado</option></SelectInput></Field>}
-      <Field label="Estado"><SelectInput value={status} onChange={event => setStatus(event.target.value)}><option value="">Todos</option><option value="confirmed">Confirmado</option><option value="corrected">Corregido</option><option value="reversed">Revertido</option><option value="pending_review">Pendiente de revisión</option><option value="in_review">En revisión</option><option value="authorized_for_repack">Autorizado para reenvasado</option><option value="pending_economic_disposition">Pendiente de decisión económica</option></SelectInput></Field>
+      <Field label="Estado"><SelectInput value={status} onChange={event => setStatus(event.target.value)}><option value="">Todos</option><option value="confirmed">Confirmado</option><option value="corrected">Corregido</option><option value="reversed">Revertido</option><option value="pending_review">Pendiente de revisión</option><option value="in_review">En revisión</option><option value="authorized_for_repack">Autorizado para reenvasado</option><option value="not_recoverable">No recuperable</option><option value="pending_information">Falta información</option><option value="resolved_specialized">Resuelto con procedimiento especializado</option><option value="pending_economic_disposition">Pendiente de decisión económica</option></SelectInput></Field>
     </div>
     {(from && to && from > to) && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800">La fecha inicial no puede ser posterior a la fecha final.</p>}
     {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800"><AlertTriangle className="mr-1 inline" size={15} />{error}</p>}

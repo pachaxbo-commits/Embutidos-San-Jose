@@ -86,7 +86,7 @@ export function buildProcessingLotTraceReport(rows: ProcessingBatch[], filters: 
     name: 'Trazabilidad por lote de sacheteado',
     headers: ['Lote resultante', 'Producto terminado', 'Elaboración', 'Fecha elaboración', 'Fecha embolsado', 'Vencimiento', 'Peso neto producido', 'Cantidad comercial', 'Lotes de origen y aportes contables', 'Costo histórico transferido', 'Responsable', 'Almacén', 'Estado comercial documentado'],
     rows: rows.flatMap(batch => batch.destinations.filter(destination => {
-      if (filters.productId && destination.productId !== filters.productId) return false
+      if (filters.productId && batch.sourceProductId !== filters.productId && destination.productId !== filters.productId) return false
       if (filters.outputLot && !`${destination.lotCode || ''} ${destination.lotId || ''}`.toLocaleLowerCase().includes(filters.outputLot.toLocaleLowerCase())) return false
       return true
     }).map(destination => [

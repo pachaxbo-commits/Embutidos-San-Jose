@@ -1,5 +1,6 @@
 import { buildProcessingBatchReport, buildProcessingLotTraceReport, buildProcessingQualityReport, filterProcessingBatches, filterProcessingRepackings, filterProcessingReviews } from '../processingReports.ts'
 import type { ProcessingBatch, ProcessingRepackRecord, ProcessingReviewRecord } from '../processing.ts'
+import { collectProcessingReportPages } from '../processingReportPagination.ts'
 
 function assertEqual(actual: unknown, expected: unknown, message = 'valores distintos') { if (actual !== expected) throw new Error(`${message}: esperado ${String(expected)}, recibido ${String(actual)}`) }
 function assertMatch(actual: string, pattern: RegExp, message = 'texto no coincide') { if (!pattern.test(actual)) throw new Error(`${message}: ${actual}`) }
@@ -21,6 +22,7 @@ const trace = buildProcessingLotTraceReport([batch], { outputLot: 'DER-1' })
 assertMatch(String(trace.rows[0][8]), /asignación contable, no identificación física/)
 assertEqual(trace.rows[0][0], 'DER-1')
 assertEqual(buildProcessingLotTraceReport([batch], { outputLot: 'NO-EXISTE' }).rows.length, 0)
+assertEqual(buildProcessingLotTraceReport([batch], { productId: 'bulk' }).rows.length, 1, 'la trazabilidad inversa por producto de origen conserva sus lotes terminados')
 
 const review = { id: 'review-1', caseId: 'case-1', operationId: 'op-r', restaurantId: 'sanjose', branchId: 'central', schemaVersion: 1, lotId: 'lot-r', productId: 'sachet', productName: 'Sachet Viena', lotCode: 'REV-1', sourceLotIds: [], reservationId: 'reservation-1', reservationPurpose: 'review_hold', location: 'central', commercialQuantity: 2, commercialUnit: 'package', historicalAssignedWeightG: null, physicalWeightG: null, weightDifferenceG: null, costCents: null, packageCondition: 'unknown', productObservation: 'not_assessed', status: 'in_review', action: 'record_observation', observations: '', reason: '', evidenceRefs: [], revision: 1, previousStatus: 'pending_review', reviewedAt: '2026-10-29T12:00:00.000Z', reviewedBy: 'warehouse-1', reviewedByName: 'Almacén QA' } satisfies ProcessingReviewRecord
 const repack = { id: 'repack-1', operationId: 'op-p', status: 'confirmed', sourceLotId: 'lot-r', sourceProductId: 'sachet', sourceProductName: 'Sachet Viena', sourceUnitType: 'package', location: 'central', reservationId: 'reservation-1', reviewId: 'review-1', reviewCaseId: 'case-1', authorizationId: 'quality-auth', evidenceRefs: ['evidence-1'], openedCommercialQuantity: 2, openedPhysicalWeightG: 500, sourceCostCents: 125, outputLots: [{ id: 'out-1', lotId: 'new-lot', productId: 'sachet', productName: 'Sachet Viena', lotCode: 'NEW-1', commercialQuantity: 2, commercialUnit: 'package', netWeightG: 500, costCents: 125, movementId: 'movement-1' }], movementIds: ['movement-1'], responsibleUid: 'admin-1', responsibleName: 'Admin QA', confirmedAt: '2026-10-29T13:00:00.000Z', reversal: { status: 'blocked', dependencyIds: [], reason: 'test' } } satisfies ProcessingRepackRecord
@@ -38,3 +40,20 @@ assertEqual(filterProcessingReviews([lateReview], { from: '2026-10-29', to: '202
 const transformed = { ...repack, sourceProductId: 'bulk', outputLots: repack.outputLots }
 assertEqual(filterProcessingRepackings([transformed], { productId: 'sachet' }).length, 1, 'el producto de salida también coincide aunque el origen sea distinto')
 console.log('PASS: reportes filtran y trazan lotes; pesos desconocidos y costo histórico no se duplican.')
+let calls = 0
+const complete = await collectProcessingReportPages(async (cursor: number | null) => {
+  calls++
+  return cursor === null ? { rows: [{ id: 'a' }, { id: 'b' }], cursor: 1, hasMore: true } : { rows: [{ id: 'b' }, { id: 'c' }], cursor: 2, hasMore: false }
+}, () => true)
+assertEqual(complete?.length, 3, 'las páginas se completan sin duplicar documentos')
+assertEqual(calls, 2)
+let failed = false
+try { await collectProcessingReportPages(async (cursor: number | null) => { if (cursor) throw new Error('network failed'); return { rows: [{ id: 'a' }], cursor: 1, hasMore: true } }, () => true) } catch { failed = true }
+assertEqual(failed, true, 'un fallo intermedio no devuelve el informe parcial')
+let active = true
+const stale = await collectProcessingReportPages(async () => { active = false; return { rows: [{ id: 'a' }], cursor: null, hasMore: false } }, () => active)
+assertEqual(stale, null, 'se descarta la respuesta de filtros obsoletos')
+let overLimit = false
+try { await collectProcessingReportPages(async () => ({ rows: Array.from({ length: 10001 }, (_, i) => ({ id: String(i) })), cursor: null, hasMore: false }), () => true) } catch { overLimit = true }
+assertEqual(overLimit, true, '10.001 registros bloquean el informe completo y las exportaciones')
+console.log('PASS: paginación completa, deduplicación, fallo intermedio, cancelación y límite de 10.000 registros.')
