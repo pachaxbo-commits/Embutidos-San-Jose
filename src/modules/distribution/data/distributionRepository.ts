@@ -1,5 +1,6 @@
 import type { PendingOperation } from './operationQueue'
 import { submitOperation } from './operationQueue'
+import { createLiveEvidenceCache } from './liveEvidenceCache'
 import { normalizeCI } from '../domain/customerIdentity'
 import type { ProvisionalCollectionSnapshot } from '../domain/provisionalCollection'
 import {
@@ -548,32 +549,47 @@ function subscribeQuery<T>(
   let unsubscribe: Unsubscribe | null = null
   let cancelled = false
   let emission = 0
+  let stopEvidence = () => {}
   const queryKey = `q${querySequence++}`
 
   void (async () => {
     try {
       const context = await getContext()
       if (cancelled) return
+      let refreshEvidence = () => {}
+      const evidenceCache = createLiveEvidenceCache<DistSaleCorrection>((id, next, error) =>
+        onSnapshot(docRef(context, DIST_COLLECTIONS.saleCorrections, id), { includeMetadataChanges: true }, snapshot => {
+          if (!snapshot.metadata.fromCache) next(snapshot.data() as DistSaleCorrection | undefined)
+        }, error),
+      () => refreshEvidence())
+      stopEvidence = () => evidenceCache.dispose()
       unsubscribe = onSnapshot(
         build(context),
         { includeMetadataChanges: true },
         (snapshot) => {
           reportPendingWrites(queryKey, snapshot.metadata.hasPendingWrites)
-          const version = ++emission
-          void Promise.all(snapshot.docs.map(async entry => {
-            const row = { id: entry.id, ...entry.data() }
-            if (entry.ref.parent.id !== DIST_COLLECTIONS.sales) return row as T
-            const sale = row as unknown as DistSale
-            if (!sale.voidedAt || !sale.derivedVoid) return row as T
-            const correctionId = sale.derivedVoid.correctionId
-            const correction = correctionId
-              ? await getDocFromServer(docRef(context, DIST_COLLECTIONS.saleCorrections, correctionId))
-              : undefined
-            const evidence = correction?.data() as DistSaleCorrection | undefined
-            const receipt = resolveVoidedSaleReceiptSnapshot(sale, evidence)
-            return { ...row, derivedVoid: { ...sale.derivedVoid, cashReceiptSnapshot: receipt } } as T
-          })).then(rows => { if (!cancelled && version === emission) onData(rows) })
-            .catch(error => { if (!cancelled && version === emission) onError?.(error as Error) })
+          evidenceCache.retain(new Set(snapshot.docs.flatMap(entry => {
+            const sale = entry.data() as DistSale
+            return entry.ref.parent.id === DIST_COLLECTIONS.sales && sale.voidedAt && sale.derivedVoid
+              && !sale.derivedVoid.cashReceiptSnapshot && sale.derivedVoid.correctionId ? [sale.derivedVoid.correctionId] : []
+          })))
+          refreshEvidence = () => {
+            const version = ++emission
+            void Promise.all(snapshot.docs.map(async entry => {
+              const row = { id: entry.id, ...entry.data() }
+              if (entry.ref.parent.id !== DIST_COLLECTIONS.sales) return row as T
+              const sale = row as unknown as DistSale
+              if (!sale.voidedAt || !sale.derivedVoid) return row as T
+              const correctionId = sale.derivedVoid.correctionId
+              const evidence = correctionId && !sale.derivedVoid.cashReceiptSnapshot
+                ? await evidenceCache.get(correctionId)
+                : undefined
+              const receipt = resolveVoidedSaleReceiptSnapshot(sale, evidence)
+              return { ...row, derivedVoid: { ...sale.derivedVoid, cashReceiptSnapshot: receipt } } as T
+            })).then(rows => { if (!cancelled && version === emission) onData(rows) })
+              .catch(error => { if (!cancelled && version === emission) onError?.(error as Error) })
+          }
+          refreshEvidence()
         },
         (error) => {
           console.error('[distribution] error de suscripcion', error)
@@ -587,6 +603,7 @@ function subscribeQuery<T>(
 
   return () => {
     cancelled = true
+    stopEvidence()
     reportPendingWrites(queryKey, false)
     if (unsubscribe) unsubscribe()
   }

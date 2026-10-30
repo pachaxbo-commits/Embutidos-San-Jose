@@ -24,6 +24,7 @@
     "test:access": "node firebase/tests/exclusiveAccessRules.test.mjs",
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
     "test:subscription-permissions": "node --experimental-strip-types src/modules/distribution/state/__tests__/distributionSubscriptionPolicy.test.ts",
+    "test:live-evidence-cache": "node --experimental-strip-types scripts/test-live-evidence-cache.mjs",
     "test:closure-regression": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureRegression.test.ts",
     "test:closure-audit": "node --experimental-strip-types src/modules/distribution/domain/__tests__/closureAudit.test.ts",
     "test:closure-rectification": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/closureRectification.test.mjs\"",
