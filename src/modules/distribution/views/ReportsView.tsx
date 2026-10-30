@@ -2,6 +2,7 @@ import {
   exportExcel,
   exportPdf,
   reportAttributionError,
+  sellerKilogramReportError,
   reportSheets,
   type ReportSheetId,
   REPORT_OPTIONS,
@@ -20,6 +21,7 @@ import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../da
 import {
   computeMoneySummary,
   computeSellerBreakdown,
+  computeSellerKilogramsByProduct,
   cashMovementRouteId,
   cashMovementSellerUid,
   computeSoldByProduct,
@@ -32,6 +34,7 @@ import {
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import { ClosureRectificationAudit } from './ClosureRectificationAudit'
 import { RangePicker, describeRange } from './RangePicker'
+import { printHtmlDocument } from '../../../services/printing/documentPrintService'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistCollection, DistExpense, DistSale } from '../types'
 import { aggregateCustomerPurchases } from '../domain/customerPurchases'
@@ -49,7 +52,7 @@ import { MermaReportView } from './MermaReportView'
 
 type MainCategory = 'resumen' | 'dinero' | 'ventas' | 'creditos' | 'inventario'
 type DineroSubTab = 'flujo' | 'cobros' | 'gastos' | 'arqueos'
-type VentasSubTab = 'ventas' | 'cortesias' | 'productos' | 'ganancias' | 'kardex' | 'clientes'
+type VentasSubTab = 'ventas' | 'sellerKg' | 'cortesias' | 'productos' | 'ganancias' | 'kardex' | 'clientes'
 type InventarioSubTab = 'existencias' | 'movimientos' | 'diferencias' | 'mermas'
 
 const MAIN_CATEGORIES: { value: MainCategory; label: string }[] = [
@@ -80,6 +83,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const [selectedProfitProduct, setSelectedProfitProduct] = useState<ProductProfitSummaryItem | null>(null)
   const [selectedDifferenceClosure, setSelectedDifferenceClosure] = useState<DistributionViewProps['data']['closures'][number] | null>(null)
   const [customerSearchTerm, setCustomerSearchTerm] = useState('')
+  const [showSellerProductDetails, setShowSellerProductDetails] = useState(false)
 
   const attributionError = reportAttributionError(data, session.dayKeys, routeFilter, sellerFilter)
 
@@ -120,6 +124,24 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     setIsExportModalOpen(true)
   }
 
+  const sellerKgError = sellerKilogramReportError(data, session.dayKeys, routeFilter, sellerFilter)
+  const printSellerKilograms = async () => {
+    if (sellerKgError) { setExportError(sellerKgError); return }
+    try {
+      const sheet = reportSheets(data, session.dayKeys, routeFilter, sellerFilter).find(row => row.id === 'sellerSummary')
+      if (!sheet) throw new Error('No se pudo preparar el reporte por chofer.')
+      const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character))
+      const tableRows = sheet.rows.map(row => `<tr>${row.map(cell => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('')
+      const productRows = showSellerProductDetails ? sellerProductKilograms.map(row => `<tr><td>${esc(row.sellerName)}</td><td>${esc(row.routeNames.join(' · '))}</td><td>${esc(row.productName)}</td><td>${row.granelKilograms.toFixed(3)}</td><td>${row.documentedSachetKilograms.toFixed(3)}</td><td>${row.estimatedSachetKilograms.toFixed(3)}</td><td>${row.totalDocumentedKilograms.toFixed(3)}</td><td>${row.unknownWeightPackages}</td></tr>`).join('') : ''
+      const productDetailTable = showSellerProductDetails ? `<h3>Detalle por producto</h3><table><thead><tr><th>Chofer</th><th>Ruta</th><th>Producto</th><th>Granel kg</th><th>Sachets doc. kg</th><th>Estimados kg</th><th>Total doc. kg</th><th>Paquetes sin peso</th></tr></thead><tbody>${productRows || '<tr><td colspan="8">Sin detalle por producto en el período.</td></tr>'}</tbody></table>` : ''
+      const routeName = routeFilter ? reportRecordName(data.routes.find(route => route.id === routeFilter)?.name, routeFilter) : 'Todas las rutas'
+      const sellerName = sellerFilter ? reportPersonName(sellerOptions.find(seller => seller.sellerUid === sellerFilter)?.sellerName) : 'Todos los choferes'
+      const html = `<!doctype html><html lang="es"><meta charset="utf-8"><title>Kg vendidos por chofer</title><style>body{font:12px Arial,sans-serif;color:#172033;margin:24px}h1{color:#a20f25;margin-bottom:4px}.meta{color:#475569;margin:4px 0 18px}table{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:18px}thead{display:table-header-group}tr{break-inside:avoid}th,td{border:1px solid #cbd5e1;padding:6px;text-align:left}th{background:#f1f5f9}tr:last-child{font-weight:bold;background:#f8fafc}.note{margin-top:12px;color:#475569;font-size:10px}@page{size:landscape;margin:12mm}@media print{body{margin:0}}</style><h1>EMBUTIDOS SAN JOSÉ</h1><h2>KG VENDIDOS POR CHOFER</h2><p class="meta">Período: ${esc(describeRange(session.dayKeys))} · Ruta: ${esc(routeName)} · Chofer: ${esc(sellerName)}<br>Emitido: ${esc(new Date().toLocaleString('es-BO'))}</p><table><thead><tr>${sheet.headers.map(header => `<th>${esc(header)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>${productDetailTable}<p class="note">Los sachets estimados se muestran separados. Paquetes sin peso fiable no se convierten en kilogramos documentados.</p></html>`
+      await printHtmlDocument(html, 'Kg vendidos por chofer')
+      setExportError('')
+    } catch (failure) { setExportError((failure as Error).message || 'No se pudo abrir la impresión.') }
+  }
+
   const handleToggleSheet = (id: ReportSheetId) => {
     setSelectedSheetIds((prev) => {
       const next = new Set(prev)
@@ -146,6 +168,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         throw new Error('Espera la confirmación de las operaciones pendientes antes de exportar.')
       }
       const allSheets = reportSheets(data, session.dayKeys, routeFilter, sellerFilter)
+      if (selectedSheetIds.has('sellerSummary')) {
+        const kgError = sellerKilogramReportError(data, session.dayKeys, routeFilter, sellerFilter)
+        if (kgError) throw new Error(kgError)
+      }
       const sheets = filterReportSheets(allSheets, selectedSheetIds)
       if (sheets.length === 0) {
         throw new Error('Selecciona al menos un reporte.')
@@ -227,6 +253,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     () => computeSellerBreakdown(sales, collections, expenses, claims, data.products),
     [sales, collections, expenses, claims, data.products],
   )
+  const sellerProductKilograms = computeSellerKilogramsByProduct(sales, claims, data.products, sellerFilter)
 
   const productRows = useMemo(() => {
     const sold = computeSoldByProduct(sales)
@@ -468,6 +495,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       <div className="grid w-full min-w-0 gap-3">
         {/* Botones de Descarga */}
         <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => { setMainCategory('ventas'); setVentasSubTab('sellerKg'); setExportError('') }} className="flex min-h-11 items-center gap-2 rounded-2xl bg-[var(--primary)] px-4 py-3 text-sm font-extrabold text-white shadow-sm"><Award size={16}/> Kg vendidos por chofer</button>
           <button
             type="button"
             disabled={exporting}
@@ -499,7 +527,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
           onRouteFilterChange={setRouteFilter}
         />
 
-        {(sellerOptions.length > 1 || (mainCategory === 'inventario' && inventarioSubTab === 'diferencias')) && (
+        {(sellerOptions.length > 1 || (mainCategory === 'inventario' && inventarioSubTab === 'diferencias') || (mainCategory === 'ventas' && ventasSubTab === 'sellerKg')) && (
           <Field label="Distribuidor / vendedor">
             <ChoiceButton
               label={sellerFilter ? sellerOptions.find((s) => s.sellerUid === sellerFilter)?.sellerName : 'Todos los vendedores'}
@@ -956,6 +984,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
             <div className="flex flex-wrap gap-1.5 border-b border-slate-200 pb-2">
               {[
                 { value: 'ventas', label: 'Ventas' },
+                { value: 'sellerKg', label: 'Kg por chofer' },
                 { value: 'cortesias', label: 'Cortesías' },
                 { value: 'productos', label: 'Productos vendidos' },
                 { value: 'ganancias', label: 'Ganancias' },
@@ -976,6 +1005,19 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                 </button>
               ))}
             </div>
+
+            {ventasSubTab === 'sellerKg' && (() => {
+              const rows = sellers.filter(seller => seller.salesCount > 0 || seller.kilograms !== 0 || seller.documentedSachetKilograms !== 0 || seller.estimatedSachetKilograms !== 0 || seller.packages !== 0 || seller.unknownWeightPackages !== 0)
+              const sheet = sellerKgError ? undefined : reportSheets(data, session.dayKeys, routeFilter, sellerFilter).find(report => report.id === 'sellerSummary')
+              return <SectionCard title="Kg vendidos por chofer">
+                <p className="mb-3 text-xs text-slate-600">Kilos de granel y peso documentado de sachets. Las estimaciones y paquetes sin peso fiable se informan por separado.</p>
+                {sellerKgError && <p role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">{sellerKgError}</p>}
+                <div className="mb-3 flex flex-wrap gap-2"><SecondaryButton onClick={() => setShowSellerProductDetails(value => !value)}><Search size={15}/>{showSellerProductDetails ? 'Ocultar detalle por producto' : 'Ver detalle por producto'}</SecondaryButton><SecondaryButton disabled={Boolean(sellerKgError)} onClick={() => void printSellerKilograms()}><Printer size={15}/> Imprimir reporte</SecondaryButton><SecondaryButton disabled={Boolean(sellerKgError)} onClick={() => handleOpenExportModal('PDF')}><FileText size={15}/> Descargar PDF</SecondaryButton><SecondaryButton disabled={Boolean(sellerKgError)} onClick={() => handleOpenExportModal('Excel')}><FileSpreadsheet size={15}/> Descargar Excel</SecondaryButton></div>
+                {rows.length === 0 ? <EmptyBlock title="Sin ventas en el período" description="No se convirtieron despachos, cobros ni paquetes sin peso en ventas por kilogramo."/> : <div className="grid gap-2">{rows.map(seller => <article key={seller.sellerUid} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap justify-between gap-2"><strong>{seller.sellerName}</strong><span className="text-xs font-semibold text-slate-600">{seller.routeNames.join(' · ') || 'Sin ruta'}</span></div><dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4"><div><dt>Granel</dt><dd className="font-black">{seller.kilograms.toFixed(3)} kg</dd></div><div><dt>Sachets documentados</dt><dd className="font-black">{seller.documentedSachetKilograms.toFixed(3)} kg</dd></div><div><dt>Total documentado</dt><dd className="font-black text-emerald-800">{seller.totalDocumentedKilograms.toFixed(3)} kg</dd></div><div><dt>Sachets estimados</dt><dd className="font-black">{seller.estimatedSachetKilograms > 0 ? `≈ ${seller.estimatedSachetKilograms.toFixed(3)} kg` : '—'}</dd></div><div><dt>Paquetes sin peso fiable</dt><dd className="font-black">{seller.unknownWeightPackages}</dd></div><div><dt>Paquetes contabilizados</dt><dd className="font-black">{seller.packages}</dd></div></dl></article>)}<p className="text-xs font-black text-slate-800">Total general documentado: {rows.reduce((sum, seller) => sum + seller.totalDocumentedKilograms, 0).toFixed(3)} kg · estimado separado: ≈ {rows.reduce((sum, seller) => sum + seller.estimatedSachetKilograms, 0).toFixed(3)} kg</p></div>}
+                {showSellerProductDetails && <div className="mt-3 grid gap-2">{sellerProductKilograms.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">Sin detalle por producto en el período.</p> : sellerProductKilograms.map(row => <article key={`${row.sellerUid}-${row.productId}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3"><div className="flex flex-wrap justify-between gap-1"><strong className="text-xs">{row.productName}</strong><span className="text-[10px] text-slate-600">{row.sellerName} · {row.routeNames.join(' · ') || 'Sin ruta'}</span></div><p className="mt-1 text-[10px] text-slate-700">Granel {row.granelKilograms.toFixed(3)} kg · Sachets documentados {row.documentedSachetKilograms.toFixed(3)} kg · Total documentado {row.totalDocumentedKilograms.toFixed(3)} kg · Estimado ≈ {row.estimatedSachetKilograms.toFixed(3)} kg · Paquetes sin peso: {row.unknownWeightPackages}</p></article>)}</div>}
+                {!sellerKgError && sheet && <p className="mt-3 text-[10px] text-slate-500">El PDF y Excel usan la hoja existente “{sheet.name}” y los filtros de fecha, ruta y chofer seleccionados.</p>}
+              </SectionCard>
+            })()}
 
             {ventasSubTab === 'ventas' && (
               sales.length === 0 ? (

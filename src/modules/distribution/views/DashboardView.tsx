@@ -6,6 +6,7 @@ import { Screen } from '../../../components/ui/Screen'
 import {
   buildReconciliation,
   computeMoneySummary,
+  computeSellerKilogramsByRoute,
   computeSoldByProduct,
   computeSoldKilograms,
   computeSoldPackages,
@@ -121,6 +122,10 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
         distributorName: string
         salesTotal: number
         kilograms: number
+        granelKilograms: number
+        documentedSachetKilograms: number
+        estimatedSachetKilograms: number
+        unknownWeightPackages: number
         credit: number
         collected: number
         isOpen: boolean
@@ -135,6 +140,10 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
         distributorName: dispatch.distributorName,
         salesTotal: 0,
         kilograms: 0,
+        granelKilograms: 0,
+        documentedSachetKilograms: 0,
+        estimatedSachetKilograms: 0,
+        unknownWeightPackages: 0,
         credit: 0,
         collected: 0,
         isOpen: true,
@@ -142,21 +151,33 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
       })
     }
 
+    const sellerKgByRoute = computeSellerKilogramsByRoute(sales, claims, data.products)
     for (const sale of sales) {
+      if (sale.voidedAt || sale.pendingConfirmation || sale.saleKind === 'courtesy') continue
+      const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
       const entry = map.get(sale.routeId) ?? {
         routeId: sale.routeId,
-        routeName: sale.routeName,
-        distributorName: sale.sellerName,
+        routeName: effective.routeName,
+        distributorName: effective.sellerName,
         salesTotal: 0,
         kilograms: 0,
+        granelKilograms: 0,
+        documentedSachetKilograms: 0,
+        estimatedSachetKilograms: 0,
+        unknownWeightPackages: 0,
         credit: 0,
         collected: 0,
         isOpen: false,
         cashDifference: null,
       }
-      entry.salesTotal = round2(entry.salesTotal + sale.total)
-      entry.credit = round2(entry.credit + sale.creditAmount)
-      entry.kilograms = round2(entry.kilograms + computeSoldKilograms([sale]))
+      entry.salesTotal = round2(entry.salesTotal + effective.total)
+      entry.credit = round2(entry.credit + effective.creditAmount)
+      const metrics = sellerKgByRoute.get(sale.routeId)
+      entry.kilograms = metrics?.totalDocumentedKilograms ?? 0
+      entry.granelKilograms = metrics?.granelKilograms ?? 0
+      entry.documentedSachetKilograms = metrics?.documentedSachetKilograms ?? 0
+      entry.estimatedSachetKilograms = metrics?.estimatedSachetKilograms ?? 0
+      entry.unknownWeightPackages = metrics?.unknownWeightPackages ?? 0
       map.set(sale.routeId, entry)
     }
 
@@ -175,7 +196,7 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
     }
 
     return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
-  }, [visibleOpenDispatches, periodClosures, sales, collections])
+  }, [visibleOpenDispatches, periodClosures, sales, collections, claims, data.products])
 
   /**
    * Conciliacion consolidada del periodo.
@@ -430,8 +451,8 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
                       <dd className="text-xs font-black tabular-nums text-slate-800">{formatBs(entry.salesTotal)}</dd>
                     </div>
                     <div>
-                      <dt className="text-[10px] font-bold uppercase text-slate-400">Kg</dt>
-                      <dd className="text-xs font-black tabular-nums text-slate-800">{entry.kilograms} kg</dd>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Kg documentados</dt>
+                      <dd className="text-xs font-black tabular-nums text-slate-800">{entry.kilograms.toFixed(3)} kg</dd>
                     </div>
                     <div>
                       <dt className="text-[10px] font-bold uppercase text-slate-400">Credito</dt>
@@ -442,6 +463,12 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
                       <dd className="text-xs font-black tabular-nums text-slate-800">{formatBs(entry.collected)}</dd>
                     </div>
                   </dl>
+                  <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 rounded-xl bg-slate-50 p-2 text-[10px] font-semibold text-slate-600 sm:grid-cols-4">
+                    <span>Granel: <b>{entry.granelKilograms.toFixed(3)} kg</b></span>
+                    <span>Sachets documentados: <b>{entry.documentedSachetKilograms.toFixed(3)} kg</b></span>
+                    {entry.estimatedSachetKilograms > 0 && <span>Sachets estimados: <b>≈ {entry.estimatedSachetKilograms.toFixed(3)} kg</b></span>}
+                    {entry.unknownWeightPackages > 0 && <span>Paquetes sin peso fiable: <b>{entry.unknownWeightPackages}</b></span>}
+                  </div>
                   {entry.cashDifference !== null && (
                     <div className="mt-2">
                       <VarianceBadge variance={entry.cashDifference} />

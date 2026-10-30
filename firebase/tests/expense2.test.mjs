@@ -50,12 +50,13 @@ try {
   await root.collection('distRoutes').doc(routeId).set({ id: routeId, name: 'Ruta QA', active: true })
 
   // Security Rules are tested with authenticated client SDKs, not the Admin SDK.
-  for (const type of ['saveExpenseGroup', 'deleteExpenseGroup', 'saveExpenseCategory', 'deleteExpenseCategory', 'saveExpenseSupplier', 'registerSupplierPurchase', 'paySupplierPayable', 'voidSupplierPayment', 'voidSupplierPurchase']) {
+  for (const type of ['saveExpenseGroup', 'deleteExpenseGroup', 'saveExpenseCategory', 'deleteExpenseCategory', 'saveExpenseSupplier', 'paySupplierPayable', 'voidSupplierPayment', 'voidSupplierPurchase']) {
     await assertSucceeds(queuedFrom(admin, type, { sample: true })); checks++
     await assertFails(queuedFrom(warehouse, type, { sample: true })); checks++
     await assertFails(queuedFrom(distributor, type, { sample: true })); checks++
     await assertFails(queuedFrom(outsider, type, { sample: true })); checks++
   }
+  await assertSucceeds(queuedFrom(distributor, 'registerSupplierPurchase', { sample: true })); checks++
   const adminDb = env.authenticatedContext(admin).firestore()
   for (const collection of ['distExpenseGroups', 'distSuppliers', 'distPayables', 'distSupplierPayments']) {
     await assertFails(setDoc(doc(adminDb, 'restaurants', 'sanjose', collection, `${prefix}-direct`), { id: `${prefix}-direct` })); checks++

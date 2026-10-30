@@ -3014,7 +3014,26 @@ async function saveExpenseSupplier(o, p) {
 }
 
 async function registerSupplierPurchase(o, p) {
-  o.admin();
+  const isDistributorPurchase = o.member.role === "distributor";
+  check(o.member.role === "admin" || isDistributorPurchase, "Solo Administración o Distribuidores pueden registrar compras de proveedor.");
+  if (isDistributorPurchase) {
+    check(typeof o.member.routeId === "string" && o.member.routeId.length > 0, "Tu usuario no tiene una ruta asignada.");
+    check(p.routeId === undefined && p.groupId === undefined && p.categoryId === undefined,
+      "La ruta y clasificación de una compra de distribuidor se determinan desde el servidor.");
+    check(Array.isArray(p.purchaseLines) && p.purchaseLines.length === 1, "Registra una sola línea de compra de carne por operación.");
+    const line = p.purchaseLines[0];
+    check(String(line?.description || "").trim().toLocaleLowerCase("es") === "carne" && line?.unit === "kg",
+      "Los distribuidores solo pueden registrar compras de carne por kilogramo.");
+    check(Number(line?.quantity) > 0 && Number(line?.quantity) <= 10000 && Number(line?.unitPrice) > 0,
+      "La cantidad y el precio por kilogramo deben ser mayores que cero y válidos.");
+    check(round(Number(line.quantity) * Number(line.unitPrice)) === round(p.amount),
+      "El total debe coincidir con kilogramos por precio unitario.");
+    check(["cash", "transfer", "credit"].includes(p.paymentMethod), "Selecciona Efectivo, QR / transferencia o A crédito.");
+    check(p.paymentMethod === "credit" ? Number(p.initialPayment || 0) === 0 : round(Number(p.initialPayment)) === round(p.amount),
+      "La compra de ruta se registra pagada completamente o a crédito; los abonos posteriores se registran en Cuentas por pagar.");
+  } else {
+    o.admin();
+  }
   const supplier = await o.read("distSuppliers", safeId(p.supplierId));
   check(supplier?.active === true, "Selecciona un proveedor activo.");
   const total = round(p.amount);
@@ -3061,7 +3080,8 @@ async function registerSupplierPurchase(o, p) {
   check(!receiptNumber || Boolean(receiptType), "Selecciona el tipo de comprobante de compra.");
   check(validDate(p.dayKey), "La fecha de compra no es válida.");
   check(!p.dueDayKey || (validDate(p.dueDayKey) && p.dueDayKey >= p.dayKey), "La fecha de vencimiento no es válida.");
-  const groupId = safeId(p.groupId), categoryId = safeId(p.categoryId);
+  const groupId = isDistributorPurchase ? "production_input" : safeId(p.groupId);
+  const categoryId = isDistributorPurchase ? "production_input-1" : safeId(p.categoryId);
   const group = await readExpenseGroupConfig(o, groupId);
   check(group && group.active !== false && group.economicType === "production_input", "Las cuentas por pagar solo se registran en grupos clasificados como compras para producción.");
   const category = await o.read("distExpenseCategories", categoryId);
@@ -3073,13 +3093,18 @@ async function registerSupplierPurchase(o, p) {
   const method = paid === 0 ? "credit" : paid === total ? p.paymentMethod : "mixed";
   check(paid === 0 || ["cash", "transfer", "other"].includes(p.paymentMethod), "Selecciona la forma de pago del adelanto.");
   const categoryName = category?.name || defaultName;
+  const routeId = isDistributorPurchase ? o.member.routeId : "administracion";
+  const route = isDistributorPurchase ? await o.read("distRoutes", routeId) : null;
+  check(!isDistributorPurchase || route?.active !== false, "La ruta asignada no está disponible para registrar compras.");
+  const routeName = isDistributorPurchase ? route?.name || routeId : "Administración";
+  const responsibleName = o.member.displayName || o.actor;
   const expense = {
     id: o.id, ...o.base(), dayKey: p.dayKey, operationId: o.id, transactionKind: "supplier_purchase",
     group: groupId, groupName: group.name || group.label || groupId, categoryId, categoryName,
     economicType: "production_input", affectsOperatingResult: false, classificationStatus: "reviewed", classificationSource: "admin_review",
     concept: detail, amount: total, paymentMethod: method,
     cashPaidAmount: p.paymentMethod === "cash" ? paid : 0, transferPaidAmount: p.paymentMethod === "transfer" ? paid : 0, otherPaidAmount: p.paymentMethod === "other" ? paid : 0, initialPaymentMethod: p.paymentMethod,
-    routeId: "administracion", routeName: "Administración", registeredByUid: o.actor, registeredByName: o.member.displayName || o.actor,
+    routeId, routeName, registeredByUid: o.actor, registeredByName: responsibleName,
     supplierId: supplier.id, supplierName: supplier.name, note: String(p.note || "").trim(),
     ...(receiptType ? { purchaseReceiptType: receiptType } : {}), ...(receiptNumber ? { purchaseReceiptNumber: receiptNumber } : {}),
     ...(purchaseLines ? { purchaseLines } : {}),
@@ -3089,7 +3114,7 @@ async function registerSupplierPurchase(o, p) {
     id: o.id, ...o.base(), supplierId: supplier.id, supplierName: supplier.name, purchaseExpenseId: o.id,
     dayKey: p.dayKey, description: detail, groupId, groupName: expense.groupName, categoryId, categoryName,
     totalAmount: total, paidAmount: paid, balance, status: balance === 0 ? "paid" : paid > 0 ? "partial" : "pending",
-    ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}), note: String(p.note || "").trim(), ...(purchaseLines ? { purchaseLines } : {}), routeId: "administracion", routeName: "Administración",
+    ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}), note: String(p.note || "").trim(), ...(purchaseLines ? { purchaseLines } : {}), routeId, routeName,
   };
   if (receiptType) payable.purchaseReceiptType = receiptType;
   if (receiptNumber) payable.purchaseReceiptNumber = receiptNumber;
@@ -3097,8 +3122,8 @@ async function registerSupplierPurchase(o, p) {
   o.put("distPayables", payable.id, payable);
   if (paid > 0) o.put("distSupplierPayments", `${o.id}__initial`, {
     id: `${o.id}__initial`, ...o.base(), payableId: o.id, supplierId: supplier.id, supplierName: supplier.name, amount: paid,
-    paymentMethod: p.paymentMethod, dayKey: p.dayKey, routeId: "administracion", routeName: "Administración",
-    responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, note: "Pago inicial de la compra",
+    paymentMethod: p.paymentMethod, dayKey: p.dayKey, routeId, routeName,
+    responsibleUid: o.actor, responsibleName, note: "Pago inicial de la compra",
   });
   return { expense, payable };
 }

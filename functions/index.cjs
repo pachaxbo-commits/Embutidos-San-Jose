@@ -8,6 +8,7 @@ const { processCommand } = require("./operations.cjs");
 const { prepareCleanDelivery, executeCleanDelivery } = require("./maintenance.cjs");
 const { submitDiagnostic, listDiagnostics, updateDiagnostic } = require("./error-diagnostics.cjs");
 const { manageProcessingQualityAuthorization: manageProcessingQualityAuthorizationCore } = require("./processing-authorization.cjs");
+const { listDistributorPurchaseSuppliers: listDistributorPurchaseSuppliersCore } = require("./supplier-catalog.cjs");
 initializeApp();
 exports.processSanJoseOperation = onDocumentCreated(
   {
@@ -31,6 +32,19 @@ exports.manageSanJoseDiagnostics = onCall(
     if (action === "list") return listDiagnostics(db, request);
     if (action === "update") return updateDiagnostic(db, request);
     throw new HttpsError("invalid-argument", "La acción de diagnóstico no es válida.");
+  },
+);
+
+exports.listDistributorPurchaseSuppliers = onCall(
+  { region: "us-central1", memory: "256MiB", maxInstances: 3, invoker: "public" },
+  async (request) => {
+    try {
+      return await listDistributorPurchaseSuppliersCore(getFirestore(), request.auth?.uid);
+    } catch (error) {
+      if (error?.code && ["unauthenticated", "permission-denied"].includes(error.code))
+        throw new HttpsError(error.code, error.message);
+      throw error;
+    }
   },
 );
 

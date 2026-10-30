@@ -6,6 +6,7 @@ import { cashMovementRouteId, cashMovementSellerUid, computeSellerBreakdown, com
 import { roundStockQuantity } from "../domain/stockAvailability";
 import { originPendingQuantity } from '../domain/originTraceability';
 import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio, currentCustomerDisplayName } from "../domain/creditRoutes";
+const roundKg = (value: number) => Math.round((value + Number.EPSILON) * 1000) / 1000;
 import {
   aggregateCustomerPurchases,
   type CustomerPurchasesAggregation,
@@ -378,6 +379,19 @@ export function reportAttributionError(data: DistributionData, days: string[], r
   return unresolved ? "No se pudo identificar al vendedor de una devolución histórica. No se muestran cifras parciales." : null;
 }
 
+export function sellerKilogramReportError(data: DistributionData, days: string[], route = "", seller = ""): string | null {
+  if (data.operations.some(operation => operation.status === 'queued'))
+    return 'Espera la confirmación de las operaciones pendientes antes de emitir el reporte de kilos.'
+  if (data.sales.some(sale => days.includes(sale.dayKey || toDayKey(sale.createdAt)) && (!route || matchesRoute(sale.routeId, route)) && (!seller || sale.sellerUid === seller) && sale.pendingConfirmation))
+    return 'Hay ventas pendientes de sincronización en el período. No se emitió el reporte parcial.'
+  const unresolvedClaim = data.claims.some(claim => days.includes(claim.dayKey || toDayKey(claim.createdAt))
+    && (!route || matchesRoute(cashMovementRouteId(claim), route))
+    && (!seller || cashMovementSellerUid(claim) === seller)
+    && !claim.sellerUid
+    && !data.sales.some(sale => sale.id === claim.saleId && sale.sellerUid))
+  return unresolvedClaim ? 'Hay una devolución histórica sin chofer atribuible. No se emitió el reporte parcial.' : null
+}
+
 export function reportSheets(
   data: DistributionData,
   days: string[],
@@ -466,7 +480,14 @@ export function reportSheets(
   const voidedCashReceiptSales = data.sales.filter((sale) => inScope(sale) && sale.voidedAt && sale.derivedVoid
     && !sale.pendingConfirmation && sale.saleKind !== 'courtesy' && (!seller || sale.sellerUid === seller));
   const voidedReceiptTotals = computeVoidedSaleReceiptTotals(voidedCashReceiptSales);
-  const sellerBreakdown = computeSellerBreakdown([...sales, ...voidedCashReceiptSales], collections, expenses, claims, data.products);
+  const sellerBreakdown = computeSellerBreakdown([...sales, ...voidedCashReceiptSales], collections, expenses, claims, data.products)
+    .filter(item => item.salesCount > 0 || item.kilograms !== 0 || item.documentedSachetKilograms !== 0 || item.estimatedSachetKilograms !== 0 || item.packages !== 0 || item.unknownWeightPackages !== 0);
+  const sellerKgRows = sellerBreakdown.length
+    ? [
+      ...sellerBreakdown.map(item => [item.sellerName, item.routeNames.join(' · '), item.kilograms, item.documentedSachetKilograms, item.estimatedSachetKilograms, item.totalDocumentedKilograms, item.totalEstimatedKilograms, item.packages, item.unknownWeightPackages]),
+      ["TOTAL GENERAL", "", roundKg(sellerBreakdown.reduce((sum, item) => sum + item.kilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.documentedSachetKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.estimatedSachetKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.totalDocumentedKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.totalEstimatedKilograms, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.packages, 0)), roundKg(sellerBreakdown.reduce((sum, item) => sum + item.unknownWeightPackages, 0))],
+    ]
+    : [["Sin ventas en el período", "", "", "", "", "", "", "", ""]];
   return [
     {
       id: 'summary',
@@ -506,7 +527,7 @@ export function reportSheets(
       id: 'sellerSummary',
       name: "Kg por vendedor",
       headers: ["Vendedor", "Rutas", "Granel (kg)", "Sachets documentados (kg)", "Sachets estimados (kg)", "Total documentado (kg)", "Total incluyendo estimados (kg)", "Paquetes", "Paquetes sin peso fiable"],
-      rows: sellerBreakdown.map(item => [item.sellerName, item.routeNames.join(' · '), item.kilograms, item.documentedSachetKilograms, item.estimatedSachetKilograms, item.totalDocumentedKilograms, item.totalEstimatedKilograms, item.packages, item.unknownWeightPackages]),
+      rows: sellerKgRows,
     },
     {
       id: 'sales',
@@ -1260,7 +1281,9 @@ export async function exportPdf(
   filename = "SanJose-reportes.pdf",
 ) {
 
-  const pdf = new jsPDF({ orientation: "portrait", format: "letter" });
+  const firstSheet = sheets[0]
+  const firstSheetIsWide = Boolean(firstSheet && (firstSheet.headers.length > 8 || firstSheet.id === "credits" || firstSheet.id === "sales" || firstSheet.id === "claims"))
+  const pdf = new jsPDF({ orientation: firstSheetIsWide ? "landscape" : "portrait", format: "letter" });
 
   const renderSummarySheet = (sheet: ReportSheet) => {
     drawBrandedPdfHeader(

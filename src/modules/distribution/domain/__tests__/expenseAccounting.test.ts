@@ -1,4 +1,5 @@
 import type { DistExpense } from '../../types.ts'
+import { computeSellerBreakdown } from '../engine.ts'
 import { expenseCashPaidAmount, expenseMatchesPaymentFilter, expenseOtherPaidAmount, expenseTransferPaidAmount } from '../expenseAccounting.ts'
 import { summarizeActiveExpenses } from '../expenseReview.ts'
 import { DEFAULT_EXPENSE_CATEGORIES, listExpenseGroups, mergeExpenseCategories } from '../expenseCategories.ts'
@@ -26,6 +27,13 @@ check(expenseMatchesPaymentFilter(mixedPay, 'mixed') && expenseMatchesPaymentFil
 const totals = summarizeActiveExpenses([creditPurchase, cashPayment, qrAdvance, mixedPay])
 check(totals.productionInputTotal === 3_500 && totals.total === 3_500, 'la compra a crédito y parcial se reconocen como compras económicas una sola vez')
 check(totals.cashOutflow === 900, 'la salida de efectivo suma adelantos en efectivo y pagos posteriores, no el total a crédito')
+const routeSale = { id: 'sale-route', sellerUid: 'hugo', sellerName: 'Hugo', routeId: 'route-hugo', routeName: 'Ruta Hugo', createdAt: base.createdAt, dayKey: base.dayKey, saleKind: 'sale', total: 1_000, cashAmount: 1_000, qrAmount: 0, creditAmount: 0, lines: [] } as never
+const routePurchase = { ...creditPurchase, id: 'route-purchase-cash', operationId: 'route-purchase-cash', transactionKind: 'supplier_purchase', routeId: 'route-hugo', routeName: 'Ruta Hugo', registeredByUid: 'hugo', registeredByName: 'Hugo', amount: 700, paymentMethod: 'cash', cashPaidAmount: 700 } as DistExpense
+const routeQrPurchase = { ...routePurchase, id: 'route-purchase-qr', operationId: 'route-purchase-qr', paymentMethod: 'transfer', cashPaidAmount: 0, transferPaidAmount: 700 } as DistExpense
+const routeCreditPurchase = { ...routePurchase, id: 'route-purchase-credit', operationId: 'route-purchase-credit', paymentMethod: 'credit', cashPaidAmount: 0, transferPaidAmount: 0 } as DistExpense
+check(computeSellerBreakdown([routeSale], [], [routePurchase]).find(row => row.sellerUid === 'hugo')?.expectedCash === 300, 'el cierre de ruta descuenta los Bs 700 pagados en efectivo de Hugo')
+check(computeSellerBreakdown([routeSale], [], [routeQrPurchase]).find(row => row.sellerUid === 'hugo')?.expectedCash === 1_000, 'una compra QR no reduce el efectivo físico esperado de la ruta')
+check(computeSellerBreakdown([routeSale], [], [routeCreditPurchase]).find(row => row.sellerUid === 'hugo')?.expectedCash === 1_000, 'una compra a crédito no reduce el efectivo físico esperado de la ruta')
 const customCategory = { ...DEFAULT_EXPENSE_CATEGORIES[0], id: 'custom-services', group: 'custom-admin', name: 'Servicios de oficina' }
 const mergedCategories = mergeExpenseCategories([customCategory])
 check(mergedCategories.some(category => category.id === 'administration-1') && mergedCategories.some(category => category.id === 'custom-services'), 'las categorías personalizadas no ocultan los valores predeterminados')

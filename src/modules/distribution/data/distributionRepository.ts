@@ -1542,12 +1542,12 @@ export async function saveExpenseSupplier(input: { supplierId: string; name: str
 export interface SupplierPurchaseInput {
   operationId: string
   supplierId: string
-  groupId: string
-  categoryId: string
+  groupId?: string
+  categoryId?: string
   description: string
   amount: number
   initialPayment: number
-  paymentMethod?: 'cash' | 'transfer' | 'other'
+  paymentMethod?: 'cash' | 'transfer' | 'other' | 'credit'
   dayKey: string
   dueDayKey?: string
   purchaseReceiptType?: 'invoice' | 'receipt' | 'other'
@@ -1558,6 +1558,20 @@ export interface SupplierPurchaseInput {
 
 export async function registerSupplierPurchase(input: SupplierPurchaseInput) {
   return submitOperation<{ expense: DistExpense; payable: DistPayable }>('registerSupplierPurchase', input, input.operationId)
+}
+
+let distributorSupplierFunctionsEmulatorConnected = false
+export async function listDistributorPurchaseSuppliers(): Promise<Array<{ id: string; name: string }>> {
+  const context = await getFirebaseContext()
+  if (!context) throw new Error('Firebase no está configurado.')
+  const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
+  const functions = getFunctions(context.app, 'us-central1')
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !distributorSupplierFunctionsEmulatorConnected) {
+    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+    distributorSupplierFunctionsEmulatorConnected = true
+  }
+  const call = httpsCallable<void, Array<{ id: string; name: string }>>(functions, 'listDistributorPurchaseSuppliers')
+  return (await call()).data
 }
 
 export async function paySupplierPayable(input: { payableId: string; amount: number; paymentMethod: 'cash' | 'transfer' | 'other'; dayKey: string; note?: string }, operationId = newOperationId('supplier-payment')) {
