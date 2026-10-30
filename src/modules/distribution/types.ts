@@ -361,6 +361,21 @@ export interface DistSale extends DistBaseDoc {
   revision?: number
   /** Resultado vigente; los campos originales del documento no se sobrescriben. */
   effectiveSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount' | 'saleKind'>
+  derivedVoid?: {
+    correctionId?: string
+    cashRefundAmount?: number
+    cashReceiptSnapshot?: {
+      cashAmount: number
+      qrAmount: number
+      paymentKind?: PaymentKind | string
+      saleDayKey?: string
+      saleCreatedAt?: string
+      sellerUid?: string
+      sellerName?: string
+      sourceRevision?: number
+    }
+    [key: string]: unknown
+  }
   /** Instantánea original antes de cualquier corrección auditada */
   originalSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount' | 'saleKind'>
   /** Historial acumulado de correcciones auditadas de esta venta */
@@ -752,7 +767,10 @@ export interface DistClosure extends DistBaseDoc {
   cashCollections: number
   qrCollections: number
   cashExpenses: number
+  voidedCashReceipts?: number
+  voidedQrReceipts?: number
   claimCash?: number
+  claimQr?: number
   expectedCash: number
   closureType?: 'route' | 'admin'
   physicalCashDeclared?: number
@@ -837,7 +855,7 @@ export interface OriginReference {
  physicalOriginConfirmed: false; basis: 'original_accounting_debit_only'; quantity: number;
 }
 export interface DistTransfer { id: string; fromWarehouseId: string; toWarehouseId: string; line: DistDispatchLine; createdAt: string; createdBy: string; responsibleName?: string; note?: string }
-export interface DistClaim { id: string; kind: 'exchange'|'return'; isDerivedSaleVoid?: boolean; saleId: string; sellerUid?: string; sellerName?: string; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; dispatchId?: string; receivedLocation?: string; documentedPackageWeightKgSnapshot?: number; presentationSnapshot?: string; descriptionSnapshot?: string; returnedProcessingAllocations?: Array<{ lotId: string; reservationId?: string; quantity: number; weightG?: number; allocations: DistLotAllocation[] }>; quarantineTransferredAt?: string; quarantineTransferredBy?: string; quarantineTransferredByName?: string; quarantineTransferredTo?: string; quarantineTransferMovementIds?: string[]; quarantineTransferReversalMovementIds?: string[]; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; returnedCostCents?: number | null; costAccountingStatus?: 'pending_quarantine_disposition' | string; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName: string;quantity: number;unitType: UnitType;total: number;allocations?: DistLotAllocation[];documentedPackageWeightKgSnapshot?: number;presentationSnapshot?: string;descriptionSnapshot?: string} | null }
+export interface DistClaim { id: string; kind: 'exchange'|'return'; isDerivedSaleVoid?: boolean; saleId: string; sellerUid?: string; sellerName?: string; createdBy?: string; saleSellerUid?: string; saleSellerName?: string; cashMovementResponsibleUid?: string; cashMovementResponsibleName?: string; cashMovementRouteId?: string; originRouteId?: string; cashRefundStatus?: 'pending'|'executed'|string; cashRefundedAt?: string; cashRefundedBy?: string; cashRefundedByName?: string; pendingConfirmation?: boolean; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; dispatchId?: string; receivedLocation?: string; documentedPackageWeightKgSnapshot?: number; presentationSnapshot?: string; descriptionSnapshot?: string; returnedProcessingAllocations?: Array<{ lotId: string; reservationId?: string; quantity: number; weightG?: number; allocations: DistLotAllocation[] }>; quarantineTransferredAt?: string; quarantineTransferredBy?: string; quarantineTransferredByName?: string; quarantineTransferredTo?: string; quarantineTransferMovementIds?: string[]; quarantineTransferReversalMovementIds?: string[]; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; returnedCostCents?: number | null; costAccountingStatus?: 'pending_quarantine_disposition' | string; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName:string;quantity:number;unitType:UnitType;total:number;allocations?:DistLotAllocation[];documentedPackageWeightKgSnapshot?:number;presentationSnapshot?:string;descriptionSnapshot?:string} | null }
 export interface DistCreditStatus { id: string; oldestPendingAt: string | null; checkedAt: string }
 export interface DistCreditOverride { id: string; customerId: string; activeUntil: string; reason: string; grantedAt: string; grantedBy: string; grantedByName: string; revokedAt?: string; revokedBy?: string }
 export interface DistWarehouseShift { id: string; warehouseId: string; responsibleName: string; openedAt: string; openedBy: string; closedAt?: string; closedBy?: string; active: boolean }

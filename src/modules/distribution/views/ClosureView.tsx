@@ -4,9 +4,8 @@ import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { buildReconciliation, computeMoneySummary, partitionDispatchSettlementSales, matchesRoute, round2, toDayKey } from '../domain/engine'
+import { buildReconciliation, cashMovementRouteId, computeMoneySummary, partitionDispatchSettlementSales, matchesRoute, round2, toDayKey } from '../domain/engine'
 import { previewDispatchMermaSettlement } from '../domain/dispatchMermaSettlement'
-import { expenseCashPaidAmount } from '../domain/expenseAccounting'
 import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeDispatchSettlementSales, subscribeCollections, subscribeExpenses, subscribeClosedDispatchesForRoute } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -285,7 +284,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       mark('dispatches')
       stopSales = subscribeDispatchSettlementSales(dispatchRoute, dispatchKey, rows => {
         const scoped = partitionDispatchSettlementSales(rows, dispatchKey, dispatchRoute, dispatchCandidates)
-        const eligible = scoped.attributable.map(sale => sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale)
+        const eligible = scoped.attributable.map(sale => sale.effectiveSnapshot
+          ? { ...sale, ...(sale.voidedAt ? { cashReceiptSnapshot: sale.derivedVoid?.cashReceiptSnapshot || { cashAmount: sale.cashAmount, qrAmount: sale.qrAmount } } : {}), ...sale.effectiveSnapshot }
+          : sale)
         setSalesSnapshot({ dispatchId: dispatchKey, rows: eligible, ambiguousRows: scoped.ambiguous })
         mark('sales')
       }, fail, ownerUid)
@@ -480,9 +481,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     setReceiptModalProductId(null)
   }
 
-  const moneySummary = computeMoneySummary(routeSales, routeCollections, routeExpenses)
-  const claimCash = data.claims.filter(c => c.routeId === dispatchRoute && c.createdAt >= dispatchCreated).reduce((n,c)=>n+c.cashIn-c.cashOut,0)
-  const calculatedMoney = { ...moneySummary, expectedCash:round2(moneySummary.expectedCash+claimCash) }
+  const routeCashClaims = data.claims.filter(c => cashMovementRouteId(c) === dispatchRoute && c.createdAt >= dispatchCreated)
+  const moneySummary = computeMoneySummary(routeSales, routeCollections, routeExpenses, routeCashClaims)
+  const calculatedMoney = moneySummary
   const preservingHistoricalMoney = Boolean(existingClosure?.preserveFinancialSnapshot && ['reopened', 'warehouse_done'].includes(existingClosure.status))
   const money = preservingHistoricalMoney
     ? {
@@ -492,6 +493,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         cashCollections: existingClosure?.cashCollections || 0,
         qrCollections: existingClosure?.qrCollections || 0,
         cashExpenses: existingClosure?.cashExpenses || 0,
+        voidedCashReceipts: existingClosure?.voidedCashReceipts || 0,
+        voidedQrReceipts: existingClosure?.voidedQrReceipts || 0,
+        claimCash: existingClosure?.claimCash || 0,
+        claimQr: existingClosure?.claimQr || 0,
         expectedCash: existingClosure?.expectedCash || 0,
       }
     : calculatedMoney
@@ -509,34 +514,13 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const adminMoney = useMemo(() => {
     const sales = data.sales
       .filter(s => s.dayKey === adminDayKey && (matchesRoute(s.routeId, 'administracion') || (!s.routeId && s.sourceLocation === 'centralWarehouse')))
-      .map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s)
     const collections = data.collections
       .filter(c => c.dayKey === adminDayKey && (matchesRoute(c.routeId, 'administracion') || c.collectedByUid === session.uid))
     const expenses = data.expenses
       .filter(e => e.dayKey === adminDayKey && (matchesRoute(e.routeId, 'administracion') || !e.routeId) && !e.voided)
     const claims = data.claims
-      .filter(c => c.dayKey === adminDayKey && matchesRoute(c.routeId, 'administracion'))
-
-    const commercialSales = sales.filter(s => s.saleKind !== 'courtesy')
-    const cashSales = round2(commercialSales.reduce((n, s) => n + (s.cashAmount || 0), 0))
-    const qrSales = round2(commercialSales.reduce((n, s) => n + (s.qrAmount || 0), 0))
-    const creditGenerated = round2(commercialSales.reduce((n, s) => n + (s.creditAmount || 0), 0))
-    const cashCollections = round2(collections.reduce((n, c) => n + (Number.isFinite(c.cashAmount) ? c.cashAmount! : c.method === 'cash' ? c.amount : 0), 0))
-    const qrCollections = round2(collections.reduce((n, c) => n + (Number.isFinite(c.qrAmount) ? c.qrAmount! : c.method === 'qr' ? c.amount : 0), 0))
-    const cashExpenses = round2(expenses.reduce((n, e) => n + expenseCashPaidAmount(e), 0))
-    const claimCash = round2(claims.reduce((n, c) => n + (c.cashIn || 0) - (c.cashOut || 0), 0))
-    const expectedCash = round2(cashSales + cashCollections - cashExpenses + claimCash)
-
-    return {
-      cashSales,
-      qrSales,
-      creditGenerated,
-      cashCollections,
-      qrCollections,
-      cashExpenses,
-      claimCash,
-      expectedCash,
-    }
+      .filter(c => c.dayKey === adminDayKey && (matchesRoute(cashMovementRouteId(c), 'administracion') || c.isDerivedSaleVoid === true))
+    return computeMoneySummary(sales, collections, expenses, claims)
   }, [data.sales, data.collections, data.expenses, data.claims, adminDayKey, session.uid])
 
   const adminDeclaredVal = round2(Number(adminDeclaredCash) || 0)
@@ -577,7 +561,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
       cashCollections: adminMoney.cashCollections,
       qrCollections: adminMoney.qrCollections,
       cashExpenses: adminMoney.cashExpenses,
+      voidedCashReceipts: adminMoney.voidedCashReceipts,
+      voidedQrReceipts: adminMoney.voidedQrReceipts,
       claimCash: adminMoney.claimCash,
+      claimQr: adminMoney.claimQr,
       expectedCash: adminMoney.expectedCash,
       physicalCashDeclared: adminDeclaredVal,
       cashDifference: adminCashDifference,
@@ -970,7 +957,9 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             <KpiCard label="Cobros efectivo" value={formatBs(adminMoney.cashCollections)} />
             <KpiCard label="Cobros QR" value={formatBs(adminMoney.qrCollections)} />
             <KpiCard label="Egresos en efectivo" value={formatBs(adminMoney.cashExpenses)} tone="danger" />
+            <KpiCard label="Cobro de ventas anuladas" value={formatBs(adminMoney.voidedCashReceipts)} hint="Cobro original conservado para el flujo de caja" />
             <KpiCard label="Ajuste devoluciones" value={formatBs(adminMoney.claimCash)} />
+            <KpiCard label="Movimiento QR por anulaciones" value={formatBs(adminMoney.voidedQrReceipts + adminMoney.claimQr)} hint="Informativo; no modifica el efectivo físico" />
             <KpiCard label="Efectivo esperado" value={formatBs(adminMoney.expectedCash)} tone="primary" />
           </div>
 
@@ -1466,9 +1455,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             <KpiCard
               label="Efectivo esperado"
               value={formatBs(money.expectedCash)}
-              hint="Ventas efectivo + cobros efectivo - gastos"
+              hint="Cobros efectivos + ajustes de caja - egresos"
               tone="primary"
             />
+            <KpiCard label="Cobro original de ventas anuladas" value={formatBs(money.voidedCashReceipts)} hint="Se conserva el cobro histórico; el reembolso se atribuye a su propia caja" />
             <Field
               label={isDistributor ? 'Efectivo físico que estás devolviendo (Bs)' : 'Efectivo físico declarado (Bs)'}
               required

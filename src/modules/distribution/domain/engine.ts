@@ -251,14 +251,16 @@ export interface SoldTotals {
 export function computeSoldByProduct(sales: DistSale[]): Map<string, SoldTotals> {
   const result = new Map<string, SoldTotals>()
   for (const sale of sales) {
-    for (const line of sale.lines || []) {
+    if (sale.voidedAt || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    for (const line of effective.lines || []) {
       const current = result.get(line.productId)
       result.set(line.productId, {
         productName: line.productNameSnapshot,
         unitType: line.unitType,
-        quantity: round2((current?.quantity ?? 0) + (sale.saleKind === 'courtesy' ? 0 : line.quantity)),
-        courtesyQuantity: round2((current?.courtesyQuantity ?? 0) + (sale.saleKind === 'courtesy' ? line.quantity : 0)),
-        amount: round2((current?.amount ?? 0) + (sale.saleKind === 'courtesy' ? 0 : line.subtotal)),
+        quantity: round2((current?.quantity ?? 0) + (effective.saleKind === 'courtesy' ? 0 : line.quantity)),
+        courtesyQuantity: round2((current?.courtesyQuantity ?? 0) + (effective.saleKind === 'courtesy' ? line.quantity : 0)),
+        amount: round2((current?.amount ?? 0) + (effective.saleKind === 'courtesy' ? 0 : line.subtotal)),
       })
     }
   }
@@ -316,7 +318,40 @@ export interface MoneySummary {
   qrCollections: number
   collectionsTotal: number
   cashExpenses: number
+  /** Cobros originales de ventas anuladas; movimiento de caja, no venta neta. */
+  voidedCashReceipts: number
+  /** Cobros QR originales de ventas anuladas; movimiento electrónico, no venta neta. */
+  voidedQrReceipts: number
+  claimCash: number
+  claimQr: number
   expectedCash: number
+}
+
+export function isSettledClaimCashMovement(claim: DistClaim): boolean {
+  return claim.pendingConfirmation !== true && claim.cashRefundStatus !== 'pending'
+}
+
+export function cashMovementRouteId(claim: DistClaim): string {
+  return claim.cashMovementRouteId || (claim.isDerivedSaleVoid ? 'administracion' : claim.routeId)
+}
+
+export function cashMovementSellerUid(claim: DistClaim): string {
+  return claim.cashMovementResponsibleUid || (claim.isDerivedSaleVoid ? claim.createdBy || claim.sellerUid || '' : claim.sellerUid || '')
+}
+
+function voidedReceiptSnapshot(sale: DistSale): { cash: number; qr: number } {
+  const snapshot = (sale as DistSale & { cashReceiptSnapshot?: { cashAmount?: number; qrAmount?: number } }).cashReceiptSnapshot
+    || sale.derivedVoid?.cashReceiptSnapshot
+  const source = snapshot || sale
+  return {
+    cash: Number.isFinite(Number(source.cashAmount)) ? round2(Number(source.cashAmount)) : 0,
+    qr: Number.isFinite(Number(source.qrAmount)) ? round2(Number(source.qrAmount)) : 0,
+  }
+}
+
+function settledClaimDelta(claims: DistClaim[], fieldIn: 'cashIn' | 'qrIn', fieldOut: 'cashOut' | 'qrOut'): number {
+  return round2(claims.filter(isSettledClaimCashMovement).reduce((sum, claim) =>
+    sum + (Number(claim[fieldIn]) || 0) - (Number(claim[fieldOut]) || 0), 0))
 }
 
 /**
@@ -328,18 +363,30 @@ export function computeMoneySummary(
   sales: DistSale[],
   collections: DistCollection[],
   expenses: DistExpense[],
+  claims: DistClaim[] = [],
 ): MoneySummary {
   let cashSales = 0
   let qrSales = 0
   let creditGenerated = 0
   let salesTotal = 0
+  let voidedCashReceipts = 0
+  let voidedQrReceipts = 0
 
   for (const sale of sales) {
-    if (sale.saleKind === 'courtesy' || sale.voidedAt || sale.pendingConfirmation) continue
-    cashSales += Number(sale.cashAmount) || 0
-    qrSales += Number(sale.qrAmount) || 0
-    creditGenerated += Number(sale.creditAmount) || 0
-    salesTotal += Number(sale.total) || 0
+    if (sale.voidedAt) {
+      if (!sale.pendingConfirmation && sale.derivedVoid && sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy') {
+        const receipt = voidedReceiptSnapshot(sale)
+        voidedCashReceipts += receipt.cash
+        voidedQrReceipts += receipt.qr
+      }
+      continue
+    }
+    if (sale.saleKind === 'courtesy' || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    cashSales += Number(effective.cashAmount) || 0
+    qrSales += Number(effective.qrAmount) || 0
+    creditGenerated += Number(effective.creditAmount) || 0
+    salesTotal += Number(effective.total) || 0
   }
 
   let cashCollections = 0
@@ -353,6 +400,8 @@ export function computeMoneySummary(
 
   const cashExpenses = expenses.filter((expense) => !expense.voided).reduce((sum, expense) =>
     sum + expenseCashPaidAmount(expense), 0)
+  const claimCash = settledClaimDelta(claims, 'cashIn', 'cashOut')
+  const claimQr = settledClaimDelta(claims, 'qrIn', 'qrOut')
 
   return {
     salesTotal: round2(salesTotal),
@@ -363,7 +412,11 @@ export function computeMoneySummary(
     qrCollections: round2(qrCollections),
     collectionsTotal: round2(cashCollections + qrCollections),
     cashExpenses: round2(cashExpenses),
-    expectedCash: round2(cashSales + cashCollections - cashExpenses),
+    voidedCashReceipts: round2(voidedCashReceipts),
+    voidedQrReceipts: round2(voidedQrReceipts),
+    claimCash,
+    claimQr,
+    expectedCash: round2(cashSales + voidedCashReceipts + cashCollections - cashExpenses + claimCash),
   }
 }
 
@@ -456,7 +509,9 @@ export function nextReceivableStatus(originalAmount: number, paidAmount: number)
 export function computeSoldKilograms(sales: DistSale[]): number {
   let total = 0
   for (const sale of sales) {
-    for (const line of sale.lines || []) {
+    if (sale.voidedAt || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    for (const line of effective.lines || []) {
       if (line.unitType === 'kg') total += Number(line.quantity) || 0
     }
   }
@@ -466,7 +521,9 @@ export function computeSoldKilograms(sales: DistSale[]): number {
 export function computeSoldPackages(sales: DistSale[]): number {
   let total = 0
   for (const sale of sales) {
-    for (const line of sale.lines || []) {
+    if (sale.voidedAt || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    for (const line of effective.lines || []) {
       if (line.unitType !== 'kg') total += Number(line.quantity) || 0
     }
   }
@@ -491,6 +548,9 @@ export interface SellerBreakdown {
   totalDocumentedKilograms: number
   totalEstimatedKilograms: number
   packages: number
+  voidedCashReceipts: number
+  cashRefunds: number
+  qrRefunds: number
   /** Efectivo que deberia entregar: ventas efectivo + cobros efectivo - gastos */
   expectedCash: number
 }
@@ -553,6 +613,9 @@ export function computeSellerBreakdown(
       totalDocumentedKilograms: 0,
       totalEstimatedKilograms: 0,
       packages: 0,
+      voidedCashReceipts: 0,
+      cashRefunds: 0,
+      qrRefunds: 0,
       expectedCash: 0,
     }
     map.set(key, created)
@@ -560,7 +623,16 @@ export function computeSellerBreakdown(
   }
 
   for (const sale of sales) {
-    if (sale.saleKind === 'courtesy' || sale.voidedAt || sale.pendingConfirmation) continue
+    if (sale.voidedAt) {
+      if (sale.derivedVoid && !sale.pendingConfirmation && sale.saleKind !== 'courtesy') {
+        const entry = ensure(sale.sellerUid, sale.sellerName)
+        const receipt = voidedReceiptSnapshot(sale)
+        entry.voidedCashReceipts = round2(entry.voidedCashReceipts + receipt.cash)
+        entry.expectedCash = round2(entry.expectedCash + receipt.cash)
+      }
+      continue
+    }
+    if (sale.saleKind === 'courtesy' || sale.pendingConfirmation) continue
     const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
     const entry = ensure(effective.sellerUid, effective.sellerName)
     entry.salesCount += 1
@@ -638,8 +710,12 @@ export function computeSellerBreakdown(
   }
 
   for (const claim of claims) {
-    if (!claim.sellerUid) continue
-    const entry = ensure(claim.sellerUid, claim.sellerName || '')
+    if (!isSettledClaimCashMovement(claim)) continue
+    const financialOwner = cashMovementSellerUid(claim)
+    if (!financialOwner) continue
+    const entry = ensure(financialOwner, claim.cashMovementResponsibleName || claim.sellerName || '')
+    entry.cashRefunds = round2(entry.cashRefunds + (Number(claim.cashOut) || 0))
+    entry.qrRefunds = round2(entry.qrRefunds + (Number(claim.qrOut) || 0))
     entry.expectedCash = round2(entry.expectedCash + (Number(claim.cashIn) || 0) - (Number(claim.cashOut) || 0))
   }
 

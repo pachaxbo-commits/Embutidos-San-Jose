@@ -25,6 +25,28 @@ async function readExpenseGroupConfig(o, id) {
 }
 const round = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const roundAt = (n, precision = 2) => Math.round((Number(n) + Number.EPSILON) * (10 ** precision)) / (10 ** precision);
+const isSettledCashMovement = (row) => row?.pendingConfirmation !== true && row?.cashRefundStatus !== "pending";
+async function voidedSaleReceiptAmounts(o, sale) {
+  if (!sale?.voidedAt || !sale?.derivedVoid) return { cash: 0, qr: 0 };
+  let snapshot = sale.derivedVoid.cashReceiptSnapshot;
+  if (!snapshot && sale.derivedVoid.correctionId) {
+    const correction = await o.read('distSaleCorrections', sale.derivedVoid.correctionId);
+    snapshot = correction?.original;
+  }
+  // Old documents retain the immutable sale payment split at the top level.
+  // New voids additionally persist an explicit, auditable receipt snapshot.
+  const source = snapshot || sale;
+  const cash = Number(source.cashAmount), qr = Number(source.qrAmount);
+  check(Number.isFinite(cash) && cash >= 0 && Number.isFinite(qr) && qr >= 0,
+    `La venta anulada ${sale.id} no conserva el desglose verificable de su cobro original; requiere conciliación antes del cierre.`);
+  return { cash: round(cash), qr: round(qr) };
+}
+function settledClaimCash(claims) {
+  return round(claims.filter(isSettledCashMovement).reduce((sum, row) => sum + (Number(row.cashIn) || 0) - (Number(row.cashOut) || 0), 0));
+}
+function settledClaimQr(claims) {
+  return round(claims.filter(isSettledCashMovement).reduce((sum, row) => sum + (Number(row.qrIn) || 0) - (Number(row.qrOut) || 0), 0));
+}
 const quantityPrecision = (product) => product?.unitType === "kg" ? 3 : 2;
 const canonicalJson = value => JSON.stringify(value, (_key, item) => {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
@@ -2095,6 +2117,10 @@ async function voidDerivedSale(o, p, sale) {
     check(dispatch?.status === 'open', 'La ruta ya no está abierta; la anulación requiere revisión posterior al cierre.');
     const closures = await o.query('distClosures', 'dispatchId', sale.dispatchId);
     check(!closures.some(row => row.warehouseClosedBy || row.status === 'closed'), 'La ruta ya tiene recepción o cierre confirmado.');
+  } else if (isAdministrationRouteId(sale.routeId) || (!sale.routeId && sale.sourceLocation === 'centralWarehouse')) {
+    const closures = await o.query('distClosures', 'dayKey', sale.dayKey || dayKey(new Date(sale.createdAt || o.now)));
+    check(!closures.some(row => (row.closureType === 'admin' || isAdministrationRouteId(row.routeId)) && row.status === 'closed'),
+      'La caja de Administración ya fue cerrada para la jornada de esta venta. Requiere una rectificación administrativa posterior al cierre.');
   }
   const saleSnapshot = sale.effectiveSnapshot && typeof sale.effectiveSnapshot === 'object' ? sale.effectiveSnapshot : sale;
   const rawQrAmount = saleSnapshot.qrAmount;
@@ -2124,6 +2150,7 @@ async function voidDerivedSale(o, p, sale) {
   check(!receipt || Number(receipt.paidAmount || 0) === 0,
     'El crédito ya tiene abonos. No se puede anular ni revertir esos pagos mediante el flujo de anulación.');
   const cashAmount = round(Number(saleSnapshot.cashAmount ?? sale.cashAmount) || 0);
+  const qrAmount = round(Number(saleSnapshot.qrAmount ?? sale.qrAmount) || 0);
   const creditAmount = round(Number(saleSnapshot.creditAmount ?? sale.creditAmount) || 0);
   const saleTotal = round(Number(saleSnapshot.total ?? sale.total) || 0);
   const cashRefundAmount = round(Number(p.cashRefundAmount || 0));
@@ -2168,20 +2195,24 @@ async function voidDerivedSale(o, p, sale) {
     stockDeltas: [...returnedByProduct].map(([productId, row]) => ({ productId, quantity: -row.quantity, allocations: row.allocations })),
     moneyDelta: -saleTotal, creditDelta: -creditAmount,
     physicalCustodyConfirmed: true, custodyLocation: loc, custodyNote: String(p.physicalCustodyNote).trim(), cashRefundAmount,
+    cashReceiptSnapshot: { cashAmount, qrAmount, paymentKind: saleSnapshot.paymentKind || sale.paymentKind || '', saleDayKey: sale.dayKey || '', saleCreatedAt: sale.createdAt || '', sellerUid: sale.sellerUid || '', sellerName: sale.sellerName || '', sourceRevision: Number(sale.revision || 0) },
     correctedByName: o.member.displayName || o.actor };
   o.put('distSaleCorrections', o.id, correction);
   o.put('distSales', sale.id, { ...sale, effectiveSnapshot: correction.corrected, latestCorrectionId: o.id,
     editedAt: o.now, editedBy: o.actor, editReason: reason, voidedAt: o.now, voidedBy: o.actor,
     voidedByName: o.member.displayName || o.actor, voidReason: reason, revision: correction.revision,
     derivedVoid: { correctionId: o.id, voidScenario: p.voidScenario, custodyLocation: loc, custodyConfirmedBy: o.actor, custodyConfirmedByName: o.member.displayName || o.actor,
-      custodyConfirmedAt: o.now, custodyNote: correction.custodyNote, cashRefundAmount } });
+      custodyConfirmedAt: o.now, custodyNote: correction.custodyNote, cashRefundAmount, cashReceiptSnapshot: correction.cashReceiptSnapshot } });
   // Dedicated cash-out record for closure cash reconciliation. It is deliberately
   // excluded from sales adjustments/profit: the sale itself is voided above.
   if (cashRefundAmount > 0 || qrRefundAmount > 0) o.put('distClaims', o.id, { id: o.id, ...o.base(), kind: 'return', isDerivedSaleVoid: true,
-    saleId: sale.id, sellerUid: sale.sellerUid, sellerName: sale.sellerName, customerId: sale.customerId || '',
-    customerName: sale.customerName || '', routeId: sale.routeId, productId: snapshot.lines[0].productId,
+    saleId: sale.id, sellerUid: o.actor, sellerName: o.member.displayName || o.actor, saleSellerUid: sale.sellerUid || '', saleSellerName: sale.sellerName || '', customerId: sale.customerId || '',
+    customerName: sale.customerName || '', routeId: 'administracion', originRouteId: sale.routeId || '', productId: snapshot.lines[0].productId,
     productName: snapshot.lines[0].productNameSnapshot, unitType: snapshot.lines[0].unitType,
     quantity: 0, reason, revenueDelta: 0, cashIn: 0, cashOut: cashRefundAmount, qrIn: 0, qrOut: qrRefundAmount,
+    cashRefundStatus: 'executed', cashRefundedAt: cashRefundAmount > 0 ? o.now : '', cashRefundedBy: cashRefundAmount > 0 ? o.actor : '',
+    cashRefundedByName: cashRefundAmount > 0 ? o.member.displayName || o.actor : '', cashMovementResponsibleUid: o.actor,
+    cashMovementResponsibleName: o.member.displayName || o.actor, cashMovementRouteId: 'administracion',
     method: cashRefundAmount > 0 && qrRefundAmount > 0 ? 'mixed' : qrRefundAmount > 0 ? 'qr' : 'cash',
     qrRefundReference: qrRefundAmount > 0 ? String(p.qrRefundReference).trim() : '',
     qrRefundConfirmed: qrRefundAmount > 0, qrRefundedBy: qrRefundAmount > 0 ? o.actor : '', qrRefundedAt: qrRefundAmount > 0 ? o.now : '',
@@ -3254,9 +3285,9 @@ async function closure(o, p) {
     const dayKey = requested.dayKey || o.today;
     const id = requested.id || `closure_admin_${dayKey}_${o.id}`;
 
-    const sales = (await o.query("distSales", "dayKey", dayKey))
+    const rawSales = (await o.query("distSales", "dayKey", dayKey))
       .filter((s) => isAdministrationRouteId(s.routeId) || (!s.routeId && s.sourceLocation === "centralWarehouse"))
-      .map((sale) => (sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale));
+    const sales = rawSales.map((sale) => (sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale));
 
     const collections = (await o.query("distCollections", "dayKey", dayKey))
       .filter((x) => isAdministrationRouteId(x.routeId) || x.collectedByUid === o.actor);
@@ -3265,16 +3296,21 @@ async function closure(o, p) {
       .filter((x) => (isAdministrationRouteId(x.routeId) || !x.routeId) && !x.voided);
 
     const claims = (await o.query("distClaims", "dayKey", dayKey))
-      .filter((x) => isAdministrationRouteId(x.routeId));
+      .filter((x) => isAdministrationRouteId(x.routeId) || x.isDerivedSaleVoid === true);
 
     const sum = (list, key) => round(list.reduce((n, r) => n + (r[key] || 0), 0));
     const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
+    const voidedReceipts = await Promise.all(rawSales.filter((sale) => sale.voidedAt && sale.derivedVoid && sale.saleKind !== "courtesy")
+      .map((sale) => voidedSaleReceiptAmounts(o, sale)));
+    const voidedCashReceipts = round(voidedReceipts.reduce((total, row) => total + row.cash, 0));
+    const voidedQrReceipts = round(voidedReceipts.reduce((total, row) => total + row.qr, 0));
     const cashSales = sum(commercialSales, "cashAmount"),
       cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
       cashExpenses = round(expenses.filter((expense) => !expense.voided).reduce((total, expense) => total + (Number.isFinite(expense.cashPaidAmount) ? Math.max(0, expense.cashPaidAmount) : (expense.paymentMethod || "cash") === "cash" ? (expense.amount || 0) : 0), 0)),
-      claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
+      claimCash = settledClaimCash(claims),
+      claimQr = settledClaimQr(claims),
       expectedCash = round(
-        cashSales + cashCollections - cashExpenses + claimCash,
+        cashSales + voidedCashReceipts + cashCollections - cashExpenses + claimCash,
       );
 
     const c = {
@@ -3295,7 +3331,10 @@ async function closure(o, p) {
       cashCollections,
       qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
       cashExpenses,
+      voidedCashReceipts,
+      voidedQrReceipts,
       claimCash,
+      claimQr,
       expectedCash,
       physicalCashDeclared: round(requested.physicalCashDeclared),
       cashDifference: round(requested.physicalCashDeclared - expectedCash),
@@ -3839,12 +3878,19 @@ async function closure(o, p) {
   );
   const sum = (list, key) => round(list.reduce((n, r) => n + (r[key] || 0), 0));
   const commercialSales = sales.filter((s) => s.saleKind !== "courtesy");
+  const voidedReceipts = await Promise.all(settlementSales.filter((sale) => sale.voidedAt && sale.derivedVoid && sale.saleKind !== "courtesy")
+    .map((sale) => voidedSaleReceiptAmounts(o, sale)));
+  const voidedCashReceipts = round(voidedReceipts.reduce((total, row) => total + row.cash, 0));
+  const voidedQrReceipts = round(voidedReceipts.reduce((total, row) => total + row.qr, 0));
   const cashSales = sum(commercialSales, "cashAmount"),
     cashCollections = round(collections.reduce((n, x) => n + (Number.isFinite(x.cashAmount) ? x.cashAmount : x.method === "cash" ? x.amount : 0), 0)),
     cashExpenses = round(expenses.filter((expense) => !expense.voided).reduce((total, expense) => total + (Number.isFinite(expense.cashPaidAmount) ? Math.max(0, expense.cashPaidAmount) : (expense.paymentMethod || "cash") === "cash" ? (expense.amount || 0) : 0), 0)),
-    claimCash = round(sum(claims, "cashIn") - sum(claims, "cashOut")),
+    // A derived-sale void is executed by Administration. Legacy rows kept the
+    // sale route, so do not debit that cash from the distributor's route box.
+    claimCash = settledClaimCash(claims.filter((claim) => !claim.isDerivedSaleVoid)),
+    claimQr = settledClaimQr(claims.filter((claim) => !claim.isDerivedSaleVoid)),
     expectedCash = round(
-      cashSales + cashCollections - cashExpenses + claimCash,
+      cashSales + voidedCashReceipts + cashCollections - cashExpenses + claimCash,
     );
   check(
     Number.isFinite(requested.physicalCashDeclared) &&
@@ -3865,7 +3911,10 @@ async function closure(o, p) {
         cashCollections: previous.cashCollections,
         qrCollections: previous.qrCollections,
         cashExpenses: previous.cashExpenses,
+        voidedCashReceipts: previous.voidedCashReceipts,
+        voidedQrReceipts: previous.voidedQrReceipts,
         claimCash: previous.claimCash,
+        claimQr: previous.claimQr,
         expectedCash: previous.expectedCash,
         physicalCashDeclared: previous.physicalCashDeclared,
         cashDifference: previous.cashDifference,
@@ -3877,7 +3926,10 @@ async function closure(o, p) {
         cashCollections,
         qrCollections: round(collections.reduce((n, x) => n + (Number.isFinite(x.qrAmount) ? x.qrAmount : x.method === "qr" ? x.amount : 0), 0)),
         cashExpenses,
+        voidedCashReceipts,
+        voidedQrReceipts,
         claimCash,
+        claimQr,
         expectedCash,
         physicalCashDeclared: requested.physicalCashDeclared,
         cashDifference: round(requested.physicalCashDeclared - expectedCash),

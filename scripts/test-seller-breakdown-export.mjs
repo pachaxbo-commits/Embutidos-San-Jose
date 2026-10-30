@@ -39,6 +39,33 @@ try {
   assert.equal(row[3], 0.083, 'the export uses 333 g historical replacement minus 250 g returned')
   assert.equal(row[4], 0, 'catalog approximate weight does not replace historical grams')
   console.log('PASS export Kg por vendedor: 333 g replacement allocation, 250 g returned, net 0.083 kg; no catalog estimate substituted')
+
+  const voidedCashSale = {
+    id: 'voided-cash-sale', operationId: 'voided-cash-sale', restaurantId: 'sanjose', branchId: 'main',
+    createdAt: '2026-10-29T10:00:00.000Z', createdBy: 'admin', dayKey: '2026-10-29', schemaVersion: 2,
+    saleKind: 'sale', sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración',
+    sellerUid: 'admin', sellerName: 'Administración', lines: [], total: 0, paymentKind: 'cash', cashAmount: 0, qrAmount: 0, creditAmount: 0,
+    voidedAt: '2026-10-29T11:00:00.000Z',
+    derivedVoid: { cashReceiptSnapshot: { cashAmount: 10, qrAmount: 0, saleDayKey: '2026-10-29', saleCreatedAt: '2026-10-29T10:00:00.000Z' } },
+  }
+  const voidedCashClaim = {
+    id: 'voided-cash-claim', kind: 'return', isDerivedSaleVoid: true, saleId: voidedCashSale.id,
+    sellerUid: 'admin', sellerName: 'Administración', createdBy: 'admin', cashMovementResponsibleUid: 'admin',
+    cashMovementRouteId: 'administracion', routeId: 'administracion', customerId: 'customer-void', customerName: 'Cliente',
+    productId: 'p1', productName: 'Producto', quantity: 0, unitType: 'package', reason: 'anulación',
+    createdAt: '2026-10-29T11:00:00.000Z', dayKey: '2026-10-29', revenueDelta: 0, additionalCost: 0, debtReduction: 0,
+    cashIn: 0, cashOut: 10, qrIn: 0, qrOut: 0, replacement: null, cashRefundStatus: 'executed',
+  }
+  const cashData = { ...data, sales: [voidedCashSale], claims: [voidedCashClaim], routes: [] }
+  const cashSheet = reportSheets(cashData, ['2026-10-29'], 'administracion').find(sheet => sheet.id === 'cashFlow')
+  assert.ok(cashSheet, 'PDF/Excel export contains the cash flow ledger')
+  const originalReceiptRow = cashSheet.rows.find(row => row[0] === 'Cobros originales de ventas anuladas')
+  const refundRow = cashSheet.rows.find(row => row[0] === 'Cambios y devoluciones')
+  const netFlowRow = cashSheet.rows.find(row => row[0] === 'FLUJO NETO')
+  assert.equal(originalReceiptRow?.[1], 10, 'PDF/Excel keeps the original cash receipt separate from net sales')
+  assert.equal(refundRow?.[1], -10, 'PDF/Excel records executed refund in the actual movement line')
+  assert.equal(netFlowRow?.[3], 0, 'PDF/Excel same-day net flow is zero, not a fictitious shortage')
+  console.log('PASS PDF/Excel cash-flow export: voided original receipt +10, refund -10, net 0')
 } finally {
   await vite.close()
 }
