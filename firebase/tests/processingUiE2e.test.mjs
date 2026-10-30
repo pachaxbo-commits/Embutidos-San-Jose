@@ -138,7 +138,7 @@ try {
     const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
     assert.ok(sizes.document <= sizes.viewport + 1, `overflow horizontal a ${width}px: ${JSON.stringify(sizes)}`)
   }
-  for (const [width, height] of [[360, 800], [390, 844], [768, 1024], [1440, 900]]) {
+  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1440, 900]]) {
     for (const tab of ['Nueva elaboración', 'Mercadería reservada', 'Revisión de producto', 'Reenvasado', 'Historial']) {
       await page.getByRole('button', { name: tab, exact: true }).click()
       await assertNoHorizontalOverflow(width, height)
@@ -384,7 +384,7 @@ try {
     const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
     assert.ok(sizes.document <= sizes.viewport + 1, `overflow horizontal en modal de anulación a ${width}px: ${JSON.stringify(sizes)}`)
   }
-  for (const [width, height] of [[360, 800], [390, 844], [768, 1024], [1440, 900]]) {
+  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1440, 900]]) {
     await assertVoidNoHorizontalOverflow(width, height)
     await page.getByLabel('Qué ocurrió con esta venta').selectOption('recorded_in_error_never_delivered')
     await page.getByPlaceholder('Ej.: venta registrada por error; la mercadería no fue entregada').fill('Venta de QA registrada por error; paquete quedó bajo custodia')
@@ -416,7 +416,7 @@ try {
   assert.equal(finalVoidLot.processingCostCentsRemaining, 125, 'se restauraron exactamente los 125 centavos históricos')
   assert.equal(voidMovements.length, 1, 'se registró un solo movimiento de restitución')
   assert.equal(pageErrors.length, 0, `errores JavaScript del recorrido QR: ${pageErrors.join('; ')}`)
-  console.log(`PASS: Playwright Chromium; revisión y reenvasado con Functions/Firestore/Auth Emulator; anulación y devolución QR completas desde SellView en 360×800, 390×844, 768×1024 y 1440×900; un paquete/250 g/125 centavos restaurados una vez. Capturas sintéticas guardadas en ${tmpdir()}`)
+  console.log(`PASS: Playwright Chromium + Functions/Firestore/Auth Emulator; sacheteado y anulación/reembolso QR revisados en 320, 360, 375, 390, 414, 768 y 1440 px; un paquete, 250 g y 125 centavos restaurados una sola vez. Capturas sintéticas guardadas en ${tmpdir()}`)
 } finally {
   await browser?.close()
   vite.kill('SIGTERM')

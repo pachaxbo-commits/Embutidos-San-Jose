@@ -18,6 +18,7 @@
     "test:processing-domain": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingDomain.test.ts",
     "test:processing-review-domain": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingReview.test.ts",
     "test:processing-ui": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingUi.test.ts",
+    "test:processing-reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingReports.test.ts",
     "test:processing-ui-e2e": "node scripts/run-processing-ui-e2e.mjs",
     "test:processing-availability": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingAvailability.test.cjs\"",
     "test:processing-reservations": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingReservations.test.mjs\"",

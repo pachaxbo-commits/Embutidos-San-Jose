@@ -6,7 +6,7 @@ const REPORT_FIELDS = [
   "view", "source", "category", "errorName", "message", "stack",
   "componentStack", "recentEvents", "closureContext",
 ];
-const VALID_SOURCES = new Set(["react_render", "window_error", "unhandled_rejection"]);
+const VALID_SOURCES = new Set(["react_render", "window_error", "unhandled_rejection", "handled_operation_failure"]);
 const VALID_CATEGORIES = new Set(["render", "asynchronous", "permission", "synchronization", "data", "unknown"]);
 const VALID_STATUSES = new Set(["new", "reviewing", "resolved"]);
 const MAX_REPORT_BYTES = 20_000;

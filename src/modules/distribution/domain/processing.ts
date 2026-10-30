@@ -164,6 +164,7 @@ export interface ProcessingRepackRecord {
   openedCommercialQuantity: number
   openedPhysicalWeightG: number
   sourceCostCents: number | null
+  packagingMaterials?: ProcessingPackagingMaterial[]
   outputLots: Array<{ id: string; lotId: string; productId: string; productName: string; lotCode: string; commercialQuantity: number; commercialUnit: UnitType; netWeightG: number; costCents: number | null; movementId: string }>
   movementIds: string[]
   responsibleUid: string

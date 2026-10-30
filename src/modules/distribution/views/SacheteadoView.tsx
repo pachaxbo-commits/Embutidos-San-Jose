@@ -11,6 +11,8 @@ import type { DistLot, DistProduct } from '../types'
 import type { DistributionViewProps } from './DistributionApp'
 import { PrimaryButton, SecondaryButton, SectionCard } from './shared'
 import { ProcessingOperationsView } from './ProcessingOperationsView'
+import { ProcessingGuide } from './ProcessingGuide'
+import { ProcessingReportsView } from './ProcessingReportsView'
 
 type SourceRow = { lotId: string; quantityKg: string }
 type DestinationDraft = {
@@ -26,7 +28,7 @@ type Draft = {
 }
 type SubmitState = 'idle' | 'sending' | 'unknown' | 'rejected' | 'confirmed'
 type Tab = 'new' | 'reservations' | 'review' | 'repack' | 'history'
-type HistoryMode = 'batches' | 'reviews' | 'repackings'
+type HistoryMode = 'batches' | 'reviews' | 'repackings' | 'reports'
 const DRAFT_PREFIX = 'sanjose_processing_draft_v1'
 const randomId = (prefix: string) => newOperationId(prefix).replace(/[^A-Za-z0-9_-]/g, '_')
 const todayKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
@@ -268,10 +270,14 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
       {([['new','Nueva elaboración'],['reservations','Mercadería reservada'],['review','Revisión de producto'],['repack','Reenvasado'],['history','Historial']] as const).map(([key,label]) => <button key={key} type="button" onClick={() => { setTab(key); setSelectedBatch(null) }} aria-current={tab === key ? 'page' : undefined} className={`min-h-11 rounded-xl px-2 text-xs font-extrabold sm:text-sm ${tab === key ? 'bg-[var(--primary)] text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
     </div>
 
+    {tab === 'new' && <ProcessingGuide topic="new" />}
+    {tab === 'history' && <ProcessingGuide topic="history" />}
+
     {['reservations','review','repack'].includes(tab) && <ProcessingOperationsView mode={tab as 'reservations' | 'review' | 'repack'} session={session} products={data.products} lots={data.lots} locationOptions={[{id:'central',name:'Almacén central'}, ...data.warehouses.filter(item => item.active)]} />}
 
     {tab === 'history' && <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3"><button type="button" onClick={() => { setHistoryMode('batches'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'batches' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Elaboraciones</button><button type="button" onClick={() => { setHistoryMode('reviews'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reviews' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Revisiones</button><button type="button" onClick={() => { setHistoryMode('repackings'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'repackings' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reenvasados</button></div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><button type="button" onClick={() => { setHistoryMode('batches'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'batches' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Elaboraciones</button><button type="button" onClick={() => { setHistoryMode('reviews'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reviews' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Revisiones</button><button type="button" onClick={() => { setHistoryMode('repackings'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'repackings' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reenvasados</button><button type="button" onClick={() => { setHistoryMode('reports'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reports' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reportes</button></div>
+      {historyMode === 'reports' && <ProcessingReportsView session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
       {session.role === 'admin' && <Field label="Filtrar por almacén"><SelectInput value={historyWarehouse} onChange={event => setHistoryWarehouse(event.target.value)}><option value="all">Todos los almacenes</option>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field>}
       {historyMode === 'reviews' && <ProcessingOperationsView mode="history-reviews" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
       {historyMode === 'repackings' && <ProcessingOperationsView mode="history-repackings" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
@@ -345,22 +351,29 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
 
       {step === 2 && <div className="space-y-3">
         <SectionCard title="Paso 3 · Bolsas y materiales">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-600">Envases dañados se registran aparte; no significan pérdida de alimento.</p><SecondaryButton onClick={() => editDraft(current => ({ ...current, materials: [...current.materials, { id: randomId('material'), description: '', quantity: '', damaged: '0', costBs: '', expenseId: '' }] }))}><Plus size={15} />Añadir material</SecondaryButton></div>
-          {draft.materials.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">No se agregaron materiales. Las bolsas rotas no generan merma alimentaria automáticamente.</p> : <div className="space-y-3">{draft.materials.map(material => <article key={material.id} className="grid min-w-0 gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-2">
+          <ProcessingGuide topic="materials" />
+          <details className="rounded-xl border border-slate-200 p-3">
+          <summary className="min-h-10 cursor-pointer text-sm font-extrabold text-slate-800">Materiales adicionales (opcional)</summary>
+          <div className="mb-3 mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-600">Bolsas dañadas y pérdida de alimento son registros distintos.</p><SecondaryButton onClick={() => editDraft(current => ({ ...current, materials: [...current.materials, { id: randomId('material'), description: '', quantity: '', damaged: '0', costBs: '', expenseId: '' }] }))}><Plus size={15} />Añadir material</SecondaryButton></div>
+          {draft.materials.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">No se agregaron materiales. La elaboración puede continuar sin llenar esta sección.</p> : <div className="space-y-3">{draft.materials.map(material => <article key={material.id} className="grid min-w-0 gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-2">
             <Field label="Material"><TextInput value={material.description} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, description: event.target.value } : row) }))} placeholder="Bolsa, etiqueta…" /></Field>
             <div className="grid grid-cols-2 gap-2"><Field label="Usado"><NumberInput step="0.001" min="0.001" value={material.quantity} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, quantity: event.target.value } : row) }))} /></Field><Field label="Dañado"><NumberInput step="0.001" min="0" value={material.damaged} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, damaged: event.target.value } : row) }))} /></Field></div>
             <Field label="Costo conocido (Bs, opcional)"><NumberInput step="0.01" min="0" value={material.costBs} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, costBs: event.target.value } : row) }))} placeholder="Costo no disponible" /></Field>
-            <Field label="Referencia a egreso existente (opcional)"><TextInput value={material.expenseId} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, expenseId: event.target.value } : row) }))} placeholder="ID del egreso" /></Field>
+            <Field label="Vincular egreso existente (opcional)"><SelectInput value={material.expenseId} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, expenseId: event.target.value } : row) }))}><option value="">Sin egreso vinculado</option>{data.expenses.filter(expense => !expense.voided).map(expense => <option key={expense.id} value={expense.id}>{expense.concept} · Bs {expense.amount.toFixed(2)} · {new Date(expense.createdAt).toLocaleDateString('es-BO')}</option>)}</SelectInput><span className="mt-1 block text-[11px] text-slate-500">Solo referencia; no vuelve a registrar ni modificar el gasto.</span></Field>
             <button type="button" onClick={() => editDraft(current => ({ ...current, materials: current.materials.filter(row => row.id !== material.id) }))} className="min-h-10 justify-self-start text-xs font-bold text-rose-700">Quitar material</button>
           </article>)}</div>}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-600">Costos de elaboración no se capitalizan ni alteran Resultado en esta fase.</p><SecondaryButton onClick={() => editDraft(current => ({ ...current, costs: [...current.costs, { id: randomId('cost'), kind: 'labor', amountBs: '', expenseId: '', sourceReference: '' }] }))}><Plus size={15} />Añadir costo informativo</SecondaryButton></div>
+          </details>
+          <details className="rounded-xl border border-slate-200 p-3">
+          <summary className="min-h-10 cursor-pointer text-sm font-extrabold text-slate-800">Costos auxiliares (opcional · solo informativos)</summary>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-600">No se capitalizan ni alteran Egresos o Resultado.</p><SecondaryButton onClick={() => editDraft(current => ({ ...current, costs: [...current.costs, { id: randomId('cost'), kind: 'labor', amountBs: '', expenseId: '', sourceReference: '' }] }))}><Plus size={15} />Añadir costo</SecondaryButton></div>
           {draft.costs.map(cost => <div key={cost.id} className="mt-2 grid min-w-0 gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-2">
             <Field label="Tipo"><SelectInput value={cost.kind} onChange={event => editDraft(current => ({ ...current, costs: current.costs.map(row => row.id === cost.id ? { ...row, kind: event.target.value as CostDraft['kind'] } : row) }))}><option value="labor">Mano de obra</option><option value="packaging">Empaque</option><option value="other">Otro</option><option value="source_inventory">Inventario de origen (informativo)</option></SelectInput></Field>
             <Field label="Costo Bs (opcional)"><NumberInput min="0" step="0.01" value={cost.amountBs} onChange={event => editDraft(current => ({ ...current, costs: current.costs.map(row => row.id === cost.id ? { ...row, amountBs: event.target.value } : row) }))} placeholder="No disponible" /></Field>
-            <Field label="ID de egreso existente (opcional)"><TextInput value={cost.expenseId} onChange={event => editDraft(current => ({ ...current, costs: current.costs.map(row => row.id === cost.id ? { ...row, expenseId: event.target.value } : row) }))} /></Field>
+            <Field label="Egreso existente (opcional)"><SelectInput value={cost.expenseId} onChange={event => editDraft(current => ({ ...current, costs: current.costs.map(row => row.id === cost.id ? { ...row, expenseId: event.target.value } : row) }))}><option value="">Sin egreso vinculado</option>{data.expenses.filter(expense => !expense.voided).map(expense => <option key={expense.id} value={expense.id}>{expense.concept} · Bs {expense.amount.toFixed(2)} · {new Date(expense.createdAt).toLocaleDateString('es-BO')}</option>)}</SelectInput></Field>
             <Field label="Referencia"><TextInput value={cost.sourceReference} onChange={event => editDraft(current => ({ ...current, costs: current.costs.map(row => row.id === cost.id ? { ...row, sourceReference: event.target.value } : row) }))} /></Field>
             <button type="button" onClick={() => editDraft(current => ({ ...current, costs: current.costs.filter(row => row.id !== cost.id) }))} className="min-h-10 justify-self-start text-xs font-bold text-rose-700">Quitar costo</button>
           </div>)}
+          </details>
         </SectionCard>
         <SectionCard title="Observaciones"><TextArea maxLength={500} value={draft.notes} onChange={event => editDraft(current => ({ ...current, notes: event.target.value }))} placeholder="Observaciones del proceso (no sustituyen pesajes ni aprobaciones)" /></SectionCard>
       </div>}
