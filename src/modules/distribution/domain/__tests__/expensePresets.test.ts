@@ -1,7 +1,7 @@
 import { isExpenseReviewPending } from '../expenseReview.ts'
 import type { DistExpense } from '../../types.ts'
 import registry from '../../../../../functions/expense-presets.json' with { type: 'json' }
-import { adminExpensePreset, customExpensePreset } from '../expensePresets.ts'
+import { adminExpensePreset, customExpensePreset, isExpensePresetChoiceAvailable } from '../expensePresets.ts'
 import { DEFAULT_EXPENSE_CATEGORIES } from '../expenseCategories.ts'
 
 const check = (ok: boolean, message: string) => { if (!ok) throw new Error(message); console.log(`PASS ${message}`) }
@@ -26,6 +26,10 @@ check(isExpenseReviewPending({ ...autoExpense, id: 'legacy', classificationStatu
 const cleaning = DEFAULT_EXPENSE_CATEGORIES.find(category => category.id === 'administration-2')!
 check(cleaning.name === 'Limpieza' && adminExpensePreset(cleaning)?.classificationSource === 'admin_review' && adminExpensePreset(cleaning)?.classificationStatus === 'reviewed', 'Administración puede seleccionar Limpieza activa sin autoClassifiable y queda revisada')
 check(customExpensePreset(cleaning, false) === null, 'Limpieza no se habilita automáticamente para distribuidores')
+const movedFuel = { ...DEFAULT_EXPENSE_CATEGORIES.find(category => category.id === 'indirect-1')!, group: 'commercialization' as const, active: true, autoClassifiable: true, distributorVisible: true }
+check(!isExpensePresetChoiceAvailable('fuel', [movedFuel]), 'se oculta el atajo Combustible del grupo anterior cuando la categoría fue movida')
+check(isExpensePresetChoiceAvailable('category:indirect-1', [movedFuel]), 'la categoría Combustible sigue disponible por su grupo vigente')
+check(!isExpensePresetChoiceAvailable('fuel', [{ ...movedFuel, active: false }]), 'un atajo no ofrece una categoría inactiva')
 check(adminExpensePreset({ ...cleaning, id: 'custom-production', group: 'production_input', name: 'Insumo adicional' })?.economicType === 'production_input', 'el grupo de producción conserva el tratamiento de materia prima')
 check(adminExpensePreset({ ...cleaning, active: false }) === null, 'categorías inactivas no se ofrecen a Administración')
 console.log('PASS expense presets: opciones seguras, materia prima y revisión')

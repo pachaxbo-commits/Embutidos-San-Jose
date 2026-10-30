@@ -8,7 +8,7 @@ import { matchesRoute, round2, toDayKey } from '../domain/engine'
 import { classifyExpense, deleteExpense, listDistributorPurchaseSuppliers, newOperationId, registerExpense, registerSupplierPurchase, saveExpenseGroup } from '../data/distributionRepository'
 import { expenseCategoriesForGroup, expenseGroupDisplayName, listExpenseGroups, mergeExpenseCategories, reconcileExpenseCategoryFilter } from '../domain/expenseCategories'
 import { effectiveExpenseEconomicType, filterExpensesByStatus, isExpenseReviewPending, summarizeActiveExpenses } from '../domain/expenseReview'
-import { adminExpensePreset, customExpensePreset, EXPENSE_PRESETS, EXPENSE_PRODUCTION_PRESETS, EXPENSE_TOP_LEVEL_CHOICES, type ExpensePreset } from '../domain/expensePresets'
+import { adminExpensePreset, customExpensePreset, EXPENSE_PRESETS, EXPENSE_PRODUCTION_PRESETS, EXPENSE_TOP_LEVEL_CHOICES, isExpensePresetChoiceAvailable, type ExpensePreset } from '../domain/expensePresets'
 import { isProductionPreviewReadOnly } from '../../../lib/firebase'
 import { ExpenseConfigurationModal } from './ExpenseConfigurationModal'
 import { ExpenseReportsView } from './ExpenseReportsView'
@@ -73,18 +73,29 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
   const adminPresets = useMemo(() => categories.map((item) => adminExpensePreset(item, data.expenseGroups)).filter((item): item is ExpensePreset => item !== null), [categories, data.expenseGroups])
   const frequentAdminChoiceIds = useMemo(() => new Set(EXPENSE_PRESETS.map(preset => preset.categoryId)), [])
   const moreAdminPresetsByGroup = useMemo(() => groups.filter(group => group.active).map(group => ({ ...group, presets: adminPresets.filter(preset => preset.group === group.id && !frequentAdminChoiceIds.has(preset.categoryId)) })), [adminPresets, frequentAdminChoiceIds, groups])
+  const currentTopLevelChoices = useMemo(() => EXPENSE_TOP_LEVEL_CHOICES.filter(choice => isExpensePresetChoiceAvailable(choice.value, categories)), [categories])
   const topLevelChoices = useMemo(() => session.role === 'admin'
-    ? EXPENSE_TOP_LEVEL_CHOICES
-    : [...EXPENSE_TOP_LEVEL_CHOICES, ...customPresets.filter((preset) => preset.group !== 'production_input').map((preset) => ({ value: preset.id, label: preset.label }))], [customPresets, session.role])
+    ? currentTopLevelChoices
+    : [...currentTopLevelChoices, ...customPresets.filter((preset) => preset.group !== 'production_input').map((preset) => ({ value: preset.id, label: preset.label }))], [currentTopLevelChoices, customPresets, session.role])
   const productionChoices = useMemo(() => [
-    ...EXPENSE_PRODUCTION_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
+    ...EXPENSE_PRODUCTION_PRESETS.filter(preset => isExpensePresetChoiceAvailable(preset.id, categories)).map((preset) => ({ value: preset.id, label: preset.label })),
     ...(session.role === 'admin' ? adminPresets.filter((preset) => preset.group === 'production_input' && !frequentAdminChoiceIds.has(preset.categoryId)).map((preset) => ({ value: preset.id, label: preset.label })) : customPresets.filter((preset) => preset.group === 'production_input').map((preset) => ({ value: preset.id, label: preset.label }))),
-  ], [adminPresets, customPresets, frequentAdminChoiceIds, session.role])
-  const selectedPreset = selectedChoice.startsWith('group-category:')
+  ], [adminPresets, categories, customPresets, frequentAdminChoiceIds, session.role])
+  const selectedPreset = (() => {
+    const selected = selectedChoice.startsWith('group-category:')
     ? (() => { const selectedCategory = categories.find((category) => category.id === selectedChoice.slice('group-category:'.length)); const selectedGroup = groups.find((group) => group.id === groupCategoryGroup); return selectedCategory && selectedGroup ? { id: selectedChoice, label: selectedCategory.name, group: selectedGroup.id, categoryId: selectedCategory.id, categoryName: selectedCategory.name, economicType: selectedGroup.economicType, classificationStatus: 'reviewed' as const, classificationSource: 'admin_review' as const, requiresDetail: false } : undefined })()
     : selectedChoice === 'production_input'
     ? [...EXPENSE_PRESETS, ...customPresets, ...adminPresets].find((preset) => preset.id === productionPresetId)
     : [...EXPENSE_PRESETS, ...customPresets, ...adminPresets].find((preset) => preset.id === selectedChoice)
+    if (!selected || !EXPENSE_PRESETS.some(preset => preset.id === selected.id)) return selected
+    const currentCategory = categories.find(category => category.id === selected.categoryId)
+    if (!currentCategory) return selected
+    if (!currentCategory.active) return undefined
+    if (currentCategory.group === selected.group) return { ...selected, label: currentCategory.name, categoryName: currentCategory.name }
+    return session.role === 'admin'
+      ? adminExpensePreset(currentCategory, data.expenseGroups) || undefined
+      : customExpensePreset(currentCategory, false, data.expenseGroups) || undefined
+  })()
   const distributorMeatPurchase = session.role === 'distributor' && selectedChoice === 'production_input' && productionPresetId === 'production_meat'
   const distributorPurchaseTotal = round2((Number(purchaseQuantity) || 0) * (Number(purchaseUnitPrice) || 0))
   const matchingExpenses = useMemo(() => data.expenses.filter((expense) => {

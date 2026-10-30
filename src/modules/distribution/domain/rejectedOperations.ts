@@ -60,7 +60,7 @@ export function getRejectedOperationActionLabel(type: string, role: UserRole): s
 }
 
 export function rejectedOperationStatusMessage(): string {
-  return 'El servidor rechazó esta operación al validarla. Revisa el motivo antes de volver a registrarla.'
+  return 'El servidor rechazó esta operación; no quedó registrada. Corrige el motivo antes de volver a intentarlo.'
 }
 
 export function lotUpdateReasonError(reason: string): string | null {

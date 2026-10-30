@@ -416,7 +416,8 @@ export function DistributionApp({
               <p className="font-extrabold">{operationMetadata.label} rechazada</p>
               <p className="mt-1">{rejectedOperationStatusMessage()}</p>
               <p className="mt-1">Fecha: {new Date(o.createdAt).toLocaleString('es-BO')}{entityDetails ? ` · ${entityDetails}` : ''}</p>
-              <p className="mt-1">El servidor rechazó esta operación. Revisa los datos y el estado antes de volver a registrarla.</p>
+              <p className="mt-1">El rechazo no generó el cambio solicitado. Corrige los datos antes de reintentar.</p>
+              {role === 'distributor' && o.error && <p className="mt-1 rounded-lg bg-rose-50 p-2 text-xs font-bold">Motivo: {o.error}</p>}
               {(role === 'admin' || role === 'support') && <details className="mt-2 rounded-lg bg-rose-50 p-2 text-xs"><summary className="min-h-8 cursor-pointer font-bold">Ver motivo técnico</summary><p className="break-words">{o.error || 'El servidor no aceptó la operación.'}</p></details>}
               <div className="mt-2 flex flex-wrap gap-2">
                 <button className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold" onClick={() => selectModule(destination ?? 'dist.dashboard')}>{getRejectedOperationActionLabel(o.type, session.role)}</button>
