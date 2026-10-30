@@ -27,7 +27,7 @@ export interface ReportOption {
 
 export const REPORT_OPTIONS: readonly ReportOption[] = [
   { id: 'summary', label: 'Resumen', sheetName: 'Resumen' },
-  { id: 'sellerSummary', label: 'Resumen por vendedor · kg vendidos', sheetName: 'Kg por vendedor' },
+  { id: 'sellerSummary', label: 'Kg vendidos por chofer', sheetName: 'Kg por vendedor' },
   { id: 'sales', label: 'Ventas', sheetName: 'Ventas' },
   { id: 'courtesies', label: 'Entregas de cortesía', sheetName: 'Cortesías' },
   { id: 'products', label: 'Productos vendidos', sheetName: 'Productos vendidos' },
@@ -70,6 +70,8 @@ export function defaultSheetIdForTab(tab: string): ReportSheetId {
       return 'courtesies'
     case 'productos':
       return 'products'
+    case 'sellerKg':
+      return 'sellerSummary'
     case 'ganancias':
       return 'productProfit'
     case 'kardex':

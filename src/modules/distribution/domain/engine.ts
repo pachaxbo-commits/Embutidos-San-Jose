@@ -757,6 +757,115 @@ export function computeSellerBreakdown(
   return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
 }
 
+export interface SellerRouteKilograms {
+  granelKilograms: number
+  documentedSachetKilograms: number
+  totalDocumentedKilograms: number
+  estimatedSachetKilograms: number
+  unknownWeightPackages: number
+}
+
+/** Shares the seller report calculation while keeping route rows independent. */
+export function computeSellerKilogramsByRoute(
+  sales: DistSale[],
+  claims: DistClaim[] = [],
+  products: DistProduct[] = [],
+): Map<string, SellerRouteKilograms> {
+  const routeIds = new Set([...sales.map(sale => sale.routeId), ...claims.map(claim => claim.routeId)].filter(Boolean))
+  const result = new Map<string, SellerRouteKilograms>()
+  for (const routeId of routeIds) {
+    const routeSales = sales.filter(sale => sale.routeId === routeId)
+    const routeSaleIds = new Set(routeSales.map(sale => sale.id))
+    const routeClaims = claims.filter(claim => claim.routeId === routeId || routeSaleIds.has(claim.saleId))
+    const sellers = computeSellerBreakdown(routeSales, [], [], routeClaims, products)
+    const totals = sellers.reduce((sum, seller) => ({
+      granelKilograms: sum.granelKilograms + seller.kilograms,
+      documentedSachetKilograms: sum.documentedSachetKilograms + seller.documentedSachetKilograms,
+      totalDocumentedKilograms: sum.totalDocumentedKilograms + seller.totalDocumentedKilograms,
+      estimatedSachetKilograms: sum.estimatedSachetKilograms + seller.estimatedSachetKilograms,
+      unknownWeightPackages: sum.unknownWeightPackages + seller.unknownWeightPackages,
+    }), { granelKilograms: 0, documentedSachetKilograms: 0, totalDocumentedKilograms: 0, estimatedSachetKilograms: 0, unknownWeightPackages: 0 })
+    if (sellers.some(seller => seller.salesCount > 0 || seller.kilograms !== 0 || seller.documentedSachetKilograms !== 0 || seller.estimatedSachetKilograms !== 0 || seller.packages !== 0 || seller.unknownWeightPackages !== 0)) result.set(routeId, {
+      granelKilograms: round3(totals.granelKilograms),
+      documentedSachetKilograms: round3(totals.documentedSachetKilograms),
+      totalDocumentedKilograms: round3(totals.totalDocumentedKilograms),
+      estimatedSachetKilograms: round3(totals.estimatedSachetKilograms),
+      unknownWeightPackages: round3(totals.unknownWeightPackages),
+    })
+  }
+  return result
+}
+
+export interface SellerProductKilograms extends SellerRouteKilograms {
+  sellerUid: string
+  sellerName: string
+  routeNames: string[]
+  productId: string
+  productName: string
+}
+
+/** Net kilogram detail per seller and item, using the same sale/claim logic. */
+export function computeSellerKilogramsByProduct(
+  sales: DistSale[],
+  claims: DistClaim[] = [],
+  products: DistProduct[] = [],
+  sellerFilter = '',
+): SellerProductKilograms[] {
+  const productsById = new Map(products.map(product => [product.id, product]))
+  const productIds = new Set<string>()
+  for (const sale of sales) {
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    for (const line of effective.lines || []) productIds.add(line.productId)
+  }
+  for (const claim of claims) {
+    productIds.add(claim.productId)
+    if (claim.replacement?.productId) productIds.add(claim.replacement.productId)
+  }
+  const result: SellerProductKilograms[] = []
+  for (const productId of productIds) {
+    const productSales = sales.flatMap(sale => {
+      const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+      const lines = (effective.lines || []).filter(line => line.productId === productId)
+      return lines.length ? [{ ...effective, effectiveSnapshot: undefined, lines }] : []
+    })
+    const productClaims = claims.flatMap(claim => {
+      const originalMatches = claim.productId === productId
+      const replacementMatches = claim.replacement?.productId === productId
+      if (!originalMatches && !replacementMatches) return []
+      return [{
+        ...claim,
+        productId,
+        quantity: originalMatches ? claim.quantity : 0,
+        unitType: originalMatches ? claim.unitType : claim.replacement?.unitType || claim.unitType,
+        returnedProcessingAllocations: originalMatches ? claim.returnedProcessingAllocations : [],
+        replacement: replacementMatches ? claim.replacement : null,
+      }]
+    })
+    const rows = computeSellerBreakdown(productSales, [], [], productClaims, products)
+    for (const row of rows) {
+      if (sellerFilter && row.sellerUid !== sellerFilter) continue
+      if (row.salesCount === 0 && row.kilograms === 0 && row.documentedSachetKilograms === 0 && row.estimatedSachetKilograms === 0 && row.packages === 0 && row.unknownWeightPackages === 0) continue
+      result.push({
+        sellerUid: row.sellerUid,
+        sellerName: row.sellerName,
+        routeNames: row.routeNames,
+        productId,
+        productName: productsById.get(productId)?.name
+          || productSales.flatMap(sale => sale.lines).find(line => line.productId === productId)?.productNameSnapshot
+          || claims.find(claim => claim.productId === productId)?.productName
+          || claims.find(claim => claim.replacement?.productId === productId)?.replacement?.productName
+          || 'Producto histórico',
+        granelKilograms: row.kilograms,
+        documentedSachetKilograms: row.documentedSachetKilograms,
+        totalDocumentedKilograms: row.totalDocumentedKilograms,
+        estimatedSachetKilograms: row.estimatedSachetKilograms,
+        unknownWeightPackages: row.unknownWeightPackages,
+      })
+    }
+  }
+  return result.sort((a, b) => a.sellerName.localeCompare(b.sellerName, 'es') || a.productName.localeCompare(b.productName, 'es'))
+}
+
 function addSellerClaimReturnLine(entry: SellerBreakdown, claim: DistClaim): void {
   const quantity = Math.max(0, Number(claim.quantity) || 0)
   if (!quantity) return

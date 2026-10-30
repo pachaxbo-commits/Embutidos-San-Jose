@@ -9,7 +9,7 @@ const vite = await createServer({
 })
 
 try {
-  const { reportSheets } = await vite.ssrLoadModule('/src/modules/distribution/data/reportExports.ts')
+  const { reportSheets, sellerKilogramReportError } = await vite.ssrLoadModule('/src/modules/distribution/data/reportExports.ts')
   const processing = (overrides = {}) => ({
     segmentId: 'segment-1', batchId: 'batch-1', destinationId: 'lot-1', sourceMovementId: 'move-1',
     quantity: 1, physicalWeightG: 250, costCents: 125, weightBasis: 'documented_average',
@@ -31,7 +31,7 @@ try {
       { id: 'old-derived', unitType: 'package', approximateWeightKg: 0.1 },
       { id: 'replacement-derived', unitType: 'package', approximateWeightKg: 0.25, documentedPackageWeightKg: 0.25 },
     ],
-    movements: [], warehouses: [], transfers: [], routes: [], lots: [], balances: [], supportSettings: {},
+    movements: [], warehouses: [], transfers: [], routes: [], lots: [], balances: [], supportSettings: {}, operations: [],
   }
   const row = reportSheets(data, ['2026-10-29']).find(sheet => sheet.id === 'sellerSummary')?.rows[0]
   assert.ok(row, 'PDF/Excel export has a seller summary row for a return claim from an earlier sale')
@@ -39,6 +39,11 @@ try {
   assert.equal(row[3], 0.083, 'the export uses 333 g historical replacement minus 250 g returned')
   assert.equal(row[4], 0, 'catalog approximate weight does not replace historical grams')
   console.log('PASS export Kg por vendedor: 333 g replacement allocation, 250 g returned, net 0.083 kg; no catalog estimate substituted')
+  assert.equal(sellerKilogramReportError(data, ['2026-10-29']), null, 'complete data can be reported')
+  assert.match(sellerKilogramReportError({ ...data, operations: [{ status: 'queued' }] }, ['2026-10-29']), /operaciones pendientes/i)
+  assert.match(sellerKilogramReportError({ ...data, sales: [{ id: 'pending', routeId: 'route-1', sellerUid: 'seller-1', createdAt: '2026-10-29T12:00:00.000Z', dayKey: '2026-10-29', pendingConfirmation: true }] }, ['2026-10-29']), /ventas pendientes/i)
+  assert.match(sellerKilogramReportError({ ...data, claims: [{ ...claim, sellerUid: undefined, saleId: 'missing-sale', productId: 'missing-product' }] }, ['2026-10-29']), /devolución histórica sin chofer/i)
+  console.log('PASS el reporte de kilos bloquea operaciones sin sincronizar, ventas pendientes y devoluciones sin atribución')
 
   const voidedCashSale = {
     id: 'voided-cash-sale', operationId: 'voided-cash-sale', restaurantId: 'sanjose', branchId: 'main',
