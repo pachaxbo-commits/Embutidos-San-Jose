@@ -7,6 +7,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { processCommand } = require("./operations.cjs");
 const { prepareCleanDelivery, executeCleanDelivery } = require("./maintenance.cjs");
 const { submitDiagnostic, listDiagnostics, updateDiagnostic } = require("./error-diagnostics.cjs");
+const { manageProcessingQualityAuthorization: manageProcessingQualityAuthorizationCore } = require("./processing-authorization.cjs");
 initializeApp();
 exports.processSanJoseOperation = onDocumentCreated(
   {
@@ -30,6 +31,20 @@ exports.manageSanJoseDiagnostics = onCall(
     if (action === "list") return listDiagnostics(db, request);
     if (action === "update") return updateDiagnostic(db, request);
     throw new HttpsError("invalid-argument", "La acción de diagnóstico no es válida.");
+  },
+);
+
+exports.manageProcessingQualityAuthorization = onCall(
+  { region: "us-central1", memory: "256MiB", maxInstances: 1, invoker: "public" },
+  async (request) => {
+    try {
+      return await manageProcessingQualityAuthorizationCore(getFirestore(), request);
+    } catch (error) {
+      if (error?.code && ["unauthenticated", "permission-denied", "invalid-argument", "failed-precondition", "already-exists"].includes(error.code)) {
+        throw new HttpsError(error.code, error.message);
+      }
+      throw error;
+    }
   },
 );
 

@@ -27,8 +27,10 @@ import {
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
+import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord, ProcessingRepackRecord, ProcessingEvidenceRecord, ProcessingQualityAuthorization } from '../domain/processing'
+import { validateRepackOperationContract } from '../domain/processing'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
-import { centralBalanceId, round2, toDayKey } from '../domain/engine'
+import { centralBalanceId, resolveVoidedSaleReceiptSnapshot, round2, toDayKey } from '../domain/engine'
 import type {
   DistBalance,
   DistWarehouse,
@@ -59,9 +61,12 @@ import type {
   PaymentKind,
   SourceLocation,
   UnitType,
+  SupplierPurchaseLine,
 } from '../types'
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from './supportMaintenance'
 import { recordQrVerification, type QrSourceType } from './qrVerification'
+import { connectStorageEmulator, getStorage, ref as storageRef, uploadBytes, getMetadata as getStorageMetadata } from 'firebase/storage'
+import type { FirebaseApp } from 'firebase/app'
 
 /**
  * Repositorio de distribucion movil.
@@ -97,15 +102,179 @@ export const DIST_COLLECTIONS = {
   payables: 'distPayables',
   supplierPayments: 'distSupplierPayments',
   closures: 'distClosures',
+  processingReviews: 'distProcessingReviews',
+  processingRepackings: 'distProcessingRepackings',
+  processingEvidence: 'distProcessingEvidence',
+  processingQualityAuthorizations: 'distProcessingQualityAuthorizations',
   adjustmentRequests: 'distAdjustmentRequests',
   quotes: 'distQuotes',
   saleCorrections: 'distSaleCorrections',
 } as const
 
 const SCHEMA_VERSION = 1
+let processingStorageEmulatorConnected = false
 
 export function warehouseBalanceId(warehouseId: string, productId: string): string {
   return warehouseId === 'central' ? centralBalanceId(productId) : `warehouse__${warehouseId}__${productId}`
+}
+
+export interface ProcessingBatchPage {
+  rows: ProcessingBatch[]
+  cursor: QueryDocumentSnapshot<DocumentData> | null
+  hasMore: boolean
+}
+
+/** Historial bajo demanda: acotado y filtrado por ubicación para cumplir Rules de almacén. */
+export async function loadProcessingBatchPage(
+  location: string | undefined,
+  cursor: QueryDocumentSnapshot<DocumentData> | null = null,
+  pageSize = 20,
+): Promise<ProcessingBatchPage> {
+  const context = await getContext()
+  const ref = collectionRef(context, 'distProcessingBatches')
+  const constraints: QueryConstraint[] = []
+  if (location) constraints.push(where('sourceLocation', '==', location))
+  constraints.push(orderBy('createdAt', 'desc'), limit(Math.min(50, Math.max(1, pageSize + 1))))
+  if (cursor) constraints.splice(constraints.length - 1, 0, startAfter(cursor))
+  const snapshot = await getDocsFromServer(query(ref, ...constraints))
+  const hasMore = snapshot.docs.length > pageSize
+  const docs = snapshot.docs.slice(0, pageSize)
+  return {
+    rows: docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingBatch),
+    cursor: docs.at(-1) || null,
+    hasMore,
+  }
+}
+
+export async function loadProcessingReservationPage(
+  location: string | undefined,
+  cursor: QueryDocumentSnapshot<DocumentData> | null = null,
+  pageSize = 20,
+): Promise<{ rows: ProcessingReservation[]; cursor: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
+  const context = await getContext()
+  const ref = collectionRef(context, 'distStockReservations')
+  const constraints: QueryConstraint[] = []
+  if (location) constraints.push(where('location', '==', location))
+  constraints.push(orderBy('createdAt', 'desc'), limit(Math.min(50, Math.max(1, pageSize + 1))))
+  if (cursor) constraints.splice(constraints.length - 1, 0, startAfter(cursor))
+  const snapshot = await getDocsFromServer(query(ref, ...constraints))
+  const hasMore = snapshot.docs.length > pageSize
+  const docs = snapshot.docs.slice(0, pageSize)
+  return { rows: docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingReservation), cursor: docs.at(-1) || null, hasMore }
+}
+
+async function loadProcessingPage<T>(name: string, location: string | undefined, dateField: string, cursor: QueryDocumentSnapshot<DocumentData> | null, pageSize: number): Promise<{ rows: T[]; cursor: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
+  const context = await getContext()
+  const constraints: QueryConstraint[] = []
+  if (location) constraints.push(where('location', '==', location))
+  constraints.push(orderBy(dateField, 'desc'), limit(Math.min(50, Math.max(1, pageSize + 1))))
+  if (cursor) constraints.splice(constraints.length - 1, 0, startAfter(cursor))
+  const snapshot = await getDocsFromServer(query(collectionRef(context, name), ...constraints))
+  const hasMore = snapshot.docs.length > pageSize
+  const docs = snapshot.docs.slice(0, pageSize)
+  return { rows: docs.map(row => ({ id: row.id, ...row.data() }) as T), cursor: docs.at(-1) || null, hasMore }
+}
+
+export function loadProcessingReviewPage(location: string | undefined, cursor: QueryDocumentSnapshot<DocumentData> | null = null, pageSize = 20) {
+  return loadProcessingPage<ProcessingReviewRecord>('distProcessingReviews', location, 'reviewedAt', cursor, pageSize)
+}
+
+export function loadProcessingRepackPage(location: string | undefined, cursor: QueryDocumentSnapshot<DocumentData> | null = null, pageSize = 20) {
+  return loadProcessingPage<ProcessingRepackRecord>('distProcessingRepackings', location, 'confirmedAt', cursor, pageSize)
+}
+
+/** Evidence is queried by both location and reservation so warehouse Rules can prove scope. */
+export async function loadProcessingEvidenceForReservation(location: string, reservationId: string): Promise<ProcessingEvidenceRecord[]> {
+  const context = await getContext()
+  const snapshot = await getDocsFromServer(query(collectionRef(context, 'distProcessingEvidence'), where('location', '==', location), where('reservationId', '==', reservationId), where('status', '==', 'verified'), limit(30)))
+  return snapshot.docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingEvidenceRecord)
+}
+
+export async function loadMyProcessingQualityAuthorization(): Promise<ProcessingQualityAuthorization | null> {
+  const context = await getContext()
+  return loadProcessingQualityAuthorizationFor(context.uid)
+}
+
+export async function loadProcessingQualityAuthorizationFor(beneficiaryUid: string): Promise<ProcessingQualityAuthorization | null> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, 'distProcessingQualityAuthorizations', beneficiaryUid))
+  return snapshot.exists() ? ({ id: snapshot.data().authorizationId || snapshot.id, ...snapshot.data() }) as ProcessingQualityAuthorization : null
+}
+
+export type ProcessingOperationState =
+  | { status: 'missing' }
+  | { status: 'queued'; createdAt?: string }
+  | { status: 'confirmed'; result: unknown }
+  | { status: 'rejected'; error: string }
+
+/** Lee estado desde servidor, no del cache local, antes de reintentar una respuesta desconocida. */
+export async function getProcessingOperationState(operationId: string, expectedType: 'confirmProcessingBatch' | 'recordProcessingReview' | 'confirmProcessingRepack' = 'confirmProcessingBatch'): Promise<ProcessingOperationState> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, 'distOperations', operationId))
+  if (!snapshot.exists()) return { status: 'missing' }
+  const data = snapshot.data()
+  if (data.type !== expectedType) throw new Error('El identificador corresponde a otra operación.')
+  if (data.status === 'confirmed') return { status: 'confirmed', result: data.result }
+  if (data.status === 'rejected') return { status: 'rejected', error: String(data.error || 'El servidor rechazó la operación.') }
+  return { status: 'queued', ...(typeof data.createdAt === 'string' ? { createdAt: data.createdAt } : {}) }
+}
+
+/** Entrada oficial al backend; nunca modifica lotes ni balances desde el cliente. */
+export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput, operationId: string): Promise<unknown> {
+  return submitOperation('confirmProcessingBatch', input, operationId)
+}
+
+/** Registra una inspección de producto inmovilizado sin tocar inventario ni liberar la reserva. */
+export async function recordProcessingReview(input: RecordProcessingReviewInput, operationId: string): Promise<unknown> {
+  return submitOperation('recordProcessingReview', input, operationId)
+}
+
+/** Sube evidencia con metadatos acotados y registra su verificación por el servidor. */
+export async function uploadProcessingEvidence(input: { lotId: string; reservationId: string; location: string; reviewCaseId: string; reviewRevision: number; evidenceType: 'photo' | 'measurement_record' | 'signed_quality_record'; file: File; evidenceId: string; operationId: string }): Promise<unknown> {
+  const context = await getContext(true)
+  const { file } = input
+  if (!['image/jpeg','image/png','application/pdf'].includes(file.type) || file.size <= 0 || file.size > 15 * 1024 * 1024) throw new Error('Adjunta una foto JPG/PNG o PDF de hasta 15 MB.')
+  if (!/^[A-Za-z0-9_-]{8,120}$/.test(input.evidenceId) || !/^[A-Za-z0-9_-]{8,120}$/.test(input.operationId)) throw new Error('Los identificadores de la carga no son válidos.')
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+  const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  const objectPath = `processing-evidence/sanjose/${input.location}/${input.reservationId}/${input.reviewCaseId}/${input.reviewRevision}/${context.uid}/${input.evidenceId}`
+  const storage = getStorage(context.app)
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !processingStorageEmulatorConnected) {
+    connectStorageEmulator(storage, window.location.hostname || '127.0.0.1', 9199)
+    processingStorageEmulatorConnected = true
+  }
+  const object = storageRef(storage, objectPath)
+  const customMetadata = { restaurantId: 'sanjose', lotId: input.lotId, reservationId: input.reservationId,
+    reviewCaseId: input.reviewCaseId, reviewRevision: String(input.reviewRevision), location: input.location,
+    uploadedBy: context.uid, evidenceType: input.evidenceType, sha256, evidenceId: input.evidenceId }
+  let alreadyUploaded = false
+  try {
+    const existing = await getStorageMetadata(object)
+    alreadyUploaded = existing.customMetadata?.sha256 === sha256 && existing.customMetadata?.lotId === input.lotId
+      && existing.customMetadata?.reviewCaseId === input.reviewCaseId && existing.customMetadata?.reviewRevision === String(input.reviewRevision)
+  } catch { /* The object is not present yet; upload below. */ }
+  if (!alreadyUploaded) await uploadBytes(object, file, { contentType: file.type, customMetadata })
+  return submitOperation('recordProcessingEvidence', { lotId: input.lotId, reservationId: input.reservationId, location: input.location,
+    reviewCaseId: input.reviewCaseId, reviewRevision: input.reviewRevision, evidenceType: input.evidenceType, evidenceId: input.evidenceId }, input.operationId)
+}
+
+/** Reenvasa una reserva aprobada mediante la única transacción del servidor. */
+export async function confirmProcessingRepack(input: RepackOperationInput): Promise<unknown> {
+  if (!input.operationId.trim()) throw new Error('El reenvasado requiere un identificador de operación estable.')
+  validateRepackOperationContract(input)
+  return submitOperation('confirmProcessingRepack', input, input.operationId)
+}
+
+/** Lee un informe de inspección desde servidor; el alcance por ubicación lo aplican Firestore Rules. */
+export async function loadProcessingReview(reviewId: string): Promise<ProcessingReviewRecord | null> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, DIST_COLLECTIONS.processingReviews, reviewId))
+  return snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as ProcessingReviewRecord) : null
+}
+
+/** Contrato de la fase siguiente; solo valida en cliente y no envía ni modifica existencias. */
+export function validateRepackRequest(input: RepackOperationInput): void {
+  validateRepackOperationContract(input)
 }
 
 export function subscribeWarehouses(onData: (rows: DistWarehouse[]) => void, onError?: (error: Error) => void) {
@@ -200,6 +369,7 @@ export function isOperationApplied(operationId: string): boolean {
 }
 
 interface RepoContext {
+  app: FirebaseApp
   db: Firestore
   restaurantId: string
   uid: string
@@ -211,6 +381,7 @@ async function getContext(forWrite = false): Promise<RepoContext> {
   if (forWrite) assertFirebaseWritesAllowed(context.app.options.projectId)
   if (!context.auth.currentUser) throw new Error('Inicia sesion para registrar operaciones.')
   return {
+    app: context.app,
     db: context.db,
     restaurantId: context.restaurantId,
     uid: context.auth.currentUser?.uid ?? '',
@@ -376,6 +547,7 @@ function subscribeQuery<T>(
 ): () => void {
   let unsubscribe: Unsubscribe | null = null
   let cancelled = false
+  let emission = 0
   const queryKey = `q${querySequence++}`
 
   void (async () => {
@@ -387,7 +559,21 @@ function subscribeQuery<T>(
         { includeMetadataChanges: true },
         (snapshot) => {
           reportPendingWrites(queryKey, snapshot.metadata.hasPendingWrites)
-          onData(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as T))
+          const version = ++emission
+          void Promise.all(snapshot.docs.map(async entry => {
+            const row = { id: entry.id, ...entry.data() }
+            if (entry.ref.parent.id !== DIST_COLLECTIONS.sales) return row as T
+            const sale = row as unknown as DistSale
+            if (!sale.voidedAt || !sale.derivedVoid) return row as T
+            const correctionId = sale.derivedVoid.correctionId
+            const correction = correctionId
+              ? await getDocFromServer(docRef(context, DIST_COLLECTIONS.saleCorrections, correctionId))
+              : undefined
+            const evidence = correction?.data() as DistSaleCorrection | undefined
+            const receipt = resolveVoidedSaleReceiptSnapshot(sale, evidence)
+            return { ...row, derivedVoid: { ...sale.derivedVoid, cashReceiptSnapshot: receipt } } as T
+          })).then(rows => { if (!cancelled && version === emission) onData(rows) })
+            .catch(error => { if (!cancelled && version === emission) onError?.(error as Error) })
         },
         (error) => {
           console.error('[distribution] error de suscripcion', error)
@@ -466,6 +652,25 @@ export function subscribeClosedDispatches(
   )
 }
 
+/** Closed dispatches are needed to resolve legacy sales consistently with the server during reconciliation. */
+export function subscribeClosedDispatchesForRoute(
+  routeId: string,
+  onData: (rows: DistDispatch[]) => void,
+  onError?: (error: Error) => void,
+  distributorUid?: string,
+) {
+  return subscribeQuery<DistDispatch>(
+    context => {
+      const base = collectionRef(context, DIST_COLLECTIONS.dispatches)
+      return distributorUid
+        ? query(base, where('distributorUid', '==', distributorUid))
+        : query(base, where('routeId', '==', routeId), where('status', '==', 'closed'))
+    },
+    rows => onData(rows.filter(row => row.status === 'closed' && row.routeId === routeId)),
+    onError,
+  )
+}
+
 function subscribeDayScoped<T>(
   collectionName: string,
   dayKeys: string[],
@@ -528,6 +733,43 @@ export function subscribeSales(
   )
 }
 
+/**
+ * Cierre consulta el mismo alcance histórico que el servidor: ventas por ruta
+ * más ventas enlazadas directamente al despacho. No filtra por dayKey, porque
+ * documentos antiguos pueden carecer de ese campo o conservar uno incorrecto;
+ * su atribución temporal se valida después con createdAt e intervalos del
+ * despacho. Para distribuidores se usa su índice de seguridad por sellerUid.
+ */
+export function subscribeDispatchSettlementSales(
+  routeId: string,
+  dispatchId: string,
+  onData: (rows: DistSale[]) => void,
+  onError?: (error: Error) => void,
+  distributorUid?: string,
+) {
+  if (distributorUid) return subscribeQuery<DistSale>(
+    context => query(collectionRef(context, DIST_COLLECTIONS.sales), where('sellerUid', '==', distributorUid)),
+    onData,
+    onError,
+  )
+
+  let routeRows: DistSale[] | null = null
+  let dispatchRows: DistSale[] | null = null
+  const emit = () => {
+    if (!routeRows || !dispatchRows) return
+    onData([...new Map([...routeRows, ...dispatchRows].map(row => [row.id, row])).values()])
+  }
+  const stopRoute = subscribeQuery<DistSale>(
+    context => query(collectionRef(context, DIST_COLLECTIONS.sales), where('routeId', '==', routeId)),
+    rows => { routeRows = rows; emit() }, onError,
+  )
+  const stopDispatch = subscribeQuery<DistSale>(
+    context => query(collectionRef(context, DIST_COLLECTIONS.sales), where('dispatchId', '==', dispatchId)),
+    rows => { dispatchRows = rows; emit() }, onError,
+  )
+  return () => { stopRoute(); stopDispatch() }
+}
+
 export function subscribeQuotes(isAdmin: boolean, onData: (rows: DistQuote[]) => void, onError?: (error: Error) => void) {
   return subscribeQuery<DistQuote>(context => {
     const ref = collectionRef(context, DIST_COLLECTIONS.quotes)
@@ -552,7 +794,7 @@ export async function correctSale(input: { saleId: string; reason: string; lines
   await submitOperation('editSale', input, newOperationId('sale-correction'))
 }
 
-export async function voidSale(input: { saleId: string; reason: string }): Promise<void> {
+export async function voidSale(input: { saleId: string; reason: string; voidScenario?: 'recorded_in_error_never_delivered' | 'delivered_then_returned'; physicalCustodyConfirmed?: boolean; custodyLocation?: string; physicalCustodyNote?: string; cashRefundAmount?: number; qrRefundAmount?: number; qrRefundConfirmed?: boolean; qrRefundReference?: string }): Promise<void> {
   await submitOperation('voidSale', input, newOperationId('sale-void'))
 }
 
@@ -892,6 +1134,7 @@ export async function saveProduct(product: Omit<DistProduct, 'restaurantId' | 'c
     {
       ...product,
       approximateWeightKg: product.approximateWeightKg === undefined ? deleteField() : product.approximateWeightKg,
+      documentedPackageWeightKg: product.documentedPackageWeightKg === undefined ? deleteField() : product.documentedPackageWeightKg,
       referencePrice: round2(product.referencePrice),
       restaurantId: context.restaurantId,
       createdAt: product.createdAt ?? now,
@@ -1234,6 +1477,10 @@ export async function saveExpenseGroup(input: { groupId: string; name: string; e
   return submitOperation<DistExpenseGroup>('saveExpenseGroup', input, newOperationId('expense-group'))
 }
 
+export async function deleteExpenseGroup(input: { groupId: string }) {
+  return submitOperation<{ id: string; deleted: true }>('deleteExpenseGroup', input, newOperationId('delete-expense-group'))
+}
+
 export async function saveExpenseSupplier(input: { supplierId: string; name: string; contactName?: string; phone?: string; note?: string; active: boolean }) {
   return submitOperation<DistSupplier>('saveExpenseSupplier', input, newOperationId('expense-supplier'))
 }
@@ -1250,6 +1497,7 @@ export interface SupplierPurchaseInput {
   dayKey: string
   dueDayKey?: string
   note?: string
+  purchaseLines?: SupplierPurchaseLine[]
 }
 
 export async function registerSupplierPurchase(input: SupplierPurchaseInput) {
@@ -1294,6 +1542,10 @@ export async function deleteExpense(expenseId: string, reason = ''): Promise<voi
 
 export async function saveExpenseCategory(input: { categoryId: string; group: ExpenseGroupId; name: string; active: boolean; order: number; autoClassifiable: boolean; distributorVisible: boolean }) {
   return submitOperation<DistExpenseCategory>('saveExpenseCategory', input, newOperationId('expense-category'))
+}
+
+export async function deleteExpenseCategory(input: { categoryId: string }) {
+  return submitOperation<{ id: string; deleted: true }>('deleteExpenseCategory', input, newOperationId('delete-expense-category'))
 }
 
 export async function classifyExpense(input: { expenseId: string; group: ExpenseGroupId; categoryId: string; economicType: ExpenseEconomicType }) {

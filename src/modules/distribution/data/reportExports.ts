@@ -2,7 +2,7 @@ import { jsPDF, autoTable, Workbook } from "../../../lib/documentLibraries.ts";
 import type { CellHookData } from "jspdf-autotable";
 import type { DistributionData } from "../state/useDistributionStore";
 import type { DistCustomer, DistSale, DistSaleLine } from "../types";
-import { matchesRoute, round2, toDayKey } from "../domain/engine";
+import { cashMovementRouteId, cashMovementSellerUid, computeSellerBreakdown, computeVoidedSaleReceiptTotals, isSettledClaimCashMovement, matchesRoute, round2, toDayKey } from "../domain/engine";
 import { roundStockQuantity } from "../domain/stockAvailability";
 import { originPendingQuantity } from '../domain/originTraceability';
 import { allocateCreditBySubtotal, computeAsOfReceivablesPortfolio, currentCustomerDisplayName } from "../domain/creditRoutes";
@@ -138,7 +138,7 @@ export function inventoryHistorySheet(
 
   return {
     name: "Historial de inventario",
-    headers: ["Fecha y hora", "Producto", "Movimiento", "Variación", "Unidad", "Origen", "Destino", "Responsable", "Observación"],
+    headers: ["Fecha y hora", "Producto", "Movimiento", "Variación", "Unidad", "Origen", "Destino", "Paquetes derivados", "Peso neto asignado (g)", "Costo histórico trasladado (Bs, informativo)", "Lote derivado", "Elaboración", "Responsable", "Observación"],
     rows: rows.map(({ movement, delta, responsible }) => [
       reportDateTime(movement.createdAt),
       reportRecordName(movement.productName, "Producto de registro anterior"),
@@ -147,6 +147,11 @@ export function inventoryHistorySheet(
       reportUnitLabel(movement.unitType),
       locationName(movement.fromLocation),
       locationName(movement.toLocation),
+      movement.processingAllocations?.reduce((sum, allocation) => sum + allocation.quantity, 0) ?? "",
+      movement.physicalWeightG ?? "",
+      movement.costCents == null ? "" : round2(movement.costCents / 100),
+      movement.allocations?.map(allocation => allocation.lotCode).filter(Boolean).join(", ") || "",
+      movement.processingBatchIds?.join(", ") || "",
       responsible,
       movement.note || "",
     ]),
@@ -394,8 +399,9 @@ export function reportSheets(
       (s) =>
         inScope(s) &&
         !s.pendingConfirmation &&
+        !s.voidedAt &&
         (!seller || s.sellerUid === seller),
-    ),
+    ).map((sale) => sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale),
     credits = computeAsOfReceivablesPortfolio({
       receivables: data.receivables,
       collections: data.collections.filter((collection) => !collection.pendingConfirmation),
@@ -421,9 +427,10 @@ export function reportSheets(
   const courtesySales = allSales.filter(s => s.saleKind === 'courtesy')
   const claims = data.claims.filter(
     (c) =>
-      inScope(c) &&
+      days.includes(c.dayKey || toDayKey(c.createdAt)) &&
+        (!route || matchesRoute(cashMovementRouteId(c), route)) &&
         (!seller ||
-        c.sellerUid === seller ||
+        cashMovementSellerUid(c) === seller ||
         (!c.sellerUid && data.sales.some((s) => s.id === c.saleId && s.sellerUid === seller))),
   );
   const lines = sales.flatMap((s) => s.lines.map((l) => ({ ...l, sale: s })));
@@ -456,6 +463,10 @@ export function reportSheets(
       "Almacén registrado",
     );
   };
+  const voidedCashReceiptSales = data.sales.filter((sale) => inScope(sale) && sale.voidedAt && sale.derivedVoid
+    && !sale.pendingConfirmation && sale.saleKind !== 'courtesy' && (!seller || sale.sellerUid === seller));
+  const voidedReceiptTotals = computeVoidedSaleReceiptTotals(voidedCashReceiptSales);
+  const sellerBreakdown = computeSellerBreakdown([...sales, ...voidedCashReceiptSales], collections, expenses, claims, data.products);
   return [
     {
       id: 'summary',
@@ -490,6 +501,12 @@ export function reportSheets(
         costKnown,
         seller,
       },
+    },
+    {
+      id: 'sellerSummary',
+      name: "Kg por vendedor",
+      headers: ["Vendedor", "Rutas", "Granel (kg)", "Sachets documentados (kg)", "Sachets estimados (kg)", "Total documentado (kg)", "Total incluyendo estimados (kg)", "Paquetes", "Paquetes sin peso fiable"],
+      rows: sellerBreakdown.map(item => [item.sellerName, item.routeNames.join(' · '), item.kilograms, item.documentedSachetKilograms, item.estimatedSachetKilograms, item.totalDocumentedKilograms, item.totalEstimatedKilograms, item.packages, item.unknownWeightPackages]),
     },
     {
       id: 'sales',
@@ -673,13 +690,14 @@ export function reportSheets(
       headers: ["Concepto", "Efectivo (Bs)", "QR (Bs)", "Total (Bs)"],
       rows: [
         ["Cobros de ventas", round2(sales.reduce((n, s) => n + s.cashAmount, 0)), round2(sales.reduce((n, s) => n + s.qrAmount, 0)), round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0))],
+        ["Cobros originales de ventas anuladas", voidedReceiptTotals.cash, voidedReceiptTotals.qr, voidedReceiptTotals.total],
         ["Cobros de cartera", round2(collections.reduce((n, c) => n + (c.cashAmount ?? (c.method === "cash" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + (c.qrAmount ?? (c.method === "qr" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + c.amount, 0))],
-        ["Cambios y devoluciones", round2(claims.reduce((n, c) => n + c.cashIn - c.cashOut, 0)), round2(claims.reduce((n, c) => n + c.qrIn - c.qrOut, 0)), round2(claims.reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0))],
+        ["Cambios y devoluciones", round2(claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut, 0)), round2(claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.qrIn - c.qrOut, 0)), round2(claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0))],
         ["Gastos", -spent, 0, -spent],
-        ["FLUJO NETO", "", "", round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + collections.reduce((n, c) => n + c.amount, 0) + claims.reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent)],
+        ["FLUJO NETO", "", "", round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + voidedReceiptTotals.total + collections.reduce((n, c) => n + c.amount, 0) + claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent)],
       ],
       meta: {
-        netFlow: round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + collections.reduce((n, c) => n + c.amount, 0) + claims.reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent),
+        netFlow: round2(sales.reduce((n, s) => n + s.cashAmount + s.qrAmount, 0) + voidedReceiptTotals.total + collections.reduce((n, c) => n + c.amount, 0) + claims.filter(isSettledClaimCashMovement).reduce((n, c) => n + c.cashIn - c.cashOut + c.qrIn - c.qrOut, 0) - spent),
       },
     },
     {
@@ -751,16 +769,17 @@ export function reportSheets(
     {
       id: 'expenses',
       name: "Gastos",
-      headers: ["Fecha", "Ruta", "Responsable", "Concepto", "Importe (Bs)"],
+      headers: ["Fecha", "Ruta", "Responsable", "Concepto", "Detalle de artículos de compra", "Importe (Bs)"],
       rows: [
         ...expenses.map((e) => [
         reportDateTime(e.createdAt),
         reportRecordName(e.routeName, "Ruta registrada"),
         reportPersonName(e.registeredByName),
         e.concept,
+        e.purchaseLines?.map(line => `${line.description}: ${line.quantity} ${line.unit === 'other' ? line.unitLabel || 'otra unidad' : line.unit}; unitario Bs ${line.unitPrice}; total Bs ${line.total}; merma ${line.wasteQuantity}; neto ${line.netUsableQuantity}`).join(" | ") || "",
         e.amount,
         ] as Cell[]),
-        ["TOTAL", "", "", "", round2(expenses.reduce((n, e) => n + e.amount, 0))],
+        ["TOTAL", "", "", "", "", round2(expenses.reduce((n, e) => n + e.amount, 0))],
       ],
     },
     {
@@ -1168,6 +1187,7 @@ export async function exportExcel(
         "Precio unitario (Bs)",
         "Venta (Bs)",
         "Costo (Bs)",
+        "Costo en cuarentena pendiente (informativo, Bs)",
         "Ganancia (Bs)",
         "Margen (%)",
         "Estado / Observación",
@@ -1186,6 +1206,9 @@ export async function exportExcel(
         d.actualUnitPrice,
         d.saleBs,
         d.costBs !== null ? d.costBs : "Incompleto",
+        d.costAccountingStatus === "pending_quarantine_disposition"
+          ? (d.pendingQuarantineCostBs !== null && d.pendingQuarantineCostBs !== undefined ? d.pendingQuarantineCostBs : "Costo no disponible")
+          : "",
         d.profitBs !== null ? d.profitBs : "No disponible",
         d.marginPct !== null ? d.marginPct / 100 : null,
         d.isClaimRelated ? (d.claimKind === "return" ? "Devolución" : "Cambio") : d.isCorrected ? "Venta corregida" : "Normal",

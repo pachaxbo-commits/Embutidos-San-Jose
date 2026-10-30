@@ -39,6 +39,11 @@ export type StockMovementType =
   | 'customer_return' // devolución física de cliente, inicialmente en cuarentena
   | 'transfer' // movimiento entre almacenes
   | 'sale_void' // reversión auditada de venta
+  | 'reservation_created' // reserva: cambio de disponibilidad sin cambio físico
+  | 'reservation_released' // liberación de reserva: sin cambio físico
+  | 'processing_consumption' // consumo físico del producto de origen en elaboración
+  | 'processing_output' // entrada de una presentación derivada (bloqueada si falta trazabilidad posterior)
+  | 'processing_discard' // clasificación de gramos descartados dentro del consumo del batch; sin segundo delta físico
 
 export interface DistBaseDoc {
   pendingConfirmation?: boolean
@@ -71,6 +76,8 @@ export interface DistProduct {
   referencePrice: number
   /** Peso aproximado por paquete/unidad. NO se usa para convertir reportes. */
   approximateWeightKg?: number
+  /** Peso neto documentado por paquete, expresado en kg. */
+  documentedPackageWeightKg?: number
   active: boolean
   sortOrder: number
   restaurantId: string
@@ -139,6 +146,23 @@ export interface DistAdjustmentRequest extends DistBaseDoc {
 
 /** Ledger auditable; las reaperturas agregan metadata de reversión sin borrar el movimiento. */
 export interface DistStockMovement extends DistBaseDoc {
+  batchId?: string
+  destinationId?: string
+  destinationKind?: string
+  physicalWeightG?: number
+  commercialQuantity?: number
+  costCents?: number | null
+  processingCostCents?: number | null
+  costTotal?: number | null
+  processingAllocations?: import('./domain/processing.ts').ProcessingMovementAllocation[]
+  processingBatchIds?: string[]
+  processingWeightBasis?: import('./domain/processing.ts').ProcessingWeightBasis[]
+  processingAllocationMethod?: 'documented_average_not_individual_measurement'
+  processingCommercialBlocked?: boolean
+  sourceLotIds?: string[]
+  sourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[]
+  allocations?: DistLotAllocation[]
+  sourceAllocationBasis?: 'batch_blend_accounting_allocation'
   originReferences?: OriginReference[]
   traceabilityStatus?: 'physical_origin_pending'
   documentedMovementIds?: string[]
@@ -216,6 +240,7 @@ export interface DistLotAllocation {
   expiresOn: string
   quantity: number
   productionCost: number | null
+  processingAllocation?: import('./domain/processing.ts').ProcessingMovementAllocation
 }
 
 export interface DistDispatchAddition {
@@ -274,11 +299,14 @@ export interface DistDispatch extends DistBaseDoc {
 
 export interface DistSaleLine {
   costTotal?: number | null
-  allocations?: { lotId: string; lotCode: string; expiresOn: string; quantity: number; productionCost: number | null }[]
+  costCents?: number | null
+  allocations?: DistLotAllocation[]
   productId: string
   productNameSnapshot: string
   presentationSnapshot?: string
   descriptionSnapshot?: string
+  /** Peso neto documentado por paquete congelado al momento de la venta. */
+  documentedPackageWeightKgSnapshot?: number
   quantity: number
   unitType: UnitType
   /** En ventas de Administración por kg: cantidad realmente entregada; el cobro usa quantity. */
@@ -333,6 +361,21 @@ export interface DistSale extends DistBaseDoc {
   revision?: number
   /** Resultado vigente; los campos originales del documento no se sobrescriben. */
   effectiveSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount' | 'saleKind'>
+  derivedVoid?: {
+    correctionId?: string
+    cashRefundAmount?: number
+    cashReceiptSnapshot?: {
+      cashAmount: number
+      qrAmount: number
+      paymentKind?: PaymentKind | string
+      saleDayKey?: string
+      saleCreatedAt?: string
+      sellerUid?: string
+      sellerName?: string
+      sourceRevision?: number
+    }
+    [key: string]: unknown
+  }
   /** Instantánea original antes de cualquier corrección auditada */
   originalSnapshot?: Pick<DistSale, 'lines' | 'total' | 'paymentKind' | 'cashAmount' | 'qrAmount' | 'creditAmount' | 'saleKind'>
   /** Historial acumulado de correcciones auditadas de esta venta */
@@ -508,10 +551,26 @@ export interface DistExpense extends DistBaseDoc {
   registeredByUid: string
   registeredByName: string
   note?: string
+  /** Detalle cuantitativo de compra; opcional para conservar compatibilidad histórica. */
+  purchaseLines?: SupplierPurchaseLine[]
+}
+
+export type PurchaseUnit = 'kg' | 'g' | 'unit' | 'box' | 'sack' | 'liter' | 'other'
+
+export interface SupplierPurchaseLine {
+  description: string
+  quantity: number
+  unit: PurchaseUnit
+  unitLabel?: string
+  unitPrice: number
+  total: number
+  wasteQuantity: number
+  netUsableQuantity: number
+  note?: string
 }
 
 export type ExpenseEconomicType = 'operating_expense' | 'production_input'
-export type ExpenseGroup = 'administration' | 'indirect' | 'equipment' | 'other' | 'production_additional' | 'production_input'
+export type ExpenseGroup = 'administration' | 'indirect' | 'commercialization' | 'equipment' | 'other' | 'production_additional' | 'production_input'
 /** Group IDs are stable; built-in groups retain the ExpenseGroup IDs. */
 export type ExpenseGroupId = string
 
@@ -561,6 +620,7 @@ export interface DistPayable extends DistBaseDoc {
   status: 'pending' | 'partial' | 'paid' | 'voided'
   dueDayKey?: string
   note?: string
+  purchaseLines?: SupplierPurchaseLine[]
   routeId: string
   routeName: string
   voidedAt?: string
@@ -631,6 +691,15 @@ export interface DistClosureProductRow {
   /** Producto no apto/pérdida. En cierres históricos mantiene el significado de la merma usada entonces. */
   returnWaste?: number
   returnWasteReason?: string
+  /** Paquetes derivados recibidos dañados; se inmovilizan en cuarentena. */
+  damagedPackageQuantity?: number
+  damagedPackageCondition?: string
+  damagedPackageReason?: string
+  /** Medición física opcional real en gramos; null/ausente significa desconocido. */
+  damagedMeasuredWeightG?: number | null
+  damagedHistoricalAssignedWeightG?: number
+  damagedWeightMeasurementScope?: string
+  damagedQuarantineLots?: Array<{ lotId: string; reservationId: string; movementId: string; quantity: number; batchId: string; costCents: number | null }>
   shortage?: number
   overage?: number
   lossCost?: number | null
@@ -674,6 +743,7 @@ export interface DistClosureRectification {
 }
 
 export interface DistClosure extends DistBaseDoc {
+  derivedClaimQuarantineReceipts?: Array<{ lotId: string; reservationId: string; claimId: string; quantity: number; assignedWeightG: number | null; costCents: number | null; movementId: string }>
   rectificationId?: string
   rectification?: DistClosureRectification
   rectificationView?: 'original' | 'corrected'
@@ -697,7 +767,10 @@ export interface DistClosure extends DistBaseDoc {
   cashCollections: number
   qrCollections: number
   cashExpenses: number
+  voidedCashReceipts?: number
+  voidedQrReceipts?: number
   claimCash?: number
+  claimQr?: number
   expectedCash: number
   closureType?: 'route' | 'admin'
   physicalCashDeclared?: number
@@ -746,6 +819,25 @@ export interface DistQrVerification {
 
 export interface DistLot {
  pendingOrigins?: Record<string, OriginReference[]>;
+ /** Aggregate reservation by location. Writers must update this lot document in the same transaction as reservation documents to serialize competing stock operations. */
+ processingUnavailable?: Record<string, { courtesy: number; repackPending: number; reviewHold: number }>;
+ /** Server-only gate until package weight and exact historical cost are consumed end-to-end. */
+ processingCommercialBlocked?: boolean;
+ processingBatchId?: string;
+ processingDestinationId?: string;
+ processingDestinationKind?: import('./domain/processing.ts').ProcessingDestinationKind;
+ processingPhysicalWeightGRemaining?: number;
+ processingCostCentsRemaining?: number | null;
+ processingCostTotalCents?: number | null;
+ processingPackageWeightLedger?: import('./domain/processing.ts').PackageWeightLedger;
+ /** Per-location remaining package/gram/cost segments; absent on legacy derived lots and required for movement. */
+ processingByLocation?: Record<string, import('./domain/processing.ts').ProcessingLotLocationLedger>;
+ /** Latest immutable inspection pointer; it never changes physical availability or release eligibility. */
+ processingReview?: { caseId: string; latestReviewId: string; revision: number; status: import('./domain/processing.ts').ProcessingReviewStatus; updatedAt: string; updatedBy: string; economicDispositionStatus?: 'pending_quarantine_disposition' };
+ processingSourceLotIds?: string[];
+ processingSourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[];
+ processingSourceAllocationBasis?: 'batch_blend_accounting_allocation' | 'repack_origin_reference';
+ packagedOn?: string;
  id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;
  quantities: Record<string, number>; quarantined?: boolean; legacy?: boolean; createdAt: string; createdBy: string;
@@ -755,13 +847,15 @@ export interface DistLot {
  quarantineOriginalLotCode?: string;
  quarantineDestinationLotId?: string; quarantineDestinationLotCode?: string; quarantineLossCost?: number | null;
 }
+export type DistStockReservation = import('./domain/processing.ts').ProcessingReservation
+export type DistProcessingReview = import('./domain/processing.ts').ProcessingReviewRecord
 export interface OriginReference {
  historicalUnitCost?: number | null;
  exceptionId: string; accountingLotId: string; sourceMovementId: string;
  physicalOriginConfirmed: false; basis: 'original_accounting_debit_only'; quantity: number;
 }
 export interface DistTransfer { id: string; fromWarehouseId: string; toWarehouseId: string; line: DistDispatchLine; createdAt: string; createdBy: string; responsibleName?: string; note?: string }
-export interface DistClaim { id: string; kind: 'exchange'|'return'; saleId: string; sellerUid?: string; sellerName?: string; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName: string;quantity: number;unitType: UnitType;total: number} | null }
+export interface DistClaim { id: string; kind: 'exchange'|'return'; isDerivedSaleVoid?: boolean; saleId: string; sellerUid?: string; sellerName?: string; createdBy?: string; saleSellerUid?: string; saleSellerName?: string; cashMovementResponsibleUid?: string; cashMovementResponsibleName?: string; cashMovementRouteId?: string; originRouteId?: string; cashRefundStatus?: 'pending'|'executed'|string; cashRefundedAt?: string; cashRefundedBy?: string; cashRefundedByName?: string; pendingConfirmation?: boolean; customerId: string; customerName: string; productId: string; productName: string; quantity: number; unitType: UnitType; reason: string; routeId: string; dispatchId?: string; receivedLocation?: string; documentedPackageWeightKgSnapshot?: number; presentationSnapshot?: string; descriptionSnapshot?: string; returnedProcessingAllocations?: Array<{ lotId: string; reservationId?: string; quantity: number; weightG?: number; allocations: DistLotAllocation[] }>; quarantineTransferredAt?: string; quarantineTransferredBy?: string; quarantineTransferredByName?: string; quarantineTransferredTo?: string; quarantineTransferMovementIds?: string[]; quarantineTransferReversalMovementIds?: string[]; createdAt: string; dayKey: string; revenueDelta: number; additionalCost: number | null; returnedCostCents?: number | null; costAccountingStatus?: 'pending_quarantine_disposition' | string; debtReduction: number; cashIn: number; cashOut: number; qrIn: number; qrOut: number; replacement: {productId: string;productName:string;quantity:number;unitType:UnitType;total:number;allocations?:DistLotAllocation[];documentedPackageWeightKgSnapshot?:number;presentationSnapshot?:string;descriptionSnapshot?:string} | null }
 export interface DistCreditStatus { id: string; oldestPendingAt: string | null; checkedAt: string }
 export interface DistCreditOverride { id: string; customerId: string; activeUntil: string; reason: string; grantedAt: string; grantedBy: string; grantedByName: string; revokedAt?: string; revokedBy?: string }
 export interface DistWarehouseShift { id: string; warehouseId: string; responsibleName: string; openedAt: string; openedBy: string; closedAt?: string; closedBy?: string; active: boolean }

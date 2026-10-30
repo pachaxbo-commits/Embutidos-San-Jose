@@ -36,6 +36,8 @@ const vite = await createServer({
         export const reopenClosure = async () => {}
         export const saveClosure = async (...args) => { globalThis.__saveClosureCalls += 1; globalThis.__saveClosureArgs.push(args); return globalThis.__saveClosureImpl(...args) }
         export const setClosureVarianceReviewed = async () => {}
+        export const subscribeClosedDispatchesForRoute = (_route, onData) => { onData([]); return () => {} }
+        export const subscribeDispatchSettlementSales = (_route, _dispatch, onData) => { onData([]); return () => {} }
         export const subscribeSales = (_days, _route, onData) => { onData([]); return () => {} }
         export const subscribeCollections = (_days, _route, onData) => { onData([]); return () => {} }
         export const subscribeExpenses = (_days, _route, onData) => { onData([]); return () => {} }

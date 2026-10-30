@@ -39,6 +39,18 @@ const returnLoss = movement({ id: 'return-loss-unassigned', type: 'return_waste_
 const withReturnMovements = computeOperatingResult([], [], [], [recoverableMerma, returnLoss], ['2026-10-10'])
 equal(withReturnMovements.losses, 3, 'la merma recuperable no es pérdida y sí se incluye la pérdida sin lote trazable')
 equal(withReturnMovements.details.find((entry) => entry.key === 'losses')?.rows[0]?.tipo, 'Pérdida sin lote de origen identificado', 'la pérdida sin lote tiene etiqueta comprensible')
+const pendingDerivedReturn = claim({ id: 'derived-return-pending', returnedCostCents: 250, costAccountingStatus: 'pending_quarantine_disposition', revenueDelta: 0 })
+const pendingDerivedResult = computeOperatingResult([], [pendingDerivedReturn], [], [], ['2026-10-10'])
+equal(pendingDerivedResult.pendingQuarantineDispositionCount, 1, 'devolución derivada en cuarentena marca disposición pendiente')
+equal(pendingDerivedResult.pendingQuarantineCostBs, 2.5, 'costo de cuarentena se muestra solo como información')
+equal(pendingDerivedResult.operatingResult, 0, 'el costo en cuarentena no se vuelve a sumar ni restar del resultado')
+equal(pendingDerivedResult.details.find((entry) => entry.key === 'quarantineDisposition')?.rows[0]?.estado, 'Pendiente de disposición; no ajusta Resultado', 'el detalle aclara que el costo no ajusta Resultado')
+const unknownPendingDerivedReturn = claim({ id: 'derived-return-unknown', returnedCostCents: null, costAccountingStatus: 'pending_quarantine_disposition', revenueDelta: 0 })
+const unknownPendingDerivedResult = computeOperatingResult([], [unknownPendingDerivedReturn], [], [], ['2026-10-10'])
+equal(unknownPendingDerivedResult.pendingQuarantineCostBs, null, 'costo faltante sigue desconocido')
+equal(unknownPendingDerivedResult.pendingQuarantineDispositionCount, 1, 'costo faltante no oculta una cuarentena pendiente')
+const filteredPendingDerivedResult = computeOperatingResult([], [claim({ ...pendingDerivedReturn, routeId: 'route-b' })], [], [], ['2026-10-10'], 'route-a')
+equal(filteredPendingDerivedResult.pendingQuarantineDispositionCount, 0, 'la advertencia respeta el filtro de ruta')
 const dispatchMermaMovement = movement({ id: 'dispatch-merma', type: 'dispatch', normalQuantity: 80, dispatchMerma: 2.3, quantity: 82.3, lossCost: null })
 const withDispatchMerma = computeOperatingResult([], [], [], [dispatchMermaMovement], ['2026-10-10'])
 equal(withDispatchMerma.losses, 0, 'la merma adicional entregada físicamente a ruta no se cuenta como pérdida')
@@ -58,6 +70,14 @@ const legacyDispatchWaste = computeOperatingResult([], [], [], [movement({ id: '
 equal(legacyDispatchWaste.losses, 5, 'dispatch_waste histórico conserva su significado de pérdida')
 const unknownReturnLoss = computeOperatingResult([], [], [], [{ ...returnLoss, id: 'unknown-return-loss', lossCost: null }], ['2026-10-10'])
 equal(unknownReturnLoss.operatingResult, null, 'no se inventa el resultado si una pérdida de retorno no tiene costo histórico')
+const processingOnly = computeOperatingResult([], [], [], [
+  movement({ id: 'processing-consume', type: 'processing_consumption', lossCost: null, centralDelta: -10, refId: 'batch-1' }),
+  movement({ id: 'processing-output', type: 'processing_output', lossCost: null, centralDelta: 9, refId: 'batch-1' }),
+  movement({ id: 'processing-loss', type: 'processing_discard', lossCost: 1.5, quantity: 1, centralDelta: 0, refId: 'batch-1' }),
+], ['2026-10-10'])
+equal(processingOnly.losses, 1.5, 'solo el descarte confirmado reduce el resultado; consumo y entrada de elaboración no crean gastos')
+equal(processingOnly.operatingResult, -1.5, 'el costo de descarte se reconoce una sola vez')
+equal(processingOnly.details.find((entry) => entry.key === 'losses')?.rows[0]?.tipo, 'Descarte confirmado de elaboración', 'el descarte queda identificado semánticamente')
 
 const courtesy = sale({ id: 'courtesy', operationId: 'courtesy', saleKind: 'courtesy', total: 0, cashAmount: 0, creditAmount: 0, lines: [], courtesyCost: 4 })
 const withCourtesy = computeOperatingResult([sale(), courtesy], [claim()], [expense()], [movement(), movement({ id: 'c-mov', type: 'courtesy', lossCost: 4, refId: 'courtesy', refType: 'sale' })], ['2026-10-10'])

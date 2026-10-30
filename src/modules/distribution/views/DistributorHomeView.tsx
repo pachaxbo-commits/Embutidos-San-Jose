@@ -16,8 +16,8 @@ export function DistributorHomeView({
   onNavigate,
 }: DistributionViewProps & { onNavigate: (module: ModuleId) => void }) {
   const money = useMemo(
-    () => computeMoneySummary(data.sales, data.collections, data.expenses),
-    [data.sales, data.collections, data.expenses],
+    () => computeMoneySummary(data.sales, data.collections, data.expenses, data.claims),
+    [data.sales, data.collections, data.expenses, data.claims],
   )
   // Se muestran las dos magnitudes por separado: los paquetes y sachets no se
   // convierten a kilos, asi que un dia de solo paquetes daria "0 kg" y parece

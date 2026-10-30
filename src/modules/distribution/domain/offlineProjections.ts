@@ -42,7 +42,12 @@ export function projectBalances(balances: DistBalance[], pendingSales: DistSale[
       .flatMap(s => s.lines).filter(line => line.productId === b.productId).reduce((n, line) => n + line.quantity, 0)
     const location = b.locationKind === 'route' ? `route__${b.routeId}` : (b.warehouseId && b.warehouseId !== 'central' ? `warehouse__${b.warehouseId}` : 'central')
     const unavailable = lots.filter(l => l.productId === b.productId)
-      .reduce((n, l) => n + (l.quarantined || (l.expiresOn && l.expiresOn < today) ? (l.quantities[location] || 0) : location.startsWith('route__') ? 0 : originPendingQuantity(l, location)), 0)
+      .reduce((n, l) => {
+        const physical = Number(l.quantities[location]) || 0
+        if (l.processingCommercialBlocked || l.quarantined || l.expiresOn && l.expiresOn < today) return n + physical
+        const held = l.processingUnavailable?.[location]
+        return n + (location.startsWith('route__') ? 0 : originPendingQuantity(l, location)) + Number(held?.courtesy || 0) + Number(held?.repackPending || 0) + Number(held?.reviewHold || 0)
+      }, 0)
     return { ...b, quantity: Math.max(0, b.quantity - pendingQty), availableQuantity: Math.max(0, b.quantity - pendingQty - unavailable) }
   })
 }

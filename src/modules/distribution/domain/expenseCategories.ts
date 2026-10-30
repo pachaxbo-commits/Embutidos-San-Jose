@@ -4,6 +4,7 @@ import registry from '../../../../functions/expense-presets.json' with { type: '
 export const EXPENSE_GROUPS: { id: ExpenseGroup; label: string }[] = [
   { id: 'administration', label: 'Gastos de administración' },
   { id: 'indirect', label: 'Gastos indirectos' },
+  { id: 'commercialization', label: 'Gastos de comercialización' },
   { id: 'equipment', label: 'Gastos de equipamiento' },
   { id: 'other', label: 'Otros egresos operativos' },
   { id: 'production_additional', label: 'Gasto de producción adicional' },
@@ -23,14 +24,17 @@ export const DEFAULT_EXPENSE_CATEGORIES: DistExpenseCategory[] = Object.entries(
     schemaVersion: 1,
     group: group as ExpenseGroup,
     name,
-    active: true,
+    active: !(group === 'indirect' && ['indirect-7', 'indirect-8', 'indirect-9'].includes(`${group}-${order + 1}`)),
     order: groupIndex * 100 + order,
   })),
 )
 
 export function mergeExpenseCategories(overrides: DistExpenseCategory[]): DistExpenseCategory[] {
   const byId = new Map(DEFAULT_EXPENSE_CATEGORIES.map((category) => [category.id, category]))
-  for (const category of overrides) byId.set(category.id, category)
+  for (const category of overrides) {
+    const movedPresetCategory = category.group === 'indirect' && ['indirect-7', 'indirect-8', 'indirect-9'].includes(category.id)
+    byId.set(category.id, movedPresetCategory ? { ...category, active: false } : category)
+  }
   return [...byId.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, 'es'))
 }
 

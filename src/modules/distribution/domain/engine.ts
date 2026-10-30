@@ -4,7 +4,10 @@ import type {
   DistClaim,
   DistDispatch,
   DistExpense,
+  DistLotAllocation,
+  DistProduct,
   DistSale,
+  DistSaleCorrection,
   DistSaleLine,
   PaymentKind,
   UnitType,
@@ -59,6 +62,103 @@ export function isSaleForDispatch(
   dispatchRouteId: string,
 ): boolean {
   return (!sale.routeId || sale.routeId === dispatchRouteId) && sale.sourceLocation !== 'centralWarehouse'
+}
+
+/** Scope the same-dispatch legacy sales accepted by the closure backend. */
+export function isSaleForDispatchSettlement(
+  sale: { dispatchId?: string; routeId?: string | null; sourceLocation?: string | null; createdAt: string },
+  dispatchId: string,
+  dispatchRouteId: string,
+  dispatchCreatedAt: string,
+  competingDispatches?: Array<{ id: string; routeId: string; createdAt: string; status: 'open' | 'closed'; closedAt?: string; operationalIntervals?: Array<{ openedAt: string; closedAt?: string }>; reopenHistory?: Array<{ reopenedAt: string; previousClosedAt?: string }> }>,
+): boolean {
+  if (!isSaleForDispatch(sale, dispatchRouteId)) return false
+  if (sale.dispatchId) return sale.dispatchId === dispatchId
+  if (sale.routeId !== dispatchRouteId || !Number.isFinite(Date.parse(sale.createdAt))) return false
+  if (Number.isFinite(Date.parse(dispatchCreatedAt)) && Date.parse(sale.createdAt) < Date.parse(dispatchCreatedAt)) return false
+  if (!competingDispatches) return true
+  const possible = getPossibleDispatchIdsForLegacySale(sale, dispatchRouteId, competingDispatches)
+  return possible.length === 1 && possible[0] === dispatchId
+}
+
+export function getPossibleDispatchIdsForLegacySale(
+  sale: { routeId?: string | null; sourceLocation?: string | null; createdAt?: string },
+  dispatchRouteId: string,
+  competingDispatches: Array<{ id: string; routeId: string; createdAt: string; status: 'open' | 'closed'; closedAt?: string; operationalIntervals?: Array<{ openedAt: string; closedAt?: string }>; reopenHistory?: Array<{ reopenedAt: string; previousClosedAt?: string }> }>,
+): string[] {
+  if (!isSaleForDispatch(sale, dispatchRouteId) || sale.routeId !== dispatchRouteId) return []
+  if (!sale.createdAt || !Number.isFinite(Date.parse(sale.createdAt))) {
+    return competingDispatches.filter(dispatch => dispatch.routeId === dispatchRouteId).map(dispatch => dispatch.id)
+  }
+  const saleAt = Date.parse(sale.createdAt)
+  return competingDispatches.filter(dispatch => dispatch.routeId === dispatchRouteId && dispatchMayContainSaleAt(dispatch, saleAt)).map(dispatch => dispatch.id)
+}
+
+export function partitionDispatchSettlementSales<T extends { id: string; dispatchId?: string; routeId?: string | null; sourceLocation?: string | null; createdAt?: string; voidedAt?: string; pendingConfirmation?: boolean }>(
+  sales: T[],
+  dispatchId: string,
+  dispatchRouteId: string,
+  dispatchCandidates: Array<{ id: string; routeId: string; createdAt: string; status: 'open' | 'closed'; closedAt?: string; operationalIntervals?: Array<{ openedAt: string; closedAt?: string }>; reopenHistory?: Array<{ reopenedAt: string; previousClosedAt?: string }> }>,
+): { attributable: T[]; ambiguous: T[]; excluded: T[] } {
+  const attributable: T[] = []
+  const ambiguous: T[] = []
+  const excluded: T[] = []
+  for (const sale of sales) {
+    if (!isSaleForDispatch(sale, dispatchRouteId)) { excluded.push(sale); continue }
+    if (sale.dispatchId) {
+      if (sale.dispatchId === dispatchId && !sale.voidedAt && !sale.pendingConfirmation) attributable.push(sale)
+      else excluded.push(sale)
+      continue
+    }
+    if (sale.routeId !== dispatchRouteId) { excluded.push(sale); continue }
+    if (sale.voidedAt || sale.pendingConfirmation) { excluded.push(sale); continue }
+    // The backend conservatively rejects effective legacy sales without a
+    // trustworthy timestamp, even when only one dispatch is currently known.
+    // Keep the UI warning in lockstep; a missing date cannot prove attribution.
+    if (!sale.createdAt || !Number.isFinite(Date.parse(sale.createdAt))) { ambiguous.push(sale); continue }
+    const possible = getPossibleDispatchIdsForLegacySale(sale, dispatchRouteId, dispatchCandidates)
+    if (possible.length === 1 && possible[0] === dispatchId) attributable.push(sale)
+    else if (possible.includes(dispatchId) && (possible.length > 1 || !sale.createdAt || !Number.isFinite(Date.parse(sale.createdAt)))) ambiguous.push(sale)
+    else excluded.push(sale)
+  }
+  return { attributable, ambiguous, excluded }
+}
+
+function dispatchMayContainSaleAt(
+  dispatch: { createdAt: string; status: 'open' | 'closed'; closedAt?: string; operationalIntervals?: Array<{ openedAt: string; closedAt?: string }>; reopenHistory?: Array<{ reopenedAt: string; previousClosedAt?: string }> },
+  saleAt: number,
+): boolean {
+  const createdAt = Date.parse(dispatch.createdAt || '')
+  if (Array.isArray(dispatch.operationalIntervals) && dispatch.operationalIntervals.length) {
+    return dispatch.operationalIntervals.some(interval => {
+      const openedAt = Date.parse(interval.openedAt || '')
+      const closedAt = Date.parse(interval.closedAt || '')
+      return Number.isFinite(openedAt) && openedAt <= saleAt && (!interval.closedAt || !Number.isFinite(closedAt) || saleAt <= closedAt)
+    }) || (dispatch.status === 'open' && Number.isFinite(createdAt) && saleAt >= createdAt
+      && saleAt >= Date.parse(dispatch.operationalIntervals.at(-1)?.openedAt || dispatch.createdAt))
+  }
+
+  const history = dispatch.reopenHistory || []
+  if (history.length) {
+    if (!Number.isFinite(createdAt)) return true
+    const firstClose = Date.parse(history[0].previousClosedAt || '')
+    if (!Number.isFinite(firstClose)) return saleAt >= createdAt
+    if (saleAt >= createdAt && saleAt <= firstClose) return true
+    for (let index = 0; index < history.length; index++) {
+      const openedAt = Date.parse(history[index].reopenedAt || '')
+      const nextClose = history[index + 1]?.previousClosedAt
+      const closedAt = nextClose ? Date.parse(nextClose) : dispatch.status === 'closed' ? Date.parse(dispatch.closedAt || '') : Number.POSITIVE_INFINITY
+      if (Number.isFinite(openedAt) && openedAt <= saleAt && (!Number.isFinite(closedAt) || saleAt <= closedAt)) return true
+    }
+    return false
+  }
+
+  if (!Number.isFinite(createdAt)) return true
+  if (saleAt < createdAt) return false
+  if (dispatch.status === 'open') return true
+  if (!dispatch.closedAt) return true // Legacy closed dispatch without an end time remains conservatively ambiguous.
+  const closedAt = Date.parse(dispatch.closedAt)
+  return !Number.isFinite(closedAt) || saleAt <= closedAt
 }
 
 /**
@@ -152,14 +252,16 @@ export interface SoldTotals {
 export function computeSoldByProduct(sales: DistSale[]): Map<string, SoldTotals> {
   const result = new Map<string, SoldTotals>()
   for (const sale of sales) {
-    for (const line of sale.lines || []) {
+    if (sale.voidedAt || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    for (const line of effective.lines || []) {
       const current = result.get(line.productId)
       result.set(line.productId, {
         productName: line.productNameSnapshot,
         unitType: line.unitType,
-        quantity: round2((current?.quantity ?? 0) + (sale.saleKind === 'courtesy' ? 0 : line.quantity)),
-        courtesyQuantity: round2((current?.courtesyQuantity ?? 0) + (sale.saleKind === 'courtesy' ? line.quantity : 0)),
-        amount: round2((current?.amount ?? 0) + (sale.saleKind === 'courtesy' ? 0 : line.subtotal)),
+        quantity: round2((current?.quantity ?? 0) + (effective.saleKind === 'courtesy' ? 0 : line.quantity)),
+        courtesyQuantity: round2((current?.courtesyQuantity ?? 0) + (effective.saleKind === 'courtesy' ? line.quantity : 0)),
+        amount: round2((current?.amount ?? 0) + (effective.saleKind === 'courtesy' ? 0 : line.subtotal)),
       })
     }
   }
@@ -217,7 +319,64 @@ export interface MoneySummary {
   qrCollections: number
   collectionsTotal: number
   cashExpenses: number
+  /** Cobros originales de ventas anuladas; movimiento de caja, no venta neta. */
+  voidedCashReceipts: number
+  /** Cobros QR originales de ventas anuladas; movimiento electrónico, no venta neta. */
+  voidedQrReceipts: number
+  claimCash: number
+  claimQr: number
   expectedCash: number
+}
+
+export function isSettledClaimCashMovement(claim: DistClaim): boolean {
+  return claim.pendingConfirmation !== true && claim.cashRefundStatus !== 'pending'
+}
+
+export function cashMovementRouteId(claim: DistClaim): string {
+  return claim.cashMovementRouteId || (claim.isDerivedSaleVoid ? 'administracion' : claim.routeId)
+}
+
+export function cashMovementSellerUid(claim: DistClaim): string {
+  return claim.cashMovementResponsibleUid || (claim.isDerivedSaleVoid ? claim.createdBy || claim.sellerUid || '' : claim.sellerUid || '')
+}
+
+export function resolveVoidedSaleReceiptSnapshot(
+  sale: DistSale,
+  correction?: Pick<DistSaleCorrection, 'saleId' | 'original'>,
+): { cashAmount: number; qrAmount: number } {
+  const snapshot = sale.derivedVoid?.cashReceiptSnapshot
+  const source = snapshot || correction?.original
+  const error = `Conciliación pendiente: falta evidencia verificable del cobro original de la venta ${sale.id}.`
+  if (!source || (correction && correction.saleId !== sale.id)) throw new Error(error)
+  const { cashAmount, qrAmount } = source
+  if (typeof cashAmount !== 'number' || !Number.isFinite(cashAmount) || cashAmount < 0
+    || typeof qrAmount !== 'number' || !Number.isFinite(qrAmount) || qrAmount < 0) throw new Error(error)
+  if ('total' in source && source.total !== undefined) {
+    const creditAmount = 'creditAmount' in source ? source.creditAmount : undefined
+    if (typeof source.total !== 'number' || !Number.isFinite(source.total) || source.total < 0
+      || (creditAmount !== undefined && (typeof creditAmount !== 'number' || !Number.isFinite(creditAmount) || creditAmount < 0))
+      || Math.abs(round2(cashAmount + qrAmount + (typeof creditAmount === 'number' ? creditAmount : 0)) - round2(source.total)) > 0.01) {
+      throw new Error(error)
+    }
+  }
+  return { cashAmount: round2(cashAmount), qrAmount: round2(qrAmount) }
+}
+
+export function computeVoidedSaleReceiptTotals(sales: DistSale[]): { cash: number; qr: number; total: number } {
+  const totals = sales.filter(sale => sale.voidedAt && sale.derivedVoid && !sale.pendingConfirmation
+    && sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy')
+    .reduce((sum, sale) => {
+      const snapshot = resolveVoidedSaleReceiptSnapshot(sale)
+      return { cash: sum.cash + snapshot.cashAmount, qr: sum.qr + snapshot.qrAmount }
+    }, { cash: 0, qr: 0 })
+  const cash = round2(totals.cash)
+  const qr = round2(totals.qr)
+  return { cash, qr, total: round2(cash + qr) }
+}
+
+function settledClaimDelta(claims: DistClaim[], fieldIn: 'cashIn' | 'qrIn', fieldOut: 'cashOut' | 'qrOut'): number {
+  return round2(claims.filter(isSettledClaimCashMovement).reduce((sum, claim) =>
+    sum + (Number(claim[fieldIn]) || 0) - (Number(claim[fieldOut]) || 0), 0))
 }
 
 /**
@@ -229,18 +388,30 @@ export function computeMoneySummary(
   sales: DistSale[],
   collections: DistCollection[],
   expenses: DistExpense[],
+  claims: DistClaim[] = [],
 ): MoneySummary {
   let cashSales = 0
   let qrSales = 0
   let creditGenerated = 0
   let salesTotal = 0
+  let voidedCashReceipts = 0
+  let voidedQrReceipts = 0
 
   for (const sale of sales) {
-    if (sale.saleKind === 'courtesy' || sale.voidedAt || sale.pendingConfirmation) continue
-    cashSales += Number(sale.cashAmount) || 0
-    qrSales += Number(sale.qrAmount) || 0
-    creditGenerated += Number(sale.creditAmount) || 0
-    salesTotal += Number(sale.total) || 0
+    if (sale.voidedAt) {
+      if (!sale.pendingConfirmation && sale.derivedVoid && sale.saleKind !== 'courtesy' && sale.effectiveSnapshot?.saleKind !== 'courtesy') {
+        const receipt = resolveVoidedSaleReceiptSnapshot(sale)
+        voidedCashReceipts += receipt.cashAmount
+        voidedQrReceipts += receipt.qrAmount
+      }
+      continue
+    }
+    if (sale.saleKind === 'courtesy' || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    cashSales += Number(effective.cashAmount) || 0
+    qrSales += Number(effective.qrAmount) || 0
+    creditGenerated += Number(effective.creditAmount) || 0
+    salesTotal += Number(effective.total) || 0
   }
 
   let cashCollections = 0
@@ -254,6 +425,8 @@ export function computeMoneySummary(
 
   const cashExpenses = expenses.filter((expense) => !expense.voided).reduce((sum, expense) =>
     sum + expenseCashPaidAmount(expense), 0)
+  const claimCash = settledClaimDelta(claims, 'cashIn', 'cashOut')
+  const claimQr = settledClaimDelta(claims, 'qrIn', 'qrOut')
 
   return {
     salesTotal: round2(salesTotal),
@@ -264,7 +437,11 @@ export function computeMoneySummary(
     qrCollections: round2(qrCollections),
     collectionsTotal: round2(cashCollections + qrCollections),
     cashExpenses: round2(cashExpenses),
-    expectedCash: round2(cashSales + cashCollections - cashExpenses),
+    voidedCashReceipts: round2(voidedCashReceipts),
+    voidedQrReceipts: round2(voidedQrReceipts),
+    claimCash,
+    claimQr,
+    expectedCash: round2(cashSales + voidedCashReceipts + cashCollections - cashExpenses + claimCash),
   }
 }
 
@@ -357,7 +534,9 @@ export function nextReceivableStatus(originalAmount: number, paidAmount: number)
 export function computeSoldKilograms(sales: DistSale[]): number {
   let total = 0
   for (const sale of sales) {
-    for (const line of sale.lines || []) {
+    if (sale.voidedAt || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    for (const line of effective.lines || []) {
       if (line.unitType === 'kg') total += Number(line.quantity) || 0
     }
   }
@@ -367,7 +546,9 @@ export function computeSoldKilograms(sales: DistSale[]): number {
 export function computeSoldPackages(sales: DistSale[]): number {
   let total = 0
   for (const sale of sales) {
-    for (const line of sale.lines || []) {
+    if (sale.voidedAt || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    for (const line of effective.lines || []) {
       if (line.unitType !== 'kg') total += Number(line.quantity) || 0
     }
   }
@@ -386,7 +567,15 @@ export interface SellerBreakdown {
   collected: number
   expenses: number
   kilograms: number
+  documentedSachetKilograms: number
+  estimatedSachetKilograms: number
+  unknownWeightPackages: number
+  totalDocumentedKilograms: number
+  totalEstimatedKilograms: number
   packages: number
+  voidedCashReceipts: number
+  cashRefunds: number
+  qrRefunds: number
   /** Efectivo que deberia entregar: ventas efectivo + cobros efectivo - gastos */
   expectedCash: number
 }
@@ -401,8 +590,30 @@ export function computeSellerBreakdown(
   collections: DistCollection[],
   expenses: DistExpense[],
   claims: DistClaim[] = [],
+  products: DistProduct[] = [],
 ): SellerBreakdown[] {
   const map = new Map<string, SellerBreakdown>()
+  const productsById = new Map(products.map(product => [product.id, product]))
+  const salesById = new Map(sales.map(sale => [sale.id, sale]))
+  const returnedBySaleProduct = new Map<string, number>()
+  const returnedProcessingWeightBySaleProduct = new Map<string, number>()
+  const returnedProcessingWeightUnknown = new Set<string>()
+  for (const claim of claims) {
+    const key = `${claim.saleId}::${claim.productId}`
+    returnedBySaleProduct.set(key, (returnedBySaleProduct.get(key) || 0) + Math.max(0, Number(claim.quantity) || 0))
+    const groups = (claim as DistClaim & { returnedProcessingAllocations?: Array<{ allocations?: DistLotAllocation[]; quantity?: number }> }).returnedProcessingAllocations || []
+    const returnedAllocations = groups.flatMap(group => group.allocations || []).filter(allocation => allocation.processingAllocation)
+    const isDerived = Boolean(salesById.get(claim.saleId)?.lines?.some(line => line.productId === claim.productId && line.allocations?.some(allocation => allocation.processingAllocation)))
+    const returnedQuantity = Math.max(0, Number(claim.quantity) || 0)
+    const groupsCoverReturn = groups.reduce((sum, group) => sum + Number(group.quantity || 0), 0) === returnedQuantity
+    if (isDerived && (!groups.length || !groupsCoverReturn || !returnedAllocations.length
+      || !returnedAllocations.every(allocation => Number.isSafeInteger(allocation.processingAllocation?.physicalWeightG)))) {
+      returnedProcessingWeightUnknown.add(key)
+    } else if (returnedAllocations.length) {
+      returnedProcessingWeightBySaleProduct.set(key, (returnedProcessingWeightBySaleProduct.get(key) || 0)
+        + returnedAllocations.reduce((sum, allocation) => sum + Number(allocation.processingAllocation?.physicalWeightG), 0))
+    }
+  }
   const cashExpenseBySeller = new Map<string, number>()
 
   const ensure = (uid: string, name: string): SellerBreakdown => {
@@ -421,7 +632,15 @@ export function computeSellerBreakdown(
       collected: 0,
       expenses: 0,
       kilograms: 0,
+      documentedSachetKilograms: 0,
+      estimatedSachetKilograms: 0,
+      unknownWeightPackages: 0,
+      totalDocumentedKilograms: 0,
+      totalEstimatedKilograms: 0,
       packages: 0,
+      voidedCashReceipts: 0,
+      cashRefunds: 0,
+      qrRefunds: 0,
       expectedCash: 0,
     }
     map.set(key, created)
@@ -429,16 +648,71 @@ export function computeSellerBreakdown(
   }
 
   for (const sale of sales) {
-    if (sale.saleKind === 'courtesy') continue
-    const entry = ensure(sale.sellerUid, sale.sellerName)
+    if (sale.voidedAt) {
+      if (sale.derivedVoid && !sale.pendingConfirmation && sale.saleKind !== 'courtesy') {
+        const entry = ensure(sale.sellerUid, sale.sellerName)
+        const receipt = resolveVoidedSaleReceiptSnapshot(sale)
+        entry.voidedCashReceipts = round2(entry.voidedCashReceipts + receipt.cashAmount)
+        entry.expectedCash = round2(entry.expectedCash + receipt.cashAmount)
+      }
+      continue
+    }
+    if (sale.saleKind === 'courtesy' || sale.pendingConfirmation) continue
+    const effective = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
+    const entry = ensure(effective.sellerUid, effective.sellerName)
     entry.salesCount += 1
-    entry.salesTotal = round2(entry.salesTotal + (Number(sale.total) || 0))
-    entry.cashSales = round2(entry.cashSales + (Number(sale.cashAmount) || 0))
-    entry.qrSales = round2(entry.qrSales + (Number(sale.qrAmount) || 0))
-    entry.creditGenerated = round2(entry.creditGenerated + (Number(sale.creditAmount) || 0))
-    entry.kilograms = round2(entry.kilograms + computeSoldKilograms([sale]))
-    entry.packages = round2(entry.packages + computeSoldPackages([sale]))
-    if (sale.routeName && !entry.routeNames.includes(sale.routeName)) entry.routeNames.push(sale.routeName)
+    entry.salesTotal = round2(entry.salesTotal + (Number(effective.total) || 0))
+    entry.cashSales = round2(entry.cashSales + (Number(effective.cashAmount) || 0))
+    entry.qrSales = round2(entry.qrSales + (Number(effective.qrAmount) || 0))
+    entry.creditGenerated = round2(entry.creditGenerated + (Number(effective.creditAmount) || 0))
+    for (const line of effective.lines || []) {
+      const key = `${sale.id}::${line.productId}`
+      const soldQuantity = Math.max(0, Number(line.quantity) || 0)
+      const returnedQuantity = Math.min(soldQuantity, returnedBySaleProduct.get(key) || 0)
+      const processing = (line.allocations || []).filter(allocation => allocation.processingAllocation)
+      if (line.unitType === 'package' && processing.length > 0) {
+        const allProcessingWeightsKnown = processing.every(allocation => Number.isSafeInteger(allocation.processingAllocation?.physicalWeightG))
+        const processingWeightG = allProcessingWeightsKnown
+          ? processing.reduce((sum, allocation) => sum + Number(allocation.processingAllocation?.physicalWeightG), 0)
+          : null
+        const returnedWeightG = returnedProcessingWeightBySaleProduct.get(key)
+        const netQuantity = Math.max(0, soldQuantity - returnedQuantity)
+        const derivedQuantity = processing.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0)
+        const derivedReturnedQuantity = Math.min(derivedQuantity, returnedQuantity)
+        entry.packages += Math.min(netQuantity, derivedQuantity)
+        if (allProcessingWeightsKnown && processingWeightG !== null && !returnedProcessingWeightUnknown.has(key)) {
+          const netWeightG = Math.max(0, processingWeightG - (returnedWeightG ?? (derivedReturnedQuantity === 0 ? 0 : NaN)))
+          if (Number.isFinite(netWeightG)) entry.documentedSachetKilograms += netWeightG / 1000
+          else entry.unknownWeightPackages += Math.min(netQuantity, derivedQuantity)
+        } else {
+          entry.unknownWeightPackages += Math.min(netQuantity, derivedQuantity)
+        }
+        const ordinaryNetQuantity = Math.max(0, netQuantity - Math.min(netQuantity, derivedQuantity))
+        if (ordinaryNetQuantity > 0) addSellerSaleLine(entry, line, ordinaryNetQuantity, productsById)
+      } else {
+        addSellerSaleLine(entry, line, soldQuantity - returnedQuantity, productsById)
+      }
+      returnedBySaleProduct.set(key, Math.max(0, (returnedBySaleProduct.get(key) || 0) - returnedQuantity))
+      returnedProcessingWeightBySaleProduct.delete(key)
+      returnedProcessingWeightUnknown.delete(key)
+    }
+    if (effective.routeName && !entry.routeNames.includes(effective.routeName)) entry.routeNames.push(effective.routeName)
+  }
+
+  // Devoluciones y cambios reducen la cantidad originalmente vendida. La
+  // reposición del cambio se suma una vez como producto efectivamente entregado.
+  for (const claim of claims) {
+    const originalSale = salesById.get(claim.saleId)
+    const sellerUid = claim.sellerUid || originalSale?.sellerUid
+    if (!sellerUid || claim.isDerivedSaleVoid || originalSale?.voidedAt || originalSale?.pendingConfirmation) continue
+    const entry = ensure(sellerUid, claim.sellerName || originalSale?.sellerName || '')
+    // If the sale predates the selected report period, its return is still a
+    // physical movement in this period. Do not pull the old sale into the
+    // period; record only the negative quantity event using the claim snapshot.
+    if (!originalSale) addSellerClaimReturnLine(entry, claim)
+    if (claim.kind === 'exchange' && claim.replacement) {
+      addSellerClaimReplacement(entry, claim.replacement)
+    }
   }
 
   for (const collection of collections) {
@@ -461,14 +735,136 @@ export function computeSellerBreakdown(
   }
 
   for (const claim of claims) {
-    if (!claim.sellerUid) continue
-    const entry = ensure(claim.sellerUid, claim.sellerName || '')
+    if (!isSettledClaimCashMovement(claim)) continue
+    const financialOwner = cashMovementSellerUid(claim)
+    if (!financialOwner) continue
+    const entry = ensure(financialOwner, claim.cashMovementResponsibleName || claim.sellerName || '')
+    entry.cashRefunds = round2(entry.cashRefunds + (Number(claim.cashOut) || 0))
+    entry.qrRefunds = round2(entry.qrRefunds + (Number(claim.qrOut) || 0))
     entry.expectedCash = round2(entry.expectedCash + (Number(claim.cashIn) || 0) - (Number(claim.cashOut) || 0))
   }
 
   for (const entry of map.values()) {
+    entry.kilograms = round3(entry.kilograms)
+    entry.documentedSachetKilograms = round3(entry.documentedSachetKilograms)
+    entry.estimatedSachetKilograms = round3(entry.estimatedSachetKilograms)
+    entry.totalDocumentedKilograms = round3(entry.kilograms + entry.documentedSachetKilograms)
+    entry.totalEstimatedKilograms = round3(entry.totalDocumentedKilograms + entry.estimatedSachetKilograms)
+    entry.unknownWeightPackages = round3(entry.unknownWeightPackages)
     entry.expectedCash = round2(entry.expectedCash + entry.cashSales - (cashExpenseBySeller.get(entry.sellerUid) || 0))
   }
 
   return [...map.values()].sort((a, b) => b.salesTotal - a.salesTotal)
+}
+
+function addSellerClaimReturnLine(entry: SellerBreakdown, claim: DistClaim): void {
+  const quantity = Math.max(0, Number(claim.quantity) || 0)
+  if (!quantity) return
+  if (claim.unitType === 'kg') {
+    entry.kilograms -= quantity
+    return
+  }
+  entry.packages -= quantity
+  if (claim.unitType !== 'package') return
+  const allocations = (claim.returnedProcessingAllocations || []).flatMap(group => group.allocations || [])
+  const processing = allocations.filter(allocation => allocation.processingAllocation)
+  if (processing.length) {
+    if (processing.every(allocation => Number.isSafeInteger(allocation.processingAllocation?.physicalWeightG))) {
+      const grams = processing.reduce((sum, allocation) => sum + Number(allocation.processingAllocation?.physicalWeightG), 0)
+      entry.documentedSachetKilograms -= grams / 1000
+    } else entry.unknownWeightPackages += quantity
+    return
+  }
+  const snapshot: DistSaleLine = {
+    productId: claim.productId,
+    productNameSnapshot: claim.productName,
+    unitType: claim.unitType,
+    quantity,
+    actualUnitPrice: 0,
+    subtotal: 0,
+    ...(claim.documentedPackageWeightKgSnapshot ? { documentedPackageWeightKgSnapshot: claim.documentedPackageWeightKgSnapshot } : {}),
+    ...(claim.presentationSnapshot ? { presentationSnapshot: claim.presentationSnapshot } : {}),
+    ...(claim.descriptionSnapshot ? { descriptionSnapshot: claim.descriptionSnapshot } : {}),
+  }
+  const exactWeight = documentedPackageWeight(snapshot)
+  if (exactWeight !== undefined) entry.documentedSachetKilograms -= quantity * exactWeight
+  else entry.unknownWeightPackages += quantity
+}
+
+function addSellerClaimReplacement(
+  entry: SellerBreakdown,
+  replacement: NonNullable<DistClaim['replacement']>,
+): void {
+  const quantity = Math.max(0, Number(replacement.quantity) || 0)
+  const allocations = replacement.allocations || []
+  const processing = allocations.filter(allocation => allocation.processingAllocation)
+  if (replacement.unitType === 'package' && processing.length > 0) {
+    entry.packages += quantity
+    const allocatedQuantity = processing.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0)
+    const exactWeights = allocatedQuantity === quantity && processing.every(allocation => Number.isSafeInteger(allocation.processingAllocation?.physicalWeightG))
+    if (exactWeights) {
+      entry.documentedSachetKilograms += processing.reduce((sum, allocation) => sum + Number(allocation.processingAllocation?.physicalWeightG), 0) / 1000
+    } else entry.unknownWeightPackages += quantity
+    return
+  }
+  if (replacement.unitType === 'kg') {
+    entry.kilograms += quantity
+    return
+  }
+  entry.packages += quantity
+  if (replacement.unitType !== 'package') return
+  const snapshot = {
+    productId: replacement.productId,
+    unitType: replacement.unitType,
+    quantity,
+    ...(replacement.documentedPackageWeightKgSnapshot ? { documentedPackageWeightKgSnapshot: replacement.documentedPackageWeightKgSnapshot } : {}),
+    ...(replacement.presentationSnapshot ? { presentationSnapshot: replacement.presentationSnapshot } : {}),
+    ...(replacement.descriptionSnapshot ? { descriptionSnapshot: replacement.descriptionSnapshot } : {}),
+  } as DistSaleLine
+  const exactWeight = documentedPackageWeight(snapshot)
+  if (exactWeight !== undefined) entry.documentedSachetKilograms += quantity * exactWeight
+  else entry.unknownWeightPackages += quantity
+}
+
+function round3(value: number): number {
+  return Math.round((Number(value) + Number.EPSILON) * 1000) / 1000
+}
+
+function documentedPackageWeight(line: DistSaleLine): number | undefined {
+  if (Number.isFinite(line.documentedPackageWeightKgSnapshot) && (line.documentedPackageWeightKgSnapshot || 0) > 0) {
+    return line.documentedPackageWeightKgSnapshot
+  }
+  // Una presentación con unidad y peso explícitos es una especificación
+  // documental. El peso aproximado del catálogo nunca pasa por esta rama.
+  const label = `${line.presentationSnapshot || ''} ${line.descriptionSnapshot || ''}`
+  const match = label.match(/(?:^|\D)(\d+(?:[.,]\d+)?)\s*(kg|g|gr|gramos?)\b/i)
+  if (match) {
+    const amount = Number(match[1].replace(',', '.'))
+    const weight = match[2].toLowerCase() === 'kg' ? amount : amount / 1000
+    if (Number.isFinite(weight) && weight > 0) return weight
+  }
+  return undefined
+}
+
+function addSellerSaleLine(
+  entry: SellerBreakdown,
+  line: Pick<DistSaleLine, 'productId' | 'unitType' | 'quantity' | 'presentationSnapshot' | 'descriptionSnapshot' | 'documentedPackageWeightKgSnapshot'>,
+  signedQuantity: number,
+  productsById: Map<string, DistProduct>,
+): void {
+  const product = productsById.get(line.productId)
+  if (line.unitType === 'kg') {
+    entry.kilograms += signedQuantity
+    return
+  }
+  entry.packages += signedQuantity
+  if (line.unitType !== 'package') return
+  const exactWeight = documentedPackageWeight(line as DistSaleLine)
+  if (exactWeight !== undefined) {
+    entry.documentedSachetKilograms += signedQuantity * exactWeight
+  } else if (Number.isFinite(product?.approximateWeightKg) && (product?.approximateWeightKg || 0) > 0) {
+    entry.estimatedSachetKilograms += signedQuantity * (product?.approximateWeightKg || 0)
+  } else {
+    entry.unknownWeightPackages += signedQuantity
+  }
 }

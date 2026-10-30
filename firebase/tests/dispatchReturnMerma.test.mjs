@@ -6,7 +6,8 @@ import { initializeTestEnvironment, assertFails } from '@firebase/rules-unit-tes
 import { doc, setDoc } from 'firebase/firestore'
 
 const req = createRequire(new URL('../../functions/package.json', import.meta.url))
-process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
+process.env.FIRESTORE_EMULATOR_HOST ||= '127.0.0.1:8085'
+const [emulatorHost, emulatorPort] = process.env.FIRESTORE_EMULATOR_HOST.split(':')
 const { initializeApp } = req('firebase-admin/app')
 const { getFirestore } = req('firebase-admin/firestore')
 const { dayKey, processCommand } = req('./operations.cjs')
@@ -16,7 +17,7 @@ const db = getFirestore(app)
 const root = db.doc('restaurants/sanjose')
 const env = await initializeTestEnvironment({
   projectId,
-  firestore: { host: '127.0.0.1', port: 8085, rules: fs.readFileSync('firebase/firestore.rules', 'utf8') },
+  firestore: { host: emulatorHost, port: Number(emulatorPort), rules: fs.readFileSync('firebase/firestore.rules', 'utf8') },
 })
 const prefix = `return-merma-${Date.now().toString(36)}`
 const admin = `${prefix}-admin`, warehouse = `${prefix}-warehouse`, seller = `${prefix}-seller`, sellerShortage = `${prefix}-seller-shortage`
@@ -316,6 +317,23 @@ try {
   }, 'rejected')
   pass(/despacho, las ventas y el saldo físico de ruta no concilian/.test(rejectedFalseConfirmation.error) && !(await read('distClosures', `closure_${mismatchDispatch.id}`)), 'una diferencia de stock ajena a la merma no se puede declarar como peso vendido')
   pass((await read('distBalances', mismatchBalanceId)).quantity === 0.78 && !(await root.collection('distStockMovements').where('dispatchId', '==', mismatchDispatch.id).get()).docs.some(row => row.data().type === 'dispatch_merma_sale'), 'el rechazo de confirmación no crea movimientos ni altera el saldo discrepante')
+
+  const legacySeller = `${prefix}-legacy-sale-seller`, legacyRoute = `${prefix}-legacy-sale-route`, legacyProduct = `${prefix}-legacy-sale-product`
+  await root.collection('members').doc(legacySeller).set({ role: 'distributor', active: true, routeId: legacyRoute, displayName: 'QA venta histórica sin despacho' })
+  await root.collection('distProducts').doc(legacyProduct).set({ id: legacyProduct, restaurantId: 'sanjose', name: 'Viena venta histórica QA', unitType: 'kg', active: true, referencePrice: 40, productionCost: 10 })
+  const legacyIntake = await command(admin, 'intake', { lines: [{ productId: legacyProduct, quantity: 100, lotCode: 'LOTE-VENTA-HISTORICA-QA', manufacturedOn: dayKey(new Date()), expiresOn: '2027-12-31', productionCost: 10 }], note: 'Prueba venta antigua sin despacho' })
+  const legacyDispatch = await command(warehouse, 'dispatch', { warehouseId: wh, routeId: legacyRoute, routeName: 'Ruta QA venta histórica', distributorUid: legacySeller, distributorName: 'QA venta histórica sin despacho', lines: [{ productId: legacyProduct, quantity: 17.56, normalQuantity: 17, dispatchMerma: 0.56, allocationsRequested: [{ lotId: `${legacyIntake.id}__0`, quantity: 17.56 }] }] })
+  const legacySale = await command(legacySeller, 'sale', { sourceLocation: 'route', dispatchId: legacyDispatch.id, routeId: legacyRoute, routeName: 'Ruta QA venta histórica', lines: [{ productId: legacyProduct, quantity: 16.66, actualUnitPrice: 40 }], paymentKind: 'cash', cashAmount: 666.4, qrAmount: 0, creditAmount: 0 })
+  const legacySaleDoc = await read('distSales', legacySale.id)
+  delete legacySaleDoc.dispatchId
+  await root.collection('distSales').doc(legacySale.id).set(legacySaleDoc)
+  pass(!(await read('distSales', legacySale.id)).dispatchId, 'fixture usa una venta de ruta histórica sin dispatchId')
+  await command(legacySeller, 'closure', { mode: 'declaration', dispatchId: legacyDispatch.id, declaredReturns: { [legacyProduct]: 0.34 }, declaredReturnMermas: {}, physicalCashDeclared: 666.4 })
+  const legacyReceipt = await command(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: legacyDispatch.id, products: [{ productId: legacyProduct, actualReturn: 0.34, returnMerma: 0.22, returnWaste: 0, physicalReturn: 0.56, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'Almacén comprobó físicamente las bolsas registradas.' }] }, warehouseResponsibleName: 'QA almacén' })
+  const legacyClosure = await read('distClosures', `closure_${legacyDispatch.id}`)
+  const legacyMovements = (await root.collection('distStockMovements').where('dispatchId', '==', legacyDispatch.id).get()).docs.map(row => row.data())
+  pass(legacyReceipt.status === 'confirmed' && legacyClosure.products[0].dispatchMermaEmbeddedInSalesQuantity === 0.34, 'el servidor incluye venta antigua de la misma ruta y admite solo los 0,34 kg conciliados y confirmados')
+  pass(legacyMovements.filter(row => row.type === 'dispatch_merma_sale' && !row.reversedAt).reduce((sum, row) => sum + row.quantity, 0) === 0.34, 'la venta antigua produce un único movimiento físico confirmado de 0,34 kg')
 
   console.log(`\n${checks} pruebas de merma de despacho/retorno pasaron.`)
 } finally {

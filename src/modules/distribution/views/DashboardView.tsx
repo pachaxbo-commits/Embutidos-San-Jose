@@ -84,7 +84,8 @@ export function DashboardView({ session, data, modules = [], onNavigate }: Distr
     [data.expenses, routeFilter],
   )
 
-  const money = useMemo(() => computeMoneySummary(sales, collections, expenses), [sales, collections, expenses])
+  const claims = routeFilter ? data.claims.filter((claim) => matchesRoute(claim.isDerivedSaleVoid ? 'administracion' : claim.routeId, routeFilter)) : data.claims
+  const money = useMemo(() => computeMoneySummary(sales, collections, expenses, claims), [sales, collections, expenses, claims])
   const soldKg = useMemo(() => computeSoldKilograms(sales), [sales])
   const soldPackages = useMemo(() => computeSoldPackages(sales), [sales])
 

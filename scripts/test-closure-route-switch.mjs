@@ -25,7 +25,9 @@ const vite = await createServer({
     },
     load(id) {
       if (id !== '\0closure-route-switch-repository') return
-      return `export const subscribeSales = (_days, route, callback) => globalThis.__closureRouteSwitchSubscribe('sales', route, callback)
+      return `export const subscribeClosedDispatchesForRoute = (_route, callback) => { callback([]); return () => {} }
+export const subscribeDispatchSettlementSales = (route, _dispatch, callback) => globalThis.__closureRouteSwitchSubscribe('sales', route, callback)
+export const subscribeSales = (_days, route, callback) => globalThis.__closureRouteSwitchSubscribe('sales', route, callback)
 export const subscribeCollections = (_days, route, callback) => globalThis.__closureRouteSwitchSubscribe('collections', route, callback)
 export const subscribeExpenses = (_days, route, callback) => globalThis.__closureRouteSwitchSubscribe('expenses', route, callback)
 export const declareRouteReturn = async () => { throw new Error('No submit in this test') }

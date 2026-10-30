@@ -20,6 +20,8 @@ import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../da
 import {
   computeMoneySummary,
   computeSellerBreakdown,
+  cashMovementRouteId,
+  cashMovementSellerUid,
   computeSoldByProduct,
   computeSoldKilograms,
   computeSoldPackages,
@@ -98,8 +100,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   }, [mainCategory, dineroSubTab, ventasSubTab, inventarioSubTab])
 
   const allSellers = useMemo(
-    () => computeSellerBreakdown(data.sales, data.collections, data.expenses, data.claims),
-    [data.sales, data.collections, data.expenses, data.claims],
+    () => computeSellerBreakdown(data.sales, data.collections, data.expenses, data.claims, data.products),
+    [data.sales, data.collections, data.expenses, data.claims, data.products],
   )
   const sellerOptions = useMemo(() => {
     const sellers = new Map(allSellers.map((seller) => [seller.sellerUid, seller.sellerName]))
@@ -207,25 +209,23 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     () =>
       data.claims
         .filter((claim) => session.dayKeys.includes(claim.dayKey || toDayKey(claim.createdAt)))
-        .filter((claim) => !routeFilter || matchesRoute(claim.routeId, routeFilter))
+        .filter((claim) => !routeFilter || matchesRoute(cashMovementRouteId(claim), routeFilter))
         .filter(
           (claim) =>
             !sellerFilter ||
-            claim.sellerUid === sellerFilter ||
+            cashMovementSellerUid(claim) === sellerFilter ||
             (!claim.sellerUid && data.sales.some((sale) => sale.id === claim.saleId && sale.sellerUid === sellerFilter)),
         ),
     [data.claims, data.sales, session.dayKeys, routeFilter, sellerFilter],
   )
 
   const money = useMemo(() => {
-    const base = computeMoneySummary(sales, collections, expenses)
-    const claimCash = claims.reduce((sum, claim) => sum + (Number(claim.cashIn) || 0) - (Number(claim.cashOut) || 0), 0)
-    return { ...base, expectedCash: round2(base.expectedCash + claimCash) }
+    return computeMoneySummary(sales, collections, expenses, claims)
   }, [sales, collections, expenses, claims])
 
   const sellers = useMemo(
-    () => computeSellerBreakdown(sales, collections, expenses, claims),
-    [sales, collections, expenses, claims],
+    () => computeSellerBreakdown(sales, collections, expenses, claims, data.products),
+    [sales, collections, expenses, claims, data.products],
   )
 
   const productRows = useMemo(() => {
@@ -263,7 +263,9 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   )
 
   const operatingFinancials = useMemo(() => {
-    const commercialSales = sales.filter((s) => s.saleKind !== 'courtesy')
+    const commercialSales = sales
+      .filter((s) => !s.voidedAt && !s.pendingConfirmation && s.saleKind !== 'courtesy')
+      .map((s) => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s)
     const lines = commercialSales.flatMap((s) => s.lines)
     const revenue = round2(
       commercialSales.reduce((n, s) => n + s.total, 0) + claims.reduce((n, c) => n + c.revenueDelta, 0),
@@ -281,7 +283,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       .filter((m) => !m.reversedAt)
       .filter((m) => session.dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
       .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
-      .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'return_waste_unassigned' || m.type === 'courtesy' || (m.type === 'adjustment' && m.centralDelta < 0))
+      .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'return_waste_unassigned' || m.type === 'courtesy' || m.type === 'processing_discard' || (m.type === 'adjustment' && m.centralDelta < 0))
     const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
     const operatingProfit =
       costKnown && !sellerFilter ? round2(revenue - cost - spent - lossCost) : null
@@ -361,22 +363,19 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   }, [periodCollections])
 
   const reconciliation = useMemo(() => {
-    const commercialSales = sales.filter(s => s.saleKind !== 'courtesy')
-    const periodSalesTotal = round2(commercialSales.reduce((sum, s) => sum + s.total, 0))
-    const periodCashSales = round2(commercialSales.reduce((sum, s) => sum + s.cashAmount, 0))
-    const periodQrSales = round2(commercialSales.reduce((sum, s) => sum + s.qrAmount, 0))
-    const periodCreditSales = round2(commercialSales.reduce((sum, s) => sum + s.creditAmount, 0))
+    const periodSalesTotal = money.salesTotal
+    const periodCashSales = money.cashSales
+    const periodQrSales = money.qrSales
+    const periodCreditSales = money.creditGenerated
 
     const periodCashCollections = round2(
       collections.reduce((sum, c) => sum + (c.cashAmount ?? (c.method === 'cash' ? c.amount : 0)), 0),
     )
     const periodCashExpenses = round2(expenses.reduce((sum, e) => sum + expenseCashPaidAmount(e), 0))
 
-    const periodClaimsCashIn = round2(claims.reduce((sum, c) => sum + (c.cashIn || 0), 0))
-    const periodClaimsCashOut = round2(claims.reduce((sum, c) => sum + (c.cashOut || 0), 0))
-    const claimsCashNet = round2(periodClaimsCashIn - periodClaimsCashOut)
+    const claimsCashNet = money.claimCash
 
-    const expectedCash = round2(periodCashSales + periodCashCollections + claimsCashNet - periodCashExpenses)
+    const expectedCash = money.expectedCash
     const declaredCash = round2(closures.reduce((sum, cl) => sum + (cl.physicalCashDeclared ?? 0), 0))
     const cashDifference = round2(declaredCash - expectedCash)
 
@@ -388,11 +387,14 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       cashCollections: periodCashCollections,
       cashExpenses: periodCashExpenses,
       claimsCashNet,
+      voidedCashReceipts: money.voidedCashReceipts,
+      voidedQrReceipts: money.voidedQrReceipts,
+      claimQr: money.claimQr,
       expectedCash,
       declaredCash,
       cashDifference,
     }
-  }, [sales, collections, expenses, claims, closures])
+  }, [collections, expenses, closures, money.cashSales, money.claimCash, money.claimQr, money.creditGenerated, money.expectedCash, money.qrSales, money.salesTotal, money.voidedCashReceipts, money.voidedQrReceipts])
 
   const isMultiDay = session.dayKeys.length > 1
   const formatReportDateTime = (isoDate: string) => {
@@ -530,9 +532,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         {/* ========================================================= */}
         {mainCategory === 'resumen' && (
           <div className="grid gap-3">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-7">
               <KpiCard label="Ventas netas" value={formatBs(operatingFinancials.revenue)} tone="primary" hint={`${sales.length} ventas`} />
               <KpiCard label="Efectivo esperado" value={formatBs(money.expectedCash)} tone="positive" hint="Ventas + cobros + cambios - gastos" />
+              <KpiCard label="Cobro original anulado" value={formatBs(money.voidedCashReceipts)} hint="Movimiento histórico de caja; no es venta neta" />
+              <KpiCard label="Reembolsos efectivo netos" value={formatBs(Math.min(0, money.claimCash))} hint="Registrados en su jornada y caja" />
+              <KpiCard label="Movimientos QR de anulaciones" value={formatBs(money.voidedQrReceipts + money.claimQr)} hint="Separados del efectivo físico" />
               <KpiCard label="Crédito generado" value={formatBs(money.creditGenerated)} tone="warning" />
               <KpiCard label="Gastos de ruta" value={formatBs(money.cashExpenses)} tone="danger" />
               <KpiCard label="Entregas de cortesía" value={`${courtesySales.length}`} tone="warning" hint="No son ventas ni cobros" />
@@ -643,8 +648,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       <KpiCard label="Crédito" value={formatBs(seller.creditGenerated)} tone="warning" />
                       <KpiCard label="Cobró cartera" value={formatBs(seller.collected)} tone="positive" />
                       <KpiCard label="Gastos" value={formatBs(seller.expenses)} tone="danger" />
-                      <KpiCard label="Granel" value={`${seller.kilograms} kg`} />
-                      <KpiCard label="Paquetes" value={String(seller.packages)} />
+                      <KpiCard label="Kg vendidos a granel" value={`${seller.kilograms.toFixed(3)} kg`} />
+                      <KpiCard label="Kg en sachets documentados" value={`${seller.documentedSachetKilograms.toFixed(3)} kg`} />
+                      <KpiCard label="Total kg documentados" value={`${seller.totalDocumentedKilograms.toFixed(3)} kg`} tone="positive" />
+                      <KpiCard label="Sachets (peso estimado)" value={seller.estimatedSachetKilograms > 0 ? `≈ ${seller.estimatedSachetKilograms.toFixed(3)} kg` : '—'} />
+                      <KpiCard label="Paquetes vendidos" value={String(seller.packages)} />
+                      <KpiCard label="Paquetes sin peso fiable" value={seller.unknownWeightPackages > 0 ? `${seller.unknownWeightPackages} · peso no disponible` : '0'} />
                     </div>
                     {(() => {
                       const sellerClosures = closures.filter((c) => c.distributorUid === seller.sellerUid)
@@ -1832,6 +1841,11 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                                   (Gan: {formatBs(detail.profitBs)})
                                 </span>
                               )}
+                            </p>
+                          )}
+                          {detail.costAccountingStatus === 'pending_quarantine_disposition' && (
+                            <p className="mt-1 text-[10px] font-semibold text-amber-800">
+                              Costo histórico en cuarentena pendiente de disposición: {detail.pendingQuarantineCostBs === null || detail.pendingQuarantineCostBs === undefined ? 'no disponible' : formatBs(detail.pendingQuarantineCostBs)}. No se revirtió ni se duplicó en Resultado.
                             </p>
                           )}
                         </div>

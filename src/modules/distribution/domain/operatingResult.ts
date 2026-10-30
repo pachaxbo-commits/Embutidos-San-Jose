@@ -18,6 +18,7 @@ export interface OperatingResult {
   operatingResult: number | null; costsKnown: boolean; report: ProductProfitReport; details: OperatingResultDetail[]
   expenses: OperatingResultExpenseRow[]; salesByOrigin: Array<{ origin: string; amount: number }>
   pendingClassificationCount: number; pendingEconomicDecisionCount: number
+  pendingQuarantineDispositionCount: number; pendingQuarantineCostBs: number | null
 }
 
 const ZERO: Record<string, number> = { administration: 0, indirect: 0, equipment: 0, other: 0, production_additional: 0, production_input: 0 }
@@ -34,6 +35,11 @@ export function computeOperatingResult(
   const productionInputs = allScopedActiveExpenses.filter((expense) => effectiveExpenseEconomicType(expense) === 'production_input')
   const pendingClassificationCount = allScopedActiveExpenses.filter(isExpenseReviewPending).length
   const pendingEconomicDecisionCount = pendingClassificationCount
+  const pendingQuarantineClaims = scopedClaims.filter((claim) => claim.costAccountingStatus === 'pending_quarantine_disposition')
+  const pendingQuarantineCostKnown = pendingQuarantineClaims.every((claim) => typeof claim.returnedCostCents === 'number' && Number.isFinite(claim.returnedCostCents))
+  const pendingQuarantineCostBs = pendingQuarantineCostKnown
+    ? round2(pendingQuarantineClaims.reduce((sum, claim) => sum + (claim.returnedCostCents ?? 0), 0) / 100)
+    : null
   const scopedMovements = movements.filter((movement) => !movement.reversedAt && inScope(movement.dayKey || toDayKey(movement.createdAt), movement.routeId))
   const routeNames = new Map(routes.map((route) => [route.id, route.name]))
   for (const sale of scopedSales) {
@@ -53,7 +59,8 @@ export function computeOperatingResult(
     salesByOriginMap.set(origin, round2((salesByOriginMap.get(origin) || 0) + (sale.effectiveSnapshot?.total ?? sale.total)))
   }
   const salesByOrigin = [...salesByOriginMap.entries()].map(([origin, amount]) => ({ origin, amount }))
-  const adjustments = round2(scopedClaims.reduce((sum, claim) => sum + claim.revenueDelta, 0))
+  const economicClaims = scopedClaims.filter((claim) => !claim.isDerivedSaleVoid)
+  const adjustments = round2(economicClaims.reduce((sum, claim) => sum + claim.revenueDelta, 0))
   const netSales = round2(report.totals.salesBs)
   const costOfSales = report.totals.costBs
   const grossMargin = report.totals.profitBs
@@ -78,7 +85,7 @@ export function computeOperatingResult(
     }
   })
   const losses = scopedMovements.filter((movement) =>
-    movement.type === 'shortage' || movement.type === 'return_waste' || movement.type === 'return_waste_unassigned' || movement.type === 'dispatch_waste' ||
+    movement.type === 'shortage' || movement.type === 'return_waste' || movement.type === 'return_waste_unassigned' || movement.type === 'dispatch_waste' || movement.type === 'processing_discard' ||
     (movement.type === 'adjustment' && movement.centralDelta < 0),
   )
   const lossCostsKnown = losses.every((movement) => typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost))
@@ -106,11 +113,13 @@ export function computeOperatingResult(
     fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, cliente: line.customerName,
     origen: displayOrigin(undefined, line.routeName), responsable: line.sellerName, monto: line.saleBs,
   }))
-  const claimRows = scopedClaims.map((claim) => ({ fecha: claim.dayKey || toDayKey(claim.createdAt), producto: claim.productName,
+  const claimRows = economicClaims.map((claim) => ({ fecha: claim.dayKey || toDayKey(claim.createdAt), producto: claim.productName,
     tipo: claim.kind === 'return' ? 'Devolución' : 'Cambio', cliente: claim.customerName,
     origen: displayOrigin(claim.routeId, scopedSales.find((sale) => sale.id === claim.saleId)?.routeName), monto: claim.revenueDelta }))
   const movementTypeLabel: Record<DistStockMovement['type'], string> = {
     traceability_notice: 'Origen físico pendiente (incidencia documental sin efecto económico)',
+    reservation_created: 'Reserva de producto (sin movimiento físico)', reservation_released: 'Liberación de reserva (sin movimiento físico)',
+    processing_consumption: 'Consumo de producto en elaboración', processing_output: 'Producto terminado de elaboración', processing_discard: 'Descarte confirmado de elaboración',
     intake: 'Ingreso de inventario', dispatch: 'Despacho', dispatch_addition: 'Aumento de despacho', sale: 'Venta',
     sale_correction: 'Corrección de venta', return: 'Retorno', adjustment: 'Ajuste de inventario',
     dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', dispatch_merma_sale: 'Merma adicional dentro de ventas', return_waste: 'Merma al retorno',
@@ -125,6 +134,16 @@ export function computeOperatingResult(
     origen: displayOrigin(sale.routeId, sale.routeName), responsable: sale.sellerName, monto: courtesyCostBySale[index] ?? 'Costo no registrado' }))
   courtesyRows.push(...unlinkedCourtesyMovements.map((movement) => ({ fecha: movement.dayKey || toDayKey(movement.createdAt), motivo: 'Cortesía sin venta vinculada', origen: displayOrigin(movement.routeId), responsable: movement.responsibleName || 'Sin responsable', monto: movement.lossCost ?? 'Costo no registrado' })))
   const details: OperatingResultDetail[] = [
+    ...(pendingQuarantineClaims.length ? [{
+      key: 'quarantineDisposition', label: 'Costo histórico en cuarentena pendiente de disposición',
+      amount: pendingQuarantineCostBs,
+      rows: pendingQuarantineClaims.map((claim) => ({
+        fecha: claim.dayKey || toDayKey(claim.createdAt), producto: claim.productName,
+        cliente: claim.customerName, estado: 'Pendiente de disposición; no ajusta Resultado',
+        costo: typeof claim.returnedCostCents === 'number' ? round2(claim.returnedCostCents / 100) : 'Costo histórico no disponible',
+      })),
+      explanation: 'Importe informativo. No se suma ni resta nuevamente: el costo de venta original se conserva hasta definir la disposición económica de la cuarentena.',
+    }] : []),
     { key: 'grossSales', label: 'Ventas brutas', amount: grossSales, rows: saleRows },
     { key: 'adjustments', label: 'Cambios y devoluciones', amount: adjustments, rows: claimRows },
     { key: 'netSales', label: 'Ventas netas', amount: netSales, rows: [...saleRows, ...claimRows] },
@@ -142,5 +161,5 @@ export function computeOperatingResult(
     ] },
   ]
   const expenseGroupLabels = [...new Map(expenseRows.map((row) => [row.group, row.groupLabel])).entries()].map(([id, label]) => ({ id, label }))
-  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, expenseGroupLabels, productionInputTotal, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin, pendingClassificationCount, pendingEconomicDecisionCount }
+  return { grossSales, adjustments, netSales, costOfSales, grossMargin, expenseTotals, expenseGroupLabels, productionInputTotal, losses: lossCost, courtesyCost, operatingResult, costsKnown, report, details, expenses: expenseRows, salesByOrigin, pendingClassificationCount, pendingEconomicDecisionCount, pendingQuarantineDispositionCount: pendingQuarantineClaims.length, pendingQuarantineCostBs }
 }

@@ -28,6 +28,7 @@ import {
   RefreshCw,
   Sun,
   FileText,
+  PackageCheck,
 } from 'lucide-react'
 import { getVisibleModules, SAN_JOSE_APP_CONFIG, type ModuleId } from '../../../config/appConfig'
 import { hasPermission } from '../../../services/permissionService'
@@ -60,6 +61,7 @@ import { UsersView } from './UsersView'
 import { SupportView } from './SupportView'
 import { DiagnosticCenterView } from './DiagnosticCenterView'
 import { QuotesView } from './QuotesView'
+import { SacheteadoView } from './SacheteadoView'
 import type { Permission, UserRole } from '../../../types'
 import type { DistributionData } from '../state/useDistributionStore'
 
@@ -108,6 +110,7 @@ const MODULE_ICONS: Partial<Record<ModuleId, BottomNavItem<ModuleId>['icon']>> =
   'printer-settings': Printer,
   'dist.support': Settings2,
   'dist.diagnostics': Bug,
+  'dist.processing': PackageCheck,
 }
 
 export function DistributionApp({
@@ -253,6 +256,8 @@ export function DistributionApp({
         )
       case 'dist.inventory':
         return <InventoryView {...viewProps} />
+      case 'dist.processing':
+        return <SacheteadoView {...viewProps} />
       case 'dist.dispatches':
         return <DispatchesView {...viewProps} />
       case 'dist.sales':

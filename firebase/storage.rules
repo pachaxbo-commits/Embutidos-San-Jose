@@ -1,0 +1,54 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function memberPath() {
+      return /databases/(default)/documents/restaurants/sanjose/members/$(request.auth.uid);
+    }
+    function member() {
+      return firestore.get(memberPath()).data;
+    }
+    function activeQualityWorker() {
+      return request.auth != null && firestore.exists(memberPath())
+        && member().active == true && member().role in ['admin', 'warehouse'];
+    }
+    function ownsLocation(location) {
+      return member().role == 'admin'
+        || member().role == 'warehouse'
+          && location == ((('warehouseId' in member()) && member().warehouseId != 'central' && member().warehouseId != '')
+            ? 'warehouse__' + member().warehouseId : 'central');
+    }
+    function validEvidenceUpload(location, reservationId, caseId, revision, uploaderUid, evidenceId) {
+      let reservationPath = /databases/(default)/documents/restaurants/sanjose/distStockReservations/$(reservationId);
+      let reservation = firestore.get(reservationPath).data;
+      let lotPath = /databases/(default)/documents/restaurants/sanjose/distLots/$(reservation.lotId);
+      let lot = firestore.get(lotPath).data;
+      let reviewPath = /databases/(default)/documents/restaurants/sanjose/distProcessingReviews/$(lot.processingReview.latestReviewId);
+      let review = firestore.get(reviewPath).data;
+      return activeQualityWorker() && ownsLocation(location) && uploaderUid == request.auth.uid
+        && firestore.exists(reservationPath) && firestore.exists(lotPath) && firestore.exists(reviewPath)
+        && reservation.location == location && reservation.status in ['active', 'partially_consumed']
+        && reservation.purpose in ['review_hold', 'repack_pending']
+        && lot.processingReview.caseId == caseId && lot.processingReview.revision == revision
+        && review.caseId == caseId && review.reservationId == reservationId
+        && review.location == location && review.revision == revision
+        && request.resource.size > 0 && request.resource.size <= 15 * 1024 * 1024
+        && request.resource.contentType in ['image/jpeg', 'image/png', 'application/pdf']
+        && request.resource.metadata.keys().hasOnly(['restaurantId','lotId','reservationId','reviewCaseId','reviewRevision','location','uploadedBy','evidenceType','sha256','evidenceId'])
+        && request.resource.metadata.restaurantId == 'sanjose'
+        && request.resource.metadata.lotId == reservation.lotId
+        && request.resource.metadata.reservationId == reservationId
+        && request.resource.metadata.reviewCaseId == caseId
+        && request.resource.metadata.reviewRevision == string(revision)
+        && request.resource.metadata.location == location
+        && request.resource.metadata.uploadedBy == request.auth.uid
+        && request.resource.metadata.evidenceId == evidenceId
+        && request.resource.metadata.evidenceType in ['photo','measurement_record','signed_quality_record']
+        && request.resource.metadata.sha256.matches('^[A-Fa-f0-9]{64}$');
+    }
+    match /processing-evidence/sanjose/{location}/{reservationId}/{caseId}/{revision}/{uploaderUid}/{evidenceId} {
+      allow create: if validEvidenceUpload(location, reservationId, caseId, int(revision), uploaderUid, evidenceId);
+      allow get: if activeQualityWorker() && ownsLocation(location);
+      allow list, update, delete: if false;
+    }
+  }
+}

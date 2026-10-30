@@ -22,6 +22,24 @@ function slice(a, offset, quantity) {
   const result = { ...a, quantity: r(quantity) };
   delete result.originReferences;
   if (selected.length) result.originReferences = selected;
+  if (a.processingAllocation) {
+    const allocation = a.processingAllocation;
+    const packageCount = Number(allocation.quantity);
+    check(Number.isSafeInteger(packageCount) && packageCount > 0 && Number.isSafeInteger(offset) && Number.isSafeInteger(quantity), 'Fracción comercial del lote derivado inválida.');
+    const share = (total, start, count) => {
+      if (total === null || total === undefined) return null;
+      check(Number.isSafeInteger(total) && total >= 0, 'Peso o costo asignado del lote derivado inválido.');
+      const end = start + count;
+      return Number((BigInt(total) * BigInt(end) / BigInt(packageCount)) - (BigInt(total) * BigInt(start) / BigInt(packageCount)));
+    };
+    result.processingAllocation = {
+      ...allocation,
+      quantity: Number(quantity),
+      physicalWeightG: share(allocation.physicalWeightG, offset, Number(quantity)),
+      costCents: share(allocation.costCents, offset, Number(quantity)),
+      allocationMethod: 'documented_average',
+    };
+  }
   return result;
 }
 function remove(lot, loc, allocation, allowPending = true) {
