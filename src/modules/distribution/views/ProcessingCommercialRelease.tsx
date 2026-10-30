@@ -3,6 +3,7 @@ import { Field, TextInput } from '../../../components/ui/Form'
 import type { DistLot } from '../types'
 import { loadMyProcessingQualityAuthorization, newOperationId, releaseProcessingLot } from '../data/distributionRepository'
 import { SecondaryButton } from './shared'
+import { recordErrorDiagnostic } from '../../../lib/errorDiagnostics'
 
 export function ProcessingCommercialRelease({ lot }: { lot: DistLot }) {
   const [reason, setReason] = useState('')
@@ -16,7 +17,8 @@ export function ProcessingCommercialRelease({ lot }: { lot: DistLot }) {
       if (!authorization || authorization.status !== 'active') throw new Error('Necesitas una autorización vigente de Calidad para liberar este lote.')
       await releaseProcessingLot({ lotId: lot.id, authorizationReference: authorization.id, reason }, operationId)
       setMessage('Liberación confirmada. El lote conserva sus pesos, costos y trazabilidad de elaboración.')
-    } catch {
+    } catch (error) {
+      recordErrorDiagnostic({ error: error instanceof Error ? error : new Error(String(error)), source: 'handled_operation_failure', view: 'dist.processing.release' })
       setMessage('No se confirmó la liberación. Verifica tu autorización de Calidad, las reservas, las fechas y la conciliación del lote antes de reintentar.')
     } finally { setBusy(false) }
   }

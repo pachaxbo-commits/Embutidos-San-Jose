@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { initializeTestEnvironment, assertFails } from '@firebase/rules-unit-testing'
 import { doc, setDoc } from 'firebase/firestore'
+console.log(`Commercial release runtime: Node ${process.versions.node}`)
 
 const req = createRequire(new URL('../../functions/package.json', import.meta.url))
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
@@ -72,10 +73,17 @@ try {
   await root.collection('distLots').doc(derivedLotId).update({ quarantined: true })
   await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA must reject quarantined stock' }, `${prefix}-quarantine`, 'rejected')
   await root.collection('distLots').doc(derivedLotId).update({ quarantined: false })
-  const release = await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA physical finished product approved' }, `${prefix}-release`)
+  const [release, concurrentRelease] = await Promise.all([
+    command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA physical finished product approved' }, `${prefix}-release`),
+    command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA concurrent release cannot duplicate approval' }, `${prefix}-concurrent-release`),
+  ])
+  assert.equal(release.result.release.operationId, concurrentRelease.result.release.operationId)
   assert.equal(release.result.release.status, 'released')
   const repeated = await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA repeated release request is safe' }, `${prefix}-release-again`)
   assert.equal(repeated.result.release.operationId, release.result.release.operationId)
+  const releasedSnapshot = await read('distLots', derivedLotId)
+  await command(ids.admin, 'updateLot', { lotId: derivedLotId, lotCode: 'QA-CHANGED', manufacturedOn: '2026-10-28', expiresOn: '2999-12-31', productionCost: 999, reason: 'QA generic editing must not extend derived expiry' }, `${prefix}-blocked-edit`, 'rejected')
+  assert.deepEqual(await read('distLots', derivedLotId), releasedSnapshot)
   const dispatchId = `${prefix}-released-dispatch`
   await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: ids.route, routeName: 'QA Ruta', distributorUid: ids.seller, distributorName: 'QA Vendedor', warehouseResponsibleName: 'QA Almacen', lines: [{ productId: ids.product, quantity: 10, normalQuantity: 10, dispatchMerma: 0, allocationsRequested: [{ lotId: derivedLotId, quantity: 10 }] }] }, dispatchId)
   const sale = await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'QA Administracion', lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-released-sale`)
@@ -99,6 +107,8 @@ try {
   assert.equal(returned.processingCostCentsRemaining, 3500)
   await processCommand(db, root.collection('distOperations').doc(receiveId))
   assert.deepEqual(await read('distLots', derivedLotId), returned)
+  await command(ids.admin, 'closure', { mode: 'final', closure: { dispatchId, physicalCashDeclared: 70 } }, `${prefix}-route-close`)
+  assert.equal((await read('distDispatches', dispatchId)).status, 'closed')
   const customerId = `${prefix}-customer`
   await root.collection('distCustomers').doc(customerId).set({ id: customerId, restaurantId: 'sanjose', active: true, name: 'QA Customer', identityNumber: '1234567' })
   for (const kind of ['qr', 'credit']) {

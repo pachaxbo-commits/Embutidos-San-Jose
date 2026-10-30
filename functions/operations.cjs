@@ -4521,6 +4521,9 @@ handlers.releaseProcessingLot = async (o, p) => {
   check(lot.manufacturedOn && lot.expiresOn && lot.expiresOn >= o.today && lot.manufacturedOn <= o.today, 'Las fechas del lote no permiten liberarlo.');
   const batch = await o.read('distProcessingBatches', lot.processingBatchId);
   check(batch?.status === 'confirmed' && ['bagging','portioning'].includes(batch.processType) && batch.result?.derivedLots?.some(row => row.lotId === lot.id && row.destinationKind === 'finished'), 'La elaboración original no acredita este lote terminado.');
+  check(lot.processingSourceAllocationBasis && Array.isArray(batch.sourceAllocations) && batch.sourceAllocations.length > 0, 'Falta la procedencia documentada de elaboración.');
+  const quantities = Object.values(lot.quantities || {});
+  check(quantities.every(value => Number.isSafeInteger(value) && value >= 0) && quantities.some(value => value > 0), 'El lote no tiene paquetes físicos íntegros disponibles.');
   check(Number.isSafeInteger(lot.processingCostCentsRemaining) && lot.processingCostCentsRemaining >= 0 && Number.isSafeInteger(lot.processingPhysicalWeightGRemaining) && lot.processingPhysicalWeightGRemaining > 0, 'Falta peso medido o costo histórico conciliado.');
   const reservations = await o.processingReservations(lot.id);
   check(!reservations.some(row => ['active','partially_consumed'].includes(row.status) && Number(row.remainingQuantity) > 0), 'El lote tiene reservas activas.');
@@ -5361,6 +5364,7 @@ async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);
   check(lot, "No existe el lote.");
+  check(!lot.processingCommercialBlocked && !lot.processingBatchId && !lot.processingByLocation, 'El lote derivado conserva fechas y costo histórico de elaboración; requiere una corrección especializada.');
   check(!Object.keys(lot.pendingOrigins || {}).some(loc => origins.pending(lot, loc) > 0), 'Este lote contiene cantidades con origen pendiente; no se puede cambiar su identidad ni costo sin conciliar la excepción.');
   const reservations = await o.processingReservations(lot.id);
   const reservationLocations = new Set(['central', ...Object.keys(lot.processingUnavailable || {}), ...reservations.map(row => row.location)]);
