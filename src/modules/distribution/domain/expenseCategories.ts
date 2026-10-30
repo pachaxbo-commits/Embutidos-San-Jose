@@ -38,6 +38,15 @@ export function mergeExpenseCategories(overrides: DistExpenseCategory[]): DistEx
   return [...byId.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, 'es'))
 }
 
+export function expenseCategoriesForGroup(categories: DistExpenseCategory[], groupId: string): DistExpenseCategory[] {
+  return groupId === 'all' ? categories : categories.filter(category => category.group === groupId)
+}
+
+export function reconcileExpenseCategoryFilter(categoryId: string, groupId: string, categories: DistExpenseCategory[]): string {
+  if (categoryId === 'all' || groupId === 'all') return categoryId
+  return categories.some(category => category.id === categoryId && category.group === groupId) ? categoryId : 'all'
+}
+
 export function expenseGroupLabel(group?: string): string {
   return EXPENSE_GROUPS.find((entry) => entry.id === group)?.label ?? 'Otros / Por clasificar'
 }

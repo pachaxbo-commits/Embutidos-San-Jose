@@ -539,6 +539,8 @@ export interface DistExpense extends DistBaseDoc {
   payableId?: string
   supplierId?: string
   supplierName?: string
+  purchaseReceiptType?: 'invoice' | 'receipt' | 'other'
+  purchaseReceiptNumber?: string
   economicType?: ExpenseEconomicType
   affectsOperatingResult?: boolean
   classificationStatus?: 'classified' | 'pending_review' | 'reviewed'
@@ -597,8 +599,12 @@ export interface DistExpenseCategory extends DistBaseDoc {
 export interface DistSupplier extends DistBaseDoc {
   name: string
   active: boolean
+  legalName?: string
+  nit?: string
+  address?: string
   contactName?: string
   phone?: string
+  email?: string
   note?: string
   updatedAt?: string
   updatedBy?: string
@@ -620,6 +626,8 @@ export interface DistPayable extends DistBaseDoc {
   status: 'pending' | 'partial' | 'paid' | 'voided'
   dueDayKey?: string
   note?: string
+  purchaseReceiptType?: 'invoice' | 'receipt' | 'other'
+  purchaseReceiptNumber?: string
   purchaseLines?: SupplierPurchaseLine[]
   routeId: string
   routeName: string

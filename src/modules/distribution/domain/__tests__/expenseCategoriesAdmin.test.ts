@@ -1,4 +1,4 @@
-import { listExpenseGroups, mergeExpenseCategories } from '../expenseCategories.ts'
+import { expenseCategoriesForGroup, listExpenseGroups, mergeExpenseCategories, reconcileExpenseCategoryFilter } from '../expenseCategories.ts'
 const groups = listExpenseGroups([])
 const categories = mergeExpenseCategories([])
 const assert = (condition: boolean, message: string) => { if (!condition) throw new Error(message) }
@@ -7,4 +7,9 @@ assert(categories.find(category => category.id === 'commercialization-1')?.name 
 assert(categories.find(category => category.id === 'commercialization-2')?.name === 'Refrigerio / viáticos', 'viáticos se clasifican en comercialización')
 assert(categories.find(category => category.id === 'commercialization-3')?.name === 'Mantenimiento / reparación', 'mantenimiento se clasifica en comercialización')
 assert(!categories.find(category => category.id === 'indirect-7')?.active, 'categoría de peaje antigua queda desactivada en gastos indirectos')
+assert(expenseCategoriesForGroup(categories, 'administration').every(category => category.group === 'administration'), 'filtro de grupo Administración expone únicamente sus categorías')
+assert(expenseCategoriesForGroup(categories, 'all').length === categories.length, 'Todos los grupos conserva todas las categorías')
+assert(reconcileExpenseCategoryFilter('administration-1', 'administration', categories) === 'administration-1', 'al cambiar grupo se conserva una categoría que sigue perteneciendo al grupo')
+assert(reconcileExpenseCategoryFilter('indirect-1', 'administration', categories) === 'all', 'al cambiar grupo se restablece una categoría perteneciente a otro grupo')
+assert(reconcileExpenseCategoryFilter('unclassified', 'administration', categories) === 'all', 'Por clasificar se restablece al seleccionar un grupo concreto')
 console.log('PASS grupos económicos y categorías movidas para nuevos egresos; historial intacto')
