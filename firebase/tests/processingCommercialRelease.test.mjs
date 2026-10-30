@@ -84,6 +84,9 @@ try {
   const releasedSnapshot = await read('distLots', derivedLotId)
   await command(ids.admin, 'updateLot', { lotId: derivedLotId, lotCode: 'QA-CHANGED', manufacturedOn: '2026-10-28', expiresOn: '2999-12-31', productionCost: 999, reason: 'QA generic editing must not extend derived expiry' }, `${prefix}-blocked-edit`, 'rejected')
   assert.deepEqual(await read('distLots', derivedLotId), releasedSnapshot)
+  const insufficient = await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'QA Admin', lines: [{ productId: ids.product, quantity: 37, actualUnitPrice: 10 }], cashAmount: 370, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-insufficient-released-stock`, 'rejected')
+  assert.ok(insufficient.error.includes('Stock disponible insuficiente'))
+  assert.deepEqual(await read('distLots', derivedLotId), releasedSnapshot)
   const dispatchId = `${prefix}-released-dispatch`
   await command(ids.admin, 'dispatch', { warehouseId: 'central', routeId: ids.route, routeName: 'QA Ruta', distributorUid: ids.seller, distributorName: 'QA Vendedor', warehouseResponsibleName: 'QA Almacen', lines: [{ productId: ids.product, quantity: 10, normalQuantity: 10, dispatchMerma: 0, allocationsRequested: [{ lotId: derivedLotId, quantity: 10 }] }] }, dispatchId)
   const sale = await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'QA Administracion', lines: [{ productId: ids.product, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-released-sale`)

@@ -545,7 +545,7 @@ class Operation {
           a.id.localeCompare(b.id),
       );
     const ordinaryAvailable = roundAt(lots.reduce((sum, lot) => sum + usable(lot), 0), precision);
-    if (processingSale && ordinaryAvailable < quantity && !processingDerivedSalesEmulatorOnly() && e.lots.some(lot => lot.processingCommercialBlocked && usable(lot) > 0))
+    if (processingSale && ordinaryAvailable < quantity && !processingDerivedSalesEmulatorOnly() && e.lots.some(lot => lot.processingCommercialBlocked && !(lot.processingCommercialRelease?.status === 'released' && lot.processingCommercialRelease.batchId === lot.processingBatchId) && usable(lot) > 0))
       check(false, 'La venta comercial de sachets derivados todavía no está habilitada para usuarios reales; el stock permanece bloqueado hasta completar y auditar todo el ciclo comercial.');
     check(
       roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
