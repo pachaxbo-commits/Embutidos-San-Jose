@@ -16,7 +16,7 @@ const command = globalFirebaseCli && existsSync(globalFirebaseCli) ? process.exe
 const commandArgs = globalFirebaseCli && existsSync(globalFirebaseCli) ? [globalFirebaseCli, ...args] : args
 const child = spawn(command, commandArgs, {
   stdio: 'inherit',
-  env: { ...process.env, SANJOSE_PROCESSING_REPACK_EMULATOR_TEST: 'true' },
+  env: { ...process.env, SANJOSE_PROCESSING_REPACK_EMULATOR_TEST: 'true', SANJOSE_DERIVED_SALES_EMULATOR_TEST: 'true' },
 })
 
 child.on('error', error => {

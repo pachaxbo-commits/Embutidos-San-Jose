@@ -90,6 +90,37 @@ function allocateWeightMatrix(rowWeightsG, columnWeightsG) {
 const isAdministrationRouteId = (routeId) => routeId === "admin" || routeId === "administracion";
 const isSaleForDispatch = (sale, routeId) =>
   (!sale.routeId || sale.routeId === routeId) && sale.sourceLocation !== "centralWarehouse";
+const dispatchMayContainSaleAt = (dispatch, saleAt) => {
+  const createdAt = Date.parse(dispatch.createdAt || "");
+  if (Array.isArray(dispatch.operationalIntervals) && dispatch.operationalIntervals.length) {
+    return dispatch.operationalIntervals.some((interval) => {
+      const openedAt = Date.parse(interval.openedAt || "");
+      const closedAt = Date.parse(interval.closedAt || "");
+      return Number.isFinite(openedAt) && openedAt <= saleAt && (!interval.closedAt || !Number.isFinite(closedAt) || saleAt <= closedAt);
+    }) || (dispatch.status === "open" && Number.isFinite(createdAt) && saleAt >= createdAt
+      && saleAt >= Date.parse(dispatch.operationalIntervals.at(-1)?.openedAt || dispatch.createdAt));
+  }
+  const history = dispatch.reopenHistory || [];
+  if (history.length) {
+    if (!Number.isFinite(createdAt)) return true;
+    const firstClose = Date.parse(history[0].previousClosedAt || "");
+    if (!Number.isFinite(firstClose)) return saleAt >= createdAt;
+    if (saleAt >= createdAt && saleAt <= firstClose) return true;
+    for (let index = 0; index < history.length; index++) {
+      const openedAt = Date.parse(history[index].reopenedAt || "");
+      const nextClose = history[index + 1]?.previousClosedAt;
+      const closedAt = nextClose ? Date.parse(nextClose) : dispatch.status === "closed" ? Date.parse(dispatch.closedAt || "") : Number.POSITIVE_INFINITY;
+      if (Number.isFinite(openedAt) && openedAt <= saleAt && (!Number.isFinite(closedAt) || saleAt <= closedAt)) return true;
+    }
+    return false;
+  }
+  if (!Number.isFinite(createdAt)) return true;
+  if (saleAt < createdAt) return false;
+  if (dispatch.status === "open") return true;
+  if (!dispatch.closedAt) return true;
+  const closedAt = Date.parse(dispatch.closedAt);
+  return !Number.isFinite(closedAt) || saleAt <= closedAt;
+};
 class BusinessError extends Error {}
 const check = (condition, message) => {
   if (!condition) throw new BusinessError(message);
@@ -3287,25 +3318,52 @@ async function closure(o, p) {
     o.query("distSales", "dispatchId", d.id),
     o.query("distSales", "routeId", d.routeId),
   ]);
-  const routeDispatches = await o.query("distDispatches", "routeId", d.routeId);
+  const [routeDispatchRows, routeClosures] = await Promise.all([
+    o.query("distDispatches", "routeId", d.routeId),
+    o.query("distClosures", "routeId", d.routeId),
+  ]);
+  const closureByDispatchId = new Map(routeClosures.filter((row) => row.dispatchId).map((row) => [row.dispatchId, row]));
+  const routeDispatches = routeDispatchRows.map((dispatch) => {
+    const closure = closureByDispatchId.get(dispatch.id);
+    return { ...dispatch, reopenHistory: dispatch.reopenHistory || closure?.reopenHistory || [] };
+  });
   const eligibleSales = [];
+  const settlementSales = [];
   const ambiguousLegacySales = [];
   for (const sale of [...new Map([...dispatchSales, ...routeSales].map((row) => [row.id, row])).values()]) {
     if (!isSaleForDispatch(sale, d.routeId)) continue;
+    const effective = !sale.voidedAt && !sale.pendingConfirmation;
     if (sale.dispatchId === d.id) {
-      eligibleSales.push(sale);
+      settlementSales.push(sale);
+      if (effective) eligibleSales.push(sale);
       continue;
     }
-    if (sale.dispatchId || sale.routeId !== d.routeId || !sale.createdAt || sale.createdAt < d.createdAt) continue;
-    const possibleDispatches = routeDispatches.filter((dispatch) => dispatch.createdAt && dispatch.createdAt <= sale.createdAt
-      && (dispatch.status === "open" || !dispatch.closedAt || sale.createdAt <= dispatch.closedAt));
-    if (possibleDispatches.length === 1 && possibleDispatches[0].id === d.id) eligibleSales.push(sale);
-    else if (possibleDispatches.length > 1 && possibleDispatches.some((dispatch) => dispatch.id === d.id)) ambiguousLegacySales.push(sale);
+    if (sale.dispatchId || sale.routeId !== d.routeId) continue;
+    if (o.member.role === "distributor" && sale.sellerUid !== d.distributorUid) continue;
+    // Anulado o pendiente no afecta las cantidades efectivas ni bloquea el
+    // cierre por una atribución histórica ambigua. Sus documentos quedan para
+    // auditoría; los reembolsos vinculados se incluyen solo si el despacho se
+    // puede atribuir sin ambigüedad.
+    if (!effective && !sale.createdAt) continue;
+    if (!sale.createdAt || !Number.isFinite(Date.parse(sale.createdAt))) {
+      if (effective) ambiguousLegacySales.push(sale);
+      continue;
+    }
+    const saleAt = Date.parse(sale.createdAt);
+    const possibleDispatches = routeDispatches.filter((dispatch) =>
+      (o.member.role !== "distributor" || dispatch.distributorUid === d.distributorUid)
+      && dispatchMayContainSaleAt(dispatch, saleAt));
+    if (possibleDispatches.length === 1 && possibleDispatches[0].id === d.id) {
+      settlementSales.push(sale);
+      if (effective) eligibleSales.push(sale);
+    } else if (effective && possibleDispatches.length > 1 && possibleDispatches.some((dispatch) => dispatch.id === d.id)) {
+      ambiguousLegacySales.push(sale);
+    }
   }
   check(ambiguousLegacySales.length === 0,
-    `Hay ventas históricas de esta ruta sin despacho vinculado que coinciden con más de un despacho (${ambiguousLegacySales.map(sale => sale.id).join(", ")}). Deben conciliarse antes de confirmar el cierre.`);
+    `Hay ventas históricas de esta ruta sin despacho vinculado que no se pueden atribuir con seguridad a un solo despacho (${ambiguousLegacySales.map(sale => sale.id).join(", ")}). Deben conciliarse antes de confirmar el cierre.`);
   const sales = eligibleSales.map((sale) => sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale);
-  const dispatchSaleIds = new Set(sales.map(sale => sale.id));
+  const dispatchSaleIds = new Set(settlementSales.map(sale => sale.id));
   const routeClaims = p.mode === 'warehouse'
     ? (await o.query('distClaims', 'routeId', d.routeId)).filter(claim => dispatchSaleIds.has(claim.saleId))
     : [];
@@ -4200,6 +4258,9 @@ async function claim(o, p) {
       unitPrice: rp.referencePrice,
       total: replacementValue,
       allocations: parts,
+      ...(rp.unitType === "package" && Number(rp.documentedPackageWeightKg) > 0 ? { documentedPackageWeightKgSnapshot: Number(rp.documentedPackageWeightKg) } : {}),
+      presentationSnapshot: rp.presentation || rp.category || "",
+      descriptionSnapshot: rp.description || "",
     };
     o.ledger(rp.id, rq, loc, null, "exchange", { allocations: parts });
   }
@@ -4260,6 +4321,11 @@ async function claim(o, p) {
     productId: p.productId,
     productName: product.name,
     unitType: product.unitType,
+    ...(product.unitType === "package" && orig.length && orig.every(line => Number.isFinite(line.documentedPackageWeightKgSnapshot) && line.documentedPackageWeightKgSnapshot === orig[0].documentedPackageWeightKgSnapshot)
+      ? { documentedPackageWeightKgSnapshot: orig[0].documentedPackageWeightKgSnapshot }
+      : {}),
+    ...(orig[0]?.presentationSnapshot ? { presentationSnapshot: orig[0].presentationSnapshot } : {}),
+    ...(orig[0]?.descriptionSnapshot ? { descriptionSnapshot: orig[0].descriptionSnapshot } : {}),
     quantity: q,
     reason: p.reason,
     warehouseId: p.warehouseId || "central",

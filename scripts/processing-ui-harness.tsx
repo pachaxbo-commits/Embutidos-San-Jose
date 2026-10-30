@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { signInWithEmail } from '../src/lib/firebase'
 import { SacheteadoView } from '../src/modules/distribution/views/SacheteadoView'
 import { DistributionApp } from '../src/modules/distribution/views/DistributionApp'
+import { SellView } from '../src/modules/distribution/views/SellView'
+import { useDistributionData } from '../src/modules/distribution/state/useDistributionStore'
+import { toDayKey } from '../src/modules/distribution/domain/engine'
 import type { DistributionSession } from '../src/modules/distribution/views/DistributionApp'
 import type { UserRole } from '../src/types'
 import type { DistributionData } from '../src/modules/distribution/state/useDistributionStore'
@@ -45,6 +48,8 @@ export function Harness() {
   if (error) return <main role="alert">No se pudo autenticar en Emulator: {error}</main>
   if (!uid) return <p role="status">Conectando sesión QA a Firebase Emulator…</p>
 
+  if (params.get('sell') === '1') return <SellVoidHarness uid={uid} userName={qaUser.name} />
+
   if (fullApp) return <DistributionApp
     restaurantId="sanjose"
     restaurantName="Embutidos San José"
@@ -74,6 +79,16 @@ export function Harness() {
   } as unknown as DistributionData
 
   return <SacheteadoView session={session} data={data} />
+}
+
+function SellVoidHarness({ uid, userName }: { uid: string; userName: string }) {
+  const dayKeys = [toDayKey(new Date())]
+  const data = useDistributionData({ restaurantId: 'sanjose', routeId: null, dayKeys, enabled: true, canReadFinance: true })
+  const session: DistributionSession = {
+    restaurantId: 'sanjose', restaurantName: 'Embutidos San José', uid, userName, role: 'admin',
+    warehouseId: 'central', routeId: null, can: () => true, dayKeys, setDayKeys: () => {},
+  }
+  return <SellView session={session} data={data} />
 }
 
 createRoot(document.getElementById('root')!).render(<Harness />)

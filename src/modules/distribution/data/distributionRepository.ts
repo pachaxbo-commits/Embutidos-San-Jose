@@ -637,6 +637,25 @@ export function subscribeClosedDispatches(
   )
 }
 
+/** Closed dispatches are needed to resolve legacy sales consistently with the server during reconciliation. */
+export function subscribeClosedDispatchesForRoute(
+  routeId: string,
+  onData: (rows: DistDispatch[]) => void,
+  onError?: (error: Error) => void,
+  distributorUid?: string,
+) {
+  return subscribeQuery<DistDispatch>(
+    context => {
+      const base = collectionRef(context, DIST_COLLECTIONS.dispatches)
+      return distributorUid
+        ? query(base, where('distributorUid', '==', distributorUid))
+        : query(base, where('routeId', '==', routeId), where('status', '==', 'closed'))
+    },
+    rows => onData(rows.filter(row => row.status === 'closed' && row.routeId === routeId)),
+    onError,
+  )
+}
+
 function subscribeDayScoped<T>(
   collectionName: string,
   dayKeys: string[],
@@ -697,6 +716,43 @@ export function subscribeSales(
     onError,
     distributorUid ? { field: 'sellerUid', uid: distributorUid } : undefined,
   )
+}
+
+/**
+ * Cierre consulta el mismo alcance histórico que el servidor: ventas por ruta
+ * más ventas enlazadas directamente al despacho. No filtra por dayKey, porque
+ * documentos antiguos pueden carecer de ese campo o conservar uno incorrecto;
+ * su atribución temporal se valida después con createdAt e intervalos del
+ * despacho. Para distribuidores se usa su índice de seguridad por sellerUid.
+ */
+export function subscribeDispatchSettlementSales(
+  routeId: string,
+  dispatchId: string,
+  onData: (rows: DistSale[]) => void,
+  onError?: (error: Error) => void,
+  distributorUid?: string,
+) {
+  if (distributorUid) return subscribeQuery<DistSale>(
+    context => query(collectionRef(context, DIST_COLLECTIONS.sales), where('sellerUid', '==', distributorUid)),
+    onData,
+    onError,
+  )
+
+  let routeRows: DistSale[] | null = null
+  let dispatchRows: DistSale[] | null = null
+  const emit = () => {
+    if (!routeRows || !dispatchRows) return
+    onData([...new Map([...routeRows, ...dispatchRows].map(row => [row.id, row])).values()])
+  }
+  const stopRoute = subscribeQuery<DistSale>(
+    context => query(collectionRef(context, DIST_COLLECTIONS.sales), where('routeId', '==', routeId)),
+    rows => { routeRows = rows; emit() }, onError,
+  )
+  const stopDispatch = subscribeQuery<DistSale>(
+    context => query(collectionRef(context, DIST_COLLECTIONS.sales), where('dispatchId', '==', dispatchId)),
+    rows => { dispatchRows = rows; emit() }, onError,
+  )
+  return () => { stopRoute(); stopDispatch() }
 }
 
 export function subscribeQuotes(isAdmin: boolean, onData: (rows: DistQuote[]) => void, onError?: (error: Error) => void) {

@@ -70,4 +70,32 @@ const historicalWithoutSnapshot = baseSale('sale-old-weight', 'old-seller', [{ .
 const oldWeightResult = computeSellerBreakdown([historicalWithoutSnapshot], [], [], [], [{ id: 'old-pack', unitType: 'package', documentedPackageWeightKg: 0.4, approximateWeightKg: 0.22 } as DistProduct])
 const oldWeightSeller = oldWeightResult.find(row => row.sellerUid === 'old-seller')!
 assert(oldWeightSeller.documentedSachetKilograms === 0 && oldWeightSeller.estimatedSachetKilograms === 2.2, 'venta histórica sin snapshot no usa el peso maestro actual como si fuera histórico')
+
+const priorDayReturn = {
+  ...claim, id: 'prior-day-return', saleId: 'sale-yesterday', sellerUid: 'yesterday-seller', productId: 'bulk',
+  productName: 'Granel', unitType: 'kg', quantity: 2, dayKey: '2026-10-29', createdAt: '2026-10-29T10:00:00.000Z',
+} as DistClaim
+const returnPeriodResult = computeSellerBreakdown([], [], [], [priorDayReturn], [])
+const returnPeriodSeller = returnPeriodResult.find(row => row.sellerUid === 'yesterday-seller')!
+assert(returnPeriodSeller.kilograms === -2, 'devolución de una venta anterior reduce los kg del período del movimiento sin reimportar la venta original')
+
+const exactExchange = {
+  ...claim, id: 'exchange-yesterday-sale', kind: 'exchange', saleId: 'sale-from-previous-period', sellerUid: 'exchange-seller',
+  productId: 'old-derived', productName: 'Sachet original', unitType: 'package', quantity: 1,
+  returnedProcessingAllocations: [{ lotId: 'old-lot', reservationId: 'old-reservation', quantity: 1, allocations: [{
+    lotId: 'old-lot', lotCode: 'OLD', expiresOn: '2027-01-01', quantity: 1, productionCost: 1.25,
+    processingAllocation: { ...derivedLine.allocations![0].processingAllocation!, quantity: 1, physicalWeightG: 250, costCents: 125 },
+  }] }],
+  replacement: { productId: 'replacement-derived', productName: 'Nuevo sachet', quantity: 1, unitType: 'package', total: 5,
+    documentedPackageWeightKgSnapshot: 0.25, allocations: [{ lotId: 'replacement-lot', lotCode: 'NEW', expiresOn: '2027-01-01', quantity: 1, productionCost: 1.67,
+      processingAllocation: { ...derivedLine.allocations![0].processingAllocation!, batchId: 'replacement-batch', segmentId: 'replacement-segment', quantity: 1, physicalWeightG: 333, costCents: 167 } }] },
+} as DistClaim
+const exactExchangeResult = computeSellerBreakdown([], [], [], [exactExchange], [
+  { id: 'old-derived', unitType: 'package', approximateWeightKg: 0.1 } as DistProduct,
+  { id: 'replacement-derived', unitType: 'package', approximateWeightKg: 0.25, documentedPackageWeightKg: 0.25 } as DistProduct,
+])
+const exactExchangeSeller = exactExchangeResult.find(row => row.sellerUid === 'exchange-seller')!
+assert(exactExchangeSeller.packages === 0, 'un cambio de un sachet por otro no altera el total neto de paquetes')
+assert(exactExchangeSeller.documentedSachetKilograms === 0.083, 'cambio en período usa 333 g persistidos en reemplazo menos 250 g devueltos, no el catálogo actual')
+assert(exactExchangeSeller.estimatedSachetKilograms === 0, 'el peso estimado del catálogo no sustituye la asignación histórica del cambio')
 console.log('PASS resumen por vendedor: granel, sachets exactos, estimados, devoluciones, anulaciones y peso ausente')

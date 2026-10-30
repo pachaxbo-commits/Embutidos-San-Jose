@@ -13,6 +13,7 @@ const req = createRequire(new URL('../../functions/package.json', import.meta.ur
 const { initializeApp } = req('firebase-admin/app')
 const { getAuth } = req('firebase-admin/auth')
 const { getFirestore } = req('firebase-admin/firestore')
+const { processCommand } = req('./operations.cjs')
 const app = initializeApp({ projectId: 'demo-pachax-audit' }, 'processing-ui-e2e')
 const auth = getAuth(app)
 const db = getFirestore(app)
@@ -21,6 +22,7 @@ const uid = 'processing-ui-qa'
 const email = 'processing-ui-qa@example.test'
 const password = 'QA-only-password-123!'
 const date = new Date().toISOString()
+const boliviaDayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const sourceManufacturedOn = '2026-10-20'
 const safeExpiry = '2999-12-31'
 const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--mode', 'emulator', '--host', '127.0.0.1', '--port', '5174', '--strictPort'], {
@@ -83,6 +85,44 @@ try {
   await root.collection('distProcessingEvidence').doc('qa-disposition-evidence').set({ id: 'qa-disposition-evidence', restaurantId: 'sanjose', status: 'verified', evidenceType: 'measurement_record', lotId: 'qa-assessment-lot', reservationId: 'qa-assessment-reservation', reviewCaseId: 'qa-assessment-case', reviewRevision: 1, location: 'central', uploadedBy: uid, recordedAt: date, bucket: 'qa-fixture', objectPath: 'processing-evidence/sanjose/ui-fixture/qa-assessment.pdf', objectGeneration: '1', sha256: 'd'.repeat(64), byteSize: 512, contentType: 'application/pdf', viewers: [uid], verificationMethod: 'emulator_fixture', objectExists: true })
   await root.collection('distStockReservations').doc('qa-other-reservation').set({ id: 'qa-other-reservation', restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, productId: 'qa-source-product', productName: 'QA Producto a granel', lotId: 'qa-other-lot', lotCode: 'QA-OTRO-1KG', unitType: 'kg', location: 'central', purpose: 'review_hold', originalQuantity: 1, remainingQuantity: 1, consumedQuantity: 0, physicalWeightG: null, remainingWeightG: null, remainingCostCents: 500, status: 'active', source: 'qa', createdAt: date, createdBy: uid, createdByName: 'Administración QA', history: [] })
   await root.collection('distProcessingQualityAuthorizations').doc(uid).set({ id: 'qa-auth', authorizationId: 'qa-auth', restaurantId: 'sanjose', status: 'active', beneficiaryUid: uid, grantedBy: 'qa-system-fixture', grantedByName: 'Emulator fixture', expiresAt: '2999-12-31T23:59:59.000Z' })
+
+  // Crea una venta derivada QR a través del handler real. La única autorización
+  // se ejecuta en este proceso de Emulator; la prueba de navegador hará luego
+  // el procedimiento visual de custodia y devolución bancaria.
+  process.env.FUNCTIONS_EMULATOR = 'true'
+  process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST = 'true'
+  const voidProductId = 'qa-derived-qr-void-product'
+  const voidLotId = 'qa-derived-qr-void-lot'
+  const voidBatchId = 'qa-derived-qr-void-batch'
+  const voidSaleOperationId = 'qa-derived-qr-void-sale'
+  await root.collection('distProducts').doc(voidProductId).set({ id: voidProductId, restaurantId: 'sanjose', name: 'QA Sachet anulación QR', unitType: 'package', active: true, productionCost: 999, referencePrice: 45 })
+  await root.collection('distLots').doc(voidLotId).set({
+    id: voidLotId, restaurantId: 'sanjose', productId: voidProductId, productName: 'QA Sachet anulación QR', unitType: 'package',
+    lotCode: 'QA-QR-VOID-LOT', manufacturedOn: '2026-10-20', expiresOn: safeExpiry, productionCost: 1.25,
+    quantities: { central: 1 }, processingCommercialBlocked: true, processingBatchId: voidBatchId,
+    processingDestinationId: 'qa-qr-void-destination', processingDestinationKind: 'finished',
+    processingPhysicalWeightGRemaining: 250, processingCostCentsRemaining: 125,
+    processingSourceAllocationBasis: 'batch_blend_accounting_allocation',
+    processingByLocation: { central: { segments: [{ segmentId: `${voidBatchId}:${voidLotId}`, batchId: voidBatchId,
+      destinationId: 'qa-qr-void-destination', sourceMovementId: 'qa-qr-void-output', weightBasis: 'documented_average',
+      remainingQuantity: 1, remainingWeightG: 250, remainingCostCents: 125 }] } },
+  })
+  await root.collection('distBalances').doc(`central__${voidProductId}`).set({ id: `central__${voidProductId}`, restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: voidProductId, unitType: 'package', quantity: 1 })
+  await root.collection('distProcessingBatches').doc(voidBatchId).set({ id: voidBatchId, restaurantId: 'sanjose', status: 'confirmed', result: { derivedLots: [{ lotId: voidLotId, productId: voidProductId, commercialQuantity: 1, netWeightG: 250, costCents: 125 }] } })
+  await root.collection('distStockMovements').doc('qa-qr-void-output').set({ id: 'qa-qr-void-output', restaurantId: 'sanjose', productId: voidProductId, type: 'processing_output', fromLocation: '', toLocation: 'central', quantity: 1, physicalWeightG: 250, costCents: 125, batchId: voidBatchId, lotId: voidLotId })
+  const voidOperationRef = root.collection('distOperations').doc(voidSaleOperationId)
+  await voidOperationRef.set({ id: voidSaleOperationId, restaurantId: 'sanjose', createdBy: uid, createdAt: date, type: 'sale', status: 'queued', payload: {
+    sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración', dispatchId: '',
+    lines: [{ productId: voidProductId, quantity: 1, actualUnitPrice: 45 }], cashAmount: 0, qrAmount: 45, creditAmount: 0, paymentKind: 'qr',
+  } })
+  await processCommand(db, voidOperationRef)
+  assert.equal((await voidOperationRef.get()).data()?.status, 'confirmed', 'venta QR fixture de sachet creada por la operación real de Emulator')
+  await root.collection('distQrVerifications').doc(`sale_${voidSaleOperationId}`).set({
+    id: `sale_${voidSaleOperationId}`, restaurantId: 'sanjose', routeId: 'administracion', sourceType: 'sale',
+    sourceId: voidSaleOperationId, sourceRevision: 0, amount: 45, reference: 'QA-QR-IN-2026-001', verifiedBy: uid, verifiedAt: date,
+  })
+  const qrSaleAfterSeed = (await root.collection('distSales').doc(voidSaleOperationId).get()).data()
+  assert.equal(qrSaleAfterSeed.dayKey, boliviaDayKey, 'la venta fixture pertenece a la jornada actual de Bolivia')
 
   await waitForVite()
   browser = await chromium.launch({ headless: true })
@@ -329,7 +369,54 @@ try {
   await page.getByRole('heading', { name: /Embutidos San José/ }).waitFor({ timeout: 30000 })
   assert.equal(await page.getByRole('button', { name: 'Sacheteado y Embolsado' }).count(), 0, 'el distribuidor no ve el módulo en la navegación habitual')
   assert.equal(pageErrors.length, 0, 'los recorridos por rol no generan errores JavaScript')
-  console.log(`PASS: Playwright Chromium; pestañas y responsive 360/390/768/1440; teclado decimal móvil; revisión autorizada y reenvasado 2 kg → 8 sachets en UI con Functions/Firestore/Auth Emulator; historial y balances verificados. Capturas sintéticas: ${[360,390,768,1440].map(width => join(tmpdir(), `sanjose-processing-${width}.png`)).join(', ')}, ${join(tmpdir(), 'sanjose-processing-360-form.png')}`)
+
+  // Anulación y reembolso QR enteros desde SellView, verificando cada tamaño.
+  await page.goto('http://127.0.0.1:5174/scripts/processing-ui-harness.html?sell=1')
+  await page.getByRole('button', { name: 'Historial' }).waitFor({ timeout: 30000 })
+  await page.getByRole('button', { name: 'Historial' }).click()
+  const saleCard = page.locator('article').filter({ hasText: 'QA Sachet anulación QR' }).first()
+  await saleCard.getByRole('button', { name: 'Anular' }).waitFor({ timeout: 30000 })
+  await saleCard.getByRole('button', { name: 'Anular' }).click()
+  await page.getByRole('heading', { name: 'Anular venta completa' }).waitFor()
+  const assertVoidNoHorizontalOverflow = async (width, height) => {
+    await page.setViewportSize({ width, height })
+    await page.waitForTimeout(150)
+    const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
+    assert.ok(sizes.document <= sizes.viewport + 1, `overflow horizontal en modal de anulación a ${width}px: ${JSON.stringify(sizes)}`)
+  }
+  for (const [width, height] of [[360, 800], [390, 844], [768, 1024], [1440, 900]]) {
+    await assertVoidNoHorizontalOverflow(width, height)
+    await page.getByLabel('Qué ocurrió con esta venta').selectOption('recorded_in_error_never_delivered')
+    await page.getByPlaceholder('Ej.: venta registrada por error; la mercadería no fue entregada').fill('Venta de QA registrada por error; paquete quedó bajo custodia')
+    await page.locator('label').filter({ hasText: 'Administración verificó físicamente los paquetes en Almacén central' }).locator('input[type="checkbox"]').check()
+    await page.locator('label').filter({ hasText: 'Confirmo que se devolvieron Bs 45.00 por QR' }).locator('input[type="checkbox"]').check()
+    await page.getByLabel('Referencia bancaria de devolución QR').fill('QA-QR-OUT-2026-001')
+    await page.screenshot({ path: join(tmpdir(), `sanjose-qr-void-${width}.png`), fullPage: true })
+    if (width !== 1440) {
+      await page.getByLabel('Qué ocurrió con esta venta').selectOption('')
+      await page.getByPlaceholder('Ej.: venta registrada por error; la mercadería no fue entregada').fill('')
+      await page.locator('label').filter({ hasText: 'Administración verificó físicamente los paquetes en Almacén central' }).locator('input[type="checkbox"]').uncheck()
+      await page.locator('label').filter({ hasText: 'Confirmo que se devolvieron Bs 45.00 por QR' }).locator('input[type="checkbox"]').uncheck()
+      await page.getByLabel('Referencia bancaria de devolución QR').fill('')
+    }
+  }
+  const confirmVoidButton = page.getByRole('button', { name: 'Confirmar anulación' })
+  assert.equal(await confirmVoidButton.isEnabled(), true, 'la interfaz permite confirmar tras completar custodia y reembolso QR')
+  await confirmVoidButton.click()
+  await page.getByText('Venta anulada correctamente. Los productos volvieron al stock de origen.').waitFor({ timeout: 30000 })
+  const finalSale = (await root.collection('distSales').doc(voidSaleOperationId).get()).data()
+  const refund = (await root.collection('distClaims').where('saleId', '==', voidSaleOperationId).get()).docs.map(doc => doc.data()).find(row => row.isDerivedSaleVoid)
+  const voidMovements = (await root.collection('distStockMovements').where('saleId', '==', voidSaleOperationId).get()).docs.map(doc => doc.data()).filter(row => row.type === 'sale_void')
+  const finalVoidLot = (await root.collection('distLots').doc(voidLotId).get()).data()
+  assert.ok(finalSale.voidedAt, 'la venta se anuló desde la interfaz')
+  assert.equal(refund.qrOut, 45, 'el reembolso QR quedó auditado una sola vez')
+  assert.equal(refund.qrRefundReference, 'QA-QR-OUT-2026-001')
+  assert.equal(finalVoidLot.quantities.central, 1, 'se restauró exactamente un paquete bajo custodia')
+  assert.equal(finalVoidLot.processingPhysicalWeightGRemaining, 250, 'se restauraron exactamente los 250 g históricos')
+  assert.equal(finalVoidLot.processingCostCentsRemaining, 125, 'se restauraron exactamente los 125 centavos históricos')
+  assert.equal(voidMovements.length, 1, 'se registró un solo movimiento de restitución')
+  assert.equal(pageErrors.length, 0, `errores JavaScript del recorrido QR: ${pageErrors.join('; ')}`)
+  console.log(`PASS: Playwright Chromium; revisión y reenvasado con Functions/Firestore/Auth Emulator; anulación y devolución QR completas desde SellView en 360×800, 390×844, 768×1024 y 1440×900; un paquete/250 g/125 centavos restaurados una vez. Capturas sintéticas guardadas en ${tmpdir()}`)
 } finally {
   await browser?.close()
   vite.kill('SIGTERM')

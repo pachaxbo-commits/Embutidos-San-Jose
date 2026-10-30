@@ -57,6 +57,7 @@
     "test:quote-share": "node --experimental-strip-types src/modules/distribution/domain/__tests__/quoteSharePayload.test.ts",
     "test:reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/reportLabels.test.ts",
     "test:seller-breakdown": "node --experimental-strip-types src/modules/distribution/domain/__tests__/sellerBreakdownPackages.test.ts",
+    "test:seller-breakdown-export": "node scripts/test-seller-breakdown-export.mjs",
     "test:expense-categories": "node --experimental-strip-types src/modules/distribution/domain/__tests__/expenseCategoriesAdmin.test.ts",
     "test:route-labels": "node --experimental-strip-types src/modules/distribution/domain/__tests__/routeLabels.test.ts",
     "test:rejected-operations": "node --experimental-strip-types src/modules/distribution/domain/__tests__/rejectedOperations.test.ts",

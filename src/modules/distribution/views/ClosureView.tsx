@@ -4,10 +4,10 @@ import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { buildReconciliation, computeMoneySummary, isSaleForDispatchSettlement, matchesRoute, round2, toDayKey } from '../domain/engine'
+import { buildReconciliation, computeMoneySummary, partitionDispatchSettlementSales, matchesRoute, round2, toDayKey } from '../domain/engine'
 import { previewDispatchMermaSettlement } from '../domain/dispatchMermaSettlement'
 import { expenseCashPaidAmount } from '../domain/expenseAccounting'
-import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeSales, subscribeCollections, subscribeExpenses } from '../data/distributionRepository'
+import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClosureVarianceReviewed, subscribeDispatchSettlementSales, subscribeCollections, subscribeExpenses, subscribeClosedDispatchesForRoute } from '../data/distributionRepository'
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
@@ -36,6 +36,21 @@ const parseDraftQuantities = (drafts: Record<string, string>) =>
   ]))
 
 const getClosureSortTimestamp = (closure: DistClosure) => closure.closedAt || closure.warehouseClosedAt || closure.returnDeclaredAt || closure.createdAt || ''
+
+function closureDayKeysBetween(startDayKey: string, endDayKey: string): string[] {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDayKey) || !/^\d{4}-\d{2}-\d{2}$/.test(endDayKey)) return [...new Set([startDayKey, endDayKey].filter(Boolean))]
+  const cursor = new Date(`${startDayKey}T12:00:00.000Z`)
+  const end = new Date(`${endDayKey}T12:00:00.000Z`)
+  const days: string[] = []
+  while (cursor <= end && days.length < 3660) {
+    // dayKey es una fecha operativa de Bolivia, no una fecha del huso horario
+    // configurado en el dispositivo. Avanzar y formatear en UTC mantiene el
+    // mismo conjunto de jornadas incluso si Administración usa otro huso.
+    days.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}-${String(cursor.getUTCDate()).padStart(2, '0')}`)
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return days
+}
 
 const dispatchHasDerivedPackageProduct = (dispatch: DistributionViewProps['data']['openDispatches'][number] | null, productId: string) => {
   if (!dispatch) return false
@@ -234,35 +249,54 @@ export function ClosureView({ session, data }: DistributionViewProps) {
 
   // Las suscripciones anteriores pueden seguir vivas durante un render al cambiar
   // de ruta. Nunca conciliar un despacho con ventas/caja de otro despacho.
-  const [salesSnapshot, setSalesSnapshot] = useState<{ dispatchId: string; rows: DistSale[] }>({ dispatchId: '', rows: [] })
+  const [salesSnapshot, setSalesSnapshot] = useState<{ dispatchId: string; rows: DistSale[]; ambiguousRows: DistSale[] }>({ dispatchId: '', rows: [], ambiguousRows: [] })
   const [collectionsSnapshot, setCollectionsSnapshot] = useState<{ dispatchId: string; rows: DistCollection[] }>({ dispatchId: '', rows: [] })
   const [expensesSnapshot, setExpensesSnapshot] = useState<{ dispatchId: string; rows: DistExpense[] }>({ dispatchId: '', rows: [] })
   const routeSales = salesSnapshot.dispatchId === dispatchKey ? salesSnapshot.rows : []
   const routeCollections = collectionsSnapshot.dispatchId === dispatchKey ? collectionsSnapshot.rows : []
   const routeExpenses = expensesSnapshot.dispatchId === dispatchKey ? expensesSnapshot.rows : []
-  const dispatchCandidateKey = JSON.stringify(data.openDispatches.map(candidate => ({ id: candidate.id, routeId: candidate.routeId, createdAt: candidate.createdAt, status: candidate.status, closedAt: candidate.closedAt || '' })))
-  const ambiguousLegacySaleCount = salesSnapshot.dispatchId === dispatchKey
-    ? salesSnapshot.rows.filter(sale => !sale.dispatchId && sale.routeId === dispatchRoute && sale.createdAt >= dispatchCreated
-      && data.openDispatches.filter(candidate => candidate.routeId === dispatchRoute && candidate.createdAt <= sale.createdAt).length > 1).length
-    : 0
+  const dispatchCandidateKey = JSON.stringify({
+    open: data.openDispatches.filter(candidate => candidate.routeId === dispatchRoute).map(candidate => ({ id: candidate.id, routeId: candidate.routeId, createdAt: candidate.createdAt, status: candidate.status, closedAt: candidate.closedAt || '' })),
+    history: data.closures.filter(closure => closure.routeId === dispatchRoute).map(closure => ({ dispatchId: closure.dispatchId, status: closure.status, closedAt: closure.closedAt || '', reopenHistory: closure.reopenHistory || [] })),
+  })
+  const ambiguousLegacySaleCount = salesSnapshot.dispatchId === dispatchKey ? salesSnapshot.ambiguousRows.length : 0
   const [readyDispatch, setReadyDispatch] = useState('')
   const loaded = readyDispatch === dispatchKey
   useEffect(() => {
     if (!dispatchKey) return
-    const days = [dispatchDay, boliviaDayKey(new Date().toISOString())]
+    const today = boliviaDayKey(new Date().toISOString())
+    const startDay = dispatchDay || (dispatchCreated ? toDayKey(new Date(dispatchCreated)) : today)
+    const days = closureDayKeysBetween(startDay, today)
     const ready = new Set<string>()
-    const expected = session.role === 'warehouse' ? 1 : 3
+    const expected = session.role === 'warehouse' ? 2 : 4
     const mark = (key: string) => { ready.add(key); if (ready.size >= expected) setReadyDispatch(dispatchKey) }
     const fail = (e: Error) => setError(e.message)
     const ownerUid = session.role === 'distributor' ? session.uid : undefined
-    const dispatchCandidates = JSON.parse(dispatchCandidateKey)
-    const stop = [subscribeSales(days, dispatchRoute, rows => { setSalesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(s => isSaleForDispatchSettlement(s, dispatchKey, dispatchRoute, dispatchCreated, dispatchCandidates) && !s.voidedAt && !s.pendingConfirmation).map(s => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s) }); mark('sales') }, fail, ownerUid)]
+    let stopSales: () => void = () => undefined
+    const stopClosedDispatches = subscribeClosedDispatchesForRoute(dispatchRoute, closedRows => {
+      stopSales()
+      const openRows = data.openDispatches.filter(candidate => candidate.routeId === dispatchRoute)
+      const historicalRows = data.closures.filter(closure => closure.routeId === dispatchRoute)
+      const dispatchCandidates = [...openRows, ...closedRows].map(candidate => {
+        const closure = historicalRows.filter(item => item.dispatchId === candidate.id)
+          .sort((a, b) => (b.reopenedAt || b.closedAt || '').localeCompare(a.reopenedAt || a.closedAt || ''))[0]
+        return { ...candidate, ...(closure?.reopenHistory ? { reopenHistory: closure.reopenHistory } : {}) }
+      })
+      mark('dispatches')
+      stopSales = subscribeDispatchSettlementSales(dispatchRoute, dispatchKey, rows => {
+        const scoped = partitionDispatchSettlementSales(rows, dispatchKey, dispatchRoute, dispatchCandidates)
+        const eligible = scoped.attributable.map(sale => sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale)
+        setSalesSnapshot({ dispatchId: dispatchKey, rows: eligible, ambiguousRows: scoped.ambiguous })
+        mark('sales')
+      }, fail, ownerUid)
+    }, fail, ownerUid)
+    const stop = [stopClosedDispatches]
     if (session.role !== 'warehouse') {
       stop.push(subscribeCollections(days, dispatchRoute, rows => { setCollectionsSnapshot({ dispatchId: dispatchKey, rows: rows.filter(c => c.createdAt >= dispatchCreated) }); mark('collections') }, fail, ownerUid))
       stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.createdAt >= dispatchCreated) }); mark('expenses') }, fail, ownerUid))
     }
-    return () => stop.forEach(fn => fn())
-  }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid, dispatchCandidateKey])
+    return () => { stopSales(); stop.forEach(fn => fn()) }
+  }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid, dispatchCandidateKey, data.openDispatches, data.closures])
 
   /** La declaración y la recepción son independientes; cada rol completa su propio dato. */
   const isDeclared = (productId: string) => {
@@ -1348,7 +1382,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
         <SectionCard title="Productos devueltos">
           {!isDistributor && <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm font-bold text-indigo-900" role="status">{reviewedReceiptIds.size} de {productRows.length} productos revisados</div>}
           {ambiguousLegacySaleCount > 0 && <div role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm font-semibold text-amber-950">
-            Hay {ambiguousLegacySaleCount} venta(s) histórica(s) de esta ruta sin despacho vinculado y coinciden con más de un cierre pendiente. No se atribuyen automáticamente para evitar duplicar ventas; Administración debe conciliarlas antes de cerrar.
+            Hay {ambiguousLegacySaleCount} venta(s) histórica(s) sin despacho o fecha confiable, o que coincide(n) con varios despachos abiertos, cerrados o reabiertos. No se atribuye(n) automáticamente; Administración debe revisar el origen y conciliar estas ventas antes de confirmar la recepción.
           </div>}
           <div className="relative mb-3"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={productSearch} onChange={event => setProductSearch(event.target.value)} placeholder="Buscar producto sin perder cantidades..." className="pl-9" /></div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
