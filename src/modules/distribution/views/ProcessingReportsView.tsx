@@ -4,7 +4,7 @@ import { Field, SelectInput, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, LoadingState } from '../../../components/ui/Screen'
 import type { ProcessingBatch, ProcessingRepackRecord, ProcessingReviewRecord } from '../domain/processing'
 import { buildProcessingBatchReport, buildProcessingLotTraceReport, buildProcessingQualityReport, filterProcessingBatches, filterProcessingRepackings, filterProcessingReviews } from '../domain/processingReports'
-import { loadProcessingBatchPage, loadProcessingRepackPage, loadProcessingReviewPage, type ProcessingBatchPage } from '../data/distributionRepository'
+import { loadProcessingReportPage, type ProcessingBatchPage } from '../data/distributionRepository'
 import type { DistLot, DistProduct } from '../types'
 import type { DistributionSession } from './DistributionApp'
 import { SecondaryButton } from './shared'
@@ -21,8 +21,9 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
+  const [completedScope, setCompletedScope] = useState('')
+  const [from, setFrom] = useState(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()))
+  const [to, setTo] = useState(from)
   const [productId, setProductId] = useState('')
   const [sourceLot, setSourceLot] = useState('')
   const [outputLot, setOutputLot] = useState('')
@@ -33,6 +34,8 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
   const requestVersion = useRef(0)
   const warehouseId = session.warehouseId || 'central'
   const locationKey = session.role === 'warehouse' ? (warehouseId === 'central' ? 'central' : `warehouse__${warehouseId}`) : location === 'all' ? undefined : location === 'central' ? 'central' : `warehouse__${location}`
+  const scope = JSON.stringify([mode, locationKey, from, to])
+  const incomplete = completedScope !== scope
   const clearLoadedRows = () => {
     requestVersion.current++
     setBatches([]); setReviews([]); setRepackings([]); cursorRef.current = null; setHasMore(false)
@@ -43,30 +46,31 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
     const version = reset ? ++requestVersion.current : requestVersion.current
     setLoading(true); setError('')
     try {
-      if (reset) cursorRef.current = null
-      const nextCursor = reset ? null : cursorRef.current
-      if (mode === 'batches' || mode === 'trace') {
-        const page = await loadProcessingBatchPage(locationKey, nextCursor, 20)
+      setBatches([]); setReviews([]); setRepackings([]); setHasMore(true)
+      let cursor: Cursor = null
+      const records = new Map<string, Record<string, unknown>>()
+      for (;;) {
         if (version !== requestVersion.current) return
-        setBatches(current => reset ? page.rows : [...current, ...page.rows])
-        cursorRef.current = page.cursor; setHasMore(page.hasMore)
-      } else if (mode === 'reviews') {
-        const page = await loadProcessingReviewPage(locationKey, nextCursor, 20)
+        const page = await loadProcessingReportPage(mode, locationKey, from, to, cursor)
         if (version !== requestVersion.current) return
-        setReviews(current => reset ? page.rows : [...current, ...page.rows])
-        cursorRef.current = page.cursor; setHasMore(page.hasMore)
-      } else {
-        const page = await loadProcessingRepackPage(locationKey, nextCursor, 20)
-        if (version !== requestVersion.current) return
-        setRepackings(current => reset ? page.rows : [...current, ...page.rows])
-        cursorRef.current = page.cursor; setHasMore(page.hasMore)
+        for (const row of page.rows) records.set(row.id, row)
+        if (records.size > 10000) throw new Error('El período supera 10.000 registros. Selecciona un período menor; no se exportaron resultados parciales.')
+        if (!page.hasMore) break
+        if (!page.cursor || page.cursor === cursor) throw new Error('No se pudo completar la paginación. Actualiza el informe.')
+        cursor = page.cursor
       }
+      const rows = [...records.values()]
+      if (mode === 'batches' || mode === 'trace') setBatches(rows as unknown as ProcessingBatch[])
+      else if (mode === 'reviews') setReviews(rows as unknown as ProcessingReviewRecord[])
+      else setRepackings(rows as unknown as ProcessingRepackRecord[])
+      setHasMore(false)
+      setCompletedScope(JSON.stringify([mode, locationKey, from, to]))
     } catch (reason) {
       if (version === requestVersion.current) setError((reason as Error).message || 'No se pudo cargar el reporte.')
     } finally {
       if (version === requestVersion.current) setLoading(false)
     }
-  }, [locationKey, mode])
+  }, [locationKey, mode, from, to])
 
   useEffect(() => {
     let active = true
@@ -95,7 +99,7 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
   }, [mode, filteredBatches, productId, outputLot, reviews, repackings, products, lots, qualityRows, locationOptions])
 
   const exportReport = async (format: 'Excel' | 'PDF') => {
-    if (loading || hasMore || error) {
+    if (loading || incomplete || hasMore || error) {
       setError('El informe está incompleto. Completa la consulta antes de exportar.')
       return
     }
@@ -127,9 +131,9 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
     {(from && to && from > to) && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800">La fecha inicial no puede ser posterior a la fecha final.</p>}
     {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800"><AlertTriangle className="mr-1 inline" size={15} />{error}</p>}
     <div className="processing-report-controls flex flex-wrap gap-2">
-      <SecondaryButton disabled={loading || Boolean(from && to && from > to)} onClick={() => void exportReport('PDF')}><FileText size={15} />PDF</SecondaryButton>
-      <SecondaryButton disabled={loading || Boolean(from && to && from > to)} onClick={() => void exportReport('Excel')}><FileSpreadsheet size={15} />Excel</SecondaryButton>
-      <SecondaryButton disabled={loading || report.rows.length === 0} onClick={() => window.print()}><Printer size={15} />Imprimir</SecondaryButton>
+      <SecondaryButton disabled={loading || incomplete || hasMore || Boolean(error) || !from || !to || from > to} onClick={() => void exportReport('PDF')}><FileText size={15} />PDF</SecondaryButton>
+      <SecondaryButton disabled={loading || incomplete || hasMore || Boolean(error) || !from || !to || from > to} onClick={() => void exportReport('Excel')}><FileSpreadsheet size={15} />Excel</SecondaryButton>
+      <SecondaryButton disabled={loading || incomplete || hasMore || Boolean(error) || report.rows.length === 0} onClick={() => window.print()}><Printer size={15} />Imprimir</SecondaryButton>
       <SecondaryButton disabled={loading} onClick={() => void loadPage(true)}><RefreshCw size={15} />Actualizar</SecondaryButton>
     </div>
     <div id="processing-report-print-root" className="min-w-0">
@@ -141,6 +145,6 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
     </div>
     {loading && <LoadingState label="Cargando una página del historial…" />}
     {!loading && hasMore && <SecondaryButton full onClick={() => void loadPage(false)}>Cargar siguiente página</SecondaryButton>}
-    <p className="text-[11px] text-slate-500">El historial se consulta por páginas de hasta 20 documentos. Los filtros y las exportaciones abarcan los registros cargados; carga más páginas para incluir registros anteriores. Este reporte no cambia inventario ni libera lotes.</p>
+    <p className="text-[11px] text-slate-500">El período se consulta completo por páginas de hasta 50 documentos. Pantalla, PDF, Excel e impresión usan los mismos registros. Si falla una página, el informe queda incompleto y no puede exportarse ni imprimirse.</p>
   </section>
 }

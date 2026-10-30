@@ -184,6 +184,25 @@ export function loadProcessingRepackPage(location: string | undefined, cursor: Q
   return loadProcessingPage<ProcessingRepackRecord>('distProcessingRepackings', location, 'confirmedAt', cursor, pageSize)
 }
 
+/** Complete-period reports use server date bounds and the same warehouse scope as history. */
+export async function loadProcessingReportPage(mode: 'batches' | 'trace' | 'reviews' | 'repackings', location: string | undefined, from: string, to: string, cursor: QueryDocumentSnapshot<DocumentData> | null = null) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) throw new Error('Selecciona un período válido.')
+  const batch = mode === 'batches' || mode === 'trace'
+  const name = batch ? 'distProcessingBatches' : mode === 'reviews' ? 'distProcessingReviews' : 'distProcessingRepackings'
+  const field = batch ? 'processingDate' : mode === 'reviews' ? 'reviewedAt' : 'confirmedAt'
+  const context = await getContext()
+  const constraints: QueryConstraint[] = []
+  if (location) constraints.push(where(batch ? 'sourceLocation' : 'location', '==', location))
+  const start = batch ? from : new Date(`${from}T00:00:00-04:00`).toISOString()
+  const end = batch ? to : new Date(`${to}T23:59:59.999-04:00`).toISOString()
+  constraints.push(where(field, '>=', start), where(field, '<=', end), orderBy(field, 'desc'))
+  if (cursor) constraints.push(startAfter(cursor))
+  constraints.push(limit(51))
+  const snapshot = await getDocsFromServer(query(collectionRef(context, name), ...constraints))
+  const docs = snapshot.docs.slice(0, 50)
+  return { rows: docs.map(row => ({ id: row.id, ...row.data() })), cursor: docs.at(-1) || null, hasMore: snapshot.docs.length > 50 }
+}
+
 /** Evidence is queried by both location and reservation so warehouse Rules can prove scope. */
 export async function loadProcessingEvidenceForReservation(location: string, reservationId: string): Promise<ProcessingEvidenceRecord[]> {
   const context = await getContext()

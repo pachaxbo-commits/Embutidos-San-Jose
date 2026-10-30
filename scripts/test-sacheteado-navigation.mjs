@@ -34,6 +34,7 @@ const vite = await createServer({
         export const loadProcessingBatchPage = async () => ({ rows: globalThis.processingReportRows, cursor: null, hasMore: false })
         export const getProcessingOperationState = async () => ({ status: 'missing' })
         export const confirmProcessingBatch = async () => { throw new Error('unexpected submit') }
+        export const loadProcessingReportPage = async (_mode, _location, _from, _to, cursor) => { const offset = cursor?.offset || 0; const rows = globalThis.processingReportRows.slice(offset, offset + 50); return { rows, cursor: { offset: offset + 50 }, hasMore: offset + 50 < globalThis.processingReportRows.length } }
         export const loadProcessingReviewPage = async () => ({ rows: [], cursor: null, hasMore: false })
         export const loadProcessingRepackPage = async () => ({ rows: [], cursor: null, hasMore: false })
       `
@@ -117,10 +118,11 @@ try {
     sourceAllocations: [], inputWeightG: 250, destinations: [{ id: 'destination-1', kind: 'finished', productId: 'sachet', lotId: 'lot-report-1', lotCode: 'QA-REPORT-1', commercialUnit: 'package', commercialQuantity: 1, netWeightG: 250, sourceAllocations: [], approvalStatus: 'not_required', costCents: 100, manufacturedOn: '2026-10-29', packagedOn: '2026-10-29', expiresOn: '2026-11-10' }],
     packagingMaterials: [], costComponents: [], responsibleUid: 'warehouse-test', responsibleName: 'Almacén QA', createdAt: '2026-10-29T12:00:00.000Z', dayKey: '2026-10-29', auditEventIds: [], reversal: { status: 'blocked', dependencyIds: [], reason: 'test' }, sourceCostCents: 100,
   }]
+  globalThis.processingReportRows = Array.from({ length: 51 }, (_, index) => ({ ...globalThis.processingReportRows[0], id: `batch-report-${index}`, processingDate: new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) }))
   await act(async () => reportsTab.click())
   panel = await readPanel()
   assert.match(panel, /Trazabilidad por lote/)
-  assert.match(panel, /Los filtros y las exportaciones abarcan los registros cargados/)
+  assert.match(panel, /El período se consulta completo/)
   const excelButton = [...container.querySelectorAll('button')].find(item => item.textContent.trim() === 'Excel')
   const pdfButton = [...container.querySelectorAll('button')].find(item => item.textContent.trim() === 'PDF')
   assert.ok(excelButton && pdfButton, 'ambos formatos de exportación están disponibles')
@@ -128,8 +130,9 @@ try {
   await act(async () => { excelButton.click(); await new Promise(resolve => setTimeout(resolve, 50)) })
   await act(async () => { pdfButton.click(); await new Promise(resolve => setTimeout(resolve, 50)) })
   assert.deepEqual(globalThis.processingReportExports.map(item => item.format), ['Excel', 'PDF'], container.textContent)
+  assert.equal(globalThis.processingReportExports[0].reports[0].rows.length, 51, 'la exportación incluye ambas páginas completas')
   assert.equal(globalThis.processingReportExports[0].reports[0].name, 'Elaboraciones de sacheteado')
-  assert.match(globalThis.processingReportExports[0].description, /1 registros filtrados de 1 cargados/)
+  assert.match(globalThis.processingReportExports[0].description, /51 registros filtrados de 51 cargados/)
   let printInvoked = false
   dom.window.print = () => { printInvoked = true }
   const printButton = [...container.querySelectorAll('button')].find(item => item.textContent.includes('Imprimir'))

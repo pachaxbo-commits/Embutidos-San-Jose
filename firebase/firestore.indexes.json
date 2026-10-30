@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "distProcessingBatches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sourceLocation", "order": "ASCENDING" },
+        { "fieldPath": "processingDate", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "distSales",
       "queryScope": "COLLECTION",
       "fields": [
