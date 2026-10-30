@@ -1,3 +1,4 @@
+import { normalizeProcessingReportBatch } from '../domain/processingReports'
 import type { PendingOperation } from './operationQueue'
 import { submitOperation } from './operationQueue'
 import { createLiveEvidenceCache } from './liveEvidenceCache'
@@ -141,7 +142,7 @@ export async function loadProcessingBatchPage(
   const hasMore = snapshot.docs.length > pageSize
   const docs = snapshot.docs.slice(0, pageSize)
   return {
-    rows: docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingBatch),
+    rows: docs.map(row => normalizeProcessingReportBatch({ ...row.data(), id: row.id } as ProcessingBatch)),
     cursor: docs.at(-1) || null,
     hasMore,
   }
@@ -184,6 +185,38 @@ export function loadProcessingRepackPage(location: string | undefined, cursor: Q
   return loadProcessingPage<ProcessingRepackRecord>('distProcessingRepackings', location, 'confirmedAt', cursor, pageSize)
 }
 
+export interface ProcessingReportCursor {
+  phase: 'main' | 'repack'
+  snapshot: QueryDocumentSnapshot<DocumentData> | null
+}
+
+/** Date-bounded pages include historical repack batches without processingDate. */
+export async function loadProcessingReportPage(mode: 'batches' | 'trace' | 'reviews' | 'repackings', location: string | undefined, from: string, to: string, cursor: ProcessingReportCursor | null = null) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) throw new Error('Selecciona un periodo valido.')
+  const batch = mode === 'batches' || mode === 'trace'
+  const name = batch ? 'distProcessingBatches' : mode === 'reviews' ? 'distProcessingReviews' : 'distProcessingRepackings'
+  const context = await getContext()
+  const fetchPage = async (phase: ProcessingReportCursor['phase'], snapshotCursor: QueryDocumentSnapshot<DocumentData> | null) => {
+    const field = phase === 'repack' ? 'dayKey' : batch ? 'processingDate' : mode === 'reviews' ? 'reviewedAt' : 'confirmedAt'
+    const constraints: QueryConstraint[] = []
+    if (location) constraints.push(where(batch ? 'sourceLocation' : 'location', '==', location))
+    if (phase === 'repack') constraints.push(where('processType', '==', 'repackaging'))
+    const start = batch ? from : new Date(`${from}T00:00:00-04:00`).toISOString()
+    const end = batch ? to : new Date(`${to}T23:59:59.999-04:00`).toISOString()
+    constraints.push(where(field, '>=', start), where(field, '<=', end), orderBy(field, 'desc'))
+    if (snapshotCursor) constraints.push(startAfter(snapshotCursor))
+    constraints.push(limit(51))
+    const snapshot = await getDocsFromServer(query(collectionRef(context, name), ...constraints))
+    const docs = snapshot.docs.slice(0, 50)
+    return { rows: docs.map(row => { const value = { ...row.data(), id: row.id }; return batch ? normalizeProcessingReportBatch(value as unknown as ProcessingBatch) : value }), cursor: { phase, snapshot: docs.at(-1) || null } as ProcessingReportCursor, hasMore: snapshot.docs.length > 50 }
+  }
+  if (batch && cursor?.phase === 'repack') return fetchPage('repack', cursor.snapshot)
+  const main = await fetchPage('main', cursor?.snapshot || null)
+  if (!batch || main.hasMore) return main
+  const repack = await fetchPage('repack', null)
+  return { rows: [...main.rows, ...repack.rows], cursor: repack.cursor, hasMore: repack.hasMore }
+}
+
 /** Evidence is queried by both location and reservation so warehouse Rules can prove scope. */
 export async function loadProcessingEvidenceForReservation(location: string, reservationId: string): Promise<ProcessingEvidenceRecord[]> {
   const context = await getContext()
@@ -223,6 +256,10 @@ export async function getProcessingOperationState(operationId: string, expectedT
 /** Entrada oficial al backend; nunca modifica lotes ni balances desde el cliente. */
 export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput, operationId: string): Promise<unknown> {
   return submitOperation('confirmProcessingBatch', input, operationId)
+}
+
+export async function releaseProcessingLot(input: { lotId: string; authorizationReference: string; reason: string }, operationId: string): Promise<unknown> {
+  return submitOperation('releaseProcessingLot', input, operationId)
 }
 
 /** Registra una inspección de producto inmovilizado sin tocar inventario ni liberar la reserva. */

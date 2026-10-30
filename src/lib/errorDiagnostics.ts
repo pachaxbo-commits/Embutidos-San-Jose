@@ -1,5 +1,5 @@
 export type DiagnosticCategory = 'render' | 'asynchronous' | 'permission' | 'synchronization' | 'data' | 'unknown'
-export type DiagnosticSource = 'react_render' | 'window_error' | 'unhandled_rejection'
+export type DiagnosticSource = 'react_render' | 'window_error' | 'unhandled_rejection' | 'handled_operation_failure'
 
 export interface DiagnosticEvent {
   at: string
@@ -90,7 +90,7 @@ const classify = (message: string, source: DiagnosticSource): DiagnosticCategory
   if (/permission-denied|missing or insufficient permissions|unauthorized/i.test(message)) return 'permission'
   if (/offline|network|unavailable|deadline-exceeded|timed out|sin conexión/i.test(message)) return 'synchronization'
   if (/invalid data|invalid argument|cannot read|undefined|null|parse|serialize/i.test(message)) return 'data'
-  return source === 'unhandled_rejection' ? 'asynchronous' : 'unknown'
+  return source === 'unhandled_rejection' || source === 'handled_operation_failure' ? 'asynchronous' : 'unknown'
 }
 
 const browserAndOs = () => {

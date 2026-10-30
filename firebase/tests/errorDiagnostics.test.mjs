@@ -29,6 +29,9 @@ try {
   const request = { auth: { uid: users.distributor }, data: { report, occurrenceIdentity: { uid: users.distributor, restaurantId: 'sanjose' } } }
   const first = await submitDiagnostic(db, request)
   pass(first.accepted && !first.grouped, 'la Function acepta el reporte de la propia sesión y crea registro central')
+  const handledFailure = { ...report, code: 'ERR-D4E5F6', source: 'handled_operation_failure', category: 'asynchronous', message: 'La carga falló y se mostró una alternativa segura.' }
+  const handledResult = await submitDiagnostic(db, { auth: { uid: users.warehouse }, data: { report: handledFailure, occurrenceIdentity: { uid: users.warehouse, restaurantId: 'sanjose' } } })
+  pass(handledResult.accepted, 'el backend acepta diagnósticos de operaciones controladas sin confundirlas con rechazos no capturados')
   const stored = (await root.collection('distErrorDiagnostics').doc(first.reportId).get()).data()
   pass(stored.actorUid === users.distributor && stored.actorRole === 'distributor' && stored.actorRouteId === 'route-luciano', 'identidad, rol y ruta se derivan de la membresía autenticada')
   pass(!('financialAmount' in stored) && !stored.message.includes('example.com') && !stored.message.includes('70012345') && !stored.message.includes('Bs 41'), 'servidor aplica lista permitida y elimina correo, teléfono y montos')

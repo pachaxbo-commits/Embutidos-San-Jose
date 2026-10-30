@@ -62,7 +62,8 @@ try {
   const request = makeInput(full)
   const blockedProduction = await command(ids.admin, 'confirmProcessingRepack', request, `${prefix}-prod-gate`, 'rejected')
   pass(blockedProduction.error.includes('bucket y activación') && (await root.collection('distBalances').doc(`central__${full.sourceProductId}`).get()).data().quantity === 2, 'reenvasado permanece bloqueado sin configuración server-side y conserva inventario')
-  process.env.SANJOSE_PROCESSING_REPACK_EMULATOR_TEST = 'true'
+  process.env.SANJOSE_PROCESSING_REPACK_ENABLED = 'true'
+  process.env.SANJOSE_PROCESSING_EVIDENCE_BUCKET = 'qa-evidence-bucket'
   const confirmed = await command(ids.admin, 'confirmProcessingRepack', request, `${prefix}-confirm`)
   const sourceBalance = (await root.collection('distBalances').doc(`central__${full.sourceProductId}`).get()).data()
   const targetBalance = (await root.collection('distBalances').doc(`central__${full.targetId}`).get()).data()
@@ -215,6 +216,19 @@ try {
   const noSales = await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', lines: [{ productId: full.targetId, quantity: 1, actualUnitPrice: 1, unitPrice: 1, unitType: 'package' }], cashAmount: 1, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-blocked-sale`, 'rejected')
   pass(noSales.error.includes('bloqueada') || noSales.error.includes('bloqueado'), 'los lotes de salida siguen protegidos contra venta aun en el entorno de prueba salvo la suite aislada')
 
+  const commercial = await seedBase({ lotId: `${prefix}-commercial-source`, targetId: `${prefix}-commercial-target`, reservationId: `${prefix}-commercial-hold`, repackId: `${prefix}-commercial-repack` })
+  const commercialResult = await command(ids.admin, 'confirmProcessingRepack', makeInput(commercial), `${prefix}-commercial-confirm`)
+  const commercialLotId = commercialResult.result.outputLots[0].lotId
+  const correctReview = (await root.collection('distProcessingReviews').doc(commercial.reviewId).get()).data()
+  await root.collection('distProcessingReviews').doc(commercial.reviewId).update({ lotId: 'different-source-lot' })
+  await command(ids.admin, 'releaseProcessingLot', { lotId: commercialLotId, authorizationReference: commercial.authId, reason: 'QA incompatible review must not release stock' }, `${prefix}-commercial-bad-review`, 'rejected')
+  pass(!(await root.collection('distLots').doc(commercialLotId).get()).data().processingCommercialRelease, 'revisión de otro lote no libera el producto reenvasado')
+  await root.collection('distProcessingReviews').doc(commercial.reviewId).set(correctReview)
+  await command(ids.admin, 'releaseProcessingLot', { lotId: commercialLotId, authorizationReference: commercial.authId, reason: 'QA measured repack output approved for commerce' }, `${prefix}-commercial-release`)
+  pass((await root.collection('distLots').doc(commercialLotId).get()).data().processingCommercialRelease.status === 'released', 'Calidad puede liberar la salida reenvasada mediante la misma transición comercial')
+  await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', lines: [{ productId: commercial.targetId, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-commercial-sale`)
+  const soldRepack = (await root.collection('distLots').doc(commercialLotId).get()).data()
+  pass(soldRepack.quantities.central === 7 && soldRepack.processingPhysicalWeightGRemaining === 1750 && soldRepack.processingCostCentsRemaining === 875 && soldRepack.processingCommercialBlocked === true, 'venta posterior al reenvasado consume 250 g y 125 centavos sin activar ventas experimentales')
   console.log(`processing repack emulator: ${checks} checks PASS`)
 } finally {
   await env.cleanup()

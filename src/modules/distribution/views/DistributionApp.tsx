@@ -150,6 +150,7 @@ export function DistributionApp({
   const [currentModule, setCurrentModule] = useState<ModuleId>('dist.dashboard')
   const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false)
+  const [businessAlertsOpen, setBusinessAlertsOpen] = useState(false)
   const [isSignOutOpen, setIsSignOutOpen] = useState(false)
   const [manualUpdateRequest, setManualUpdateRequest] = useState(0)
   const [dayKeys, setDayKeys] = useState<string[]>([toDayKey(new Date())])
@@ -292,24 +293,27 @@ export function DistributionApp({
   }
 
   const roleLabel =
-    role === 'support' ? 'Soporte técnico' : role === 'distributor' ? 'Distribuidor' : role === 'warehouse' ? 'Almacen' : 'Administracion'
+    role === 'support' ? 'Soporte técnico' : role === 'distributor' ? 'Distribuidor' : role === 'warehouse' ? 'Almacén' : 'Administración'
   return (
     <div className="distribution-shell flex min-h-[100dvh] w-full min-w-0 flex-col" style={{ backgroundColor: 'var(--background)' }}>
       <header
-        className="distribution-header sticky top-0 z-30 w-full border-b border-slate-200 bg-white px-3 pb-2.5"
+        className="distribution-header sticky top-0 z-30 w-full border-b border-slate-200 bg-white px-2 pb-2 sm:px-3 sm:pb-2.5"
         style={{ borderBottomColor: 'var(--primary-soft)' }}
       >
-        <div className="mx-auto grid w-full max-w-6xl grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <img src="/brand/san-jose-logo.png" alt="" className="h-10 w-12 shrink-0 object-contain" />
+        <div className="mx-auto grid w-full max-w-6xl grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 sm:gap-2">
+          <div className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
+            <img src="/brand/san-jose-logo.png" alt="" className="h-9 w-10 shrink-0 object-contain sm:h-10 sm:w-12" />
             <div className="min-w-0">
-              <h1 className="text-sm font-extrabold leading-tight tracking-tight text-slate-900 sm:text-base">{restaurantName}</h1>
-              <p className="mt-0.5 text-[10px] font-semibold leading-tight text-slate-500 sm:text-[11px]">
-                {roleLabel} · {userName}
+              <h1 className="hidden truncate text-sm font-extrabold leading-tight tracking-tight text-slate-900 sm:block sm:text-base">{restaurantName}</h1>
+              <h1 className="truncate text-sm font-extrabold leading-tight tracking-tight text-slate-900 sm:hidden" aria-label={restaurantName}>San José</h1>
+              <p className="mt-0.5 truncate text-[10px] font-semibold leading-tight text-slate-500 sm:text-[11px]" title={`${roleLabel} · ${userName}`}>
+                <span className="sm:hidden">{role === 'warehouse' ? 'Almacén' : role === 'admin' ? 'Admin.' : roleLabel} · {userName}</span>
+                <span className="hidden sm:inline">{roleLabel} · </span><span className="hidden max-w-36 truncate sm:inline-block">{userName}</span>
               </p>
+              <span className="sr-only">{restaurantName} · {roleLabel} · {userName}</span>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
             <span className="sm:hidden"><SyncStatusPill state={syncState} compact /></span>
             <span className="hidden sm:inline-flex"><SyncStatusPill state={syncState} /></span>
             <button
@@ -326,8 +330,8 @@ export function DistributionApp({
             >
               {themeMode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             </button>
-            <button type="button" onClick={() => setIsDiagnosticsOpen(true)} aria-label="Consultar diagnóstico de errores" title="Diagnóstico de errores" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"><Bug size={16} /></button>
-            {rejectedOperationCount > 0 && <span title="Revisa las alertas para ver el motivo de las operaciones rechazadas." className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-black text-rose-800"><AlertTriangle size={12} />{rejectedOperationCount} rechazadas</span>}
+            {(role === 'admin' || role === 'support') && <button type="button" onClick={() => setIsDiagnosticsOpen(true)} aria-label="Consultar diagnóstico de errores" title="Diagnóstico de errores" className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 sm:inline-flex"><Bug size={16} /></button>}
+            {rejectedOperationCount > 0 && <button type="button" onClick={() => setBusinessAlertsOpen(open => !open)} aria-expanded={businessAlertsOpen} aria-label={`${rejectedOperationCount} operaciones rechazadas sin revisar`} title="Abrir detalle de operaciones rechazadas" className="inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-2 text-[11px] font-black text-rose-800"><AlertTriangle size={14} /><span>{rejectedOperationCount}</span></button>}
             <button
               type="button"
               onClick={() => setIsSignOutOpen(true)}
@@ -382,18 +386,22 @@ export function DistributionApp({
         <main className="min-w-0 flex-1 pb-bottom-nav">
           {data.error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{data.error}</p>}
           {syncState.lastError && <section role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-            <p className="font-semibold">{syncState.lastError}</p>
-            {syncState.lastErrorDetails?.legacy ? (
-              <p className="mt-1 text-xs">Este aviso fue guardado por una versión anterior y no conserva tipo, identificador ni hora. Por sí solo no permite saber si fue un error actual o antiguo; revisa las operaciones pendientes/rechazadas antes de repetir cualquier acción.</p>
-            ) : syncState.lastErrorDetails && <p className="mt-1 break-words text-xs">
-              Operación: {syncState.lastErrorDetails.operationType || 'no identificada'}
-              {syncState.lastErrorDetails.operationId ? ` · ID ${syncState.lastErrorDetails.operationId}` : ''}
-              {syncState.lastErrorDetails.occurredAt ? ` · ${new Date(syncState.lastErrorDetails.occurredAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}` : ''}
-              {syncState.lastErrorDetails.errorCode ? ` · código ${syncState.lastErrorDetails.errorCode}` : ''}
-            </p>}
-            <button className="mt-1 underline" onClick={dismissSyncError}>Cerrar aviso (no elimina operaciones)</button>
+            <p className="font-semibold">No se pudo sincronizar la última operación. Revisa su estado antes de volver a registrarla.</p>
+            <p className="mt-1 text-xs">El aviso no elimina operaciones. Revisa las pendientes o rechazadas y vuelve a intentar solo cuando el estado esté claro.</p>
+            {(role === 'admin' || role === 'support') && <details className="mt-2 rounded-lg bg-white/70 p-2 text-xs"><summary className="min-h-8 cursor-pointer font-bold">Diagnóstico para personal autorizado</summary>
+              <p className="break-words">{syncState.lastError}</p>
+              {syncState.lastErrorDetails?.legacy ? <p className="mt-1">Aviso heredado: la versión anterior no guardó tipo, identificador ni hora.</p> : syncState.lastErrorDetails && <p className="mt-1 break-words">
+                Operación: {syncState.lastErrorDetails.operationType || 'no identificada'}
+                {syncState.lastErrorDetails.operationId ? ` · ID ${syncState.lastErrorDetails.operationId}` : ''}
+                {syncState.lastErrorDetails.occurredAt ? ` · ${new Date(syncState.lastErrorDetails.occurredAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}` : ''}
+                {syncState.lastErrorDetails.errorCode ? ` · código ${syncState.lastErrorDetails.errorCode}` : ''}
+              </p>}
+            </details>}
+            <button className="mt-1 min-h-9 underline" onClick={dismissSyncError}>Cerrar aviso (no elimina operaciones)</button>
           </section>}
           {data.operations.filter(o => o.status === 'queued').length > 0 && <p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm">Operaciones pendientes de validación: {data.operations.filter(o => o.status === 'queued').length}. Se guardaron en el dispositivo y se enviarán al recuperar conexión. No vuelvas a registrarlas.</p>}
+          {businessAlertsOpen && <section aria-label="Operaciones rechazadas" className="mb-3 rounded-2xl border border-rose-200 bg-rose-50/60 p-2 sm:p-3">
+          <div className="mb-2 flex items-center justify-between gap-2"><p className="text-xs font-extrabold text-rose-950">Operaciones rechazadas · {rejectedOperationCount}</p><button type="button" className="min-h-10 px-2 text-xs font-bold text-rose-900 underline" onClick={() => setBusinessAlertsOpen(false)}>Cerrar detalle</button></div>
           {data.operations.filter(o => o.status === 'rejected' && !o.acknowledged).map(o => {
             const payload = o.payload as { customerId?: string; customerName?: string; receivable?: { customerName?: string }; lotId?: string; productId?: string; lotCode?: string }
             const customerName = payload.customerName || payload.receivable?.customerName || data.customers.find(customer => customer.id === payload.customerId)?.name
@@ -404,17 +412,19 @@ export function DistributionApp({
               : customerName ? `Cliente: ${customerName}` : undefined
             const operationMetadata = getRejectedOperationMetadata(o.type)
             const destination = getRejectedOperationModule(o.type, session.role)
-            return <article key={o.id} role="alert" className="mb-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+            return <article key={o.id} className="mb-2 rounded-xl border border-rose-200 bg-white p-3 text-sm text-rose-900">
               <p className="font-extrabold">{operationMetadata.label} rechazada</p>
               <p className="mt-1">{rejectedOperationStatusMessage()}</p>
               <p className="mt-1">Fecha: {new Date(o.createdAt).toLocaleString('es-BO')}{entityDetails ? ` · ${entityDetails}` : ''}</p>
-              <p className="mt-1"><span className="font-bold">Motivo:</span> {o.error || 'El servidor no aceptó la operación.'}</p>
+              <p className="mt-1">El servidor rechazó esta operación. Revisa los datos y el estado antes de volver a registrarla.</p>
+              {(role === 'admin' || role === 'support') && <details className="mt-2 rounded-lg bg-rose-50 p-2 text-xs"><summary className="min-h-8 cursor-pointer font-bold">Ver motivo técnico</summary><p className="break-words">{o.error || 'El servidor no aceptó la operación.'}</p></details>}
               <div className="mt-2 flex flex-wrap gap-2">
                 <button className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold" onClick={() => selectModule(destination ?? 'dist.dashboard')}>{getRejectedOperationActionLabel(o.type, session.role)}</button>
                 <button className="rounded-lg px-3 py-1.5 font-bold underline" onClick={() => { void acknowledgeOperation(o.id).catch(() => undefined) }}>Entendido</button>
               </div>
             </article>
           })}
+          </section>}
           <ErrorBoundary key={activeModule} viewName={activeModule} onReset={() => selectModule('dist.dashboard')}>{renderModule()}</ErrorBoundary>
         </main>
       </div>

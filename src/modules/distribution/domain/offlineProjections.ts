@@ -1,3 +1,4 @@
+import { processingCommerciallyAvailable } from './processingCommercialAvailability.ts'
 import { centralBalanceId, toDayKey } from './engine.ts'
 import { originPendingQuantity } from './originTraceability.ts'
 import type { DistBalance, DistCollection, DistExpense, DistLot, DistReceivable, DistSale } from '../types.ts'
@@ -44,7 +45,7 @@ export function projectBalances(balances: DistBalance[], pendingSales: DistSale[
     const unavailable = lots.filter(l => l.productId === b.productId)
       .reduce((n, l) => {
         const physical = Number(l.quantities[location]) || 0
-        if (l.processingCommercialBlocked || l.quarantined || l.expiresOn && l.expiresOn < today) return n + physical
+        if (!processingCommerciallyAvailable(l) || l.quarantined || l.expiresOn && l.expiresOn < today) return n + physical
         const held = l.processingUnavailable?.[location]
         return n + (location.startsWith('route__') ? 0 : originPendingQuantity(l, location)) + Number(held?.courtesy || 0) + Number(held?.repackPending || 0) + Number(held?.reviewHold || 0)
       }, 0)

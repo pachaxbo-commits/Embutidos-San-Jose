@@ -18,6 +18,7 @@
     "test:processing-domain": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingDomain.test.ts",
     "test:processing-review-domain": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingReview.test.ts",
     "test:processing-ui": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingUi.test.ts",
+    "test:processing-reports": "node --experimental-strip-types src/modules/distribution/domain/__tests__/processingReports.test.ts",
     "test:processing-ui-e2e": "node scripts/run-processing-ui-e2e.mjs",
     "test:processing-availability": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingAvailability.test.cjs\"",
     "test:processing-reservations": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingReservations.test.mjs\"",
@@ -116,6 +117,7 @@
     "test:processing-derived-dispatch": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingDerivedDispatch.test.mjs\"",
     "test:processing-derived-sale": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node --experimental-strip-types firebase/tests/processingDerivedSale.test.mjs\"",
     "test:processing-review": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingReview.test.mjs\"",
+    "test:processing-commercial-release": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingCommercialRelease.test.mjs\"",
     "test:processing-repack": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingRepack.test.mjs\"",
     "test:processing-evidence": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth,storage \"node firebase/tests/processingEvidence.test.mjs\"",
     "test:processing-quality-auth": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth,functions \"node firebase/tests/processingQualityAuthorization.test.mjs\""

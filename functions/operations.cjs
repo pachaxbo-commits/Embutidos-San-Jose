@@ -390,9 +390,9 @@ class Operation {
   }
   processingMovementAllowed(lot, loc, options) {
     if (!lot.processingCommercialBlocked) return true;
-    // The option identifies the logistics action; only the trusted Emulator
-    // switch authorizes moving protected derived stock out of its location.
-    const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && processingDerivedSalesEmulatorOnly()
+    // Commercial release is written only by the Quality-authorized transaction.
+    // Preserve the derived accounting path after release.
+    const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && (processingDerivedSalesEmulatorOnly() || lot.processingCommercialRelease?.status === 'released' && lot.processingCommercialRelease.batchId === lot.processingBatchId)
       || options.processingReturn === true && loc.startsWith('route__')
       || options.processingRepack === true && processingRepackAvailable();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
@@ -545,7 +545,7 @@ class Operation {
           a.id.localeCompare(b.id),
       );
     const ordinaryAvailable = roundAt(lots.reduce((sum, lot) => sum + usable(lot), 0), precision);
-    if (processingSale && ordinaryAvailable < quantity && !processingDerivedSalesEmulatorOnly() && e.lots.some(lot => lot.processingCommercialBlocked && usable(lot) > 0))
+    if (processingSale && ordinaryAvailable < quantity && !processingDerivedSalesEmulatorOnly() && e.lots.some(lot => lot.processingCommercialBlocked && !(lot.processingCommercialRelease?.status === 'released' && lot.processingCommercialRelease.batchId === lot.processingBatchId) && usable(lot) > 0))
       check(false, 'La venta comercial de sachets derivados todavía no está habilitada para usuarios reales; el stock permanece bloqueado hasta completar y auditar todo el ciclo comercial.');
     check(
       roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
@@ -4508,6 +4508,57 @@ handlers.reserveProcessingStock = async (o, p) => {
   return { reservationId, quantity, physicalQuantity: Number(lot.quantities?.[loc] || 0), availableQuantity: roundAt(free - quantity, quantityPrecision(product)) };
 };
 
+handlers.releaseProcessingLot = async (o, p) => {
+  o.admin();
+  const authorization = await activeQualityAuthorization(o, String(p.authorizationReference || ''));
+  check(authorization, 'La liberación requiere autorización vigente de Calidad.');
+  check(typeof p.reason === 'string' && p.reason.trim().length >= 10, 'Registra el fundamento de aptitud y liberación.');
+  const lot = await o.read('distLots', safeId(p.lotId));
+  check(lot && lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished' && !lot.quarantined && !lot.derivedReturn, 'El lote no es un producto terminado elegible.');
+  check(!lot.processingReview, 'El lote tiene revisión de Calidad; requiere resolver su procedimiento específico antes de liberar.');
+  const product = await o.read('distProducts', lot.productId);
+  check(product?.active !== false && product?.unitType === 'package', 'La liberación comercial requiere un SKU activo por paquetes.');
+  check(lot.manufacturedOn && lot.expiresOn && lot.expiresOn >= o.today && lot.manufacturedOn <= o.today, 'Las fechas del lote no permiten liberarlo.');
+  const batch = await o.read('distProcessingBatches', lot.processingBatchId);
+  const initialOutput = batch?.result?.derivedLots?.some(row => row.lotId === lot.id && row.destinationKind === 'finished');
+  const repackOutput = batch?.processType === 'repackaging' && batch.result?.outputLots?.some(row => row.lotId === lot.id);
+  check(batch?.status === 'confirmed' && (['bagging','portioning'].includes(batch.processType) && initialOutput || repackOutput), 'La elaboración original no acredita este lote terminado.');
+  if (repackOutput) {
+    const repack = await o.read('distProcessingRepackings', batch.id);
+    const review = repack && await o.read('distProcessingReviews', repack.reviewId);
+    check(repack?.status === 'confirmed' && lot.processingRepackId === repack.id && review?.qualityDecision === 'authorized_for_repack'
+      && review.lotId === repack.sourceLotId && review.reservationId === repack.reservationId && review.caseId === repack.reviewCaseId && review.location === repack.location, 'Falta la revisión autorizada del reenvasado.');
+    check(await activeQualityAuthorization(o, repack.authorizationId, review.reviewedBy), 'La autorización de Calidad del reenvasado no está vigente.');
+    check(await verifyProcessingEvidence(o, repack.evidenceRefs, { lotId: repack.sourceLotId, reservationId: repack.reservationId, reviewCaseId: repack.reviewCaseId, reviewRevision: review.evidenceRevision ?? review.revision, location: repack.location }), 'La evidencia del reenvasado no se pudo verificar.');
+  }
+  check(lot.processingSourceAllocationBasis && Array.isArray(batch.sourceAllocations) && batch.sourceAllocations.length > 0, 'Falta la procedencia documentada de elaboración.');
+  const quantities = Object.values(lot.quantities || {});
+  check(quantities.every(value => Number.isSafeInteger(value) && value >= 0) && quantities.some(value => value > 0), 'El lote no tiene paquetes físicos íntegros disponibles.');
+  check(Number.isSafeInteger(lot.processingCostCentsRemaining) && lot.processingCostCentsRemaining >= 0 && Number.isSafeInteger(lot.processingPhysicalWeightGRemaining) && lot.processingPhysicalWeightGRemaining > 0, 'Falta peso medido o costo histórico conciliado.');
+  const reservations = await o.processingReservations(lot.id);
+  check(!reservations.some(row => ['active','partially_consumed'].includes(row.status) && Number(row.remainingQuantity) > 0), 'El lote tiene reservas activas.');
+  const productLots = await o.query('distLots', 'productId', product.id);
+  for (const [location, quantity] of Object.entries(lot.quantities || {})) {
+    if (!(quantity > 0)) continue;
+    o.owns(location);
+    check(!location.startsWith('route__') && origins.pending(lot, location) === 0, 'El lote tiene destino u origen pendiente incompatible con la liberación.');
+    o.assertReservationAggregate(lot, location, reservations);
+    o.assertProcessingLocation(lot, location);
+    const balance = await o.read('distBalances', balanceId(location, product.id));
+    const physicalTotal = productLots.reduce((sum, item) => sum + Number(item.quantities?.[location] || 0), 0);
+    check(balance && Number(balance.quantity) === physicalTotal, 'El balance físico no concilia con los lotes del producto.');
+    const held = lot.processingUnavailable?.[location] || {};
+    check(!Object.values(held).some(value => Number(value) > 0), 'El lote conserva producto inmovilizado.');
+  }
+  if (lot.processingCommercialRelease) {
+    check(lot.processingCommercialRelease.status === 'released' && lot.processingCommercialRelease.batchId === batch.id, 'El estado comercial existente requiere revisión.');
+    return { id: lot.id, release: lot.processingCommercialRelease };
+  }
+  const release = { status: 'released', batchId: batch.id, authorizationId: authorization.id, approvedBy: o.actor, approvedAt: o.now, operationId: o.id, reason: p.reason.trim(), physicalWeightG: lot.processingPhysicalWeightGRemaining, costCents: lot.processingCostCentsRemaining };
+  o.put('distLots', lot.id, { ...lot, processingCommercialRelease: release });
+  return { id: lot.id, release };
+};
+
 handlers.recordProcessingReview = async (o, p) => {
   check(['admin','warehouse'].includes(o.member.role), 'Solo Administración o Almacén pueden registrar una revisión física.');
   const lotId = safeId(p.lotId), reservationId = safeId(p.reservationId);
@@ -4919,7 +4970,7 @@ handlers.confirmProcessingRepack = async (o, p) => {
     const movementId = o.ledger(target.id, outQty, null, loc, 'processing_repack_output', { repackId, reviewId, sourceLotId: lotId, lotId: lotOutputId, lotCode, destinationId: outputId, physicalWeightG: output.measuredNetWeightG, commercialQuantity: outQty, costCents, costTotal: costCents === null ? null : costCents / 100, processingCommercialBlocked: true, sourceAllocations, sourceAllocationBasis: 'repack_origin_reference', note: String(p.reason).trim() }, quantityPrecision(target));
     if (outLot.processingByLocation?.[loc]?.segments?.length) { outLot.processingByLocation[loc].segments[0].sourceMovementId = movementId; o.put('distLots', lotOutputId, outLot); }
     movementIds.push(movementId);
-    outputRows.push({ id: outputId, lotId: lotOutputId, productId: target.id, productName: target.name, lotCode, commercialQuantity: outQty, commercialUnit: target.unitType, netWeightG: output.measuredNetWeightG, costCents, movementId, sourceAllocations });
+    outputRows.push({ id: outputId, lotId: lotOutputId, productId: target.id, productName: target.name, lotCode, commercialQuantity: outQty, commercialUnit: target.unitType, netWeightG: output.measuredNetWeightG, costCents, movementId, sourceAllocations, manufacturedOn: output.manufacturedOn, packagedOn: output.packagedOn, expiresOn: output.expiresOn });
   }
   const reviewEventId = `${repackId}__review_transition`;
   const finalReviewStatus = remainingQuantity === 0 ? 'resolved_specialized' : 'pending_review';
@@ -5323,6 +5374,7 @@ async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);
   check(lot, "No existe el lote.");
+  check(!lot.processingCommercialBlocked && !lot.processingBatchId && !lot.processingByLocation, 'El lote derivado conserva fechas y costo histórico de elaboración; requiere una corrección especializada.');
   check(!Object.keys(lot.pendingOrigins || {}).some(loc => origins.pending(lot, loc) > 0), 'Este lote contiene cantidades con origen pendiente; no se puede cambiar su identidad ni costo sin conciliar la excepción.');
   const reservations = await o.processingReservations(lot.id);
   const reservationLocations = new Set(['central', ...Object.keys(lot.processingUnavailable || {}), ...reservations.map(row => row.location)]);

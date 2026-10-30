@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { chromium } from '@playwright/test'
+import { chromium, webkit } from '@playwright/test'
 
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085'
 process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9095'
@@ -125,11 +125,71 @@ try {
   assert.equal(qrSaleAfterSeed.dayKey, boliviaDayKey, 'la venta fixture pertenece a la jornada actual de Bolivia')
 
   await waitForVite()
-  browser = await chromium.launch({ headless: true })
+  if (process.env.SANJOSE_ANDROID_QA === 'true') {
+    const { _android } = await import('@playwright/test')
+    const devices = await _android.devices()
+    assert.equal(devices.length, 1, 'Android QA requires exactly one isolated emulator')
+    const device = devices[0]
+    await device.shell('am start -n com.pachax.flow.qa/com.pachax.flow.MainActivity')
+    await delay(1000)
+    const webview = await device.webView({ pkg: 'com.pachax.flow.qa' })
+    const nativePage = await webview.page()
+    await nativePage.goto('http://localhost:5174/scripts/processing-ui-harness.html')
+    await nativePage.getByRole('heading', { name: 'Sacheteado y Embolsado' }).waitFor({ timeout: 60000 })
+    await nativePage.getByRole('button', { name: 'Revisión de producto', exact: true }).click()
+    await nativePage.getByLabel('Reserva para revisar').selectOption('qa-source-reservation')
+    await nativePage.getByPlaceholder('Describe lo observado; separa peso asignado y medido.').fill('QA Android local draft persisted')
+    await nativePage.reload()
+    await nativePage.getByRole('button', { name: 'Revisión de producto', exact: true }).click()
+    await nativePage.getByLabel('Reserva para revisar').selectOption('qa-source-reservation')
+    assert.equal(await nativePage.getByPlaceholder('Describe lo observado; separa peso asignado y medido.').inputValue(), 'QA Android local draft persisted')
+    await nativePage.screenshot({ path: join(tmpdir(), 'sanjose-native-admin-qa.png'), fullPage: true })
+    await nativePage.evaluate(key => localStorage.removeItem(key), 'sanjose_warehouse_shift_' + boliviaDayKey)
+    await nativePage.goto('http://localhost:5174/scripts/processing-ui-harness.html?app=1&role=warehouse')
+    await nativePage.getByPlaceholder('Nombre completo', { exact: true }).fill('QA Warehouse Shift')
+    await nativePage.getByRole('button', { name: 'Comenzar turno', exact: true }).click()
+    await nativePage.getByRole('dialog', { name: 'Encargado de almacén de hoy' }).waitFor({ state: 'hidden' })
+    await nativePage.getByRole('button', { name: 'Mas', exact: true }).click({ timeout: 60000 })
+    await nativePage.getByRole('button', { name: 'Sacheteado y Embolsado', exact: true }).waitFor({ timeout: 60000 })
+    await nativePage.getByRole('button', { name: 'Sacheteado y Embolsado', exact: true }).click()
+    await nativePage.getByRole('heading', { name: 'Sacheteado y Embolsado' }).waitFor()
+    const nativeSize = await nativePage.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
+    assert.ok(nativeSize.scroll <= nativeSize.width + 1)
+    await nativePage.screenshot({ path: join(tmpdir(), 'sanjose-native-warehouse-qa.png'), fullPage: true })
+    await device.close()
+    console.log('PASS Android WebView QA: synthetic Auth login, Firestore synchronization, retained local draft, Admin/Warehouse navigation and width')
+  }
+  const browserType = process.env.SANJOSE_UI_ENGINE === 'webkit' ? webkit : chromium
+  browser = await browserType.launch({ headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   const pageErrors = []
-  page.on('pageerror', error => pageErrors.push(error.message))
-  await page.goto('http://127.0.0.1:5174/scripts/processing-ui-harness.html')
+  const channelSessions = new Set()
+  const interruptedSessions = new Set()
+  page.on('request', request => {
+    if (/127\.0\.0\.1:8085\/google\.firestore\.v1\.Firestore\/(Listen|Write)\/channel/.test(request.url())) {
+      const sid = new URL(request.url()).searchParams.get('SID')
+      if (sid) channelSessions.add(sid)
+    }
+  })
+  page.on('pageerror', error => {
+    const sid = error.message.match(/[?&]SID=([^&\s]+)/)?.[1]
+    // WebKit surfaces the deliberately interrupted XHR stream as a pageerror.
+    // Limit the exception to session IDs captured at the exact injected outage.
+    if (process.env.SANJOSE_UI_ENGINE === 'webkit' && sid && interruptedSessions.has(decodeURIComponent(sid))
+      && /127\.0\.0\.1:8085\/google\.firestore\.v1\.Firestore\/(Listen|Write)\/channel/.test(error.message)
+      && error.message.includes('due to access control checks.')) {
+      console.log('EXPECTED WebKit transport abort from a deliberately interrupted session')
+      return
+    }
+    pageErrors.push(error.message); console.error('QA browser error:', error.message)
+  })
+  const navigateQA = async url => {
+    // Full document navigation terminates the previous document's XHR channels.
+    // Errors from new sessions remain failures.
+    for (const sid of channelSessions) interruptedSessions.add(sid)
+    await page.goto(url)
+  }
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html')
   await page.getByRole('heading', { name: 'Sacheteado y Embolsado' }).waitFor()
 
   const assertNoHorizontalOverflow = async (width, height) => {
@@ -138,7 +198,7 @@ try {
     const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
     assert.ok(sizes.document <= sizes.viewport + 1, `overflow horizontal a ${width}px: ${JSON.stringify(sizes)}`)
   }
-  for (const [width, height] of [[360, 800], [390, 844], [768, 1024], [1440, 900]]) {
+  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1440, 900]]) {
     for (const tab of ['Nueva elaboración', 'Mercadería reservada', 'Revisión de producto', 'Reenvasado', 'Historial']) {
       await page.getByRole('button', { name: tab, exact: true }).click()
       await assertNoHorizontalOverflow(width, height)
@@ -153,6 +213,55 @@ try {
     }
     await page.screenshot({ path: join(tmpdir(), `sanjose-processing-${width}.png`), fullPage: true })
   }
+
+  // Report fixture exceeds one server page; no business operations are seeded in production.
+  const reportSeed = db.batch()
+  for (let index = 0; index < 52; index++) {
+    const id = `qa-report-${index}`
+    const reportBatch = {
+      id, operationId: id, restaurantId: 'sanjose', branchId: 'central', schemaVersion: 1,
+      status: 'confirmed', processType: 'bagging', processingDate: boliviaDayKey,
+      sourceProductId: 'qa-source-product', sourceProductName: `QA report ${index}`, sourceLocation: 'central',
+      sourceAllocations: [], inputWeightG: 250, destinations: [{ id: 'finished', kind: 'finished', productId: 'qa-sachet-product', lotId: `${id}-lot`, lotCode: `${id}-lot`, commercialUnit: 'package', commercialQuantity: 1, netWeightG: 250, costCents: 125, sourceAllocations: [] }],
+      packagingMaterials: [], costComponents: [], responsibleUid: uid, responsibleName: 'QA report owner', createdAt: date, dayKey: boliviaDayKey, sourceCostCents: 125, auditEventIds: [], reversal: { status: 'blocked', dependencyIds: [], reason: 'fixture' },
+    }
+    if (index === 51) {
+      delete reportBatch.processingDate
+      reportBatch.processType = 'repackaging'
+      reportBatch.sourceUnitType = 'kg'
+      reportBatch.sourceAllocations = [{ lotId: 'qa-free-lot', lotCode: 'QA-LIBRE-1KG', quantity: 0.25, productionCost: 5, expiresOn: safeExpiry }]
+      reportBatch.result = { sourceLotId: 'qa-free-lot', openedQuantity: 0.25 }
+      delete reportBatch.destinations[0].kind
+    }
+    reportSeed.set(root.collection('distProcessingBatches').doc(id), reportBatch)
+  }
+  await reportSeed.commit()
+  await page.getByRole('button', { name: 'Historial', exact: true }).click()
+  await page.getByRole('button', { name: 'Reportes', exact: true }).click()
+  await page.getByText(/52 filtrados \/ 52 registros cargados/).waitFor({ timeout: 30000 })
+  assert.equal(await page.locator('#processing-report-print-root tbody tr').count(), 52)
+  assert.doesNotMatch(await page.locator('#processing-report-print-root').innerText(), /NaN/, 'historical repack weights are normalized without invented values')
+  const excelDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Excel', exact: true }).click()
+  const excelFile = await (await excelDownload).path()
+  const { default: ExcelJS } = await import('exceljs')
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.readFile(excelFile)
+  let exportedRows = 0
+  workbook.worksheets[0].eachRow(row => { if (JSON.stringify(row.values).includes('QA report ')) exportedRows++ })
+  assert.equal(exportedRows, 52, 'Excel contains both complete Firestore pages')
+  const pdfDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'PDF', exact: true }).click()
+  const pdfFile = await (await pdfDownload).path()
+  const { readFile } = await import('node:fs/promises')
+  const pdfBytes = await readFile(pdfFile)
+  assert.equal(pdfBytes.subarray(0, 4).toString(), '%PDF')
+  assert.ok(pdfBytes.length > 1000)
+  await page.evaluate(() => { window.__qaPrinted = false; window.print = () => { window.__qaPrinted = true } })
+  await page.getByRole('button', { name: 'Imprimir', exact: true }).click()
+  assert.equal(await page.evaluate(() => window.__qaPrinted), true)
+  await page.getByRole('button', { name: 'Elaboraciones', exact: true }).first().click()
+  console.log('PASS complete 52-record Firestore report including historical repack: screen, real Excel/PDF downloads and print action')
 
   await page.setViewportSize({ width: 360, height: 800 })
   await page.getByRole('button', { name: 'Nueva elaboración', exact: true }).click()
@@ -196,6 +305,7 @@ try {
       const response = await route.fetch()
       assert.equal(response.status(), 200, 'el Emulator persiste la operación antes de perderse la respuesta')
       operationWriteWasCommitted = true
+      for (const sid of channelSessions) interruptedSessions.add(sid)
       await page.context().setOffline(true)
       connectionDroppedAfterCommit = true
       await route.abort('failed')
@@ -340,7 +450,7 @@ try {
   assert.equal((await root.collection('distStockMovements').where('productId', '==', 'qa-assessment-product').get()).size, 0)
 
   // Navegación habitual de DistributionApp con cuentas ficticias autenticadas en Emulator.
-  await page.goto('http://127.0.0.1:5174/scripts/processing-ui-harness.html?app=1&role=admin')
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html?app=1&role=admin')
   await page.getByRole('button', { name: 'Sacheteado y Embolsado' }).waitFor({ timeout: 30000 })
   await page.getByRole('button', { name: 'Sacheteado y Embolsado' }).click()
   await page.getByRole('heading', { name: 'Sacheteado y Embolsado' }).waitFor()
@@ -357,7 +467,7 @@ try {
 
   const boliviaDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   await page.addInitScript(key => localStorage.setItem(key, 'ok'), 'sanjose_warehouse_shift_' + boliviaDay)
-  await page.goto('http://127.0.0.1:5174/scripts/processing-ui-harness.html?app=1&role=warehouse')
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html?app=1&role=warehouse')
   await page.getByRole('button', { name: 'Sacheteado y Embolsado' }).waitFor({ timeout: 30000 })
   await page.getByRole('button', { name: 'Sacheteado y Embolsado' }).click()
   await page.getByText('Almacén asignado:').waitFor()
@@ -365,13 +475,13 @@ try {
   await page.getByText('QA-ALMACEN-PROPIO').waitFor({ timeout: 30000 })
   assert.equal(await page.getByText('QA-OTRO-ALMACEN').count(), 0, 'Almacén solo consulta la reserva de su ubicación asignada')
 
-  await page.goto('http://127.0.0.1:5174/scripts/processing-ui-harness.html?app=1&role=distributor')
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html?app=1&role=distributor')
   await page.getByRole('heading', { name: /Embutidos San José/ }).waitFor({ timeout: 30000 })
   assert.equal(await page.getByRole('button', { name: 'Sacheteado y Embolsado' }).count(), 0, 'el distribuidor no ve el módulo en la navegación habitual')
   assert.equal(pageErrors.length, 0, 'los recorridos por rol no generan errores JavaScript')
 
   // Anulación y reembolso QR enteros desde SellView, verificando cada tamaño.
-  await page.goto('http://127.0.0.1:5174/scripts/processing-ui-harness.html?sell=1')
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html?sell=1')
   await page.getByRole('button', { name: 'Historial' }).waitFor({ timeout: 30000 })
   await page.getByRole('button', { name: 'Historial' }).click()
   const saleCard = page.locator('article').filter({ hasText: 'QA Sachet anulación QR' }).first()
@@ -384,7 +494,7 @@ try {
     const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
     assert.ok(sizes.document <= sizes.viewport + 1, `overflow horizontal en modal de anulación a ${width}px: ${JSON.stringify(sizes)}`)
   }
-  for (const [width, height] of [[360, 800], [390, 844], [768, 1024], [1440, 900]]) {
+  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1440, 900]]) {
     await assertVoidNoHorizontalOverflow(width, height)
     await page.getByLabel('Qué ocurrió con esta venta').selectOption('recorded_in_error_never_delivered')
     await page.getByPlaceholder('Ej.: venta registrada por error; la mercadería no fue entregada').fill('Venta de QA registrada por error; paquete quedó bajo custodia')
@@ -416,7 +526,7 @@ try {
   assert.equal(finalVoidLot.processingCostCentsRemaining, 125, 'se restauraron exactamente los 125 centavos históricos')
   assert.equal(voidMovements.length, 1, 'se registró un solo movimiento de restitución')
   assert.equal(pageErrors.length, 0, `errores JavaScript del recorrido QR: ${pageErrors.join('; ')}`)
-  console.log(`PASS: Playwright Chromium; revisión y reenvasado con Functions/Firestore/Auth Emulator; anulación y devolución QR completas desde SellView en 360×800, 390×844, 768×1024 y 1440×900; un paquete/250 g/125 centavos restaurados una vez. Capturas sintéticas guardadas en ${tmpdir()}`)
+  console.log(`PASS: Playwright ${process.env.SANJOSE_UI_ENGINE === 'webkit' ? 'WebKit' : 'Chromium'} + Functions/Firestore/Auth Emulator; sacheteado y anulación/reembolso QR revisados en 320, 360, 375, 390, 414, 768 y 1440 px; un paquete, 250 g y 125 centavos restaurados una sola vez. Capturas sintéticas guardadas en ${tmpdir()}`)
 } finally {
   await browser?.close()
   vite.kill('SIGTERM')

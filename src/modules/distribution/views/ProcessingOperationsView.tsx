@@ -1,3 +1,4 @@
+import { ProcessingCommercialRelease } from './ProcessingCommercialRelease'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw, ShieldCheck } from 'lucide-react'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
@@ -8,6 +9,8 @@ import { confirmProcessingRepack, getProcessingOperationState, loadMyProcessingQ
 import type { DistLot, DistProduct } from '../types'
 import type { DistributionSession } from './DistributionApp'
 import { PrimaryButton, SecondaryButton, SectionCard } from './shared'
+import { ProcessingGuide } from './ProcessingGuide'
+import { recordErrorDiagnostic } from '../../../lib/errorDiagnostics'
 
 type Mode = 'reservations' | 'review' | 'repack' | 'history-reviews' | 'history-repackings'
 type Cursor = ProcessingBatchPage['cursor']
@@ -303,7 +306,8 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
         setEvidenceMessage('Evidencia verificada y vinculada a esta revisión.'); setEvidenceFile(null); setEvidenceRetry(false); evidenceRequest.current = null
       }
     } catch (reason) {
-      setError((reason as Error).message || 'No se pudo verificar la evidencia.')
+      recordErrorDiagnostic({ error: reason instanceof Error ? reason : new Error(String(reason)), source: 'handled_operation_failure', view: 'dist.processing.evidence' })
+      setError('No se pudo verificar la evidencia. Comprueba el archivo y la conexión; puedes reintentar con el mismo archivo.')
       setEvidenceRetry(true); setEvidenceMessage('La operación conserva su identificador. Comprueba el estado o reintenta con el mismo archivo antes de iniciar otra carga.')
     } finally { setEvidenceBusy(false) }
   }
@@ -394,6 +398,10 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
   if (!['admin','warehouse'].includes(session.role)) return <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-900">Esta sección solo está disponible para Almacén y Administración.</div>
 
   return <div className="min-w-0 space-y-3">
+    {mode === 'reservations' && <ProcessingGuide topic="reservations" />}
+    {mode === 'review' && <><ProcessingGuide topic="review" /><ProcessingGuide topic="evidence" /></>}
+    {mode === 'repack' && <ProcessingGuide topic="repack" />}
+    {(mode === 'history-reviews' || mode === 'history-repackings') && <ProcessingGuide topic="history" />}
     {mode === 'reservations' && <>
       <SectionCard title="Mercadería reservada" action={<SecondaryButton disabled={loading} onClick={() => void loadFirstPage()}><RefreshCw size={15} />Actualizar</SecondaryButton>}>
         <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Las cantidades reservadas están inmovilizadas. No son stock disponible para venta ni despacho.</p>
@@ -429,10 +437,16 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
             </div>
             {selectedReservation && selectedReview && <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-950">
               <b>Evidencia de Calidad</b><p className="mt-1 text-xs">El servidor comprueba archivo, SHA-256, versión de revisión, reserva y ubicación. Máximo 15 MB; JPG, PNG o PDF.</p>
-              <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
-                <input aria-label="Archivo de evidencia" type="file" accept="image/jpeg,image/png,application/pdf" disabled={evidenceBusy || evidenceRetry || ['unknown','sending'].includes(reviewState)} onChange={event => { const file = event.target.files?.[0] || null; setEvidenceFile(file); setEvidenceMessage(''); setEvidenceRetry(false) }} />
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <label className="grid min-h-11 content-center gap-1 rounded-lg border border-sky-200 bg-white p-2 text-xs font-bold">Tomar fotografía
+                  <input aria-label="Tomar fotografía de evidencia" type="file" accept="image/jpeg,image/png" capture="environment" disabled={evidenceBusy || ['unknown','sending'].includes(reviewState)} onChange={event => { const file = event.target.files?.[0] || null; if (evidenceRequest.current?.file !== file) evidenceRequest.current = null; setEvidenceFile(file); setEvidenceMessage(''); setEvidenceRetry(false) }} />
+                </label>
+                <label className="grid min-h-11 content-center gap-1 rounded-lg border border-sky-200 bg-white p-2 text-xs font-bold">Elegir fotografía o PDF
+                  <input aria-label="Elegir archivo de evidencia" type="file" accept="image/jpeg,image/png,application/pdf" disabled={evidenceBusy || ['unknown','sending'].includes(reviewState)} onChange={event => { const file = event.target.files?.[0] || null; if (evidenceRequest.current?.file !== file) evidenceRequest.current = null; setEvidenceFile(file); setEvidenceMessage(''); setEvidenceRetry(false) }} />
+                </label>
                 <button type="button" className="min-h-11 rounded-xl bg-sky-800 px-4 text-sm font-bold text-white disabled:opacity-50" disabled={!evidenceFile || evidenceBusy || ['unknown','sending'].includes(reviewState)} onClick={() => void submitEvidence()}>{evidenceBusy ? 'Verificando…' : evidenceRetry ? 'Reintentar carga' : 'Subir evidencia'}</button>
               </div>
+              {evidenceFile && <p className="mt-2 break-all text-xs">Archivo seleccionado: <b>{evidenceFile.name}</b> · {(evidenceFile.size / 1024 / 1024).toFixed(2)} MB</p>}
               <label className="mt-2 block text-xs font-semibold">Tipo de evidencia<select className="mt-1 min-h-10 w-full rounded-lg border p-2" value={evidenceType} disabled={evidenceBusy} onChange={event => setEvidenceType(event.target.value as typeof evidenceType)}><option value="photo">Fotografía</option><option value="measurement_record">Registro de medición</option><option value="signed_quality_record">Acta firmada de Calidad</option></select></label>
               {evidenceMessage && <p role="status" className="mt-2 text-xs font-bold">{evidenceMessage}</p>}
               {reviewEvidence.length > 0 && <div className="mt-2 space-y-2">{reviewEvidence.map(row => <label key={row.id} className="flex min-h-11 items-center gap-2 rounded-lg bg-white p-2 text-xs"><input disabled={reviewState === 'unknown' || reviewState === 'sending' || reviewState === 'confirmed'} type="checkbox" checked={reviewDraft.evidenceRefs.includes(row.id)} onChange={event => editReviewDraft({ evidenceRefs: event.target.checked ? [...reviewDraft.evidenceRefs, row.id] : reviewDraft.evidenceRefs.filter(id => id !== row.id) })} /><span className="break-all">{row.evidenceType} · {dateTime(row.recordedAt)} · {row.id}</span></label>)}</div>}
@@ -462,7 +476,7 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
     </SectionCard>}
 
     {mode === 'history-reviews' && <SectionCard title="Historial de revisiones">{loading && reviewRows.length === 0 ? <LoadingState label="Consultando revisiones…" /> : error ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : reviewRows.length === 0 ? <EmptyBlock title="Sin revisiones registradas" description="Las observaciones y decisiones aparecerán aquí, separadas de los reenvasados confirmados." /> : <div className="space-y-2">{reviewRows.map(row => <ReviewSummary key={row.id} review={row} />)}</div>}{reviewHasMore && <SecondaryButton full disabled={loading} onClick={() => void loadMore()}>Cargar más revisiones</SecondaryButton>}</SectionCard>}
-    {mode === 'history-repackings' && <SectionCard title="Historial de reenvasados">{loading && repackRows.length === 0 ? <LoadingState label="Consultando reenvasados confirmados…" /> : error ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : repackRows.length === 0 ? <EmptyBlock title="Sin reenvasados confirmados" description="Una revisión autorizada no aparece como reenvasado hasta que el servidor confirma su transacción." /> : <div className="space-y-2">{repackRows.map(row => <RepackSummary key={row.id} row={row} />)}</div>}{repackHasMore && <SecondaryButton full disabled={loading} onClick={() => void loadMore()}>Cargar más reenvasados</SecondaryButton>}</SectionCard>}
+    {mode === 'history-repackings' && <SectionCard title="Historial de reenvasados">{loading && repackRows.length === 0 ? <LoadingState label="Consultando reenvasados confirmados…" /> : error ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : repackRows.length === 0 ? <EmptyBlock title="Sin reenvasados confirmados" description="Una revisión autorizada no aparece como reenvasado hasta que el servidor confirma su transacción." /> : <div className="space-y-2">{repackRows.map(row => <div key={row.id}><RepackSummary row={row} />{session.role === 'admin' && row.outputLots.map(output => { const lot = lots.find(item => item.id === output.lotId); return lot?.unitType === 'package' ? <ProcessingCommercialRelease key={lot.id} lot={lot} /> : null })}</div>)}</div>}{repackHasMore && <SecondaryButton full disabled={loading} onClick={() => void loadMore()}>Cargar más reenvasados</SecondaryButton>}</SectionCard>}
   </div>
 }
 
