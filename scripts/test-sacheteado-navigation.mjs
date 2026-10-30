@@ -11,6 +11,8 @@ Object.assign(globalThis, {
   HTMLElement: dom.window.HTMLElement,
   IS_REACT_ACT_ENVIRONMENT: true,
   localStorage: dom.window.localStorage,
+  processingReportExports: [],
+  processingReportRows: [],
 })
 Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator })
 
@@ -23,12 +25,13 @@ const vite = await createServer({
     resolveId(id, importer) {
       if (id === '../data/distributionRepository' && (importer?.includes('SacheteadoView.tsx') || importer?.includes('ProcessingReportsView.tsx'))) return '\0sacheteado-repository'
       if (id === './ProcessingOperationsView' && importer?.includes('SacheteadoView.tsx')) return '\0sacheteado-operations-view'
+      if (id === '../data/reportExports' && importer?.includes('ProcessingReportsView.tsx')) return '\0processing-report-exports'
     },
     load(id) {
       if (id === '\0sacheteado-repository') return `
         export const newOperationId = prefix => prefix + '-test'
         export const warehouseBalanceId = () => 'central'
-        export const loadProcessingBatchPage = async () => ({ rows: [], cursor: null, hasMore: false })
+        export const loadProcessingBatchPage = async () => ({ rows: globalThis.processingReportRows, cursor: null, hasMore: false })
         export const getProcessingOperationState = async () => ({ status: 'missing' })
         export const confirmProcessingBatch = async () => { throw new Error('unexpected submit') }
         export const loadProcessingReviewPage = async () => ({ rows: [], cursor: null, hasMore: false })
@@ -37,6 +40,10 @@ const vite = await createServer({
       if (id === '\0sacheteado-operations-view') return `
         import React from 'react'
         export function ProcessingOperationsView({ mode }) { return React.createElement('section', { 'data-testid': 'operations-mode' }, mode) }
+      `
+      if (id === '\0processing-report-exports') return `
+        export const exportExcel = async (reports, description) => globalThis.processingReportExports.push({ format: 'Excel', reports, description })
+        export const exportPdf = async (reports, description) => globalThis.processingReportExports.push({ format: 'PDF', reports, description })
       `
     },
   }],
@@ -55,7 +62,7 @@ try {
   }
   const data = { products: [], lots: [], balances: [], warehouses: [], stockMovements: [], operations: [] }
   const readPanel = async () => {
-    await act(async () => { await Promise.resolve() })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
     return container.textContent || ''
   }
   const renderedOperationMode = () => container.querySelector('[data-testid="operations-mode"]')?.textContent || ''
@@ -104,13 +111,34 @@ try {
   assert.doesNotMatch(panel, /Origen/)
   const reportsTab = [...container.querySelectorAll('button')].find(item => item.textContent.trim() === 'Reportes')
   assert.ok(reportsTab, 'pestaña de reportes disponible dentro del módulo')
+  globalThis.processingReportRows = [{
+    id: 'batch-report-1', operationId: 'op-report-1', restaurantId: 'sanjose', branchId: 'central', schemaVersion: 1,
+    status: 'confirmed', processType: 'bagging', processingDate: '2026-10-29', sourceProductId: 'bulk', sourceProductName: 'QA granel', sourceLocation: 'central',
+    sourceAllocations: [], inputWeightG: 250, destinations: [{ id: 'destination-1', kind: 'finished', productId: 'sachet', lotId: 'lot-report-1', lotCode: 'QA-REPORT-1', commercialUnit: 'package', commercialQuantity: 1, netWeightG: 250, sourceAllocations: [], approvalStatus: 'not_required', costCents: 100, manufacturedOn: '2026-10-29', packagedOn: '2026-10-29', expiresOn: '2026-11-10' }],
+    packagingMaterials: [], costComponents: [], responsibleUid: 'warehouse-test', responsibleName: 'Almacén QA', createdAt: '2026-10-29T12:00:00.000Z', dayKey: '2026-10-29', auditEventIds: [], reversal: { status: 'blocked', dependencyIds: [], reason: 'test' }, sourceCostCents: 100,
+  }]
   await act(async () => reportsTab.click())
   panel = await readPanel()
   assert.match(panel, /Trazabilidad por lote/)
   assert.match(panel, /Los filtros y las exportaciones abarcan los registros cargados/)
+  const excelButton = [...container.querySelectorAll('button')].find(item => item.textContent.trim() === 'Excel')
+  const pdfButton = [...container.querySelectorAll('button')].find(item => item.textContent.trim() === 'PDF')
+  assert.ok(excelButton && pdfButton, 'ambos formatos de exportación están disponibles')
+  assert.equal(excelButton.disabled, false, `el reporte cargó antes de exportar: ${panel}`)
+  await act(async () => { excelButton.click(); await new Promise(resolve => setTimeout(resolve, 50)) })
+  await act(async () => { pdfButton.click(); await new Promise(resolve => setTimeout(resolve, 50)) })
+  assert.deepEqual(globalThis.processingReportExports.map(item => item.format), ['Excel', 'PDF'], container.textContent)
+  assert.equal(globalThis.processingReportExports[0].reports[0].name, 'Elaboraciones de sacheteado')
+  assert.match(globalThis.processingReportExports[0].description, /1 registros filtrados de 1 cargados/)
+  let printInvoked = false
+  dom.window.print = () => { printInvoked = true }
+  const printButton = [...container.querySelectorAll('button')].find(item => item.textContent.includes('Imprimir'))
+  assert.ok(printButton)
+  await act(async () => printButton.click())
+  assert.equal(printInvoked, true, 'la impresión utiliza el contenido filtrado visible')
 
   await act(async () => root.unmount())
-  console.log('PASS: navegación, tutoriales, materiales colapsados y límites de ancho de controles verificados en React/DOM.')
+  console.log('PASS: navegación, tutoriales, materiales opcionales, ancho compartido y exportación PDF/Excel/impresión enlazada verificadas en React/DOM.')
 } finally {
   await vite.close()
   dom.window.close()
