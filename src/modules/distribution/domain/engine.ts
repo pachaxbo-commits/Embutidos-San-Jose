@@ -866,6 +866,118 @@ export function computeSellerKilogramsByProduct(
   return result.sort((a, b) => a.sellerName.localeCompare(b.sellerName, 'es') || a.productName.localeCompare(b.productName, 'es'))
 }
 
+export interface SellerDailyRow {
+  dayKey: string
+  dateFormatted: string
+  sellerUid: string
+  sellerName: string
+  routeNames: string[]
+  granelKilograms: number
+  documentedSachetKilograms: number
+  totalDocumentedKilograms: number
+  estimatedSachetKilograms: number
+  totalEstimatedKilograms: number
+  packages: number
+  unknownWeightPackages: number
+}
+
+export interface SellerDailyDayGroup {
+  dayKey: string
+  dateFormatted: string
+  rows: SellerDailyRow[]
+  subtotal: {
+    granelKilograms: number
+    documentedSachetKilograms: number
+    totalDocumentedKilograms: number
+    estimatedSachetKilograms: number
+    totalEstimatedKilograms: number
+    packages: number
+    unknownWeightPackages: number
+  }
+}
+
+/** Formatea una fecha YYYY-MM-DD a DD/MM/YYYY */
+export function formatDayKeyToDate(dayKey: string): string {
+  const [year, month, day] = dayKey.split('-')
+  return year && month && day ? `${day}/${month}/${year}` : dayKey
+}
+
+/**
+ * Computes daily kilogram breakdown by seller and day, matching shared calculation logic.
+ * Respects Bolivia dates, voided/courtesy/pending exclusions, and return compensations.
+ */
+export function computeSellerDailyBreakdown(
+  days: string[],
+  sales: DistSale[],
+  claims: DistClaim[] = [],
+  products: DistProduct[] = [],
+  routeFilter = '',
+  sellerFilter = '',
+): SellerDailyDayGroup[] {
+  const sortedDays = [...new Set(days)].filter(Boolean).sort()
+  const result: SellerDailyDayGroup[] = []
+
+  for (const dayKey of sortedDays) {
+    const daySales = sales.filter((sale) =>
+      (sale.dayKey || toDayKey(sale.createdAt)) === dayKey &&
+      (!routeFilter || matchesRoute(sale.routeId, routeFilter)) &&
+      (!sellerFilter || sale.sellerUid === sellerFilter)
+    )
+    const dayClaims = claims.filter((claim) =>
+      (claim.dayKey || toDayKey(claim.createdAt)) === dayKey &&
+      (!routeFilter || matchesRoute(cashMovementRouteId(claim), routeFilter)) &&
+      (!sellerFilter || cashMovementSellerUid(claim) === sellerFilter)
+    )
+
+    if (daySales.length === 0 && dayClaims.length === 0) continue
+
+    const sellers = computeSellerBreakdown(daySales, [], [], dayClaims, products)
+      .filter((seller) =>
+        (!sellerFilter || seller.sellerUid === sellerFilter) &&
+        (seller.salesCount > 0 || seller.kilograms !== 0 || seller.documentedSachetKilograms !== 0 ||
+         seller.estimatedSachetKilograms !== 0 || seller.packages !== 0 || seller.unknownWeightPackages !== 0)
+      )
+
+    if (sellers.length === 0) continue
+
+    const dateFormatted = formatDayKeyToDate(dayKey)
+
+    const rows: SellerDailyRow[] = sellers.map((seller) => ({
+      dayKey,
+      dateFormatted,
+      sellerUid: seller.sellerUid,
+      sellerName: seller.sellerName,
+      routeNames: seller.routeNames,
+      granelKilograms: round3(seller.kilograms),
+      documentedSachetKilograms: round3(seller.documentedSachetKilograms),
+      totalDocumentedKilograms: round3(seller.totalDocumentedKilograms),
+      estimatedSachetKilograms: round3(seller.estimatedSachetKilograms),
+      totalEstimatedKilograms: round3(seller.totalEstimatedKilograms),
+      packages: round3(seller.packages),
+      unknownWeightPackages: round3(seller.unknownWeightPackages),
+    }))
+
+    const subtotal = {
+      granelKilograms: round3(rows.reduce((sum, r) => sum + r.granelKilograms, 0)),
+      documentedSachetKilograms: round3(rows.reduce((sum, r) => sum + r.documentedSachetKilograms, 0)),
+      totalDocumentedKilograms: round3(rows.reduce((sum, r) => sum + r.totalDocumentedKilograms, 0)),
+      estimatedSachetKilograms: round3(rows.reduce((sum, r) => sum + r.estimatedSachetKilograms, 0)),
+      totalEstimatedKilograms: round3(rows.reduce((sum, r) => sum + r.totalEstimatedKilograms, 0)),
+      packages: round3(rows.reduce((sum, r) => sum + r.packages, 0)),
+      unknownWeightPackages: round3(rows.reduce((sum, r) => sum + r.unknownWeightPackages, 0)),
+    }
+
+    result.push({
+      dayKey,
+      dateFormatted,
+      rows,
+      subtotal,
+    })
+  }
+
+  return result
+}
+
 function addSellerClaimReturnLine(entry: SellerBreakdown, claim: DistClaim): void {
   const quantity = Math.max(0, Number(claim.quantity) || 0)
   if (!quantity) return

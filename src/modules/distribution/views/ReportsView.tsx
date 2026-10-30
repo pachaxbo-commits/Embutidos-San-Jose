@@ -21,6 +21,7 @@ import { printLargeSaleReceipt, printSaleReceipt, shareSaleReceipt } from '../da
 import {
   computeMoneySummary,
   computeSellerBreakdown,
+  computeSellerDailyBreakdown,
   computeSellerKilogramsByProduct,
   cashMovementRouteId,
   cashMovementSellerUid,
@@ -131,12 +132,18 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       const sheet = reportSheets(data, session.dayKeys, routeFilter, sellerFilter).find(row => row.id === 'sellerSummary')
       if (!sheet) throw new Error('No se pudo preparar el reporte por chofer.')
       const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character))
-      const tableRows = sheet.rows.map(row => `<tr>${row.map(cell => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('')
-      const productRows = showSellerProductDetails ? sellerProductKilograms.map(row => `<tr><td>${esc(row.sellerName)}</td><td>${esc(row.routeNames.join(' · '))}</td><td>${esc(row.productName)}</td><td>${row.granelKilograms.toFixed(3)}</td><td>${row.documentedSachetKilograms.toFixed(3)}</td><td>${row.estimatedSachetKilograms.toFixed(3)}</td><td>${row.totalDocumentedKilograms.toFixed(3)}</td><td>${row.unknownWeightPackages}</td></tr>`).join('') : ''
-      const productDetailTable = showSellerProductDetails ? `<h3>Detalle por producto</h3><table><thead><tr><th>Chofer</th><th>Ruta</th><th>Producto</th><th>Granel kg</th><th>Sachets doc. kg</th><th>Estimados kg</th><th>Total doc. kg</th><th>Paquetes sin peso</th></tr></thead><tbody>${productRows || '<tr><td colspan="8">Sin detalle por producto en el período.</td></tr>'}</tbody></table>` : ''
+      const tableRows = sheet.rows.map(row => {
+        const isHeader = row[0] === 'RESUMEN DEL PERÍODO' || row[0] === 'Sin ventas en el período'
+        const isSubtotal = typeof row[0] === 'string' && row[0].startsWith('Subtotal')
+        const isTotal = row[0] === 'TOTAL GENERAL'
+        const style = isTotal ? 'font-weight:bold;background:#e2e8f0;' : isHeader ? 'font-weight:bold;background:#f1f5f9;' : isSubtotal ? 'font-weight:bold;background:#f8fafc;' : ''
+        return `<tr style="${style}">${row.map(cell => `<td>${esc(cell)}</td>`).join('')}</tr>`
+      }).join('')
+      const productRows = showSellerProductDetails ? sellerProductKilograms.map(row => `<tr><td>${esc(row.sellerName)}</td><td>${esc(row.routeNames.join(' · '))}</td><td>${esc(row.productName)}</td><td>${row.granelKilograms.toFixed(3)}</td><td>${row.documentedSachetKilograms.toFixed(3)}</td><td>${row.totalDocumentedKilograms.toFixed(3)}</td><td>${row.estimatedSachetKilograms.toFixed(3)}</td><td>${row.unknownWeightPackages}</td></tr>`).join('') : ''
+      const productDetailTable = showSellerProductDetails ? `<h3>Detalle por producto</h3><table><thead><tr><th>Chofer</th><th>Ruta</th><th>Producto</th><th>Granel kg</th><th>Sachets doc. kg</th><th>Total doc. kg</th><th>Estimados kg</th><th>Paquetes sin peso</th></tr></thead><tbody>${productRows || '<tr><td colspan="8">Sin detalle por producto en el período.</td></tr>'}</tbody></table>` : ''
       const routeName = routeFilter ? reportRecordName(data.routes.find(route => route.id === routeFilter)?.name, routeFilter) : 'Todas las rutas'
       const sellerName = sellerFilter ? reportPersonName(sellerOptions.find(seller => seller.sellerUid === sellerFilter)?.sellerName) : 'Todos los choferes'
-      const html = `<!doctype html><html lang="es"><meta charset="utf-8"><title>Kg vendidos por chofer</title><style>body{font:12px Arial,sans-serif;color:#172033;margin:24px}h1{color:#a20f25;margin-bottom:4px}.meta{color:#475569;margin:4px 0 18px}table{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:18px}thead{display:table-header-group}tr{break-inside:avoid}th,td{border:1px solid #cbd5e1;padding:6px;text-align:left}th{background:#f1f5f9}tr:last-child{font-weight:bold;background:#f8fafc}.note{margin-top:12px;color:#475569;font-size:10px}@page{size:landscape;margin:12mm}@media print{body{margin:0}}</style><h1>EMBUTIDOS SAN JOSÉ</h1><h2>KG VENDIDOS POR CHOFER</h2><p class="meta">Período: ${esc(describeRange(session.dayKeys))} · Ruta: ${esc(routeName)} · Chofer: ${esc(sellerName)}<br>Emitido: ${esc(new Date().toLocaleString('es-BO'))}</p><table><thead><tr>${sheet.headers.map(header => `<th>${esc(header)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>${productDetailTable}<p class="note">Los sachets estimados se muestran separados. Paquetes sin peso fiable no se convierten en kilogramos documentados.</p></html>`
+      const html = `<!doctype html><html lang="es"><meta charset="utf-8"><title>Kg vendidos por chofer</title><style>body{font:12px Arial,sans-serif;color:#172033;margin:24px}h1{color:#a20f25;margin-bottom:4px}.meta{color:#475569;margin:4px 0 18px}table{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:18px}thead{display:table-header-group}tr{break-inside:avoid}th,td{border:1px solid #cbd5e1;padding:6px;text-align:left}th{background:#f1f5f9}.note{margin-top:12px;color:#475569;font-size:10px}@page{size:landscape;margin:12mm}@media print{body{margin:0}}</style><h1>EMBUTIDOS SAN JOSÉ</h1><h2>KG VENDIDOS POR CHOFER</h2><p class="meta">Período: ${esc(describeRange(session.dayKeys))} · Ruta: ${esc(routeName)} · Chofer: ${esc(sellerName)}<br>Emitido: ${esc(new Date().toLocaleString('es-BO', { timeZone: 'America/La_Paz' }))}</p><table><thead><tr>${sheet.headers.map(header => `<th>${esc(header)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>${productDetailTable}<p class="note">Los sachets estimados se muestran separados. Paquetes sin peso fiable no se convierten en kilogramos documentados.</p></html>`
       await printHtmlDocument(html, 'Kg vendidos por chofer')
       setExportError('')
     } catch (failure) { setExportError((failure as Error).message || 'No se pudo abrir la impresión.') }
@@ -1009,13 +1016,77 @@ export function ReportsView({ session, data }: DistributionViewProps) {
             {ventasSubTab === 'sellerKg' && (() => {
               const rows = sellers.filter(seller => seller.salesCount > 0 || seller.kilograms !== 0 || seller.documentedSachetKilograms !== 0 || seller.estimatedSachetKilograms !== 0 || seller.packages !== 0 || seller.unknownWeightPackages !== 0)
               const sheet = sellerKgError ? undefined : reportSheets(data, session.dayKeys, routeFilter, sellerFilter).find(report => report.id === 'sellerSummary')
+              const dailyGroups = computeSellerDailyBreakdown(session.dayKeys, sales, claims, data.products, routeFilter, sellerFilter)
               return <SectionCard title="Kg vendidos por chofer">
-                <p className="mb-3 text-xs text-slate-600">Kilos de granel y peso documentado de sachets. Las estimaciones y paquetes sin peso fiable se informan por separado.</p>
+                <p className="mb-3 text-xs text-slate-600">Kilos de granel y peso documentado de sachets. Desglose diario por chofer y ruta, con subtotales diarios y totales del período. Las estimaciones y paquetes sin peso fiable se informan por separado.</p>
                 {sellerKgError && <p role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900">{sellerKgError}</p>}
                 <div className="mb-3 flex flex-wrap gap-2"><SecondaryButton onClick={() => setShowSellerProductDetails(value => !value)}><Search size={15}/>{showSellerProductDetails ? 'Ocultar detalle por producto' : 'Ver detalle por producto'}</SecondaryButton><SecondaryButton disabled={Boolean(sellerKgError)} onClick={() => void printSellerKilograms()}><Printer size={15}/> Imprimir reporte</SecondaryButton><SecondaryButton disabled={Boolean(sellerKgError)} onClick={() => handleOpenExportModal('PDF')}><FileText size={15}/> Descargar PDF</SecondaryButton><SecondaryButton disabled={Boolean(sellerKgError)} onClick={() => handleOpenExportModal('Excel')}><FileSpreadsheet size={15}/> Descargar Excel</SecondaryButton></div>
-                {rows.length === 0 ? <EmptyBlock title="Sin ventas en el período" description="No se convirtieron despachos, cobros ni paquetes sin peso en ventas por kilogramo."/> : <div className="grid gap-2">{rows.map(seller => <article key={seller.sellerUid} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap justify-between gap-2"><strong>{seller.sellerName}</strong><span className="text-xs font-semibold text-slate-600">{seller.routeNames.join(' · ') || 'Sin ruta'}</span></div><dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4"><div><dt>Granel</dt><dd className="font-black">{seller.kilograms.toFixed(3)} kg</dd></div><div><dt>Sachets documentados</dt><dd className="font-black">{seller.documentedSachetKilograms.toFixed(3)} kg</dd></div><div><dt>Total documentado</dt><dd className="font-black text-emerald-800">{seller.totalDocumentedKilograms.toFixed(3)} kg</dd></div><div><dt>Sachets estimados</dt><dd className="font-black">{seller.estimatedSachetKilograms > 0 ? `≈ ${seller.estimatedSachetKilograms.toFixed(3)} kg` : '—'}</dd></div><div><dt>Paquetes sin peso fiable</dt><dd className="font-black">{seller.unknownWeightPackages}</dd></div><div><dt>Paquetes contabilizados</dt><dd className="font-black">{seller.packages}</dd></div></dl></article>)}<p className="text-xs font-black text-slate-800">Total general documentado: {rows.reduce((sum, seller) => sum + seller.totalDocumentedKilograms, 0).toFixed(3)} kg · estimado separado: ≈ {rows.reduce((sum, seller) => sum + seller.estimatedSachetKilograms, 0).toFixed(3)} kg</p></div>}
+                {dailyGroups.length === 0 ? <EmptyBlock title="Sin ventas en el período" description="No se convirtieron despachos, cobros ni paquetes sin peso en ventas por kilogramo."/> : <div className="grid gap-4">
+                  <div className="space-y-3">
+                    {dailyGroups.map(group => (
+                      <div key={group.dayKey} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 sm:p-4">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                          <h4 className="text-xs font-black uppercase tracking-wide text-slate-800">Fecha: {group.dateFormatted}</h4>
+                          <span className="text-[11px] font-bold text-slate-500">{group.rows.length} {group.rows.length === 1 ? 'chofer' : 'choferes'}</span>
+                        </div>
+                        <div className="grid gap-2">
+                          {group.rows.map(row => (
+                            <article key={`${group.dayKey}-${row.sellerUid}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                              <div className="flex flex-wrap justify-between gap-2">
+                                <strong>{row.sellerName}</strong>
+                                <span className="text-xs font-semibold text-slate-600">{row.routeNames.join(' · ') || 'Sin ruta'}</span>
+                              </div>
+                              <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                                <div><dt className="text-slate-500">Granel</dt><dd className="font-black">{row.granelKilograms.toFixed(3)} kg</dd></div>
+                                <div><dt className="text-slate-500">Sachets documentados</dt><dd className="font-black">{row.documentedSachetKilograms.toFixed(3)} kg</dd></div>
+                                <div><dt className="text-slate-500">Total documentado</dt><dd className="font-black text-emerald-800">{row.totalDocumentedKilograms.toFixed(3)} kg</dd></div>
+                                <div><dt className="text-slate-500">Sachets estimados</dt><dd className="font-black">{row.estimatedSachetKilograms > 0 ? `≈ ${row.estimatedSachetKilograms.toFixed(3)} kg` : '—'}</dd></div>
+                                <div><dt className="text-slate-500">Paquetes sin peso fiable</dt><dd className="font-black">{row.unknownWeightPackages}</dd></div>
+                                <div><dt className="text-slate-500">Paquetes contabilizados</dt><dd className="font-black">{row.packages}</dd></div>
+                              </dl>
+                            </article>
+                          ))}
+                        </div>
+                        {(group.rows.length > 1 || dailyGroups.length > 1) && (
+                          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-950">
+                            <span>Subtotal {group.dateFormatted}:</span>
+                            <span>Granel {group.subtotal.granelKilograms.toFixed(3)} kg · Sachets doc. {group.subtotal.documentedSachetKilograms.toFixed(3)} kg · Total doc. <strong className="font-black">{group.subtotal.totalDocumentedKilograms.toFixed(3)} kg</strong>{group.subtotal.estimatedSachetKilograms > 0 ? ` · Estimado ≈ ${group.subtotal.estimatedSachetKilograms.toFixed(3)} kg` : ''}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {dailyGroups.length > 1 && (
+                    <div className="rounded-2xl border-2 border-slate-300 bg-white p-3 sm:p-4">
+                      <h4 className="mb-2 text-xs font-black uppercase tracking-wide text-slate-700">Resumen acumulado del período por chofer</h4>
+                      <div className="grid gap-2">
+                        {rows.map(seller => (
+                          <article key={seller.sellerUid} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <div className="flex flex-wrap justify-between gap-2">
+                              <strong>{seller.sellerName}</strong>
+                              <span className="text-xs font-semibold text-slate-600">{seller.routeNames.join(' · ') || 'Sin ruta'}</span>
+                            </div>
+                            <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                              <div><dt className="text-slate-500">Granel</dt><dd className="font-black">{seller.kilograms.toFixed(3)} kg</dd></div>
+                              <div><dt className="text-slate-500">Sachets documentados</dt><dd className="font-black">{seller.documentedSachetKilograms.toFixed(3)} kg</dd></div>
+                              <div><dt className="text-slate-500">Total documentado</dt><dd className="font-black text-emerald-800">{seller.totalDocumentedKilograms.toFixed(3)} kg</dd></div>
+                              <div><dt className="text-slate-500">Sachets estimados</dt><dd className="font-black">{seller.estimatedSachetKilograms > 0 ? `≈ ${seller.estimatedSachetKilograms.toFixed(3)} kg` : '—'}</dd></div>
+                              <div><dt className="text-slate-500">Paquetes sin peso fiable</dt><dd className="font-black">{seller.unknownWeightPackages}</dd></div>
+                              <div><dt className="text-slate-500">Paquetes contabilizados</dt><dd className="font-black">{seller.packages}</dd></div>
+                            </dl>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3">
+                    <p className="text-xs font-black text-emerald-950">Total general documentado del período: {rows.reduce((sum, seller) => sum + seller.totalDocumentedKilograms, 0).toFixed(3)} kg (Granel: {rows.reduce((sum, seller) => sum + seller.kilograms, 0).toFixed(3)} kg · Sachets documentados: {rows.reduce((sum, seller) => sum + seller.documentedSachetKilograms, 0).toFixed(3)} kg) · Estimado separado: ≈ {rows.reduce((sum, seller) => sum + seller.estimatedSachetKilograms, 0).toFixed(3)} kg · Paquetes sin peso fiable: {rows.reduce((sum, seller) => sum + seller.unknownWeightPackages, 0)}</p>
+                  </div>
+                </div>}
                 {showSellerProductDetails && <div className="mt-3 grid gap-2">{sellerProductKilograms.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">Sin detalle por producto en el período.</p> : sellerProductKilograms.map(row => <article key={`${row.sellerUid}-${row.productId}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3"><div className="flex flex-wrap justify-between gap-1"><strong className="text-xs">{row.productName}</strong><span className="text-[10px] text-slate-600">{row.sellerName} · {row.routeNames.join(' · ') || 'Sin ruta'}</span></div><p className="mt-1 text-[10px] text-slate-700">Granel {row.granelKilograms.toFixed(3)} kg · Sachets documentados {row.documentedSachetKilograms.toFixed(3)} kg · Total documentado {row.totalDocumentedKilograms.toFixed(3)} kg · Estimado ≈ {row.estimatedSachetKilograms.toFixed(3)} kg · Paquetes sin peso: {row.unknownWeightPackages}</p></article>)}</div>}
-                {!sellerKgError && sheet && <p className="mt-3 text-[10px] text-slate-500">El PDF y Excel usan la hoja existente “{sheet.name}” y los filtros de fecha, ruta y chofer seleccionados.</p>}
+                {!sellerKgError && sheet && <p className="mt-3 text-[10px] text-slate-500">El PDF y Excel usan la hoja existente “{sheet.name}” con fechas de cada día, subtotales diarios y el resumen del período.</p>}
               </SectionCard>
             })()}
 
