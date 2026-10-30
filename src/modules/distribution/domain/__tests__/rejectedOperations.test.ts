@@ -25,6 +25,7 @@ check(getRejectedOperationModule('collection', 'distributor') === 'dist.credits'
 check(getRejectedOperationActionLabel('collection', 'distributor') === 'Revisar en Créditos', 'texto del destino de cobro coincide con el módulo del distribuidor')
 check(getRejectedOperationMetadata('futureUnknown').module === null && getRejectedOperationMetadata('futureUnknown').actionLabel === 'Volver al inicio', 'tipo desconocido no se envía a Créditos')
 check(!rejectedOperationStatusMessage().toLowerCase().includes('sin conexión') && !rejectedOperationStatusMessage().toLowerCase().includes('offline'), 'aviso no atribuye rechazo a modo offline sin evidencia')
+check(rejectedOperationStatusMessage().includes('no quedó registrada') && rejectedOperationStatusMessage().includes('Corrige'), 'el rechazo informa que no se registró y requiere corregir antes de reintentar')
 check(lotUpdateReasonError('  ') === 'Indica por qué estás modificando este lote.', 'motivo vacío se bloquea antes de enviar')
 check(lotUpdateReasonError('Corrección de fecha') === null, 'motivo informado permite continuar')
 

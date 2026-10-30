@@ -20,6 +20,14 @@ export const EXPENSE_TOP_LEVEL_CHOICES = [
   { value: 'production_input', label: 'Materia prima / producción' },
 ]
 
+/** Hides a built-in shortcut when its category was moved to another active group. */
+export function isExpensePresetChoiceAvailable(choiceId: string, categories: DistExpenseCategory[]): boolean {
+  const preset = EXPENSE_PRESETS.find(item => item.id === choiceId)
+  if (!preset) return true
+  const current = categories.find(category => category.id === preset.categoryId)
+  return !current || (current.active && current.group === preset.group)
+}
+
 export function customExpensePreset(category: DistExpenseCategory, includeAdminOnly = false, customGroups: DistExpenseGroup[] = []): ExpensePreset | null {
   if (!category.active || !category.autoClassifiable || (!category.distributorVisible && !includeAdminOnly)) return null
   const customGroup = customGroups.find((group) => group.id === category.group && group.active)

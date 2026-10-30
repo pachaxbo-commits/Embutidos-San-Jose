@@ -2798,18 +2798,24 @@ async function expense(o, p) {
     if (o.member.role === "distributor") {
       check(p.group === undefined && p.categoryId === undefined && p.economicType === undefined && p.affectsOperatingResult === undefined, "La clasificación se determina desde la opción seleccionada; no envíes una clasificación manual.");
     }
-    group = preset.group;
-    const groupConfig = await readExpenseGroupConfig(o, group);
-    check(groupConfig && groupConfig.active !== false, "El grupo de esta opción está inactivo.");
     categoryId = preset.categoryId;
     const saved = await o.read("distExpenseCategories", categoryId);
-    check(!saved || (saved.active && saved.group === group), "La categoría ya no está activa. Actualiza la selección.");
+    check(!saved || saved.active === true, "La categoría ya no está activa. Actualiza la selección.");
+    group = saved?.group || preset.group;
+    if (saved && group !== preset.group && o.member.role === "distributor") {
+      check(saved.autoClassifiable === true && saved.distributorVisible === true,
+        "Esta categoría ya no está habilitada para egresos de Distribuidores.");
+    }
+    const groupConfig = await readExpenseGroupConfig(o, group);
+    check(groupConfig && groupConfig.active !== false, "El grupo de esta opción está inactivo.");
+    check(groupConfig.economicType === preset.economicType,
+      "La categoría cambió de tratamiento económico. Selecciona una categoría vigente.");
     category = saved?.name || preset.categoryName;
     economicType = groupConfig.economicType;
     p.groupName = groupConfig.name || groupConfig.label;
     classificationStatus = preset.classificationStatus;
     classificationSource = preset.classificationSource;
-    concept = preset.id === "other_unsure" ? "Otro" : preset.categoryName;
+    concept = preset.id === "other_unsure" ? "Otro" : category;
   } else if (o.member.role === "distributor") {
     // Accept already queued operations from older app versions without trusting their
     // implicit/default group. Keep the amount and payment, but send the entry to review.
