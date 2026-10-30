@@ -20,7 +20,7 @@ La autorización de Calidad se concede mediante el mecanismo privilegiado existe
 
 ## Reenvasado
 
-La configuración de servidor requiere `SANJOSE_PROCESSING_REPACK_ENABLED=true` y el bucket de evidencia restringido. La configuración no sustituye la reserva, revisión, evidencia verificada ni autorización de Calidad vigentes que valida la transacción. Las existencias resultantes mantienen su protección comercial; los casos de devolución o disposición económica sin política aprobada continúan bloqueados.
+La configuración de servidor requiere `SANJOSE_PROCESSING_REPACK_ENABLED=true` y el bucket de evidencia restringido. La configuración no sustituye la reserva, revisión, evidencia verificada ni autorización de Calidad vigentes que valida la transacción. Las existencias resultantes mantienen su protección contable y requieren una liberación comercial posterior desde el historial. Esa liberación reutiliza `releaseProcessingLot` y vuelve a verificar el reenvasado, su revisión, autorización y evidencia, además de la aptitud y conciliación de la salida. Los casos de devolución o disposición económica sin política aprobada continúan bloqueados.
 
 ## Despliegue y recuperación
 

@@ -216,21 +216,31 @@ try {
 
   // Report fixture exceeds one server page; no business operations are seeded in production.
   const reportSeed = db.batch()
-  for (let index = 0; index < 51; index++) {
+  for (let index = 0; index < 52; index++) {
     const id = `qa-report-${index}`
-    reportSeed.set(root.collection('distProcessingBatches').doc(id), {
+    const reportBatch = {
       id, operationId: id, restaurantId: 'sanjose', branchId: 'central', schemaVersion: 1,
       status: 'confirmed', processType: 'bagging', processingDate: boliviaDayKey,
       sourceProductId: 'qa-source-product', sourceProductName: `QA report ${index}`, sourceLocation: 'central',
       sourceAllocations: [], inputWeightG: 250, destinations: [{ id: 'finished', kind: 'finished', productId: 'qa-sachet-product', lotId: `${id}-lot`, lotCode: `${id}-lot`, commercialUnit: 'package', commercialQuantity: 1, netWeightG: 250, costCents: 125, sourceAllocations: [] }],
       packagingMaterials: [], costComponents: [], responsibleUid: uid, responsibleName: 'QA report owner', createdAt: date, dayKey: boliviaDayKey, sourceCostCents: 125, auditEventIds: [], reversal: { status: 'blocked', dependencyIds: [], reason: 'fixture' },
-    })
+    }
+    if (index === 51) {
+      delete reportBatch.processingDate
+      reportBatch.processType = 'repackaging'
+      reportBatch.sourceUnitType = 'kg'
+      reportBatch.sourceAllocations = [{ lotId: 'qa-free-lot', lotCode: 'QA-LIBRE-1KG', quantity: 0.25, productionCost: 5, expiresOn: safeExpiry }]
+      reportBatch.result = { sourceLotId: 'qa-free-lot', openedQuantity: 0.25 }
+      delete reportBatch.destinations[0].kind
+    }
+    reportSeed.set(root.collection('distProcessingBatches').doc(id), reportBatch)
   }
   await reportSeed.commit()
   await page.getByRole('button', { name: 'Historial', exact: true }).click()
   await page.getByRole('button', { name: 'Reportes', exact: true }).click()
-  await page.getByText(/51 filtrados \/ 51 registros cargados/).waitFor({ timeout: 30000 })
-  assert.equal(await page.locator('#processing-report-print-root tbody tr').count(), 51)
+  await page.getByText(/52 filtrados \/ 52 registros cargados/).waitFor({ timeout: 30000 })
+  assert.equal(await page.locator('#processing-report-print-root tbody tr').count(), 52)
+  assert.doesNotMatch(await page.locator('#processing-report-print-root').innerText(), /NaN/, 'historical repack weights are normalized without invented values')
   const excelDownload = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Excel', exact: true }).click()
   const excelFile = await (await excelDownload).path()
@@ -239,7 +249,7 @@ try {
   await workbook.xlsx.readFile(excelFile)
   let exportedRows = 0
   workbook.worksheets[0].eachRow(row => { if (JSON.stringify(row.values).includes('QA report ')) exportedRows++ })
-  assert.equal(exportedRows, 51, 'Excel contains both complete Firestore pages')
+  assert.equal(exportedRows, 52, 'Excel contains both complete Firestore pages')
   const pdfDownload = page.waitForEvent('download')
   await page.getByRole('button', { name: 'PDF', exact: true }).click()
   const pdfFile = await (await pdfDownload).path()
@@ -251,7 +261,7 @@ try {
   await page.getByRole('button', { name: 'Imprimir', exact: true }).click()
   assert.equal(await page.evaluate(() => window.__qaPrinted), true)
   await page.getByRole('button', { name: 'Elaboraciones', exact: true }).first().click()
-  console.log('PASS complete 51-record Firestore report: screen, real Excel/PDF downloads and print action')
+  console.log('PASS complete 52-record Firestore report including historical repack: screen, real Excel/PDF downloads and print action')
 
   await page.setViewportSize({ width: 360, height: 800 })
   await page.getByRole('button', { name: 'Nueva elaboración', exact: true }).click()

@@ -27,6 +27,22 @@ const reviewStatusName: Record<ProcessingReviewRecord['status'], string> = { pen
 const productName = (id: string | undefined, products: DistProduct[]) => products.find(product => product.id === id)?.name || id || 'Sin producto registrado'
 const sourceLotName = (id: string, lots: DistLot[]) => lots.find(lot => lot.id === id)?.lotCode || id
 
+/** Older repack batches store stock allocations, rather than batch-input allocations. */
+export function normalizeProcessingReportBatch(batch: ProcessingBatch): ProcessingBatch {
+  if (batch.processType !== 'repackaging') return batch
+  const first = batch.sourceAllocations[0]
+  const result = (batch as ProcessingBatch & { result?: { sourceLotId?: string; openedQuantity?: number } }).result
+  const quantity = result?.openedQuantity ?? first?.quantity
+  const lotId = result?.sourceLotId || first?.lotId
+  if (!lotId || typeof quantity !== 'number' || !Number.isFinite(quantity) || !Number.isSafeInteger(batch.inputWeightG)) throw new Error('El reenvasado histórico no conserva datos suficientes para el informe completo.')
+  return { ...batch, processingDate: batch.processingDate || batch.dayKey,
+    sourceAllocations: [{ ...first, lotId, lotCode: first?.lotCode || lotId, expiresOn: first?.expiresOn || '', productionCost: first?.productionCost ?? null,
+      quantity, quantityMilli: Math.round(quantity * 1000), measuredNetWeightG: batch.inputWeightG, historicalCostCents: batch.sourceCostCents ?? null,
+      sourceProductId: batch.sourceProductId, sourceUnitType: batch.sourceUnitType || 'package', originStatus: 'confirmed' }],
+    destinations: batch.destinations.map(destination => ({ ...destination, kind: destination.kind || 'finished' })),
+  }
+}
+
 function matchesBatch(batch: ProcessingBatch, filters: ProcessingReportFilters) {
   const date = dateKey(batch.processingDate || batch.dayKey || batch.createdAt)
   if (filters.from && date < filters.from || filters.to && date > filters.to) return false
@@ -41,7 +57,7 @@ function matchesBatch(batch: ProcessingBatch, filters: ProcessingReportFilters) 
 }
 
 export function filterProcessingBatches(rows: ProcessingBatch[], filters: ProcessingReportFilters) {
-  return rows.filter(row => matchesBatch(row, filters))
+  return rows.map(normalizeProcessingReportBatch).filter(row => matchesBatch(row, filters))
 }
 
 function matchesQualityRecord(dateValue: string, productId: string, lotLabel: string, location: string, responsibleName: string, rowStatus: string, filters: ProcessingReportFilters) {
@@ -71,7 +87,7 @@ export function buildProcessingBatchReport(rows: ProcessingBatch[], products: Di
   return {
     name: 'Elaboraciones de sacheteado',
     headers: ['Fecha', 'Tipo', 'Producto de origen', 'Lotes de origen y aporte contable', 'Entrada neta', 'Destinos y presentaciones medidas', 'Salida neta documentada', 'Diferencia', 'Costo histórico de origen', 'Materiales (informativos)', 'Responsable', 'Almacén', 'Estado'],
-    rows: rows.map(batch => {
+    rows: rows.map(normalizeProcessingReportBatch).map(batch => {
       const outputWeight = batch.destinations.reduce((sum, row) => sum + (Number.isSafeInteger(row.netWeightG) ? row.netWeightG : 0), 0)
       const source = batch.sourceAllocations.map(row => `${row.lotCode || row.lotId}: ${kg(row.measuredNetWeightG)} · ${money(row.historicalCostCents)}`).join(' | ')
       const destinations = batch.destinations.map(row => `${productName(row.productId, products)} (${row.kind}) · lote ${row.lotCode || 'sin código'} · ${row.commercialQuantity} ${row.commercialUnit || ''} · ${kg(row.netWeightG)} netos · costo histórico ${money(row.costCents)}`).join(' | ')
@@ -81,17 +97,18 @@ export function buildProcessingBatchReport(rows: ProcessingBatch[], products: Di
   }
 }
 
-export function buildProcessingLotTraceReport(rows: ProcessingBatch[], filters: Pick<ProcessingReportFilters, 'productId' | 'outputLot'> = {}, products: DistProduct[] = []) {
+export function buildProcessingLotTraceReport(rows: ProcessingBatch[], filters: Pick<ProcessingReportFilters, 'productId' | 'outputLot'> = {}, products: DistProduct[] = [], lots: DistLot[] = []) {
+  const lotsById = new Map(lots.map(lot => [lot.id, lot]))
   return {
     name: 'Trazabilidad por lote de sacheteado',
     headers: ['Lote resultante', 'Producto terminado', 'Elaboración', 'Fecha elaboración', 'Fecha embolsado', 'Vencimiento', 'Peso neto producido', 'Cantidad comercial', 'Lotes de origen y aportes contables', 'Costo histórico transferido', 'Responsable', 'Almacén', 'Estado comercial documentado'],
-    rows: rows.flatMap(batch => batch.destinations.filter(destination => {
+    rows: rows.map(normalizeProcessingReportBatch).flatMap(batch => batch.destinations.filter(destination => {
       if (filters.productId && batch.sourceProductId !== filters.productId && destination.productId !== filters.productId) return false
       if (filters.outputLot && !`${destination.lotCode || ''} ${destination.lotId || ''}`.toLocaleLowerCase().includes(filters.outputLot.toLocaleLowerCase())) return false
       return true
     }).map(destination => [
       destination.lotCode || destination.lotId || 'Sin lote resultante', productName(destination.productId, products), batch.id,
-      destination.manufacturedOn || 'No registrado', destination.packagedOn || 'No registrado', destination.expiresOn || 'No registrado',
+      destination.manufacturedOn || lotsById.get(destination.lotId || '')?.manufacturedOn || 'No registrado', destination.packagedOn || lotsById.get(destination.lotId || '')?.packagedOn || 'No registrado', destination.expiresOn || lotsById.get(destination.lotId || '')?.expiresOn || 'No registrado',
       kg(destination.netWeightG), `${destination.commercialQuantity} ${destination.commercialUnit || ''}`,
       (destination.sourceAllocations || []).map(source => `${source.sourceLotCode || source.sourceLotId}: ${kg(source.weightG)} · ${money(source.costCents)} · asignación contable, no identificación física`).join(' | ') || batch.sourceAllocations.map(source => `${source.lotCode || source.lotId}: ${kg(source.measuredNetWeightG)}`).join(' | '),
       money(destination.costCents), batch.responsibleName, batch.sourceLocation,

@@ -4520,7 +4520,17 @@ handlers.releaseProcessingLot = async (o, p) => {
   check(product?.active !== false && product?.unitType === 'package', 'La liberación comercial requiere un SKU activo por paquetes.');
   check(lot.manufacturedOn && lot.expiresOn && lot.expiresOn >= o.today && lot.manufacturedOn <= o.today, 'Las fechas del lote no permiten liberarlo.');
   const batch = await o.read('distProcessingBatches', lot.processingBatchId);
-  check(batch?.status === 'confirmed' && ['bagging','portioning'].includes(batch.processType) && batch.result?.derivedLots?.some(row => row.lotId === lot.id && row.destinationKind === 'finished'), 'La elaboración original no acredita este lote terminado.');
+  const initialOutput = batch?.result?.derivedLots?.some(row => row.lotId === lot.id && row.destinationKind === 'finished');
+  const repackOutput = batch?.processType === 'repackaging' && batch.result?.outputLots?.some(row => row.lotId === lot.id);
+  check(batch?.status === 'confirmed' && (['bagging','portioning'].includes(batch.processType) && initialOutput || repackOutput), 'La elaboración original no acredita este lote terminado.');
+  if (repackOutput) {
+    const repack = await o.read('distProcessingRepackings', batch.id);
+    const review = repack && await o.read('distProcessingReviews', repack.reviewId);
+    check(repack?.status === 'confirmed' && lot.processingRepackId === repack.id && review?.qualityDecision === 'authorized_for_repack'
+      && review.lotId === repack.sourceLotId && review.reservationId === repack.reservationId && review.caseId === repack.reviewCaseId && review.location === repack.location, 'Falta la revisión autorizada del reenvasado.');
+    check(await activeQualityAuthorization(o, repack.authorizationId, review.reviewedBy), 'La autorización de Calidad del reenvasado no está vigente.');
+    check(await verifyProcessingEvidence(o, repack.evidenceRefs, { lotId: repack.sourceLotId, reservationId: repack.reservationId, reviewCaseId: repack.reviewCaseId, reviewRevision: review.evidenceRevision ?? review.revision, location: repack.location }), 'La evidencia del reenvasado no se pudo verificar.');
+  }
   check(lot.processingSourceAllocationBasis && Array.isArray(batch.sourceAllocations) && batch.sourceAllocations.length > 0, 'Falta la procedencia documentada de elaboración.');
   const quantities = Object.values(lot.quantities || {});
   check(quantities.every(value => Number.isSafeInteger(value) && value >= 0) && quantities.some(value => value > 0), 'El lote no tiene paquetes físicos íntegros disponibles.');
@@ -4960,7 +4970,7 @@ handlers.confirmProcessingRepack = async (o, p) => {
     const movementId = o.ledger(target.id, outQty, null, loc, 'processing_repack_output', { repackId, reviewId, sourceLotId: lotId, lotId: lotOutputId, lotCode, destinationId: outputId, physicalWeightG: output.measuredNetWeightG, commercialQuantity: outQty, costCents, costTotal: costCents === null ? null : costCents / 100, processingCommercialBlocked: true, sourceAllocations, sourceAllocationBasis: 'repack_origin_reference', note: String(p.reason).trim() }, quantityPrecision(target));
     if (outLot.processingByLocation?.[loc]?.segments?.length) { outLot.processingByLocation[loc].segments[0].sourceMovementId = movementId; o.put('distLots', lotOutputId, outLot); }
     movementIds.push(movementId);
-    outputRows.push({ id: outputId, lotId: lotOutputId, productId: target.id, productName: target.name, lotCode, commercialQuantity: outQty, commercialUnit: target.unitType, netWeightG: output.measuredNetWeightG, costCents, movementId, sourceAllocations });
+    outputRows.push({ id: outputId, lotId: lotOutputId, productId: target.id, productName: target.name, lotCode, commercialQuantity: outQty, commercialUnit: target.unitType, netWeightG: output.measuredNetWeightG, costCents, movementId, sourceAllocations, manufacturedOn: output.manufacturedOn, packagedOn: output.packagedOn, expiresOn: output.expiresOn });
   }
   const reviewEventId = `${repackId}__review_transition`;
   const finalReviewStatus = remainingQuantity === 0 ? 'resolved_specialized' : 'pending_review';

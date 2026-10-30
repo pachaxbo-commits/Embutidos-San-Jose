@@ -1,4 +1,4 @@
-import { buildProcessingBatchReport, buildProcessingLotTraceReport, buildProcessingQualityReport, filterProcessingBatches, filterProcessingRepackings, filterProcessingReviews } from '../processingReports.ts'
+import { buildProcessingBatchReport, buildProcessingLotTraceReport, buildProcessingQualityReport, filterProcessingBatches, filterProcessingRepackings, filterProcessingReviews, normalizeProcessingReportBatch } from '../processingReports.ts'
 import type { ProcessingBatch, ProcessingRepackRecord, ProcessingReviewRecord } from '../processing.ts'
 import { collectProcessingReportPages } from '../processingReportPagination.ts'
 
@@ -23,6 +23,15 @@ assertMatch(String(trace.rows[0][8]), /asignación contable, no identificación 
 assertEqual(trace.rows[0][0], 'DER-1')
 assertEqual(buildProcessingLotTraceReport([batch], { outputLot: 'NO-EXISTE' }).rows.length, 0)
 assertEqual(buildProcessingLotTraceReport([batch], { productId: 'bulk' }).rows.length, 1, 'la trazabilidad inversa por producto de origen conserva sus lotes terminados')
+const legacyRepack = { ...batch, processType: 'repackaging', processingDate: undefined,
+  sourceAllocations: [{ lotId: 'original-repack-source', lotCode: 'ORIGINAL-R', quantity: 1, expiresOn: '2026-11-20', productionCost: 2.5 }],
+  result: { sourceLotId: 'original-repack-source', openedQuantity: 1 },
+  destinations: batch.destinations.map(destination => ({ ...destination, kind: undefined })),
+} as unknown as ProcessingBatch
+assertEqual(normalizeProcessingReportBatch(legacyRepack).processingDate, '2026-10-29')
+assertEqual(filterProcessingBatches([legacyRepack], { from: '2026-10-29', to: '2026-10-29', sourceLot: 'ORIGINAL-R' }).length, 1)
+assertEqual(buildProcessingBatchReport([legacyRepack]).rows[0][7], '0 g')
+assertMatch(String(buildProcessingBatchReport([legacyRepack]).rows[0][3]), /1\.000 kg.*Bs 2\.50/)
 
 const review = { id: 'review-1', caseId: 'case-1', operationId: 'op-r', restaurantId: 'sanjose', branchId: 'central', schemaVersion: 1, lotId: 'lot-r', productId: 'sachet', productName: 'Sachet Viena', lotCode: 'REV-1', sourceLotIds: [], reservationId: 'reservation-1', reservationPurpose: 'review_hold', location: 'central', commercialQuantity: 2, commercialUnit: 'package', historicalAssignedWeightG: null, physicalWeightG: null, weightDifferenceG: null, costCents: null, packageCondition: 'unknown', productObservation: 'not_assessed', status: 'in_review', action: 'record_observation', observations: '', reason: '', evidenceRefs: [], revision: 1, previousStatus: 'pending_review', reviewedAt: '2026-10-29T12:00:00.000Z', reviewedBy: 'warehouse-1', reviewedByName: 'Almacén QA' } satisfies ProcessingReviewRecord
 const repack = { id: 'repack-1', operationId: 'op-p', status: 'confirmed', sourceLotId: 'lot-r', sourceProductId: 'sachet', sourceProductName: 'Sachet Viena', sourceUnitType: 'package', location: 'central', reservationId: 'reservation-1', reviewId: 'review-1', reviewCaseId: 'case-1', authorizationId: 'quality-auth', evidenceRefs: ['evidence-1'], openedCommercialQuantity: 2, openedPhysicalWeightG: 500, sourceCostCents: 125, outputLots: [{ id: 'out-1', lotId: 'new-lot', productId: 'sachet', productName: 'Sachet Viena', lotCode: 'NEW-1', commercialQuantity: 2, commercialUnit: 'package', netWeightG: 500, costCents: 125, movementId: 'movement-1' }], movementIds: ['movement-1'], responsibleUid: 'admin-1', responsibleName: 'Admin QA', confirmedAt: '2026-10-29T13:00:00.000Z', reversal: { status: 'blocked', dependencyIds: [], reason: 'test' } } satisfies ProcessingRepackRecord

@@ -4,6 +4,23 @@
       "collectionGroup": "distProcessingBatches",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "processType", "order": "ASCENDING" },
+        { "fieldPath": "dayKey", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "distProcessingBatches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sourceLocation", "order": "ASCENDING" },
+        { "fieldPath": "processType", "order": "ASCENDING" },
+        { "fieldPath": "dayKey", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "distProcessingBatches",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "sourceLocation", "order": "ASCENDING" },
         { "fieldPath": "processingDate", "order": "DESCENDING" }
       ]

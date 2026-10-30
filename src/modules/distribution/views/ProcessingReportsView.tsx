@@ -6,13 +6,13 @@ import { Field, SelectInput, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, LoadingState } from '../../../components/ui/Screen'
 import type { ProcessingBatch, ProcessingRepackRecord, ProcessingReviewRecord } from '../domain/processing'
 import { buildProcessingBatchReport, buildProcessingLotTraceReport, buildProcessingQualityReport, filterProcessingBatches, filterProcessingRepackings, filterProcessingReviews } from '../domain/processingReports'
-import { loadProcessingReportPage, type ProcessingBatchPage } from '../data/distributionRepository'
+import { loadProcessingReportPage, type ProcessingReportCursor } from '../data/distributionRepository'
 import type { DistLot, DistProduct } from '../types'
 import type { DistributionSession } from './DistributionApp'
 import { SecondaryButton } from './shared'
 
 type ReportMode = 'batches' | 'trace' | 'reviews' | 'repackings'
-type Cursor = ProcessingBatchPage['cursor']
+type Cursor = ProcessingReportCursor | null
 
 export function ProcessingReportsView({ session, products, lots, locationOptions }: { session: DistributionSession; products: DistProduct[]; lots: DistLot[]; locationOptions: Array<{ id: string; name: string }> }) {
   const [mode, setMode] = useState<ReportMode>('batches')
@@ -51,7 +51,7 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
       setBatches([]); setReviews([]); setRepackings([]); setHasMore(true)
       const rows = await collectProcessingReportPages((cursor: Cursor) => loadProcessingReportPage(mode, locationKey, from, to, cursor), () => version === requestVersion.current)
       if (!rows) return
-      if (mode === 'batches' || mode === 'trace') setBatches(rows as unknown as ProcessingBatch[])
+      if (mode === 'batches' || mode === 'trace') setBatches((rows as unknown as ProcessingBatch[]).sort((a, b) => (b.processingDate || b.dayKey).localeCompare(a.processingDate || a.dayKey) || a.id.localeCompare(b.id)))
       else if (mode === 'reviews') setReviews(rows as unknown as ProcessingReviewRecord[])
       else setRepackings(rows as unknown as ProcessingRepackRecord[])
       setHasMore(false)
@@ -83,7 +83,7 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
     const base = mode === 'batches'
       ? buildProcessingBatchReport(filteredBatches, products)
       : mode === 'trace'
-        ? buildProcessingLotTraceReport(filteredBatches, { productId, outputLot }, products)
+        ? buildProcessingLotTraceReport(filteredBatches, { productId, outputLot }, products, lots)
         : { ...buildProcessingQualityReport(reviews, repackings, products, lots), rows: qualityRows }
     const locationColumn = mode === 'batches' ? 11 : mode === 'trace' ? 11 : 14
     const readableLocation = (value: unknown) => value === 'central'

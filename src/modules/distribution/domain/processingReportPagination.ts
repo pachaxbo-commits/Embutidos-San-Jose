@@ -17,11 +17,10 @@ export async function collectProcessingReportPages<Row extends { id: string }, C
     if (!current()) return null
     const page = await load(cursor)
     if (!current()) return null
-    const before = records.size
     for (const row of page.rows) records.set(row.id, row)
-    if (records.size > maxRows || pageNumber > Math.ceil(maxRows / 50)) throw new ProcessingReportLimitError(maxRows)
+    if (records.size > maxRows || pageNumber > Math.ceil(maxRows / 50) * 2 + 2) throw new ProcessingReportLimitError(maxRows)
     if (!page.hasMore) return [...records.values()]
-    if (!page.cursor || page.cursor === cursor || before === records.size) throw new Error('No se pudo completar la paginación. Actualiza el informe.')
+    if (!page.cursor || page.cursor === cursor || page.rows.length === 0) throw new Error('No se pudo completar la paginación. Actualiza el informe.')
     cursor = page.cursor
   }
 }
