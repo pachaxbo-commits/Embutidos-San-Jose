@@ -1509,7 +1509,11 @@ export interface RegisterExpenseInput {
   groupName?: string
   categoryId?: string
   categoryName?: string
-  paymentMethod?: 'cash' | 'transfer' | 'other'
+  paymentMethod?: 'cash' | 'transfer' | 'other' | 'credit'
+  supplierId?: string
+  dueDayKey?: string
+  purchaseReceiptType?: 'invoice' | 'receipt' | 'other'
+  purchaseReceiptNumber?: string
   economicType?: ExpenseEconomicType
   affectsOperatingResult?: boolean
   dayKey?: string

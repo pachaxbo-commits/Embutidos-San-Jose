@@ -2725,9 +2725,10 @@ async function expense(o, p) {
     "No puedes registrar gastos en esta ruta.",
   );
   const groups = Object.keys(expenseBuiltinGroups);
-  const paymentMethods = ["cash", "transfer", "other"];
+  const paymentMethods = ["cash", "transfer", "other", ...(o.member.role === "admin" ? ["credit"] : [])];
   check(Number.isFinite(p.amount) && p.amount > 0, "Revisa el monto.");
   check(!p.paymentMethod || paymentMethods.includes(p.paymentMethod), "La forma de pago no es válida.");
+  check(p.paymentMethod !== "credit" || o.member.role === "admin", "Solo Administración puede registrar egresos operativos a crédito.");
   check(!p.dayKey || validDate(p.dayKey), "La fecha del egreso no es válida.");
   let group;
   let categoryId;
@@ -2849,7 +2850,20 @@ async function expense(o, p) {
   }
   check(concept && concept.length <= 120, "Revisa el detalle del egreso.");
   check(category.length <= 80, "La categoría es demasiado larga.");
+  check(p.paymentMethod !== "credit" || economicType === "operating_expense", "Las compras de producción a crédito deben registrarse con el detalle de compra a proveedor.");
   if (p.presetId === "other_unsure") check(String(p.note || "").trim().length > 0, "Explica qué se compró o pagó para que Administración pueda revisarlo.");
+  const receiptType = p.purchaseReceiptType === undefined || p.purchaseReceiptType === "" ? undefined : String(p.purchaseReceiptType);
+  check(receiptType === undefined || ["invoice", "receipt", "other"].includes(receiptType), "Selecciona un tipo de comprobante válido.");
+  const receiptNumber = String(p.purchaseReceiptNumber || "").trim();
+  check(receiptNumber.length <= 100 && !/[\u0000-\u001f\u007f]/.test(receiptNumber), "El número de comprobante debe tener hasta 100 caracteres válidos.");
+  check(!receiptNumber || Boolean(receiptType), "Selecciona el tipo de comprobante.");
+  let creditSupplier;
+  if (p.paymentMethod === "credit") {
+    creditSupplier = await o.read("distSuppliers", safeId(p.supplierId));
+    check(creditSupplier?.active === true, "Selecciona un proveedor o acreedor activo para la cuenta a crédito.");
+    check(validDate(p.dayKey), "La fecha del egreso a crédito no es válida.");
+    check(!p.dueDayKey || (validDate(p.dueDayKey) && p.dueDayKey >= p.dayKey), "La fecha de vencimiento no es válida.");
+  }
   const e = {
     id: o.id,
     ...o.base(),
@@ -2872,11 +2886,43 @@ async function expense(o, p) {
     registeredByName: o.member.displayName || o.actor,
     note: p.note || "",
     transactionKind: "expense",
+    ...(p.paymentMethod === "credit" ? { supplierId: creditSupplier.id, supplierName: creditSupplier.name, payableId: o.id } : {}),
+    ...(receiptType ? { purchaseReceiptType: receiptType } : {}),
+    ...(receiptNumber ? { purchaseReceiptNumber: receiptNumber } : {}),
     cashPaidAmount: (p.paymentMethod || "cash") === "cash" ? round(p.amount) : 0,
     transferPaidAmount: p.paymentMethod === "transfer" ? round(p.amount) : 0,
     otherPaidAmount: p.paymentMethod === "other" ? round(p.amount) : 0,
   };
   o.put("distExpenses", o.id, e);
+  if (p.paymentMethod === "credit") {
+    const payable = {
+      id: o.id,
+      ...o.base(),
+      sourceKind: "operating_expense",
+      supplierId: creditSupplier.id,
+      supplierName: creditSupplier.name,
+      purchaseExpenseId: o.id,
+      dayKey: p.dayKey,
+      description: concept,
+      groupId: group,
+      groupName: e.groupName,
+      categoryId,
+      categoryName: category,
+      economicType,
+      affectsOperatingResult: economicType === "operating_expense",
+      totalAmount: round(p.amount),
+      paidAmount: 0,
+      balance: round(p.amount),
+      status: "pending",
+      ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}),
+      note: String(p.note || "").trim(),
+      ...(receiptType ? { purchaseReceiptType: receiptType } : {}),
+      ...(receiptNumber ? { purchaseReceiptNumber: receiptNumber } : {}),
+      routeId: e.routeId,
+      routeName: e.routeName,
+    };
+    o.put("distPayables", payable.id, payable);
+  }
   return e;
 }
 
@@ -2886,6 +2932,10 @@ async function deleteExpense(o, p) {
   const expense = await o.read("distExpenses", p.expenseId);
   check(expense && !expense.voided, "El gasto ya no está activo.");
   check((expense.transactionKind || "expense") === "expense", "Las compras a proveedor y sus pagos requieren una corrección auditada de cuentas por pagar; no se anulan como un egreso común.");
+  if (expense.payableId) {
+    const payable = await o.read("distPayables", safeId(expense.payableId));
+    check(!payable || payable.status === "voided", "Anula primero la cuenta por pagar desde Cuentas por pagar para conservar la conciliación.");
+  }
   o.put("distExpenses", expense.id, {
     ...expense,
     voided: true,
@@ -3117,8 +3167,9 @@ async function registerSupplierPurchase(o, p) {
   };
   const balance = round(total - paid);
   const payable = {
-    id: o.id, ...o.base(), supplierId: supplier.id, supplierName: supplier.name, purchaseExpenseId: o.id,
+    id: o.id, ...o.base(), sourceKind: "supplier_purchase", supplierId: supplier.id, supplierName: supplier.name, purchaseExpenseId: o.id,
     dayKey: p.dayKey, description: detail, groupId, groupName: expense.groupName, categoryId, categoryName,
+    economicType: "production_input", affectsOperatingResult: false,
     totalAmount: total, paidAmount: paid, balance, status: balance === 0 ? "paid" : paid > 0 ? "partial" : "pending",
     ...(p.dueDayKey ? { dueDayKey: p.dueDayKey } : {}), note: String(p.note || "").trim(), ...(purchaseLines ? { purchaseLines } : {}), routeId, routeName,
   };
@@ -3154,7 +3205,7 @@ async function paySupplierPayable(o, p) {
   const expense = {
     id: paymentId, ...o.base(), dayKey: p.dayKey, operationId: o.id, transactionKind: "supplier_payment",
     group: payable.groupId, groupName: payable.groupName, categoryId: payable.categoryId, categoryName: payable.categoryName,
-    economicType: "production_input", affectsOperatingResult: false, classificationStatus: "reviewed", classificationSource: "admin_review",
+    economicType: payable.economicType || "production_input", affectsOperatingResult: payable.affectsOperatingResult === true, classificationStatus: "reviewed", classificationSource: "admin_review",
     concept: `Pago a proveedor: ${payable.supplierName}`, amount, paymentMethod: p.paymentMethod,
     cashPaidAmount: p.paymentMethod === "cash" ? amount : 0, transferPaidAmount: p.paymentMethod === "transfer" ? amount : 0, otherPaidAmount: p.paymentMethod === "other" ? amount : 0,
     payableId: payable.id, supplierId: payable.supplierId, supplierName: payable.supplierName,
@@ -3187,7 +3238,7 @@ async function voidSupplierPayment(o, p) {
   if (payment.id.endsWith("__initial")) {
     affectedExpenseId = payable.purchaseExpenseId;
     const purchase = await o.read("distExpenses", affectedExpenseId);
-    check(purchase?.transactionKind === "supplier_purchase" && !purchase.voided, "No se puede corregir el adelanto porque su compra original no está disponible.");
+    check((purchase?.transactionKind === "supplier_purchase" || (purchase?.transactionKind === "expense" && payable.sourceKind === "operating_expense")) && !purchase.voided, "No se puede corregir el adelanto porque su operación original no está disponible.");
     const cashPaidAmount = round(Math.max(0, Number(purchase.cashPaidAmount || 0) - (payment.paymentMethod === "cash" ? amount : 0)));
     const transferPaidAmount = round(Math.max(0, Number(purchase.transferPaidAmount || 0) - (payment.paymentMethod === "transfer" ? amount : 0)));
     const otherPaidAmount = round(Math.max(0, Number(purchase.otherPaidAmount || 0) - (payment.paymentMethod === "other" ? amount : 0)));
@@ -3214,7 +3265,10 @@ async function voidSupplierPurchase(o, p) {
   const payments = await o.query("distSupplierPayments", "payableId", payable.id);
   check(payments.every(payment => payment.voided === true), "La compra conserva pagos sin corregir.");
   const expense = await o.read("distExpenses", payable.purchaseExpenseId);
-  check(expense?.transactionKind === "supplier_purchase" && !expense.voided, "La compra original ya no está activa.");
+  const validOriginal = payable.sourceKind === "operating_expense"
+    ? expense?.transactionKind === "expense"
+    : expense?.transactionKind === "supplier_purchase";
+  check(validOriginal && !expense.voided, "La operación original ya no está activa.");
   o.put("distExpenses", expense.id, { ...expense, voided: true, voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: reason, updatedAt: o.now, updatedBy: o.actor });
   const updatedPayable = { ...payable, status: "voided", paidAmount: 0, balance: 0, voidedAt: o.now, voidedBy: o.actor, voidedByName: o.member.displayName || o.actor, voidReason: reason, updatedAt: o.now, updatedBy: o.actor, history: [...(payable.history || []), { action: "purchase_voided", reason, at: o.now, by: o.actor, byName: o.member.displayName || o.actor }].slice(-100) };
   o.put("distPayables", payable.id, updatedPayable);
@@ -3226,6 +3280,8 @@ async function classifyExpense(o, p) {
   const expense = await o.read("distExpenses", safeId(p.expenseId));
   check(expense && !expense.voided, "El egreso ya no está activo.");
   check((expense.transactionKind || "expense") === "expense", "Las compras a proveedor y sus pagos conservan la clasificación de su cuenta por pagar.");
+  const linkedPayable = expense.payableId ? await o.read("distPayables", safeId(expense.payableId)) : null;
+  check(!linkedPayable || linkedPayable.status === "voided", "No reclasifiques un egreso con deuda pendiente; primero concilia la cuenta por pagar.");
   const groupConfig = await readExpenseGroupConfig(o, p.group);
   check(groupConfig && groupConfig.active !== false, "El grupo del egreso no es válido.");
   const categoryId = safeId(p.categoryId);

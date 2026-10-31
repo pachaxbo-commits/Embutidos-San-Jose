@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing'
-import { doc, setDoc } from 'firebase/firestore'
+import { doc, getDoc, setDoc } from 'firebase/firestore'
 
 process.env.FIRESTORE_EMULATOR_HOST ||= '127.0.0.1:8085'
 const [emulatorHost, emulatorPort] = process.env.FIRESTORE_EMULATOR_HOST.split(':')
@@ -56,6 +56,8 @@ try {
     await assertFails(queuedFrom(distributor, type, { sample: true })); checks++
     await assertFails(queuedFrom(outsider, type, { sample: true })); checks++
   }
+  await assertSucceeds(queuedFrom(admin, 'registerSupplierPurchase', { sample: true })); checks++
+  await assertFails(queuedFrom(warehouse, 'registerSupplierPurchase', { sample: true })); checks++
   await assertSucceeds(queuedFrom(distributor, 'registerSupplierPurchase', { sample: true })); checks++
   const adminDb = env.authenticatedContext(admin).firestore()
   for (const collection of ['distExpenseGroups', 'distSuppliers', 'distPayables', 'distSupplierPayments']) {
@@ -86,6 +88,39 @@ try {
   ok(directAdminExpense.result.group === groupId && directAdminExpense.result.categoryId === categoryId && directAdminExpense.result.economicType === 'production_input' && directAdminExpense.result.classificationStatus === 'reviewed' && directAdminExpense.result.classificationSource === 'admin_review', 'categoría administrativa personalizada se registra directamente con clasificación revisada')
   const defaultAdminExpense = await command(admin, 'expense', { presetId: 'admin-category:administration-5', amount: 12, routeId: 'administracion', routeName: 'Administración', concept: 'Limpieza del local' })
   ok(defaultAdminExpense.result.categoryId === 'administration-5' && defaultAdminExpense.result.economicType === 'operating_expense' && defaultAdminExpense.result.classificationStatus === 'reviewed', 'Administración puede elegir una categoría inicial sin documento de override')
+  const maintenanceCreditId = `${prefix}-maintenance-credit`
+  const maintenanceCredit = await command(admin, 'expense', { presetId: 'admin-category:administration-4', amount: 100, paymentMethod: 'credit', supplierId, dayKey: '2026-10-30', dueDayKey: '2026-11-15', purchaseReceiptType: 'receipt', purchaseReceiptNumber: 'MANT-0007', routeId: 'administracion', routeName: 'Administración', note: 'Mantenimiento eléctrico de ventana' }, 'confirmed', maintenanceCreditId)
+  const maintenancePayable = await read('distPayables', maintenanceCreditId)
+  const maintenanceExpense = await read('distExpenses', maintenanceCreditId)
+  ok(maintenanceCredit.result.paymentMethod === 'credit' && maintenanceExpense.amount === 100 && maintenanceExpense.cashPaidAmount === 0 && maintenanceExpense.transferPaidAmount === 0 && maintenanceExpense.payableId === maintenanceCreditId, 'egreso operativo a crédito registra Bs 100 y no descuenta efectivo ni QR')
+  ok(maintenancePayable.sourceKind === 'operating_expense' && maintenancePayable.economicType === 'operating_expense' && maintenancePayable.balance === 100 && maintenancePayable.status === 'pending' && maintenancePayable.dueDayKey === '2026-11-15' && maintenancePayable.purchaseReceiptNumber === 'MANT-0007', 'la deuda operativa queda en Cuentas por pagar con proveedor, vencimiento y comprobante')
+  const adminReader = env.authenticatedContext(admin).firestore()
+  ok((await getDoc(doc(adminReader, 'restaurants', 'sanjose', 'distPayables', maintenanceCreditId))).exists(), 'Administración puede volver a consultar la obligación confirmada')
+  await command(admin, 'deleteExpense', { expenseId: maintenanceCreditId, reason: 'No debe anularse fuera de Cuentas por pagar' }, 'rejected')
+  const maintenancePaymentId = `${prefix}-maintenance-payment`
+  const maintenancePayment = await command(admin, 'paySupplierPayable', { payableId: maintenanceCreditId, amount: 40, paymentMethod: 'cash', dayKey: '2026-10-31', note: 'Abono de mantenimiento QA' }, 'confirmed', maintenancePaymentId)
+  const maintenancePaymentExpense = await read('distExpenses', maintenancePayment.result.payment.id)
+  ok(maintenancePayment.result.payable.paidAmount === 40 && maintenancePayment.result.payable.balance === 60 && maintenancePaymentExpense.cashPaidAmount === 40 && maintenanceExpense.amount === 100, 'abonar Bs 40 deja Bs 60 y registra solo la salida real, sin repetir el gasto original')
+  await processCommand(db, root.collection('distOperations').doc(maintenancePaymentId))
+  ok((await root.collection('distSupplierPayments').where('payableId', '==', maintenanceCreditId).get()).size === 1 && (await read('distPayables', maintenanceCreditId)).balance === 60, 'reintentar el mismo abono no crea duplicados ni modifica de nuevo el saldo')
+  const maintenanceFinalPayment = await command(admin, 'paySupplierPayable', { payableId: maintenanceCreditId, amount: 60, paymentMethod: 'transfer', dayKey: '2026-11-02' }, 'confirmed', `${prefix}-maintenance-payment-final`)
+  ok(maintenanceFinalPayment.result.payable.status === 'paid' && maintenanceFinalPayment.result.payable.balance === 0 && (await read('distExpenses', maintenanceCreditId)).amount === 100, 'pagar el saldo restante cierra la cuenta y conserva un único egreso de Bs 100')
+
+  const voidableOperatingExpenseId = `${prefix}-maintenance-credit-voidable`
+  await command(admin, 'expense', { presetId: 'admin-category:administration-4', amount: 75, paymentMethod: 'credit', supplierId, dayKey: '2026-10-30', routeId: 'administracion', routeName: 'Administración', note: 'Mantenimiento QA anulable' }, 'confirmed', voidableOperatingExpenseId)
+  const voidableOperatingPayment = await command(admin, 'paySupplierPayable', { payableId: voidableOperatingExpenseId, amount: 25, paymentMethod: 'transfer', dayKey: '2026-10-31', note: 'Abono QA anulable' }, 'confirmed', `${prefix}-maintenance-credit-payment`)
+  await command(admin, 'voidSupplierPurchase', { payableId: voidableOperatingExpenseId, reason: 'Primero debe corregirse el abono' }, 'rejected')
+  const voidedOperatingPayment = await command(admin, 'voidSupplierPayment', { paymentId: voidableOperatingPayment.result.payment.id, reason: 'Corrección de abono operativo QA' }, 'confirmed', `${prefix}-maintenance-credit-payment-void`)
+  const restoredOperatingPayable = await read('distPayables', voidableOperatingExpenseId)
+  const restoredOperatingExpense = await read('distExpenses', voidableOperatingExpenseId)
+  ok(voidedOperatingPayment.result.payable.balance === 75 && restoredOperatingPayable.paidAmount === 0 && restoredOperatingExpense.voided !== true && (await read('distSupplierPayments', voidableOperatingPayment.result.payment.id)).voided === true, 'corregir un abono de egreso operativo restaura la deuda y conserva el gasto hasta su anulación explícita')
+  const voidedOperatingExpense = await command(admin, 'voidSupplierPurchase', { payableId: voidableOperatingExpenseId, reason: 'Mantenimiento cancelado en QA' }, 'confirmed', `${prefix}-maintenance-credit-void`)
+  ok(voidedOperatingExpense.result.status === 'voided' && (await read('distPayables', voidableOperatingExpenseId)).status === 'voided' && (await read('distExpenses', voidableOperatingExpenseId)).voided === true, 'tras corregir sus pagos se puede anular la cuenta por pagar operativa con historial')
+
+  await command(distributor, 'expense', { presetId: 'fuel', amount: 100, paymentMethod: 'credit', supplierId, routeId, routeName: 'Ruta QA' }, 'rejected')
+  await command(admin, 'expense', { presetId: 'admin-category:administration-4', amount: 100, paymentMethod: 'credit', supplierId: `${prefix}-missing-supplier`, routeId: 'administracion', routeName: 'Administración' }, 'rejected')
+  await command(admin, 'expense', { presetId: `group-category:${categoryId}`, groupId, amount: 350, paymentMethod: 'credit', supplierId, routeId: 'administracion', routeName: 'Administración', concept: 'Compra de producción sin detalle' }, 'rejected')
+  ok(true, 'el crédito operativo requiere Administración y un proveedor activo; Distribuidores no pueden crear deudas')
   await command(distributor, 'expense', { presetId: `group-category:${categoryId}`, groupId, amount: 50, routeId, routeName: 'Ruta QA', concept: 'Payload manipulado' }, 'rejected')
   await command(admin, 'saveExpenseCategory', { categoryId, group: groupId, name: 'Harina QA', active: false, order: 1 })
   await command(admin, 'expense', { presetId: `group-category:${categoryId}`, groupId, amount: 50, routeId: 'administracion', routeName: 'Administración', concept: 'Categoría inactiva' }, 'rejected')
@@ -118,6 +153,22 @@ try {
   const qrPurchaseId = `${prefix}-purchase-qr`
   const qrPurchase = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Compra pagada por transferencia', amount: 250, initialPayment: 250, paymentMethod: 'transfer', dayKey: '2026-10-21' }, 'confirmed', qrPurchaseId)
   ok(qrPurchase.result.payable.balance === 0 && (await read('distExpenses', qrPurchaseId)).transferPaidAmount === 250 && (await read('distExpenses', qrPurchaseId)).cashPaidAmount === 0, 'compra pagada por QR/transferencia no se confunde con efectivo')
+  const supplierTwoId = `${prefix}-supplier-two`
+  await command(admin, 'saveExpenseSupplier', { supplierId: supplierTwoId, name: `Carnicería QA ${prefix}`, active: true })
+  const porkLine = [{ description: 'Carne de cerdo', quantity: 10, unit: 'kg', unitPrice: 35, total: 350, wasteQuantity: 0, netUsableQuantity: 10 }]
+  const porkCashId = `${prefix}-pork-cash`
+  const porkCash = await command(admin, 'registerSupplierPurchase', { supplierId, groupId, categoryId, description: 'Carne de cerdo', amount: 350, initialPayment: 350, paymentMethod: 'cash', dayKey: '2026-10-30', purchaseLines: porkLine }, 'confirmed', porkCashId)
+  ok(porkCash.result.payable.status === 'paid' && porkCash.result.payable.balance === 0 && (await read('distExpenses', porkCashId)).purchaseLines[0].quantity === 10 && (await read('distExpenses', porkCashId)).purchaseLines[0].unitPrice === 35 && (await read('distExpenses', porkCashId)).cashPaidAmount === 350, 'compra al contado de 10 kg × Bs 35 registra Bs 350 pagados y conserva precio/unidad')
+  const porkCreditId = `${prefix}-pork-credit`
+  const porkCredit = await command(admin, 'registerSupplierPurchase', { supplierId: supplierTwoId, groupId, categoryId, description: 'Carne de cerdo a crédito', amount: 350, initialPayment: 0, paymentMethod: 'credit', dayKey: '2026-10-30', dueDayKey: '2026-11-10', purchaseLines: porkLine }, 'confirmed', porkCreditId)
+  ok(porkCredit.result.payable.balance === 350 && porkCredit.result.payable.paidAmount === 0 && porkCredit.result.payable.supplierId === supplierTwoId && (await read('distExpenses', porkCreditId)).cashPaidAmount === 0, 'compra de carne a crédito conserva proveedor distinto y no sale dinero al registrarse')
+  const porkPartialId = `${prefix}-pork-partial`
+  const porkPartial = await command(admin, 'registerSupplierPurchase', { supplierId: supplierTwoId, groupId, categoryId, description: 'Carne de cerdo con pago parcial', amount: 350, initialPayment: 100, paymentMethod: 'cash', dayKey: '2026-10-30', purchaseLines: porkLine }, 'confirmed', porkPartialId)
+  ok(porkPartial.result.payable.totalAmount === 350 && porkPartial.result.payable.paidAmount === 100 && porkPartial.result.payable.balance === 250 && (await read('distExpenses', porkPartialId)).cashPaidAmount === 100, 'compra parcial de Bs 350 registra Bs 100 pagados y Bs 250 pendientes')
+  const porkPartialPay = await command(admin, 'paySupplierPayable', { payableId: porkPartialId, amount: 40, paymentMethod: 'cash', dayKey: '2026-11-01' })
+  ok(porkPartialPay.result.payable.balance === 210 && (await read('distExpenses', porkPartialPay.result.payment.id)).cashPaidAmount === 40, 'abono posterior a compra parcial descuenta caja una sola vez y conserva el saldo')
+  const noStock = await root.collection('distBalances').where('productId', '==', 'Carne de cerdo').get()
+  ok(noStock.empty, 'ninguna modalidad de compra crea existencias o modifica Kardex automáticamente')
 
   const paymentOperationId = `${prefix}-pay-800`
   const payment = await command(admin, 'paySupplierPayable', { payableId, amount: 800, paymentMethod: 'cash', dayKey: '2026-10-27', note: 'Abono QA' }, 'confirmed', paymentOperationId)

@@ -63,8 +63,8 @@ export function ExpenseReportsView(props: DistributionViewProps) {
   const visibleExpenses = useMemo(() => expenses.filter(row => {
     if (row.voided || row.pendingConfirmation || row.transactionKind === 'supplier_payment' || state === 'voided') return false
     if (state !== 'all') {
-      if (row.transactionKind === 'supplier_purchase') {
-        const payable = payables.find(item => item.purchaseExpenseId === row.id)
+      if (row.transactionKind === 'supplier_purchase' || row.payableId) {
+        const payable = payables.find(item => item.id === (row.payableId || row.id) || item.purchaseExpenseId === row.id)
         if (payable?.status !== state) return false
       } else if (state !== 'paid') return false
     }
