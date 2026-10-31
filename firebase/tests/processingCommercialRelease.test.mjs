@@ -32,6 +32,14 @@ const command = async (actor, type, payload, operationId, expected = 'confirmed'
   if (expected) assert.equal(value.status, expected, `${type}: ${value.error || 'estado inesperado'}`)
   return { ...value, operationId }
 }
+const backendCommand = async (actor, type, payload, operationId, expected = 'confirmed') => {
+  const ref = root.collection('distOperations').doc(operationId)
+  await ref.set({ id: operationId, restaurantId: 'sanjose', createdBy: actor, createdAt: new Date().toISOString(), type, payload, status: 'queued' })
+  await processCommand(db, ref)
+  const value = (await ref.get()).data()
+  if (expected) assert.equal(value.status, expected, `${type}: ${value.error || 'estado inesperado'}`)
+  return { ...value, operationId }
+}
 const seedProduct = (id, unitType, cost) => root.collection('distProducts').doc(id).set({ id, restaurantId: 'sanjose', name: `QA ${id}`, unitType, active: true, productionCost: cost, referencePrice: 10 })
 const seedLot = async (productId, lotId, location, quantity, cost) => {
   await root.collection('distLots').doc(lotId).set({ id: lotId, restaurantId: 'sanjose', productId, productName: `QA ${productId}`, unitType: 'kg', lotCode: `LOT-${lotId}`, manufacturedOn: '2026-10-10', expiresOn: '2027-10-10', productionCost: cost, quantities: { [location]: quantity } })
@@ -67,20 +75,44 @@ try {
   pass(derivedLot.processingByLocation.central.segments[0].remainingQuantity === 36 && derivedLot.processingByLocation.central.segments[0].remainingWeightG === 9000 && derivedLot.processingByLocation.central.segments[0].remainingCostCents === 4500, 'elaboración crea segmentos de lote por ubicación con 36 paquetes, 9.000 g y 4.500 centavos')
 
   delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST
-  await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA physical finished product approved' }, `${prefix}-no-auth`, 'rejected')
-  await root.collection('distProcessingQualityAuthorizations').doc(ids.admin).set({ restaurantId: 'sanjose', status: 'active', beneficiaryUid: ids.admin, authorizationId: 'quality-release', grantedBy: 'independent-quality-authority', expiresAt: '2999-12-31T00:00:00.000Z' })
+  assert.equal((await root.collection('distProcessingQualityAuthorizations').doc(ids.admin).get()).exists, false, 'no existe autorización de Calidad para la cuenta admin sintética')
+  const batchBeforeRelease = await read('distProcessingBatches', batchId)
+  const movementsBeforeRelease = (await root.collection('distStockMovements').get()).size
+  await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Apto' }, `${prefix}-short-reason`, 'rejected')
+  await backendCommand(ids.warehouse, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-warehouse-release`, 'rejected')
+  await backendCommand(ids.seller, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-distributor-release`, 'rejected')
+  await root.collection('members').doc(ids.admin).update({ active: false })
+  await backendCommand(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-inactive-admin-release`, 'rejected')
+  await root.collection('members').doc(ids.admin).update({ active: true })
   await assertFails(setDoc(doc(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distLots', derivedLotId), { processingCommercialRelease: { status: 'released' } }, { merge: true }))
+  const reservationId = `${prefix}-release-reservation`
+  await root.collection('distStockReservations').doc(reservationId).set({ id: reservationId, restaurantId: 'sanjose', lotId: derivedLotId, productId: ids.product, location: 'central', purpose: 'courtesy', status: 'active', quantity: 1, remainingQuantity: 1 })
+  await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-reserved-release`, 'rejected')
+  await root.collection('distStockReservations').doc(reservationId).delete()
   await root.collection('distLots').doc(derivedLotId).update({ quarantined: true })
-  await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA must reject quarantined stock' }, `${prefix}-quarantine`, 'rejected')
+  await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-quarantine`, 'rejected')
   await root.collection('distLots').doc(derivedLotId).update({ quarantined: false })
+  pass(true, 'fundamento mínimo, miembro activo y rol Administración requeridos; Almacén, distribuidores, reservas y cuarentena no pueden liberar')
   const [release, concurrentRelease] = await Promise.all([
-    command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA physical finished product approved' }, `${prefix}-release`),
-    command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA concurrent release cannot duplicate approval' }, `${prefix}-concurrent-release`),
+    command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-release`),
+    command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Revisión administrativa conforme' }, `${prefix}-concurrent-release`),
   ])
   assert.equal(release.result.release.operationId, concurrentRelease.result.release.operationId)
   assert.equal(release.result.release.status, 'released')
-  const repeated = await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, authorizationReference: 'quality-release', reason: 'QA repeated release request is safe' }, `${prefix}-release-again`)
+  assert.equal(release.result.release.approvedBy, ids.admin)
+  assert.ok(['Producto apto para despacho y venta', 'Revisión administrativa conforme'].includes(release.result.release.reason))
+  assert.equal(release.result.release.physicalWeightG, 9000)
+  assert.equal(release.result.release.costCents, 4500)
+  assert.equal(release.result.release.authorizationId, undefined)
+  assert.equal((await root.collection('distProcessingQualityAuthorizations').doc(ids.admin).get()).exists, false)
+  assert.deepEqual(await read('distProcessingBatches', batchId), batchBeforeRelease, 'la liberación opera sobre la elaboración existente sin recrearla')
+  assert.equal((await root.collection('distStockMovements').get()).size, movementsBeforeRelease, 'liberar no crea movimientos ni descuenta nuevamente el granel')
+  const releasedRecord = (await read('distLots', derivedLotId)).processingCommercialRelease
+  await root.collection('distLots').doc(derivedLotId).update({ processingCommercialRelease: { ...releasedRecord, authorizationId: 'historical-quality-auth' } })
+  const repeated = await command(ids.admin, 'releaseProcessingLot', { lotId: derivedLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-release-again`)
   assert.equal(repeated.result.release.operationId, release.result.release.operationId)
+  assert.equal(repeated.result.release.authorizationId, 'historical-quality-auth', 'una referencia de autorización histórica se conserva intacta')
+  pass(true, 'lote terminado ya elaborado se libera sin autorización, sin volver a elaborar ni generar movimientos; mantiene referencia histórica si existe')
   const releasedSnapshot = await read('distLots', derivedLotId)
   await command(ids.admin, 'updateLot', { lotId: derivedLotId, lotCode: 'QA-CHANGED', manufacturedOn: '2026-10-28', expiresOn: '2999-12-31', productionCost: 999, reason: 'QA generic editing must not extend derived expiry' }, `${prefix}-blocked-edit`, 'rejected')
   assert.deepEqual(await read('distLots', derivedLotId), releasedSnapshot)
@@ -121,6 +153,6 @@ try {
   assert.equal(finalLot.quantities.central, 26)
   assert.equal(finalLot.processingPhysicalWeightGRemaining, 6500)
   assert.equal(finalLot.processingCostCentsRemaining, 3250)
-  console.log('PASS elaboration -> Quality release -> dispatch -> route sale -> warehouse closure/return; exact historical grams and cents, idempotent retry')
-  console.log('PASS release requires Quality authorization; dispatch and sale preserve derived grams and cents without emulator flag')
+  console.log('PASS elaboración -> liberación administrativa sin autorización de Calidad -> despacho -> venta de ruta -> cierre/devolución; gramos y centavos exactos, reintento idempotente')
+  console.log('PASS liberación normal sin autorización; despacho y ventas de producto derivado conservan gramos y centavos con controles actuales')
 } finally { await env.cleanup() }

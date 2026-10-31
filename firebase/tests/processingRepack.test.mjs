@@ -224,6 +224,8 @@ try {
   await command(ids.admin, 'releaseProcessingLot', { lotId: commercialLotId, authorizationReference: commercial.authId, reason: 'QA incompatible review must not release stock' }, `${prefix}-commercial-bad-review`, 'rejected')
   pass(!(await root.collection('distLots').doc(commercialLotId).get()).data().processingCommercialRelease, 'revisión de otro lote no libera el producto reenvasado')
   await root.collection('distProcessingReviews').doc(commercial.reviewId).set(correctReview)
+  await command(ids.admin, 'releaseProcessingLot', { lotId: commercialLotId, reason: 'Producto apto para despacho y venta' }, `${prefix}-commercial-no-auth`, 'rejected')
+  pass(!(await root.collection('distLots').doc(commercialLotId).get()).data().processingCommercialRelease, 'salida de reenvasado conserva el requisito específico de autorización de Calidad')
   await command(ids.admin, 'releaseProcessingLot', { lotId: commercialLotId, authorizationReference: commercial.authId, reason: 'QA measured repack output approved for commerce' }, `${prefix}-commercial-release`)
   pass((await root.collection('distLots').doc(commercialLotId).get()).data().processingCommercialRelease.status === 'released', 'Calidad puede liberar la salida reenvasada mediante la misma transición comercial')
   await command(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', lines: [{ productId: commercial.targetId, quantity: 1, actualUnitPrice: 10 }], cashAmount: 10, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, `${prefix}-commercial-sale`)

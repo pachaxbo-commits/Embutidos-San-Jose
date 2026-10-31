@@ -4,10 +4,12 @@ import { signInWithEmail } from '../src/lib/firebase'
 import { SacheteadoView } from '../src/modules/distribution/views/SacheteadoView'
 import { DistributionApp } from '../src/modules/distribution/views/DistributionApp'
 import { SellView } from '../src/modules/distribution/views/SellView'
+import { ProcessingCommercialRelease } from '../src/modules/distribution/views/ProcessingCommercialRelease'
 import { useDistributionData } from '../src/modules/distribution/state/useDistributionStore'
 import { toDayKey } from '../src/modules/distribution/domain/engine'
 import type { DistributionSession } from '../src/modules/distribution/views/DistributionApp'
 import type { UserRole } from '../src/types'
+import type { DistLot } from '../src/modules/distribution/types'
 import type { DistributionData } from '../src/modules/distribution/state/useDistributionStore'
 import '../src/index.css'
 
@@ -27,16 +29,19 @@ export function Harness() {
   const [otherLot, setOtherLot] = useState({ id: 'qa-other-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-1KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 1 } }, processingReview: { caseId: 'qa-other-case', revision: 0, status: 'authorized_for_repack', updatedAt: '', updatedBy: '' } })
   const [assessmentLot, setAssessmentLot] = useState({ id: 'qa-assessment-lot', restaurantId: 'sanjose', productId: 'qa-assessment-product', productName: 'QA Paquete para evaluación', unitType: 'package', lotCode: 'QA-ASSESSMENT', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: null, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 2 } }, processingPhysicalWeightGRemaining: 500, processingCostCentsRemaining: 250, processingCommercialBlocked: true, processingDestinationKind: 'review_hold', quarantined: true })
   const [freeLot] = useState({ id: 'qa-free-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-LIBRE-1KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
+  const [releaseLot, setReleaseLot] = useState({ id: 'qa-release-ui-lot', restaurantId: 'sanjose', productId: 'qa-release-ui-product', productName: 'QA Sachet liberable', unitType: 'package', lotCode: 'QA-RELEASE-UI', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', quantities: { central: 1 }, processingBatchId: 'qa-release-ui-batch', processingDestinationKind: 'finished' })
   useEffect(() => {
     Object.assign(window, {
       __qaUpdateSourceLot: (lot: typeof sourceLot) => setSourceLot(lot),
       __qaUpdateOtherLot: (lot: typeof otherLot) => setOtherLot(lot),
       __qaUpdateAssessmentLot: (lot: typeof assessmentLot) => setAssessmentLot(lot),
+      __qaUpdateReleaseLot: (lot: DistLot) => setReleaseLot(lot),
     })
     return () => {
       delete (window as Window & { __qaUpdateSourceLot?: unknown }).__qaUpdateSourceLot
       delete (window as Window & { __qaUpdateOtherLot?: unknown }).__qaUpdateOtherLot
       delete (window as Window & { __qaUpdateAssessmentLot?: unknown }).__qaUpdateAssessmentLot
+      delete (window as Window & { __qaUpdateReleaseLot?: unknown }).__qaUpdateReleaseLot
     }
   }, [])
   useEffect(() => {
@@ -49,6 +54,7 @@ export function Harness() {
   if (!uid) return <p role="status">Conectando sesión QA a Firebase Emulator…</p>
 
   if (params.get('sell') === '1') return <SellVoidHarness uid={uid} userName={qaUser.name} />
+  if (params.get('release') === '1') return <main className="mx-auto max-w-xl p-4"><ProcessingCommercialRelease lot={releaseLot as unknown as DistLot} /></main>
 
   if (fullApp) return <DistributionApp
     restaurantId="sanjose"

@@ -268,6 +268,57 @@ try {
   await page.getByRole('button', { name: 'Elaboraciones', exact: true }).first().click()
   console.log('PASS complete 52-record Firestore report including historical repack: screen, real Excel/PDF downloads and print action')
 
+  const releaseUiPrefix = `qa-release-ui-${Date.now().toString(36)}`
+  const releaseUiSourceId = `${releaseUiPrefix}-source`
+  const releaseUiTargetId = `${releaseUiPrefix}-sachet`
+  const releaseUiSourceLotId = `${releaseUiPrefix}-source-lot`
+  const releaseUiBatchId = `${releaseUiPrefix}-batch`
+  const releaseUiBatchOperationId = `${releaseUiPrefix}-batch-op`
+  const releaseUiLotCode = `SJ-${releaseUiPrefix.toUpperCase()}`
+  const releaseUiSourceName = `QA Origen de liberación ${releaseUiPrefix}`
+  await root.collection('distProducts').doc(releaseUiSourceId).set({ id: releaseUiSourceId, restaurantId: 'sanjose', name: releaseUiSourceName, unitType: 'kg', active: true, productionCost: 5 })
+  await root.collection('distProducts').doc(releaseUiTargetId).set({ id: releaseUiTargetId, restaurantId: 'sanjose', name: `QA Sachet liberable ${releaseUiPrefix}`, unitType: 'package', active: true, productionCost: 999 })
+  await root.collection('distLots').doc(releaseUiSourceLotId).set({ id: releaseUiSourceLotId, restaurantId: 'sanjose', productId: releaseUiSourceId, productName: releaseUiSourceName, unitType: 'kg', lotCode: `SRC-${releaseUiPrefix}`, manufacturedOn: '2026-10-20', expiresOn: safeExpiry, productionCost: 5, quantities: { central: 1 } })
+  await root.collection('distBalances').doc(`central__${releaseUiSourceId}`).set({ id: `central__${releaseUiSourceId}`, restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: releaseUiSourceId, unitType: 'kg', quantity: 1 })
+  const releaseUiBatchOperation = root.collection('distOperations').doc(releaseUiBatchOperationId)
+  await releaseUiBatchOperation.set({ id: releaseUiBatchOperationId, restaurantId: 'sanjose', createdBy: uid, createdAt: date, type: 'confirmProcessingBatch', status: 'queued', payload: {
+    batchId: releaseUiBatchId, processType: 'bagging', sourceProductId: releaseUiSourceId, location: 'central', processingDate: boliviaDayKey, inputWeightG: 1000,
+    sourceAllocations: [{ lotId: releaseUiSourceLotId, quantity: 1, measuredNetWeightG: 1000 }],
+    destinations: [{ id: 'finished', kind: 'finished', productId: releaseUiTargetId, commercialQuantity: 4, netWeightG: 1000, nominalWeightG: 250, weightBasis: 'measured_total', lotCode: releaseUiLotCode, manufacturedOn: '2026-10-20', packagedOn: boliviaDayKey, expiresOn: safeExpiry }],
+    packagingMaterials: [], costComponents: [],
+  } })
+  await processCommand(db, releaseUiBatchOperation)
+  const releaseUiBatchResult = (await releaseUiBatchOperation.get()).data()
+  assert.equal(releaseUiBatchResult.status, 'confirmed', `synthetic batch for release UI: ${releaseUiBatchResult.error || ''}`)
+  const releaseUiLotId = releaseUiBatchResult.result.derivedLots.find(row => row.destinationKind === 'finished').lotId
+  const releaseUiMovementCount = (await root.collection('distStockMovements').get()).size
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html?release=1&role=admin')
+  await page.getByLabel('Fundamento de liberación').waitFor({ timeout: 30000 })
+  const releaseUiLot = (await root.collection('distLots').doc(releaseUiBatchResult.result.derivedLots.find(row => row.destinationKind === 'finished').lotId).get()).data()
+  await page.evaluate(lot => window.__qaUpdateReleaseLot?.(lot), releaseUiLot)
+  const releasePanel = page.locator('section').filter({ hasText: `Liberación comercial · ${releaseUiLotCode}` }).last()
+  await releasePanel.getByLabel('Fundamento de liberación').fill('Producto apto para despacho y venta')
+  const qualityAuthorizationRef = root.collection('distProcessingQualityAuthorizations').doc(uid)
+  const savedQualityAuthorization = await qualityAuthorizationRef.get()
+  if (savedQualityAuthorization.exists) await qualityAuthorizationRef.delete()
+  await releasePanel.getByRole('button', { name: 'Liberar para despacho y venta', exact: true }).click()
+  await releasePanel.getByText('Lote liberado para despacho y venta.', { exact: true }).waitFor({ timeout: 30000 })
+  assert.doesNotMatch(await releasePanel.innerText(), /autorización vigente de Calidad|Verifica tu autorización de Calidad/i)
+  const releasedUiLot = (await root.collection('distLots').doc(releaseUiLotId).get()).data()
+  await page.evaluate(lot => window.__qaUpdateReleaseLot?.(lot), releasedUiLot)
+  await releasePanel.getByText('Autorizado para uso comercial; se mantienen los controles de inventario y reservas.', { exact: true }).waitFor()
+  const releaseUiOperation = (await root.collection('distOperations').where('type', '==', 'releaseProcessingLot').get()).docs.map(row => row.data()).find(row => row.payload.lotId === releaseUiLotId)
+  assert.equal(releasedUiLot.processingCommercialRelease.approvedBy, uid)
+  assert.equal(releasedUiLot.processingCommercialRelease.reason, 'Producto apto para despacho y venta')
+  assert.equal(releaseUiOperation.status, 'confirmed')
+  assert.equal(releaseUiOperation.payload.authorizationReference, undefined)
+  assert.equal((await qualityAuthorizationRef.get()).exists, false, 'liberación confirmada sin documento de autorización')
+  if (savedQualityAuthorization.exists) await qualityAuthorizationRef.set(savedQualityAuthorization.data())
+  assert.equal((await root.collection('distStockMovements').get()).size, releaseUiMovementCount, 'la liberación no crea movimientos ni vuelve a descontar inventario')
+  console.log('PASS release UI: Administración libera batch existente sin autorización de Calidad; UI confirma y conserva stock/trazabilidad')
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html')
+  await page.getByRole('heading', { name: 'Sacheteado y Embolsado' }).waitFor()
+
   await page.setViewportSize({ width: 360, height: 800 })
   await page.getByRole('button', { name: 'Nueva elaboración', exact: true }).click()
   const walkthroughDraftKey = `sanjose_processing_draft_v1:${uid}`

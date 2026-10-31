@@ -259,7 +259,7 @@ export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput,
   return submitOperation('confirmProcessingBatch', input, operationId)
 }
 
-export async function releaseProcessingLot(input: { lotId: string; authorizationReference: string; reason: string }, operationId: string): Promise<unknown> {
+export async function releaseProcessingLot(input: { lotId: string; reason: string; authorizationReference?: string }, operationId: string): Promise<unknown> {
   return submitOperation('releaseProcessingLot', input, operationId)
 }
 

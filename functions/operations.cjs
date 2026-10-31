@@ -4682,8 +4682,6 @@ handlers.reserveProcessingStock = async (o, p) => {
 
 handlers.releaseProcessingLot = async (o, p) => {
   o.admin();
-  const authorization = await activeQualityAuthorization(o, String(p.authorizationReference || ''));
-  check(authorization, 'La liberación requiere autorización vigente de Calidad.');
   check(typeof p.reason === 'string' && p.reason.trim().length >= 10, 'Registra el fundamento de aptitud y liberación.');
   const lot = await o.read('distLots', safeId(p.lotId));
   check(lot && lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished' && !lot.quarantined && !lot.derivedReturn, 'El lote no es un producto terminado elegible.');
@@ -4695,7 +4693,10 @@ handlers.releaseProcessingLot = async (o, p) => {
   const initialOutput = batch?.result?.derivedLots?.some(row => row.lotId === lot.id && row.destinationKind === 'finished');
   const repackOutput = batch?.processType === 'repackaging' && batch.result?.outputLots?.some(row => row.lotId === lot.id);
   check(batch?.status === 'confirmed' && (['bagging','portioning'].includes(batch.processType) && initialOutput || repackOutput), 'La elaboración original no acredita este lote terminado.');
+  let repackAuthorization = null;
   if (repackOutput) {
+    repackAuthorization = await activeQualityAuthorization(o, String(p.authorizationReference || ''));
+    check(repackAuthorization, 'La liberación de una salida reenvasada requiere autorización vigente de Calidad.');
     const repack = await o.read('distProcessingRepackings', batch.id);
     const review = repack && await o.read('distProcessingReviews', repack.reviewId);
     check(repack?.status === 'confirmed' && lot.processingRepackId === repack.id && review?.qualityDecision === 'authorized_for_repack'
@@ -4726,7 +4727,7 @@ handlers.releaseProcessingLot = async (o, p) => {
     check(lot.processingCommercialRelease.status === 'released' && lot.processingCommercialRelease.batchId === batch.id, 'El estado comercial existente requiere revisión.');
     return { id: lot.id, release: lot.processingCommercialRelease };
   }
-  const release = { status: 'released', batchId: batch.id, authorizationId: authorization.id, approvedBy: o.actor, approvedAt: o.now, operationId: o.id, reason: p.reason.trim(), physicalWeightG: lot.processingPhysicalWeightGRemaining, costCents: lot.processingCostCentsRemaining };
+  const release = { status: 'released', batchId: batch.id, ...(repackAuthorization ? { authorizationId: repackAuthorization.id } : {}), approvedBy: o.actor, approvedAt: o.now, operationId: o.id, reason: p.reason.trim(), physicalWeightG: lot.processingPhysicalWeightGRemaining, costCents: lot.processingCostCentsRemaining };
   o.put('distLots', lot.id, { ...lot, processingCommercialRelease: release });
   return { id: lot.id, release };
 };
