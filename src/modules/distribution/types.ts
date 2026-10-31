@@ -848,7 +848,8 @@ export interface DistLot {
  processingUnavailable?: Record<string, { courtesy: number; repackPending: number; reviewHold: number }>;
  /** Server-only gate until package weight and exact historical cost are consumed end-to-end. */
  processingCommercialBlocked?: boolean;
- processingCommercialRelease?: { status: 'released'; batchId: string; authorizationId: string; approvedBy: string; approvedAt: string; operationId: string; reason: string };
+ processingCommercialRelease?: { status: 'released'; batchId: string; authorizationId?: string; approvedBy: string; approvedAt: string; operationId: string; reason: string; physicalWeightG: number; costCents: number };
+ processingRepackId?: string;
  processingBatchId?: string;
  processingDestinationId?: string;
  processingDestinationKind?: import('./domain/processing.ts').ProcessingDestinationKind;

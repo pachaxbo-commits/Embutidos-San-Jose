@@ -56,7 +56,7 @@ const processingBalance = { ...balance(36), unitType: 'package' as const }
 const processingAvailability = stockAvailability(projected(processingBalance, [processingLot]), [processingLot], 'central', today)
 assertEqual(processingAvailability.processingBlocked, 36)
 assertEqual(processingAvailability.available, 0)
-const releasedLot: DistLot = { ...processingLot, processingBatchId: 'batch-release', processingDestinationKind: 'finished', processingCommercialRelease: { status: 'released', batchId: 'batch-release', authorizationId: 'quality-1', approvedBy: 'quality-user', approvedAt: '2026-10-29T12:00:00Z', operationId: 'release-op', reason: 'Physical product approved' } }
+const releasedLot: DistLot = { ...processingLot, processingBatchId: 'batch-release', processingDestinationKind: 'finished', processingCommercialRelease: { status: 'released', batchId: 'batch-release', authorizationId: 'quality-1', approvedBy: 'quality-user', approvedAt: '2026-10-29T12:00:00Z', operationId: 'release-op', reason: 'Physical product approved', physicalWeightG: 250, costCents: 125 } }
 assertEqual(stockAvailability(projected(processingBalance, [releasedLot]), [releasedLot], 'central', today).available, 36)
 const mismatchedRelease = { ...releasedLot, processingBatchId: 'different-batch' }
 assertEqual(stockAvailability(projected(processingBalance, [mismatchedRelease]), [mismatchedRelease], 'central', today).available, 0)
