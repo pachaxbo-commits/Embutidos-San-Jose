@@ -17,6 +17,12 @@ const root = db.doc('restaurants/sanjose')
 const env = await initializeTestEnvironment({ projectId, firestore: { host: '127.0.0.1', port: 8085, rules: fs.readFileSync('firebase/firestore.rules', 'utf8') } })
 const prefix = `pb${Date.now().toString(36)}`
 const ids = { admin: `${prefix}-admin`, warehouse: `${prefix}-warehouse`, otherWarehouse: `${prefix}-other-wh`, distributor: `${prefix}-seller`, warehouseId: `${prefix}-wh`, source: `${prefix}-bulk`, package: `${prefix}-sachet`, courtesy: `${prefix}-courtesy`, route: `${prefix}-route` }
+const boliviaDate = (offsetDays = 0) => {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+  const date = new Date(`${today}T12:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + offsetDays)
+  return date.toISOString().slice(0, 10)
+}
 let checks = 0
 const pass = (condition, message) => { assert.ok(condition, message); checks++; console.log(`PASS ${message}`) }
 const authDb = uid => env.authenticatedContext(uid).firestore()
@@ -65,6 +71,45 @@ try {
   badMass.destinations[0].netWeightG = 8999
   const rejectedMass = await run(ids.admin, 'confirmProcessingBatch', badMass, `${prefix}-bad-mass-op`, 'rejected')
   pass(rejectedMass.error.includes('diferencia 1 g') && (await read('distBalances', `central__${ids.source}`)).quantity === 10 && !(await root.collection('distProcessingBatches').doc(badMass.batchId).get()).exists && (await root.collection('distStockMovements').where('refId', '==', rejectedMass.operationId).get()).empty, 'diferencia de 1 g rechazada sin documentos ni movimientos físicos parciales')
+
+  const expirySource = `${prefix}-expiry-source`, expirySourceLot = `${prefix}-expiry-source-lot`, expiryPackage = `${prefix}-expiry-package`
+  await fixtureProduct(expirySource, 'kg', 5)
+  await fixtureProduct(expiryPackage, 'package', 999, 0.5)
+  await fixtureLot(expirySource, expirySourceLot, 'central', 20, 5, { expiresOn: boliviaDate(10) })
+  const laterExpiryPayload = validPayload(`${prefix}-later-expiry`, expirySource, [{ lotId: expirySourceLot, quantity: 20, measuredNetWeightG: 20000 }])
+  laterExpiryPayload.processingDate = boliviaDate(-1)
+  laterExpiryPayload.inputWeightG = 20000
+  const packagedOn = boliviaDate(-1)
+  const laterExpiry = boliviaDate(30)
+  laterExpiryPayload.destinations = [
+    { id: 'finished', kind: 'finished', productId: expiryPackage, commercialQuantity: 39, netWeightG: 19539, nominalWeightG: 500, weightBasis: 'measured_total', lotCode: `SACH-${prefix}-expiry`, manufacturedOn: boliviaDate(-3), packagedOn, expiresOn: laterExpiry },
+    { id: 'discard', kind: 'discard', netWeightG: 461, reason: 'QA alimento físicamente retirado y pesado' },
+  ]
+  const badExpiry = structuredClone(laterExpiryPayload); badExpiry.batchId = `${prefix}-expiry-before-packaging`; badExpiry.destinations[0].expiresOn = boliviaDate(-2)
+  const badExpiryResult = await run(ids.admin, 'confirmProcessingBatch', badExpiry, `${prefix}-expiry-before-packaging-op`, 'rejected')
+  pass(badExpiryResult.error.includes('vencimiento') && (await read('distBalances', `central__${expirySource}`)).quantity === 20, 'rechaza vencimiento anterior al embolsado sin descontar inventario')
+  const futureProcessDate = structuredClone(laterExpiryPayload); futureProcessDate.batchId = `${prefix}-future-process-date`; futureProcessDate.processingDate = boliviaDate(1)
+  const futureProcessDateResult = await run(ids.admin, 'confirmProcessingBatch', futureProcessDate, `${prefix}-future-process-date-op`, 'rejected')
+  pass(futureProcessDateResult.error.includes('no futura') && (await read('distBalances', `central__${expirySource}`)).quantity === 20, 'rechaza fecha futura del proceso y conserva el stock')
+  const futureManufacture = structuredClone(laterExpiryPayload); futureManufacture.batchId = `${prefix}-future-manufacture`; futureManufacture.destinations[0].manufacturedOn = boliviaDate(1); futureManufacture.destinations[0].packagedOn = boliviaDate(2)
+  const futureManufactureResult = await run(ids.admin, 'confirmProcessingBatch', futureManufacture, `${prefix}-future-manufacture-op`, 'rejected')
+  pass(futureManufactureResult.error.includes('requiere fecha') && (await read('distBalances', `central__${expirySource}`)).quantity === 20, 'rechaza elaboración futura y conserva el stock')
+  const packagingBeforeManufacture = structuredClone(laterExpiryPayload); packagingBeforeManufacture.batchId = `${prefix}-packaging-before-manufacture`; packagingBeforeManufacture.destinations[0].manufacturedOn = boliviaDate(-1); packagingBeforeManufacture.destinations[0].packagedOn = boliviaDate(-2)
+  const packagingBeforeManufactureResult = await run(ids.admin, 'confirmProcessingBatch', packagingBeforeManufacture, `${prefix}-packaging-before-manufacture-op`, 'rejected')
+  pass(packagingBeforeManufactureResult.error.includes('requiere fecha') && (await read('distBalances', `central__${expirySource}`)).quantity === 20, 'rechaza embolsado anterior a elaboración sin movimientos')
+  const futurePackaging = structuredClone(laterExpiryPayload); futurePackaging.batchId = `${prefix}-future-packaging`; futurePackaging.destinations[0].packagedOn = boliviaDate(1)
+  const futurePackagingResult = await run(ids.admin, 'confirmProcessingBatch', futurePackaging, `${prefix}-future-packaging-op`, 'rejected')
+  pass(futurePackagingResult.error.includes('requiere fecha') && (await read('distBalances', `central__${expirySource}`)).quantity === 20, 'rechaza fecha futura de embolsado sin movimientos')
+  const missingDiscard = structuredClone(laterExpiryPayload); missingDiscard.batchId = `${prefix}-missing-discard`; missingDiscard.destinations = [laterExpiryPayload.destinations[0]]
+  const missingDiscardResult = await run(ids.admin, 'confirmProcessingBatch', missingDiscard, `${prefix}-missing-discard-op`, 'rejected')
+  pass(missingDiscardResult.error.includes('diferencia 461 g') && (await read('distBalances', `central__${expirySource}`)).quantity === 20, 'rechaza 461 g sin asignar y no cambia inventario')
+  const laterExpiryConfirmed = await run(ids.admin, 'confirmProcessingBatch', laterExpiryPayload, `${prefix}-later-expiry-op`)
+  const laterExpiryBatch = await read('distProcessingBatches', laterExpiryPayload.batchId)
+  const laterExpiryLotRef = laterExpiryBatch.result.derivedLots.find(row => row.destinationId === 'finished')
+  const laterExpiryLot = await read('distLots', laterExpiryLotRef.lotId)
+  pass(laterExpiryConfirmed.status === 'confirmed' && laterExpiryLot.expiresOn === laterExpiry && laterExpiryBatch.sourceAllocations[0].expiresOn === boliviaDate(10), 'acepta vencimiento terminado posterior al origen y conserva ambos vencimientos para trazabilidad')
+  pass(laterExpiryBatch.destinations.find(row => row.id === 'finished').netWeightG === 19539 && laterExpiryBatch.destinations.find(row => row.id === 'finished').nominalWeightG === 500 && laterExpiryLot.processingPackageWeightLedger.measuredNetWeightG === 19539, '39 paquetes conservan 19.539 g reales frente a nominal de 500 g; nominal y peso físico siguen separados')
+  pass(laterExpiryBatch.packagingMaterials.length === 1 && laterExpiryBatch.inputWeightG === 20000 && laterExpiryBatch.destinations.reduce((sum, row) => sum + row.netWeightG, 0) === 20000 && (await read('distBalances', `central__${expirySource}`)).quantity === 0, 'bolsas/materiales no se restan automáticamente del neto: entrada 20.000 g = 19.539 g terminado + 461 g descarte')
 
   const batchId = `${prefix}-valid-batch`
   const payload = validPayload(batchId)
