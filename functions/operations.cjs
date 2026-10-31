@@ -871,7 +871,8 @@ async function dispatch(o, p, addition = false) {
     const options = Array.isArray(l.allocationsRequested)
       ? { allocationsRequested: l.allocationsRequested }
       : l.lotId ? { lotId: l.lotId } : {};
-    const product = (await o.loadStock(l.productId, from)).p;
+    const sourceStock = await o.loadStock(l.productId, from);
+    const product = sourceStock.p;
     const hasDispatchMerma = Object.prototype.hasOwnProperty.call(l, "dispatchMerma");
     const physicalQuantity = round(Number(l.quantity));
     const dispatchMerma = hasDispatchMerma ? round(Number(l.dispatchMerma)) : 0;
@@ -882,7 +883,33 @@ async function dispatch(o, p, addition = false) {
         "Revisa la cantidad normal y la merma adicional del despacho.");
       check(round(normalQuantity + dispatchMerma) === physicalQuantity, "El total físico debe ser igual a la cantidad normal más la merma adicional.");
     }
-    const allocations = await o.moveStock(l.productId, from, to, physicalQuantity, { ...options, processingDispatch: true });
+    let allocations;
+    try {
+      allocations = await o.moveStock(l.productId, from, to, physicalQuantity, { ...options, processingDispatch: true });
+    } catch (error) {
+      const reason = String(error?.message || "Revisa las cantidades y los lotes seleccionados.");
+      const lotMatch = reason.match(/(?:El lote|lote)\s+(.+?)\s+(?:no tiene cantidad libre suficiente|no pertenece|está vencido)/i);
+      const requestedLotIds = Array.isArray(l.allocationsRequested)
+        ? l.allocationsRequested.map((part) => part?.lotId).filter(Boolean)
+        : l.lotId ? [l.lotId] : [];
+      const isLotSpecificFailure = /no tiene cantidad libre suficiente|no pertenece al producto seleccionado|vencido o en cuarentena|No repitas el mismo lote|derivado de elaboración sigue bloqueado/i.test(reason);
+      const failedLot = isLotSpecificFailure && (lotMatch
+        ? sourceStock.lots.find((lot) => lot.id === lotMatch[1] || lot.lotCode === lotMatch[1])
+        : sourceStock.lots.find((lot) => requestedLotIds.includes(lot.id)))
+        || (isLotSpecificFailure && requestedLotIds[0] ? await o.read("distLots", requestedLotIds[0]) : null);
+      const lotLabel = failedLot?.lotCode || (isLotSpecificFailure ? lotMatch?.[1] || requestedLotIds[0] : undefined);
+      let friendlyReason = reason;
+      if (/no tiene cantidad libre suficiente/i.test(reason)) {
+        friendlyReason = "la disponibilidad pudo cambiar o estar retenida. Actualiza el despacho y revisa las cantidades antes de confirmar.";
+      } else if (/no pertenece al producto seleccionado/i.test(reason)) {
+        friendlyReason = "no corresponde a este producto. Selecciona un lote de la lista de este producto.";
+      } else if (/vencido o en cuarentena/i.test(reason)) {
+        friendlyReason = "está vencido o en cuarentena. Selecciona otro lote apto.";
+      } else if (/derivado de elaboración sigue bloqueado/i.test(reason)) {
+        friendlyReason = "sigue bloqueado por trazabilidad o revisión. Selecciona otro lote apto.";
+      }
+      throw new BusinessError(`No se pudo despachar ${product.name}${lotLabel ? ` · lote ${lotLabel}` : ""}: ${friendlyReason}`);
+    }
     const effective = linesByProduct.get(l.productId) || { productId: l.productId, productName: product.name, unitType: product.unitType, quantity: 0, normalQuantity: 0, dispatchMerma: 0, allocations: [], dispatchMermaAllocations: [] };
     effective.quantity = round(effective.quantity + l.quantity);
     effective.normalQuantity = round((effective.normalQuantity || 0) + normalQuantity);
