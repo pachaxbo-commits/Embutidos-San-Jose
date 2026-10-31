@@ -12,6 +12,7 @@ import type { DistributionViewProps } from './DistributionApp'
 import { PrimaryButton, SecondaryButton, SectionCard } from './shared'
 import { ProcessingOperationsView } from './ProcessingOperationsView'
 import { ProcessingGuide } from './ProcessingGuide'
+import { ProcessingContextHelp, ProcessingWalkthrough } from './ProcessingWalkthrough'
 import { ProcessingReportsView } from './ProcessingReportsView'
 import { ProcessingCommercialRelease } from './ProcessingCommercialRelease'
 
@@ -51,6 +52,22 @@ function persistDraft(uid: string, draft: Draft): boolean {
 }
 const labelKind: Record<ProcessingDestinationKind, string> = { finished: 'Producto terminado', courtesy: 'Reservado para cortesía', repack_pending: 'Pendiente de reenvasado', review_hold: 'Inmovilizado para revisión', discard: 'Descarte físico real', other: 'Otro destino (no disponible)' }
 const formatDateTime = (value?: string) => value ? new Intl.DateTimeFormat('es-BO', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/La_Paz' }).format(new Date(value)) : '—'
+const ERROR_ANCHORS: Array<[RegExp, string, number]> = [
+  [/vencimiento|fecha de embolsado|lote derivado/i, 'expiry-date', 1],
+  [/fecha de elaboración|elaboración.*futura/i, 'manufactured-date', 1],
+  [/diferencia|no concilia|masa|destinos suman/i, 'summary-metrics', 3],
+  [/kg|kilos|stock disponible|lote .*suficientes|origen/i, 'source-quantity', 0],
+  [/peso neto|peso.*gramos|peso de salida/i, 'net-weight', 1],
+  [/cantidad comercial|presentación/i, 'commercial-quantity', 1],
+  [/SKU|producto terminado|producto de destino/i, 'finished-product', 1],
+  [/código de lote|lote derivado/i, 'lot-code', 1],
+  [/lote.*elegible|lote.*condiciones|vencido|cuarentena/i, 'source-lots', 0],
+  [/producto a granel|producto de origen/i, 'source-product', 0],
+]
+function getErrorAnchor(message: string): { anchor: string; formStep: number } | null {
+  const match = ERROR_ANCHORS.find(([pattern]) => pattern.test(message))
+  return match ? { anchor: match[1], formStep: match[2] } : null
+}
 
 export function SacheteadoView({ session, data }: DistributionViewProps) {
   const today = todayKey()
@@ -69,6 +86,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
   const [historyWarehouse, setHistoryWarehouse] = useState('all')
   const [historyCursor, setHistoryCursor] = useState<ProcessingBatchPage['cursor']>(null)
   const [historyHasMore, setHistoryHasMore] = useState(false)
+  const [walkthroughOpen, setWalkthroughOpen] = useState(false)
   const submitLock = useRef(false)
   const location = session.role === 'admin' ? draft.location : fixedLocation
   const locationKey = location === 'central' ? 'central' : `warehouse__${location}`
@@ -84,8 +102,12 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
   const massError = useMemo(() => {
     if (!inputWeightG || !draft.destinations.length) return 'Ingresa el peso medido de origen y asigna todos los destinos.'
     try { reconcileProcessingMass(inputWeightG, draft.destinations.map(destination => ({ id: destination.id, netWeightG: gramsInput(destination.netWeightG) || 0 }))); return '' }
-    catch (reason) { return (reason as Error).message }
-  }, [inputWeightG, draft.destinations])
+    catch {
+      const difference = inputWeightG - outputWeightG
+      if (difference > 0) return `La entrada es ${inputWeightG} g y los destinos suman ${outputWeightG} g. Faltan asignar ${difference} g.`
+      return `La entrada es ${inputWeightG} g y los destinos suman ${outputWeightG} g. Los destinos exceden la entrada por ${Math.abs(difference)} g.`
+    }
+  }, [inputWeightG, outputWeightG, draft.destinations])
   const selectedLotIds = new Set(draft.sources.map(source => source.lotId))
   const currentBalance = data.balances.find(balance => balance.id === warehouseBalanceId(location, draft.sourceProductId))
   const stock = selectedProduct ? stockAvailability(currentBalance, data.lots, locationKey, today) : null
@@ -153,8 +175,6 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
       if (destination.nominalWeightG.trim() && !gramsInput(destination.nominalWeightG)) throw new Error(`El peso nominal informativo de ${target.name} debe ser un entero positivo en gramos.`)
       if (!destination.lotCode.trim() || !destination.manufacturedOn || !destination.packagedOn || !destination.expiresOn) throw new Error(`Completa código de lote, elaboración, embolsado y vencimiento de ${target.name}.`)
       if (destination.manufacturedOn > today || destination.packagedOn > today || destination.manufacturedOn > destination.packagedOn || destination.expiresOn < destination.packagedOn) throw new Error(`Revisa las fechas del lote derivado de ${target.name}.`)
-      const conservativeSourceExpiry = sourceLotRows.map(lot => lot!.expiresOn).sort()[0]
-      if (destination.expiresOn > conservativeSourceExpiry) throw new Error(`El vencimiento de ${target.name} supera el lote de origen más conservador (${conservativeSourceExpiry}).`)
       if (destination.kind === 'courtesy' && (!canAdmin || !destination.qualityConfirmed || destination.qualityReason.trim().length < 3)) throw new Error('La cortesía exige confirmación de aptitud y motivo de Administración; Almacén puede conservar el borrador.')
       if ((destination.kind === 'repack_pending' || destination.kind === 'review_hold') && destination.reason.trim().length < 3) throw new Error(`Indica por qué ${target.name} queda inmovilizado.`)
     }
@@ -271,7 +291,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
       {([['new','Nueva elaboración'],['reservations','Mercadería reservada'],['review','Revisión de producto'],['repack','Reenvasado'],['history','Historial']] as const).map(([key,label]) => <button key={key} type="button" onClick={() => { setTab(key); setSelectedBatch(null) }} aria-current={tab === key ? 'page' : undefined} className={`min-h-11 rounded-xl px-2 text-xs font-extrabold sm:text-sm ${tab === key ? 'bg-[var(--primary)] text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
     </div>
 
-    {tab === 'new' && <ProcessingGuide topic="new" />}
+    {tab === 'new' && <ProcessingGuide topic="new" onStart={() => setWalkthroughOpen(true)} />}
     {tab === 'history' && <ProcessingGuide topic="history" />}
 
     {['reservations','review','repack'].includes(tab) && <ProcessingOperationsView mode={tab as 'reservations' | 'review' | 'repack'} session={session} products={data.products} lots={data.lots} locationOptions={[{id:'central',name:'Almacén central'}, ...data.warehouses.filter(item => item.active)]} />}
@@ -304,24 +324,24 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
       </div>
 
       {message && <div role="status" className={`rounded-2xl border p-3 text-sm ${submitState === 'confirmed' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-sky-200 bg-sky-50 text-sky-900'}`}>{message}{submitState === 'confirmed' && <button type="button" className="mt-2 block min-h-10 font-extrabold underline" onClick={() => { setDraft(freshDraft(fixedLocation, today)); setSubmitState('idle'); setMessage(''); setError(''); setStep(0) }}>Iniciar otra elaboración</button>}</div>}
-      {error && <div role="alert" className="flex gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900"><AlertTriangle className="mt-0.5 shrink-0" size={17} /><span>{error}</span></div>}
+      {error && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900"><AlertTriangle className="mt-0.5 shrink-0" size={17} /><span className="min-w-0 flex-1">{error}</span>{getErrorAnchor(error) && <button type="button" className="min-h-10 rounded-lg border border-rose-300 bg-white px-3 text-xs font-extrabold" onClick={() => { const target = getErrorAnchor(error)!; setStep(target.formStep); requestAnimationFrame(() => { const element = document.querySelector<HTMLElement>(`[data-processing-anchor="${target.anchor}"]`); element?.scrollIntoView({ behavior: 'smooth', block: 'center' }); element?.classList.add('ring-4', 'ring-amber-400', 'ring-offset-2'); window.setTimeout(() => element?.classList.remove('ring-4', 'ring-amber-400', 'ring-offset-2'), 2400) }) }}>Ver campo</button>}</div>}
       {submitState === 'unknown' && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Resultado pendiente de comprobación.</b> El borrador no se puede editar ni enviar con un ID distinto.<div className="mt-2"><PrimaryButton onClick={() => void checkOperation()}><RefreshCw size={16} />Comprobar estado</PrimaryButton></div></div>}
 
       {step === 0 && <SectionCard title="Paso 1 · Producto de origen y lotes">
         <div className="space-y-3">
           {canAdmin ? <Field label="Almacén de origen" required><SelectInput value={draft.location} onChange={event => editDraft(current => ({ ...current, location: event.target.value, sourceProductId: '', sources: [] }))}>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field> : <div className="rounded-xl bg-slate-50 p-3 text-sm"><b>Almacén asignado:</b> {data.warehouses.find(item => item.id === fixedLocation)?.name || (fixedLocation === 'central' ? 'Almacén central' : fixedLocation)}</div>}
           <Field label="Tipo de elaboración"><SelectInput value={draft.processType} onChange={event => editDraft(current => ({ ...current, processType: event.target.value as Draft['processType'] }))}><option value="bagging">Sacheteado y embolsado</option><option value="portioning">Porcionado</option></SelectInput><p className="mt-1 text-xs text-slate-500">Este flujo transforma producto a granel. El reemplazo de bolsas de producto terminado y la liberación de pendientes requieren procedimientos separados.</p></Field>
-          <Field label="Producto a granel · unidad kg" required hint="Solo aparecen SKU con lotes elegibles. El servidor vuelve a comprobar stock, lote y vencimiento al confirmar."><SelectInput value={draft.sourceProductId} onChange={event => setSourceProduct(event.target.value)}><option value="">Selecciona producto</option>{sourceProducts.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
+          <Field label="Producto a granel · unidad kg" required hint="Solo aparecen SKU con lotes elegibles. El servidor vuelve a comprobar stock, lote y vencimiento al confirmar."><SelectInput data-processing-anchor="source-product" value={draft.sourceProductId} onChange={event => setSourceProduct(event.target.value)}><option value="">Selecciona producto</option>{sourceProducts.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
           {selectedProduct && <div className="grid grid-cols-2 gap-2"><div className="rounded-xl border border-slate-200 p-3"><p className="text-[10px] font-black uppercase text-slate-500">Existencia física</p><p className="mt-1 font-black tabular-nums">{(stock?.physical || 0).toFixed(3)} kg</p></div><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><p className="text-[10px] font-black uppercase text-emerald-800">Disponible para procesar</p><p className="mt-1 font-black tabular-nums text-emerald-900">{(stock?.available || 0).toFixed(3)} kg</p></div></div>}
-          {selectedProduct && <div className="space-y-2"><p className="text-[11px] font-extrabold text-slate-600">Lotes elegibles (vence primero)</p>{eligibleLots.length === 0 ? <EmptyBlock title="Sin lotes elegibles" description="Se excluyen lotes vencidos, sintéticos, en cuarentena, bloqueados o con origen físico pendiente." /> : eligibleLots.map(lot => {
+          {selectedProduct && <div data-processing-anchor="source-lots" className="space-y-2"><p className="text-[11px] font-extrabold text-slate-600">Lotes elegibles (vence primero)</p>{eligibleLots.length === 0 ? <EmptyBlock title="Sin lotes elegibles" description="Se excluyen lotes vencidos, sintéticos, en cuarentena, bloqueados o con origen físico pendiente." /> : eligibleLots.map(lot => {
             const selected = selectedLotIds.has(lot.id); const row = draft.sources.find(source => source.lotId === lot.id)
             return <div key={lot.id} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-[auto_minmax(0,1fr)_minmax(150px,190px)]">
               <input type="checkbox" aria-label={`Seleccionar lote ${lot.lotCode}`} checked={selected} onChange={event => event.target.checked ? addSource(lot) : removeSource(lot.id)} className="mt-1 h-5 w-5 accent-[var(--primary)]" />
               <div className="min-w-0"><p className="break-words text-sm font-extrabold">{lot.lotCode}</p><p className="text-[11px] text-slate-500">Elab. {lot.manufacturedOn} · Vence {lot.expiresOn} · {lot.productionCost == null ? 'Costo no disponible' : `Costo histórico Bs ${lot.productionCost.toFixed(2)}`}</p><p className="mt-1 text-xs font-bold">Físico {lotAvailableQuantity(lot, locationKey).toFixed(3)} kg disponible</p></div>
-              {selected && <Field label="Kg reales utilizados" required hint="Máximo 3 decimales"><NumberInput min="0.001" max={lotAvailableQuantity(lot, locationKey)} step="0.001" inputMode="decimal" value={row?.quantityKg || ''} onChange={event => editDraft(current => ({ ...current, sources: current.sources.map(source => source.lotId === lot.id ? { ...source, quantityKg: event.target.value } : source) }))} placeholder="0,000" /></Field>}
+              {selected && <div data-processing-anchor="source-quantity"><Field label="Kg reales utilizados" required hint="Máximo 3 decimales"><NumberInput min="0.001" max={lotAvailableQuantity(lot, locationKey)} step="0.001" inputMode="decimal" value={row?.quantityKg || ''} onChange={event => editDraft(current => ({ ...current, sources: current.sources.map(source => source.lotId === lot.id ? { ...source, quantityKg: event.target.value } : source) }))} placeholder="0,000" /></Field><ProcessingContextHelp topic="sourceQuantity" /></div>}
             </div>
           })}</div>}
-          <Field label="Fecha del proceso" required><TextInput type="date" max={today} value={draft.processingDate} onChange={event => editDraft(current => ({ ...current, processingDate: event.target.value }))} /></Field>
+          <Field label="Fecha del proceso" required><TextInput data-processing-anchor="processing-date" type="date" max={today} value={draft.processingDate} onChange={event => editDraft(current => ({ ...current, processingDate: event.target.value }))} /></Field>
           <p className="rounded-xl bg-amber-50 p-3 text-xs font-semibold text-amber-900">No se permite usar paquetes o unidades como materia prima en esta fase. La suma de las asignaciones de lote debe coincidir con los gramos medidos de entrada.</p>
         </div>
       </SectionCard>}
@@ -333,16 +353,16 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
           return <article key={destination.id} className="min-w-0 rounded-2xl border border-slate-200 p-3">
             <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Destino {index + 1}</h3>{draft.destinations.length > 1 && <button type="button" aria-label="Quitar destino" onClick={() => editDraft(current => ({ ...current, destinations: current.destinations.filter(row => row.id !== destination.id) }))} className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-rose-700"><Trash2 size={16} /></button>}</div>
             <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-              <Field label="Destino físico" required><SelectInput value={destination.kind} onChange={event => updateDestination(destination.id, { kind: event.target.value as ProcessingDestinationKind, productId: event.target.value === 'discard' ? '' : destination.productId })}>{Object.entries(labelKind).filter(([key]) => key !== 'other').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</SelectInput></Field>
-              {destination.kind !== 'discard' && <Field label="SKU terminado existente" required><SelectInput value={destination.productId} onChange={event => updateDestination(destination.id, { productId: event.target.value, commercialQuantity: '' })}><option value="">Selecciona SKU</option>{destinationsProducts.map(product => <option key={product.id} value={product.id}>{product.name} · {product.unitType}</option>)}</SelectInput></Field>}
-              {destination.kind !== 'discard' && <Field label={`Cantidad comercial ${target ? `(${target.unitType})` : ''}`} required hint={target?.unitType === 'kg' ? 'Debe coincidir exactamente con los gramos netos.' : 'Paquetes/unidades enteros; no se infiere su peso.'}><NumberInput min="0" step={target?.unitType === 'kg' ? '0.001' : '1'} value={destination.commercialQuantity} onChange={event => updateDestination(destination.id, { commercialQuantity: event.target.value })} placeholder={target?.unitType === 'kg' ? '0,000' : '0'} /></Field>}
-              <Field label="Peso neto real medido (g)" required><NumberInput min="1" step="1" value={destination.netWeightG} onChange={event => updateDestination(destination.id, { netWeightG: event.target.value })} placeholder="Ej. 9000" /></Field>
-              {destination.kind !== 'discard' && <Field label="Peso nominal (g, informativo)"><NumberInput min="1" step="1" value={destination.nominalWeightG} onChange={event => updateDestination(destination.id, { nominalWeightG: event.target.value })} placeholder="Ej. 250" /></Field>}
-              {destination.kind !== 'discard' && <Field label="Lote nuevo" required><TextInput maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value })} placeholder="Código de lote" /></Field>}
-              {destination.kind !== 'discard' && <Field label="Fecha de elaboración" required><TextInput type="date" max={today} value={destination.manufacturedOn} onChange={event => updateDestination(destination.id, { manufacturedOn: event.target.value })} /></Field>}
-              {destination.kind !== 'discard' && <Field label="Fecha de embolsado" required><TextInput type="date" max={today} value={destination.packagedOn} onChange={event => updateDestination(destination.id, { packagedOn: event.target.value })} /></Field>}
-              {destination.kind !== 'discard' && <Field label="Vencimiento" required hint="El servidor no permitirá superar el lote de origen más conservador."><TextInput type="date" value={destination.expiresOn} onChange={event => updateDestination(destination.id, { expiresOn: event.target.value })} /></Field>}
-              {target && target.unitType !== 'kg' && <Field label="Base del peso real" required><SelectInput value={destination.weightBasis} onChange={event => updateDestination(destination.id, { weightBasis: event.target.value as ProcessingWeightBasis })}><option value="measured_total">Peso total medido</option><option value="documented_average">Promedio documentado</option></SelectInput></Field>}
+              <Field label="Destino físico" required><SelectInput data-processing-anchor="destination-kind" value={destination.kind} onChange={event => updateDestination(destination.id, { kind: event.target.value as ProcessingDestinationKind, productId: event.target.value === 'discard' ? '' : destination.productId })}>{Object.entries(labelKind).filter(([key]) => key !== 'other').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</SelectInput></Field>
+              {destination.kind !== 'discard' && <Field label="SKU terminado existente" required><SelectInput data-processing-anchor="finished-product" value={destination.productId} onChange={event => updateDestination(destination.id, { productId: event.target.value, commercialQuantity: '' })}><option value="">Selecciona SKU</option>{destinationsProducts.map(product => <option key={product.id} value={product.id}>{product.name} · {product.unitType}</option>)}</SelectInput></Field>}
+              {destination.kind !== 'discard' && <Field label={`Cantidad comercial ${target ? `(${target.unitType})` : ''}`} required hint={target?.unitType === 'kg' ? 'Debe coincidir exactamente con los gramos netos.' : 'Paquetes/unidades enteros; no se infiere su peso.'}><NumberInput data-processing-anchor="commercial-quantity" min="0" step={target?.unitType === 'kg' ? '0.001' : '1'} value={destination.commercialQuantity} onChange={event => updateDestination(destination.id, { commercialQuantity: event.target.value })} placeholder={target?.unitType === 'kg' ? '0,000' : '0'} /></Field>}
+              <div data-processing-anchor={destination.kind === 'discard' ? 'discard' : 'net-weight'}><Field label="Peso neto real medido (g)" required><NumberInput min="1" step="1" value={destination.netWeightG} onChange={event => updateDestination(destination.id, { netWeightG: event.target.value })} placeholder="Ej. 9000" /></Field><ProcessingContextHelp topic={destination.kind === 'discard' ? 'discard' : 'netWeight'} /></div>
+              {destination.kind !== 'discard' && <div data-processing-anchor="nominal-weight"><Field label="Peso nominal (g, informativo)"><NumberInput min="1" step="1" value={destination.nominalWeightG} onChange={event => updateDestination(destination.id, { nominalWeightG: event.target.value })} placeholder="Ej. 250" /></Field><ProcessingContextHelp topic="nominalWeight" /></div>}
+              {destination.kind !== 'discard' && <Field label="Lote nuevo" required><TextInput data-processing-anchor="lot-code" maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value })} placeholder="Código de lote" /></Field>}
+              {destination.kind !== 'discard' && <Field label="Fecha de elaboración" required><TextInput data-processing-anchor="manufactured-date" type="date" max={today} value={destination.manufacturedOn} onChange={event => updateDestination(destination.id, { manufacturedOn: event.target.value })} /></Field>}
+              {destination.kind !== 'discard' && <Field label="Fecha de embolsado" required><TextInput data-processing-anchor="packaged-date" type="date" max={today} value={destination.packagedOn} onChange={event => updateDestination(destination.id, { packagedOn: event.target.value })} /></Field>}
+              {destination.kind !== 'discard' && <div data-processing-anchor="expiry-date"><Field label="Vencimiento" required hint="San José define el vencimiento de la presentación terminada; puede ser posterior al lote de granel, pero no anterior al embolsado."><TextInput type="date" value={destination.expiresOn} onChange={event => updateDestination(destination.id, { expiresOn: event.target.value })} /></Field><ProcessingContextHelp topic="expiry" /></div>}
+              {target && target.unitType !== 'kg' && <div data-processing-anchor="weight-basis"><Field label="Base del peso real" required><SelectInput value={destination.weightBasis} onChange={event => updateDestination(destination.id, { weightBasis: event.target.value as ProcessingWeightBasis })}><option value="measured_total">Peso total medido</option><option value="documented_average">Promedio documentado</option></SelectInput></Field><ProcessingContextHelp topic="weightBasis" /></div>}
               {['courtesy', 'repack_pending', 'review_hold', 'discard'].includes(destination.kind) && <Field label="Motivo / condición" required><TextArea value={destination.reason} onChange={event => updateDestination(destination.id, { reason: event.target.value })} placeholder={destination.kind === 'discard' ? 'Motivo del descarte real' : 'Por qué se separa este producto'} /></Field>}
               {destination.kind === 'courtesy' && <div className="sm:col-span-2 rounded-xl border border-amber-200 bg-amber-50 p-3"><p className="text-xs font-bold text-amber-950">Reservado para cortesía; no se puede vender ni liberar desde esta pantalla.</p>{canAdmin ? <><label className="mt-2 flex min-h-11 items-center gap-2 text-xs font-bold"><input type="checkbox" checked={destination.qualityConfirmed} onChange={event => updateDestination(destination.id, { qualityConfirmed: event.target.checked })} />Confirmo aptitud para cortesía</label><Field label="Motivo de aptitud" required><TextArea value={destination.qualityReason} onChange={event => updateDestination(destination.id, { qualityReason: event.target.value })} /></Field></> : <p className="mt-2 text-xs">Solo Administración puede confirmar la aptitud. Guarda el borrador para que lo revise; todavía no se envía.</p>}</div>}
               {destination.kind === 'discard' && !canAdmin && <div className="sm:col-span-2 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-900">El descarte requiere confirmación directa de Administración. Este formulario queda como borrador local sin cambios de stock.</div>}
@@ -355,7 +375,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
         <SectionCard title="Paso 3 · Bolsas y materiales">
           <ProcessingGuide topic="materials" />
           <details className="rounded-xl border border-slate-200 p-3">
-          <summary className="min-h-10 cursor-pointer text-sm font-extrabold text-slate-800">Materiales adicionales (opcional)</summary>
+           <summary data-processing-anchor="materials" className="min-h-10 cursor-pointer text-sm font-extrabold text-slate-800">Materiales adicionales (opcional)</summary>
           <div className="mb-3 mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-600">Bolsas dañadas y pérdida de alimento son registros distintos.</p><SecondaryButton onClick={() => editDraft(current => ({ ...current, materials: [...current.materials, { id: randomId('material'), description: '', quantity: '', damaged: '0', costBs: '', expenseId: '' }] }))}><Plus size={15} />Añadir material</SecondaryButton></div>
           {draft.materials.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">No se agregaron materiales. La elaboración puede continuar sin llenar esta sección.</p> : <div className="space-y-3">{draft.materials.map(material => <article key={material.id} className="grid min-w-0 gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-2">
             <Field label="Material"><TextInput value={material.description} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, description: event.target.value } : row) }))} placeholder="Bolsa, etiqueta…" /></Field>
@@ -377,30 +397,31 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
           </div>)}
           </details>
         </SectionCard>
-        <SectionCard title="Observaciones"><TextArea maxLength={500} value={draft.notes} onChange={event => editDraft(current => ({ ...current, notes: event.target.value }))} placeholder="Observaciones del proceso (no sustituyen pesajes ni aprobaciones)" /></SectionCard>
+         <SectionCard title="Observaciones"><TextArea data-processing-anchor="notes" maxLength={500} value={draft.notes} onChange={event => editDraft(current => ({ ...current, notes: event.target.value }))} placeholder="Observaciones del proceso (no sustituyen pesajes ni aprobaciones)" /></SectionCard>
       </div>}
 
       {step === 3 && <div className="space-y-3">
         <SectionCard title="Paso 4 · Revisar y confirmar">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Metric label="Entrada real" value={formatKgFromGrams(inputWeightG)} /><Metric label="Destinos físicos" value={formatKgFromGrams(outputWeightG)} /><Metric label="Diferencia" value={`${massDifferenceG > 0 ? '+' : ''}${massDifferenceG} g`} tone={massDifferenceG === 0 ? 'ok' : 'bad'} /><Metric label="Almacén" value={locationOptions.find(item => item.id === location)?.name || location} /></div>
+           <div data-processing-anchor="summary-metrics" className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Metric label="Entrada real" value={formatKgFromGrams(inputWeightG)} /><Metric label="Destinos físicos" value={formatKgFromGrams(outputWeightG)} /><Metric label="Diferencia" value={`${massDifferenceG > 0 ? '+' : ''}${massDifferenceG} g`} tone={massDifferenceG === 0 ? 'ok' : 'bad'} /><Metric label="Almacén" value={locationOptions.find(item => item.id === location)?.name || location} /></div>
           <div className="mt-3 space-y-2">{draft.sources.map(source => { const lot = data.lots.find(item => item.id === source.lotId); return <div key={source.lotId} className="flex min-w-0 justify-between gap-2 rounded-xl bg-slate-50 p-3 text-xs"><span className="min-w-0 break-words"><b>{lot?.productName || selectedProduct?.name}</b> · lote <b>{lot?.lotCode || source.lotId}</b><br /><span className="text-slate-500">Asignación contable del proceso; no es identificación física individual verificada.</span></span><b className="shrink-0 tabular-nums">{source.quantityKg || '0'} kg</b></div>})}</div>
           <div className="mt-3 space-y-2">{draft.destinations.map(destination => { const product = data.products.find(item => item.id === destination.productId); return <div key={destination.id} className="flex min-w-0 justify-between gap-2 rounded-xl border border-slate-200 p-3 text-xs"><span className="min-w-0 break-words"><b>{product?.name || labelKind[destination.kind]}</b> · {labelKind[destination.kind]}<br />{destination.kind !== 'discard' ? `Lote ${destination.lotCode || 'sin completar'} · ${destination.commercialQuantity || '0'} ${product?.unitType || ''}` : `Motivo: ${destination.reason || 'pendiente'}`}</span><b className="shrink-0 tabular-nums">{destination.netWeightG || '0'} g</b></div>})}</div>
-          {massError ? <p role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-900">{massError}{Math.abs(massDifferenceG) === 1 ? ' La diferencia de 1 g bloquea la confirmación; no se redondea.' : ''}</p> : <p className="mt-3 flex items-center gap-2 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-900"><CheckCircle2 size={17} />Masa conciliada exactamente: 0 g de diferencia.</p>}
+           {massError ? <div role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-900">{massError}{Math.abs(massDifferenceG) === 1 ? ' La diferencia de 1 g bloquea la confirmación; no se redondea.' : ''}<ProcessingContextHelp topic="difference" /></div> : <p className="mt-3 flex items-center gap-2 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-900"><CheckCircle2 size={17} />Masa conciliada exactamente: 0 g de diferencia.</p>}
           <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Los lotes derivados permanecerán bloqueados para venta y despacho hasta la liberación autorizada de Calidad desde el detalle del historial. Materiales y costos auxiliares son informativos; no se capitalizan ni alteran Egresos o Resultado.</p>
           <Field label="Notas del proceso"><TextArea value={draft.notes} onChange={event => editDraft(current => ({ ...current, notes: event.target.value }))} /></Field>
         </SectionCard>
         <SectionCard title="Identificadores y borrador local">
           <p className="break-all text-[11px] text-slate-500">Elaboración: {draft.batchId}<br />Operación: {draft.operationId}</p>
-          <div className="mt-2 flex flex-wrap gap-2"><SecondaryButton onClick={() => { if (persistDraft(session.uid, draft)) setMessage('Borrador guardado solo en este dispositivo. No reservó ni consumió stock.'); else setError('No se pudo guardar el borrador en este dispositivo.') }}><Save size={15} />Guardar borrador</SecondaryButton><span className="self-center text-[11px] font-semibold text-slate-500">El borrador no cambia inventario. Se vuelve a validar contra los lotes actuales al confirmar.</span></div>
+           <div data-processing-anchor="save-draft" className="mt-2 flex flex-wrap gap-2"><SecondaryButton onClick={() => { if (persistDraft(session.uid, draft)) setMessage('Borrador guardado solo en este dispositivo. No reservó ni consumió stock.'); else setError('No se pudo guardar el borrador en este dispositivo.') }}><Save size={15} />Guardar borrador</SecondaryButton><span className="self-center text-[11px] font-semibold text-slate-500">El borrador no cambia inventario. Se vuelve a validar contra los lotes actuales al confirmar.</span></div>
         </SectionCard>
         {warehouseNeedsAdmin && <div role="status" className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Esta elaboración contiene una cortesía o descarte que debe confirmar Administración. El borrador permanece local; no hay solicitud de aprobación enviada.</div>}
-        <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><PrimaryButton full disabled={Boolean(massError) || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown' || submitState === 'confirmed'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : submitState === 'confirmed' ? 'Confirmada' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton></div>
+         <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><div data-processing-anchor="confirm"><PrimaryButton full disabled={Boolean(massError) || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown' || submitState === 'confirmed'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : submitState === 'confirmed' ? 'Confirmada' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton></div></div>
       </div>}
 
       {step < 3 && <div className="grid grid-cols-2 gap-2"><SecondaryButton full disabled={step === 0} onClick={() => setStep(value => Math.max(0, value - 1))}><ChevronLeft size={16} />Anterior</SecondaryButton><PrimaryButton full onClick={() => setStep(value => Math.min(3, value + 1))}>Continuar<ChevronRight size={16} /></PrimaryButton></div>}
       <p className="text-center text-[10px] font-semibold text-slate-400">Borrador local · ID estable {draft.batchId}</p>
     </div>}
-  </Screen>
+     {tab === 'new' && walkthroughOpen && <ProcessingWalkthrough open onClose={() => setWalkthroughOpen(false)} onFormStepChange={setStep} />}
+   </Screen>
 }
 
 function Metric({ label, value, tone = 'normal' }: { label: string; value: string; tone?: 'normal' | 'ok' | 'bad' }) {

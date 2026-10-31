@@ -9,6 +9,7 @@ const args = [
   '--only', 'auth,firestore,functions',
   'node firebase/tests/processingUiE2e.test.mjs',
 ]
+const tutorialOnly = process.argv.includes('--tutorial-only')
 const globalFirebaseCli = process.platform === 'win32' && process.env.APPDATA
   ? join(process.env.APPDATA, 'npm', 'node_modules', 'firebase-tools', 'lib', 'bin', 'firebase.js')
   : null
@@ -16,7 +17,7 @@ const command = globalFirebaseCli && existsSync(globalFirebaseCli) ? process.exe
 const commandArgs = globalFirebaseCli && existsSync(globalFirebaseCli) ? [globalFirebaseCli, ...args] : args
 const child = spawn(command, commandArgs, {
   stdio: 'inherit',
-  env: { ...process.env, SANJOSE_PROCESSING_REPACK_EMULATOR_TEST: 'true', SANJOSE_DERIVED_SALES_EMULATOR_TEST: 'true' },
+  env: { ...process.env, SANJOSE_PROCESSING_REPACK_EMULATOR_TEST: 'true', SANJOSE_DERIVED_SALES_EMULATOR_TEST: 'true', ...(tutorialOnly ? { SANJOSE_WALKTHROUGH_ONLY: 'true' } : {}) },
 })
 
 child.on('error', error => {

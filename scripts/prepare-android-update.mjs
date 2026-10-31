@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import process from 'node:process'
 
 const EXPECTED_PACKAGE = 'com.pachax.flow'
-const LAST_DISTRIBUTED_VERSION_CODE = 93
+const LAST_DISTRIBUTED_VERSION_CODE = 94
 const HOSTING_ROOT = resolve('dist', 'updates', 'san-jose')
 const RELEASE_ROOT = resolve('output', 'android')
 

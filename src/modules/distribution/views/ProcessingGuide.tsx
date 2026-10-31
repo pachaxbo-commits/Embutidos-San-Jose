@@ -62,8 +62,12 @@ const GUIDES: Record<ProcessingGuideTopic, { title: string; steps: string[] }> =
   },
 }
 
-export function ProcessingGuide({ topic }: { topic: ProcessingGuideTopic }) {
+export function ProcessingGuide({ topic, onStart }: { topic: ProcessingGuideTopic; onStart?: () => void }) {
   const guide = GUIDES[topic]
+  if (topic === 'new' && onStart) return <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50/70 p-2.5">
+    <p className="text-xs font-semibold text-sky-950">Recorra los campos de una nueva elaboración, paso a paso.</p>
+    <button type="button" onClick={onStart} className="min-h-10 rounded-xl bg-sky-700 px-4 text-xs font-extrabold text-white">Tutorial</button>
+  </div>
   return (
     <details className="mb-3 min-w-0 rounded-xl border border-sky-200 bg-sky-50/70 p-2.5 text-sky-950">
       <summary className="min-h-9 cursor-pointer list-inside list-disc text-xs font-extrabold">Tutorial · {guide.title}</summary>
