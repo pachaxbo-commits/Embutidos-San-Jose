@@ -85,6 +85,19 @@ export interface DistProduct {
   updatedAt?: string
 }
 
+/** Shared operational ordering for dispatch product preparation. */
+export interface DistDispatchProductOrder {
+  id: 'dispatchProductOrder'
+  restaurantId: string
+  schemaVersion: 1
+  enabled: boolean
+  productIds: string[]
+  revision: number
+  updatedAt: string
+  updatedBy: string
+  updatedByName?: string
+}
+
 export interface DistRoute {
   id: string
   name: string

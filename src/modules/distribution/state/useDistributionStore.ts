@@ -14,6 +14,7 @@ import {
   subscribeExpenseGroups,
   subscribeOpenDispatches,
   subscribeProducts,
+  subscribeDispatchProductOrder,
   subscribeReceivables,
   subscribeReceivableAdjustments,
   subscribeRoutes,
@@ -33,6 +34,7 @@ import type {
   DistCollection,
   DistCustomer,
   DistDispatch,
+  DistDispatchProductOrder,
   DistExpense,
   DistExpenseCategory,
   DistExpenseGroup,
@@ -98,6 +100,8 @@ export interface DistributionData {
   qrVerifications: DistQrVerification[]
   adjustmentRequests: DistAdjustmentRequest[]
   products: DistProduct[]
+  dispatchProductOrder: DistDispatchProductOrder | null
+  dispatchProductOrderLoading: boolean
   routes: DistRoute[]
   customers: DistCustomer[]
   balances: DistBalance[]
@@ -127,6 +131,8 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [qrVerifications, setQrVerifications] = useState<DistQrVerification[]>([])
   const [adjustmentRequests, setAdjustmentRequests] = useState<DistAdjustmentRequest[]>([])
   const [products, setProducts] = useState<DistProduct[]>([])
+  const [dispatchProductOrder, setDispatchProductOrder] = useState<DistDispatchProductOrder | null>(null)
+  const [dispatchProductOrderLoading, setDispatchProductOrderLoading] = useState(true)
   const [routes, setRoutes] = useState<DistRoute[]>([])
   const [customers, setCustomers] = useState<DistCustomer[]>([])
   const [balances, setBalances] = useState<DistBalance[]>([])
@@ -194,6 +200,12 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setProducts(rows.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)))
         onLoaded('products')
       }, onError),
+      subscribeDispatchProductOrder(order => {
+        setDispatchProductOrder(order)
+      }, error => {
+        setDispatchProductOrderLoading(false)
+        onError(error)
+      }, () => setDispatchProductOrderLoading(false)),
       subscribeRoutes((rows) => {
         setRoutes(rows.sort((a, b) => a.name.localeCompare(b.name)))
         onLoaded('routes')
@@ -282,6 +294,8 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     qrVerifications,
     adjustmentRequests,
     products,
+    dispatchProductOrder,
+    dispatchProductOrderLoading,
     routes,
     customers,
     balances: visibleBalances,

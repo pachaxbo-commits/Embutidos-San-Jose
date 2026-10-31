@@ -41,6 +41,7 @@ import type {
   DistCollection,
   DistCustomer,
   DistDispatch,
+  DistDispatchProductOrder,
   DistDispatchLine,
   DistExpense,
   DistExpenseCategory,
@@ -648,6 +649,48 @@ function subscribeQuery<T>(
 
 export function subscribeProducts(onData: (rows: DistProduct[]) => void, onError?: (error: Error) => void) {
   return subscribeQuery<DistProduct>((context) => collectionRef(context, DIST_COLLECTIONS.products), rows => onData(rows.filter(product => !product.deleted)), onError)
+}
+
+/** Shared dispatch-only ordering; employees can read it, writes go through the server operation. */
+export function subscribeDispatchProductOrder(
+  onData: (order: DistDispatchProductOrder | null) => void,
+  onError?: (error: Error) => void,
+  onServerSnapshot?: () => void,
+) {
+  let cancelled = false
+  let unsubscribe: Unsubscribe | undefined
+  void getContext().then(context => {
+    if (cancelled) return
+    unsubscribe = onSnapshot(
+      docRef(context, 'distSettings', 'dispatchProductOrder'),
+      { includeMetadataChanges: true },
+      snapshot => {
+        onData(snapshot.exists() ? snapshot.data() as DistDispatchProductOrder : null)
+        if (!snapshot.metadata.fromCache) onServerSnapshot?.()
+      },
+      error => onError?.(error),
+    )
+  }).catch(error => { if (!cancelled) onError?.(error as Error) })
+  return () => {
+    cancelled = true
+    unsubscribe?.()
+  }
+}
+
+export function saveDispatchProductOrder(productIds: string[], expectedRevision: number) {
+  return submitOperation<{ revision: number; enabled: boolean }>(
+    'saveDispatchProductOrder',
+    { productIds, expectedRevision },
+    newOperationId('dispatch-product-order'),
+  )
+}
+
+export function resetDispatchProductOrder(expectedRevision: number) {
+  return submitOperation<{ revision: number; enabled: boolean }>(
+    'saveDispatchProductOrder',
+    { reset: true, expectedRevision },
+    newOperationId('dispatch-product-order'),
+  )
 }
 
 export function subscribeRoutes(onData: (rows: DistRoute[]) => void, onError?: (error: Error) => void) {

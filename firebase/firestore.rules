@@ -245,6 +245,7 @@ service cloud.firestore {
           || (request.resource.data.type in ['quoteCreate','quoteUpdate','quoteCancel','quoteDelete'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type in ['editSale','voidSale'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type == 'warehouseShift' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
+          || (request.resource.data.type == 'saveDispatchProductOrder' && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
           || (request.resource.data.type in ['intake','transfer','dispatch','addition','correctDispatch','closure'] && (distAdmin(restaurantId)||distWarehouse(restaurantId)))
           || (request.resource.data.type == 'adjustmentRequest' && distWarehouse(restaurantId))
           || (request.resource.data.type == 'closure' && distDistributor(restaurantId))
@@ -441,6 +442,15 @@ service cloud.firestore {
         && request.resource.data.defaultPaperWidth in ['58mm','80mm']
         && request.resource.data.updatedBy == request.auth.uid;
       allow delete: if false;
+    }
+
+    // El orden de preparación de Despachos es una preferencia operativa
+    // compartida. El servidor valida y escribe cada revisión mediante una
+    // operación limitada; los empleados solo consultan este documento.
+    match /restaurants/{restaurantId}/distSettings/{settingId} {
+      allow get: if settingId == 'dispatchProductOrder' && distWorker(restaurantId);
+      allow list: if false;
+      allow create, update, delete: if false;
     }
 
     // Los respaldos y registros de limpieza contienen datos sensibles y solo

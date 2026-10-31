@@ -2537,6 +2537,44 @@ const handlers = {
   editSale,
   voidSale,
   correctDispatch,
+  saveDispatchProductOrder: async (o, p) => {
+    check(['admin', 'warehouse'].includes(o.member.role), 'Solo Administración o Almacén puede organizar los productos del despacho.');
+    check(p.reset === undefined || typeof p.reset === 'boolean', 'La solicitud para restablecer el orden no es válida.');
+    const current = await o.read('distSettings', 'dispatchProductOrder');
+    const currentRevision = Number(current?.revision || 0);
+    const expectedRevision = p.expectedRevision;
+    check(Number.isSafeInteger(expectedRevision) && expectedRevision >= 0, 'La revisión del orden no es válida.');
+    check(expectedRevision === currentRevision, 'El orden cambió en otro dispositivo. Cancela y vuelve a abrir «Organizar productos» para revisar la versión actual.');
+
+    const resetting = p.reset === true;
+    let productIds = [];
+    if (!resetting) {
+      check(Array.isArray(p.productIds) && p.productIds.length <= 500, 'La lista de productos del despacho no es válida.');
+      check(p.productIds.every(id => typeof id === 'string' && id.trim().length > 0), 'Hay un producto sin identificador en el orden.');
+      productIds = p.productIds;
+      check(new Set(productIds).size === productIds.length, 'El orden contiene productos repetidos.');
+      const activeIds = (await o.all('distProducts'))
+        .filter(product => product.active !== false && !product.deleted)
+        .map(product => product.id)
+        .sort();
+      check(productIds.length === activeIds.length && [...productIds].sort().every((id, index) => id === activeIds[index]),
+        'La lista de productos activos cambió mientras organizabas. Cancela y abre nuevamente para actualizarla.');
+    }
+
+    const revision = currentRevision + 1;
+    o.put('distSettings', 'dispatchProductOrder', {
+      id: 'dispatchProductOrder',
+      restaurantId: 'sanjose',
+      schemaVersion: 1,
+      enabled: !resetting,
+      productIds: resetting ? [] : productIds,
+      revision,
+      updatedAt: o.now,
+      updatedBy: o.actor,
+      updatedByName: o.member.displayName || o.actor,
+    });
+    return { revision, enabled: !resetting };
+  },
 };
 
 function quoteStatus(quote, now = new Date()) {

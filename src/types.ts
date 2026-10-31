@@ -8,6 +8,7 @@ export type Permission =
   | 'dist.inventory.adjust'
   | 'dist.dispatch.create'
   | 'dist.dispatch.addLoad'
+  | 'dist.dispatch.order'
   | 'dist.return.register'
   | 'dist.sale.create'
   | 'dist.sale.fromCentral'
