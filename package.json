@@ -88,6 +88,7 @@
     "test:expense-auto-classification": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/expenseAutoClassification.test.mjs\"",
     "test:expense-accounting": "node --experimental-strip-types src/modules/distribution/domain/__tests__/expenseAccounting.test.ts",
     "test:expense2-emulator": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/expense2.test.mjs\"",
+    "test:operating-credit-function-trigger": "node firebase/tests/operatingCreditFunctionTrigger.test.mjs",
     "test:distributor-fuel-expense": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node --experimental-strip-types firebase/tests/distributorFuelExpense.test.mjs\"",
     "test:distributor-meat-emulator": "firebase emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/distributorMeatPurchase.test.mjs\"",
     "test:today-intakes": "node --experimental-strip-types src/modules/distribution/domain/__tests__/todayIntakes.test.ts",
