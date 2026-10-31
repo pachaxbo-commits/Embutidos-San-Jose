@@ -105,6 +105,18 @@ try {
   ok((await root.collection('distSupplierPayments').where('payableId', '==', maintenanceCreditId).get()).size === 1 && (await read('distPayables', maintenanceCreditId)).balance === 60, 'reintentar el mismo abono no crea duplicados ni modifica de nuevo el saldo')
   const maintenanceFinalPayment = await command(admin, 'paySupplierPayable', { payableId: maintenanceCreditId, amount: 60, paymentMethod: 'transfer', dayKey: '2026-11-02' }, 'confirmed', `${prefix}-maintenance-payment-final`)
   ok(maintenanceFinalPayment.result.payable.status === 'paid' && maintenanceFinalPayment.result.payable.balance === 0 && (await read('distExpenses', maintenanceCreditId)).amount === 100, 'pagar el saldo restante cierra la cuenta y conserva un único egreso de Bs 100')
+
+  const voidableOperatingExpenseId = `${prefix}-maintenance-credit-voidable`
+  await command(admin, 'expense', { presetId: 'admin-category:administration-4', amount: 75, paymentMethod: 'credit', supplierId, dayKey: '2026-10-30', routeId: 'administracion', routeName: 'Administración', note: 'Mantenimiento QA anulable' }, 'confirmed', voidableOperatingExpenseId)
+  const voidableOperatingPayment = await command(admin, 'paySupplierPayable', { payableId: voidableOperatingExpenseId, amount: 25, paymentMethod: 'transfer', dayKey: '2026-10-31', note: 'Abono QA anulable' }, 'confirmed', `${prefix}-maintenance-credit-payment`)
+  await command(admin, 'voidSupplierPurchase', { payableId: voidableOperatingExpenseId, reason: 'Primero debe corregirse el abono' }, 'rejected')
+  const voidedOperatingPayment = await command(admin, 'voidSupplierPayment', { paymentId: voidableOperatingPayment.result.payment.id, reason: 'Corrección de abono operativo QA' }, 'confirmed', `${prefix}-maintenance-credit-payment-void`)
+  const restoredOperatingPayable = await read('distPayables', voidableOperatingExpenseId)
+  const restoredOperatingExpense = await read('distExpenses', voidableOperatingExpenseId)
+  ok(voidedOperatingPayment.result.payable.balance === 75 && restoredOperatingPayable.paidAmount === 0 && restoredOperatingExpense.voided !== true && (await read('distSupplierPayments', voidableOperatingPayment.result.payment.id)).voided === true, 'corregir un abono de egreso operativo restaura la deuda y conserva el gasto hasta su anulación explícita')
+  const voidedOperatingExpense = await command(admin, 'voidSupplierPurchase', { payableId: voidableOperatingExpenseId, reason: 'Mantenimiento cancelado en QA' }, 'confirmed', `${prefix}-maintenance-credit-void`)
+  ok(voidedOperatingExpense.result.status === 'voided' && (await read('distPayables', voidableOperatingExpenseId)).status === 'voided' && (await read('distExpenses', voidableOperatingExpenseId)).voided === true, 'tras corregir sus pagos se puede anular la cuenta por pagar operativa con historial')
+
   await command(distributor, 'expense', { presetId: 'fuel', amount: 100, paymentMethod: 'credit', supplierId, routeId, routeName: 'Ruta QA' }, 'rejected')
   await command(admin, 'expense', { presetId: 'admin-category:administration-4', amount: 100, paymentMethod: 'credit', supplierId: `${prefix}-missing-supplier`, routeId: 'administracion', routeName: 'Administración' }, 'rejected')
   await command(admin, 'expense', { presetId: `group-category:${categoryId}`, groupId, amount: 350, paymentMethod: 'credit', supplierId, routeId: 'administracion', routeName: 'Administración', concept: 'Compra de producción sin detalle' }, 'rejected')
