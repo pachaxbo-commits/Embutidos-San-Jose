@@ -23,6 +23,7 @@ import {
   getMailtoUrl,
 } from '../data/distributionDocumentPrintService'
 import { Capacitor } from '@capacitor/core'
+import { dispatchLotIneligibility, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, validateDispatchLotDrafts } from '../domain/dispatchSelection'
 
 interface DraftLine {
   id: string
@@ -467,12 +468,23 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     [members],
   )
 
-  const activeProducts = useMemo(() => data.products.filter((product) => product.active !== false), [data.products])
+  const activeProducts = useMemo(() => sortDispatchProducts(data.products.filter((product) => product.active !== false)), [data.products])
+
+  const draftLotIssues = useMemo(
+    () => validateDispatchLotDrafts(draftLines, activeProducts, data.lots, lotLocation, todayBolivia),
+    [draftLines, activeProducts, data.lots, lotLocation, todayBolivia],
+  )
 
   const filteredProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
     return term ? activeProducts.filter((product) => product.name.toLowerCase().includes(term)) : activeProducts
   }, [activeProducts, search])
+
+  useEffect(() => {
+    if (!isProductPickerOpen) return
+    const frame = window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-dispatch-product-search]')?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [isProductPickerOpen])
 
   /**
    * El distribuidor solo ve la carga de SU ruta. Si el despacho se registra en
@@ -500,24 +512,15 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     setConfirmingLoadType(null)
   }
 
-  const eligibleLots = (productId: string) => data.lots
-    .filter(lot => {
-      const finishedTraceable = lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished'
-        && Array.isArray(lot.processingByLocation?.[lotLocation]?.segments) && lot.processingByLocation[lotLocation].segments.length > 0
-        && !Number(lot.pendingOrigins?.[lotLocation]?.reduce((sum, row) => sum + Number(row.quantity || 0), 0))
-        && !Number(lot.processingUnavailable?.[lotLocation]?.courtesy || 0)
-        && !Number(lot.processingUnavailable?.[lotLocation]?.repackPending || 0)
-        && !Number(lot.processingUnavailable?.[lotLocation]?.reviewHold || 0)
-      return lot.productId === productId && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= todayBolivia)
-        && (!lot.processingCommercialBlocked || finishedTraceable)
-    })
-    .sort((a, b) => (a.expiresOn || '9999').localeCompare(b.expiresOn || '9999') || a.id.localeCompare(b.id))
+  const eligibleLots = (productId: string) => sortDispatchLotsFifo(data.lots.filter(lot =>
+    lot.productId === productId && !dispatchLotIneligibility(lot, productId, lotLocation, todayBolivia)
+  ))
 
   const distributeFefo = (draft: DraftLine) => {
     let remaining = round2(Number(draft.quantity) + (Number(draft.dispatchMerma) || 0))
     if (!(remaining > 0)) { setError('Primero indica la cantidad normal y la merma adicional del producto.'); return }
     const allocations: DraftLine['allocations'] = []
-    for (const lot of eligibleLots(draft.productId)) {
+    for (const lot of sortDispatchLotsFefo(eligibleLots(draft.productId))) {
       if (remaining <= 0) break
       const quantity = round2(Math.min(remaining, lot.quantities[lotLocation] || 0))
       if (quantity > 0) allocations.push({ id: newOperationId('lot'), lotId: lot.id, quantity: String(quantity) })
@@ -528,31 +531,19 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, allocations } : line))
   }
 
-  const validateLotAssignments = (): string | null => {
-    for (const draft of draftLines) {
-      const product = activeProducts.find(item => item.id === draft.productId)
-      const total = round2(Number(draft.quantity) + (Number(draft.dispatchMerma) || 0))
-      if (!product || !(total > 0)) continue
-      if (!draft.allocations.length) return `Distribuye ${product.name} entre uno o más lotes.`
-      const ids = draft.allocations.map(part => part.lotId)
-      if (ids.some(id => !id)) return `Selecciona todos los lotes de ${product.name}.`
-      if (new Set(ids).size !== ids.length) return `No repitas el mismo lote en ${product.name}.`
-      let assigned = 0
-      for (const part of draft.allocations) {
-        const quantity = round2(Number(part.quantity))
-        const lot = eligibleLots(product.id).find(item => item.id === part.lotId)
-        if (!lot || !(quantity > 0)) return `Revisa las asignaciones de ${product.name}.`
-        if (quantity > round2(lot.quantities[lotLocation] || 0)) return `El lote ${lot.lotCode} no tiene cantidad suficiente.`
-        assigned = round2(assigned + quantity)
-      }
-      if (Math.abs(assigned - total) >= 0.01) {
-        const difference = round2(Math.abs(total - assigned))
-        return assigned < total
-          ? `Faltan distribuir ${difference} de ${product.name}. Asignado: ${assigned} / ${total}.`
-          : `Sobran ${difference} asignados en ${product.name}. Asignado: ${assigned} / ${total}.`
-      }
-    }
-    return null
+  const validateLotAssignments = (): string | null => draftLotIssues[0]?.message || null
+
+  const toggleDraftProduct = (productId: string) => {
+    setDraftLines(current => {
+      const exists = current.some(line => line.productId === productId)
+      const next = exists
+        ? current.filter(line => line.productId !== productId)
+        : [...current, { id: newOperationId('draft'), productId, quantity: '', allocations: [] }]
+      const order = new Map(activeProducts.map((product, index) => [product.id, index]))
+      return next.sort((a, b) => (order.get(a.productId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.productId) ?? Number.MAX_SAFE_INTEGER))
+    })
+    setSearch('')
+    window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-dispatch-product-search]')?.focus())
   }
 
   const buildLines = (): DistDispatchLine[] => {
@@ -722,10 +713,28 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                 {Number(line.warehouseLoss) > 0 && <label className="flex items-start gap-3 text-xs font-bold text-rose-900"><input type="checkbox" className="mt-1 h-5 w-5 shrink-0" checked={Boolean(line.warehouseLossConfirmed)} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLossConfirmed: event.target.checked } : item))} /><span>Confirmo que {formatQty(Number(line.warehouseLoss), product.unitType)} se descartó realmente en Almacén. No corresponde a merma adicional enviada dentro de las bolsas.</span></label>}
               </div>
             </details>}
-            <div className="rounded-2xl border border-slate-200 bg-white p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-black text-slate-800">Lotes utilizados</p><button type="button" className="rounded-xl bg-slate-100 px-3 py-2 text-[11px] font-extrabold text-slate-700" onClick={() => distributeFefo(line)}>Distribuir por FEFO</button></div>
-              <div className="grid gap-2">{line.allocations.map(part => <div key={part.id} className="grid gap-2 rounded-xl border border-slate-200 p-2 sm:grid-cols-[minmax(0,1fr)_110px_40px] sm:items-center"><SelectInput aria-label={`Lote de ${product.name}`} value={part.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, lotId: event.target.value } : entry) } : item))}><option value="">Selecciona lote</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · {formatQty(lot.quantities[lotLocation], product.unitType)} · vence {lot.expiresOn || 'sin fecha'}</option>)}</SelectInput><NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} /><button type="button" aria-label="Quitar lote" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.filter(entry => entry.id !== part.id) } : item))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></div>)}</div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-black text-slate-800">Lotes utilizados · orden FIFO</p><button type="button" className="rounded-xl bg-slate-100 px-3 py-2 text-[11px] font-extrabold text-slate-700" onClick={() => distributeFefo(line)}>Distribuir por vencimiento (FEFO)</button></div>
+              <p className="mb-2 text-[11px] text-slate-500">El selector muestra primero los lotes elaborados hace más tiempo; si falta esa fecha, usa la fecha de ingreso. La sugerencia automática sigue priorizando el vencimiento más próximo.</p>
+              <div className="grid gap-2">{line.allocations.map(part => {
+                const selectedLot = data.lots.find(item => item.id === part.lotId)
+                const issues = draftLotIssues.filter(issue => issue.lineId === line.id && issue.allocationId === part.id)
+                return <div key={part.id} className="grid min-w-0 gap-2 rounded-xl border border-slate-200 p-2 sm:grid-cols-[minmax(0,1fr)_140px_40px] sm:items-start">
+                  <div className="min-w-0 grid gap-1">
+                    <SelectInput aria-label={`Lote de ${product.name}`} value={part.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, lotId: event.target.value } : entry) } : item))}>
+                      <option value="">Selecciona lote</option>
+                      {part.lotId && !lots.some(lot => lot.id === part.lotId) && <option value={part.lotId}>Lote seleccionado no disponible · {selectedLot?.lotCode || part.lotId}</option>}
+                      {lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · disp. {formatQty(lot.quantities[lotLocation], product.unitType)} · elab. {lot.manufacturedOn || 's/f'} · vence {lot.expiresOn || 's/f'}</option>)}
+                    </SelectInput>
+                    {selectedLot && <p className="break-words text-[10px] font-medium text-slate-500">Lote {selectedLot.lotCode || selectedLot.id} · disponible {formatQty(selectedLot.quantities[lotLocation] || 0, product.unitType)} · elaboración {selectedLot.manufacturedOn || 'sin fecha'} · ingreso {selectedLot.createdAt?.slice(0, 10) || 'sin fecha'} · vence {selectedLot.expiresOn || 'sin fecha'}</p>}
+                    {issues.map(issue => <p key={issue.key} role="alert" className="flex min-w-0 items-start gap-1.5 break-words rounded-lg border border-rose-300 bg-rose-50 p-2 text-[11px] font-bold leading-snug text-rose-900"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{issue.message}</p>)}
+                  </div>
+                  <NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} />
+                  <button type="button" aria-label="Quitar lote" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.filter(entry => entry.id !== part.id) } : item))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
+                </div>
+              })}</div>
               <button type="button" className="mt-2 w-full rounded-xl border border-dashed border-[var(--primary)] px-3 py-2 text-xs font-extrabold text-[var(--primary)]" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: [...item.allocations, { id: newOperationId('lot'), lotId: '', quantity: '' }] } : item))}>+ Agregar otro lote</button>
-              <p className={`mt-2 text-xs font-extrabold ${complete ? 'text-emerald-700' : 'text-amber-700'}`}>Asignado: {assigned} / {total} {complete ? '✓' : total <= 0 ? '' : total > assigned ? `· Faltan ${round2(total - assigned)}` : `· Sobran ${round2(assigned - total)}`}</p>
+              <p className={`mt-2 text-xs font-extrabold ${complete && !draftLotIssues.some(issue => issue.lineId === line.id) ? 'text-emerald-700' : 'text-amber-700'}`}>Asignado: {assigned} / {total} {complete && !draftLotIssues.some(issue => issue.lineId === line.id) ? '✓' : total <= 0 ? '' : total > assigned ? `· Faltan ${round2(total - assigned)}` : `· Sobran ${round2(assigned - total)}`}</p>
+              {draftLotIssues.filter(issue => issue.lineId === line.id && !issue.allocationId).map(issue => <p key={issue.key} role="alert" className="mt-2 flex items-start gap-1.5 rounded-lg border border-rose-300 bg-rose-50 p-2 text-[11px] font-bold text-rose-900"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{issue.message}</p>)}
             </div>
           </div>
         })}
@@ -1072,7 +1081,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         title={confirmingLoadType === 'dispatch' ? 'Confirmar carga física' : 'Nuevo despacho'}
         subtitle="Descuenta almacen central y carga la ruta"
         size="lg"
-        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitDispatch()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
+        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting || draftLotIssues.length > 0} onClick={() => void submitDispatch()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
       >
         {confirmingLoadType === 'dispatch' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p><p className="text-sm font-bold text-slate-700">{selectedDistributor?.displayName || 'Distribuidor'} · {data.routes.find(route => route.id === routeId)?.name || 'Ruta'}</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : <div className="grid gap-3">
           <Field label="Almacen de origen"><ChoiceButton disabled={session.role === 'warehouse'} placeholder="Selecciona almacén" label={warehouseId === 'central' ? 'Almacén central' : data.warehouses.find(w => w.id === warehouseId)?.name} onClick={() => setIsWarehousePickerOpen(true)} /></Field>
@@ -1103,26 +1112,29 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         title={confirmingLoadType === 'addition' ? 'Confirmar aumento de carga' : 'Aumento de carga'}
         subtitle={additionTarget ? `${additionTarget.routeName} · ${additionTarget.distributorName}` : ''}
         size="lg"
-        footer={confirmingLoadType === 'addition' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting} onClick={() => void submitAddition()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
+        footer={confirmingLoadType === 'addition' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting || draftLotIssues.length > 0} onClick={() => void submitAddition()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
       >
         {confirmingLoadType === 'addition' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades adicionales que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : lineEditor}
       </Modal>
 
       <ChoiceModal isOpen={isWarehousePickerOpen} onClose={() => setIsWarehousePickerOpen(false)} title="Almacén de origen" options={[{ value: 'central', label: 'Almacén central' }, ...data.warehouses.filter(w => w.active).map(w => ({ value: w.id, label: w.name }))]} selectedValue={warehouseId} onSelect={value => { setWarehouseId(value); setDraftLines([]) }} />
       <ChoiceModal isOpen={isDistributorPickerOpen} onClose={() => setIsDistributorPickerOpen(false)} title="Selecciona distribuidor" subtitle="La ruta se asignará automáticamente" searchable options={distributors.map(member => ({ value: member.uid, label: member.displayName, description: member.routeId ? data.routes.find(route => route.id === member.routeId)?.name ?? 'Ruta de registro anterior' : 'Sin ruta asignada', disabled: !member.routeId }))} selectedValue={distributorUid} onSelect={selectDistributor} />
-      <Modal isOpen={isProductPickerOpen} onClose={() => { setIsProductPickerOpen(false); setSearch('') }} title="Productos del despacho" subtitle="Selecciona varios y escribe la cantidad" size="lg" footer={<PrimaryButton full onClick={() => { setIsProductPickerOpen(false); setSearch('') }}>Listo · {draftLines.length} producto{draftLines.length === 1 ? '' : 's'}</PrimaryButton>}>
-        <div className="grid gap-3">
-          <div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput value={search} onChange={event => setSearch(event.target.value)} className="pl-9" placeholder="Buscar producto..." /></div>
-          <div className="grid grid-cols-2 gap-2">
+      <Modal isOpen={isProductPickerOpen} onClose={() => { setIsProductPickerOpen(false); setSearch('') }} title="Productos del despacho" subtitle="Selecciona varios y escribe la cantidad" size="xl" footer={<PrimaryButton full onClick={() => { setIsProductPickerOpen(false); setSearch('') }}>Listo · {draftLines.length} producto{draftLines.length === 1 ? '' : 's'}</PrimaryButton>}>
+        <div className="grid min-w-0 gap-3">
+          <div className="sticky top-0 z-10 grid gap-2 border-b border-slate-200 bg-white pb-3">
+            <div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput data-dispatch-product-search value={search} onChange={event => setSearch(event.target.value)} aria-label="Buscar productos del despacho" className="pl-9" placeholder="Buscar producto..." /></div>
+            <div aria-live="polite" className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px]"><strong className="mr-1 text-slate-700">{draftLines.length} producto{draftLines.length === 1 ? '' : 's'} agregado{draftLines.length === 1 ? '' : 's'}.</strong>{draftLines.slice(0, 5).map(line => <span key={line.productId} className="max-w-full truncate rounded-full bg-[var(--primary-soft)] px-2 py-1 font-bold text-[var(--primary)]">{activeProducts.find(product => product.id === line.productId)?.name}</span>)}{draftLines.length > 5 && <span className="rounded-full bg-slate-100 px-2 py-1 font-bold text-slate-600">+{draftLines.length - 5} más</span>}<span className="text-slate-500">· el buscador queda abierto para agregar el siguiente.</span></div>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {filteredProducts.filter(product => (central.get(product.id) ?? 0) > 0 || draftLines.some(line => line.productId === product.id)).map(product => {
               const draft = draftLines.find(line => line.productId === product.id)
               return <div key={product.id} className={`min-w-0 overflow-hidden rounded-2xl border ${draft ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}>
                 {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} onError={(event) => { event.currentTarget.style.display = 'none' }} className="aspect-[16/8] w-full object-cover" />}
-                <button type="button" onClick={() => setDraftLines(current => draft ? current.filter(line => line.productId !== product.id) : [...current, { id: newOperationId('draft'), productId: product.id, quantity: '', allocations: [] }])} className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
-                  <span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span>
+                <button type="button" aria-pressed={Boolean(draft)} onClick={() => toggleDraftProduct(product.id)} className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
+                  <span className="grid gap-1"><span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{product.category || 'Sin categoría'}</span><span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span></span>
                   <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>{formatQty(central.get(product.id) ?? 0, product.unitType)}</span>{draft && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--primary)] text-white"><Check size={13} /></span>}</span>
                 </button>
-                {draft && <div className="border-t border-[var(--primary)]/15 p-2"><NumberInput value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={`Cantidad normal (${product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u'})`} onChange={event => setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /></div>}
+                {draft && <div className="border-t border-[var(--primary)]/15 p-2"><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={`Cantidad normal (${product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u'})`} onChange={event => setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /></div>}
               </div>
             })}
           </div>

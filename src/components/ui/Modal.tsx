@@ -10,7 +10,7 @@ interface ModalProps {
   children: ReactNode
   /** Acciones fijas al pie: siempre visibles, nunca fuera del viewport */
   footer?: ReactNode
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg' | 'xl'
   /** En movil se presenta como hoja inferior; en escritorio como dialogo centrado */
   variant?: 'sheet' | 'dialog'
 }
@@ -19,6 +19,7 @@ const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
   sm: 'sm:max-w-sm',
   md: 'sm:max-w-lg',
   lg: 'sm:max-w-3xl',
+  xl: 'sm:max-w-5xl',
 }
 
 /**

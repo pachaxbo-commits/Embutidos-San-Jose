@@ -68,10 +68,15 @@ try {
 
   await command(admin, 'dispatch', { warehouseId: 'central', routeId: `${prefix}-bad-sum`, routeName: 'Bad', distributorUid: sellerBad, distributorName: 'Ruta Bad', warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 50, allocationsRequested: [{ lotId: lot('C'), quantity: 5 }] }] }, 'rejected')
   pass(true, 'rechaza asignaciones cuya suma no coincide')
-  await command(admin, 'addition', { dispatch: { id: multi.id }, warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 15, allocationsRequested: [{ lotId: lot('C'), quantity: 15 }] }] }, 'rejected')
-  pass(true, 'rechaza cantidad superior a la disponible del lote')
+  const insufficient = await command(admin, 'addition', { dispatch: { id: multi.id }, warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 15, allocationsRequested: [{ lotId: lot('C'), quantity: 15 }] }] }, 'rejected')
+  pass(insufficient.error.includes(products.main) && insufficient.error.includes('lote C') && insufficient.error.includes('disponibilidad'), 'rechazo de cantidad agotada identifica producto, lote y causa accionable')
   await command(admin, 'addition', { dispatch: { id: multi.id }, warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 2, allocationsRequested: [{ lotId: lot('C'), quantity: 1 }, { lotId: lot('C'), quantity: 1 }] }] }, 'rejected')
   pass(true, 'rechaza el mismo lote repetido')
+
+  const beforeWrongProductLot = (await read('distBalances', `central__${products.main}`)).quantity
+  const wrongProductLot = await command(admin, 'dispatch', { warehouseId: 'central', routeId: `${prefix}-bad-sum`, routeName: 'Bad', distributorUid: sellerBad, distributorName: 'Ruta Bad', warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 1, allocationsRequested: [{ lotId: lot('ADMIN'), quantity: 1 }] }] }, 'rejected')
+  pass(wrongProductLot.error.includes(products.main) && wrongProductLot.error.includes('lote ADMIN') && wrongProductLot.error.includes('no corresponde a este producto'), 'lote inválido informa producto, lote y motivo sin completar el despacho')
+  pass((await read('distBalances', `central__${products.main}`)).quantity === beforeWrongProductLot, 'despacho rechazado por lote incorrecto no modifica saldo de Almacén')
 
   await command(admin, 'correctDispatch', { dispatchId: multi.id, reason: 'Reducir carga multi-lote', changes: [{ targetType: 'initial', productId: products.main, newQuantity: 35 }] })
   const corrected = await read('distDispatches', multi.id)
