@@ -611,6 +611,8 @@ export interface DistSupplier extends DistBaseDoc {
 }
 
 export interface DistPayable extends DistBaseDoc {
+  /** Optional for legacy payables; new rows identify whether the obligation is a raw-material purchase or operating expense. */
+  sourceKind?: 'supplier_purchase' | 'operating_expense'
   supplierId: string
   supplierName: string
   purchaseExpenseId: string
@@ -620,6 +622,8 @@ export interface DistPayable extends DistBaseDoc {
   groupName: string
   categoryId: string
   categoryName: string
+  economicType?: ExpenseEconomicType
+  affectsOperatingResult?: boolean
   totalAmount: number
   paidAmount: number
   balance: number

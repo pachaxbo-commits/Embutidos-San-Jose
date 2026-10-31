@@ -14,6 +14,8 @@ const creditPurchase = { ...base, id: 'purchase-credit', transactionKind: 'suppl
 const cashPayment = { ...base, id: 'payment-cash', operationId: 'payment-op', transactionKind: 'supplier_payment', paymentMethod: 'cash', amount: 800, cashPaidAmount: 800, economicType: 'production_input', group: 'production_input' } as DistExpense
 const qrAdvance = { ...base, id: 'purchase-partial', operationId: 'partial-op', transactionKind: 'supplier_purchase', paymentMethod: 'mixed', amount: 500, cashPaidAmount: 0, transferPaidAmount: 200, otherPaidAmount: 0, economicType: 'production_input', group: 'production_input' } as DistExpense
 const mixedPay = { ...base, id: 'purchase-mixed', operationId: 'mixed-op', transactionKind: 'supplier_purchase', paymentMethod: 'mixed', amount: 1_000, cashPaidAmount: 100, transferPaidAmount: 150, economicType: 'production_input', group: 'production_input' } as DistExpense
+const operatingCredit = { ...base, id: 'maintenance-credit', operationId: 'maintenance-credit', transactionKind: 'expense', paymentMethod: 'credit', amount: 100, cashPaidAmount: 0, economicType: 'operating_expense', affectsOperatingResult: true, group: 'administration', payableId: 'maintenance-credit' } as DistExpense
+const operatingCreditPayment = { ...base, id: 'maintenance-payment', operationId: 'maintenance-payment', transactionKind: 'supplier_payment', paymentMethod: 'cash', amount: 40, cashPaidAmount: 40, economicType: 'operating_expense', affectsOperatingResult: true, group: 'administration', payableId: 'maintenance-credit' } as DistExpense
 
 check(expenseCashPaidAmount(creditPurchase) === 0, 'una compra a crédito no sale de la caja al registrarse')
 check(expenseCashPaidAmount(cashPayment) === 800, 'el pago posterior descuenta el efectivo realmente abonado')
@@ -23,10 +25,13 @@ check(expenseOtherPaidAmount({ ...base, paymentMethod: 'other', amount: 45 }) ==
 check(expenseMatchesPaymentFilter(creditPurchase, 'credit'), 'el filtro crédito identifica una compra con saldo pendiente')
 check(expenseMatchesPaymentFilter(qrAdvance, 'transfer') && !expenseMatchesPaymentFilter(qrAdvance, 'cash'), 'el filtro de medio identifica el adelanto real de una compra mixta')
 check(expenseMatchesPaymentFilter(mixedPay, 'mixed') && expenseMatchesPaymentFilter(mixedPay, 'cash') && expenseMatchesPaymentFilter(mixedPay, 'transfer'), 'una operación mixta puede consultarse por su tipo y por cada medio realmente pagado')
+check(expenseCashPaidAmount(operatingCredit) === 0 && expenseMatchesPaymentFilter(operatingCredit, 'credit'), 'un egreso operativo a crédito es deuda y no descuenta caja')
 
 const totals = summarizeActiveExpenses([creditPurchase, cashPayment, qrAdvance, mixedPay])
 check(totals.productionInputTotal === 3_500 && totals.total === 3_500, 'la compra a crédito y parcial se reconocen como compras económicas una sola vez')
 check(totals.cashOutflow === 900, 'la salida de efectivo suma adelantos en efectivo y pagos posteriores, no el total a crédito')
+const operatingCreditTotals = summarizeActiveExpenses([operatingCredit, operatingCreditPayment])
+check(operatingCreditTotals.total === 100 && operatingCreditTotals.operatingTotal === 100 && operatingCreditTotals.cashOutflow === 40, 'pagar Bs 40 de una obligación de Bs 100 reconoce el gasto una vez y solo registra Bs 40 de caja')
 const routeSale = { id: 'sale-route', sellerUid: 'hugo', sellerName: 'Hugo', routeId: 'route-hugo', routeName: 'Ruta Hugo', createdAt: base.createdAt, dayKey: base.dayKey, saleKind: 'sale', total: 1_000, cashAmount: 1_000, qrAmount: 0, creditAmount: 0, lines: [] } as never
 const routePurchase = { ...creditPurchase, id: 'route-purchase-cash', operationId: 'route-purchase-cash', transactionKind: 'supplier_purchase', routeId: 'route-hugo', routeName: 'Ruta Hugo', registeredByUid: 'hugo', registeredByName: 'Hugo', amount: 700, paymentMethod: 'cash', cashPaidAmount: 700 } as DistExpense
 const routeQrPurchase = { ...routePurchase, id: 'route-purchase-qr', operationId: 'route-purchase-qr', paymentMethod: 'transfer', cashPaidAmount: 0, transferPaidAmount: 700 } as DistExpense
