@@ -32,13 +32,46 @@ export function sortDispatchLotsFefo<T extends DistLot>(lots: readonly T[]): T[]
   )
 }
 
-/** Dispatch picker order is operational and stable; product creation order is ignored. */
-export function sortDispatchProducts<T extends DistProduct>(products: readonly T[]): T[] {
-  return [...products].sort((a, b) =>
-    spanishSort.compare(a.category || '', b.category || '') ||
+function compareDispatchProducts(a: DistProduct, b: DistProduct) {
+  return spanishSort.compare(a.category || '', b.category || '') ||
     spanishSort.compare(a.name, b.name) ||
-    a.id.localeCompare(b.id),
-  )
+    a.id.localeCompare(b.id)
+}
+
+/** Default is category/name; a saved sequence takes precedence across categories. */
+export function sortDispatchProducts<T extends DistProduct>(products: readonly T[], savedOrder?: readonly string[] | null): T[] {
+  if (savedOrder?.length) {
+    const positions = new Map<string, number>()
+    savedOrder.forEach((id, index) => { if (!positions.has(id)) positions.set(id, index) })
+    return [...products].sort((a, b) => {
+      const aPosition = positions.get(a.id)
+      const bPosition = positions.get(b.id)
+      if (aPosition !== undefined && bPosition !== undefined) return aPosition - bPosition
+      if (aPosition !== undefined) return -1
+      if (bPosition !== undefined) return 1
+      return compareDispatchProducts(a, b)
+    })
+  }
+  return [...products].sort(compareDispatchProducts)
+}
+
+/** Move one product to another position while preserving every other product. */
+export function moveDispatchProduct<T extends { id: string }>(products: readonly T[], fromId: string, toId: string): T[] {
+  const from = products.findIndex(product => product.id === fromId)
+  const to = products.findIndex(product => product.id === toId)
+  if (from < 0 || to < 0 || from === to) return [...products]
+  const next = [...products]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved)
+  return next
+}
+
+/**
+ * If a catalog change adds active products after an order was saved, keep all
+ * configured products in their exact sequence and append new ones by default.
+ */
+export function getDispatchProductIds(products: readonly DistProduct[], savedOrder?: readonly string[] | null): string[] {
+  return sortDispatchProducts(products, savedOrder).map(product => product.id)
 }
 
 export interface DispatchLotDraftLine {

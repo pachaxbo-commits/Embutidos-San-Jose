@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, Copy, Download, FileText, Mail, MessageCircle, Minus, PackagePlus, Pencil, Plus, Printer, RotateCcw, Search, Send, Trash2, Truck, Undo2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { AlertTriangle, ArrowDown, ArrowDownRight, ArrowUp, ArrowUpRight, Check, Copy, Download, FileText, GripVertical, Mail, MessageCircle, Minus, PackagePlus, Pencil, Plus, Printer, RotateCcw, Save, Search, Send, Trash2, Truck, Undo2, X } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { computeLoadedByProduct, round2, validateStockAvailability } from '../domain/engine'
-import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, subscribeClosedDispatches, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
+import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, resetDispatchProductOrder, saveDispatchProductOrder, subscribeClosedDispatches, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -23,7 +23,7 @@ import {
   getMailtoUrl,
 } from '../data/distributionDocumentPrintService'
 import { Capacitor } from '@capacitor/core'
-import { dispatchLotIneligibility, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, validateDispatchLotDrafts } from '../domain/dispatchSelection'
+import { dispatchLotIneligibility, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, validateDispatchLotDrafts } from '../domain/dispatchSelection'
 
 interface DraftLine {
   id: string
@@ -77,6 +77,14 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [confirmingLoadType, setConfirmingLoadType] = useState<'dispatch' | 'addition' | null>(null)
   const [search, setSearch] = useState('')
   const [isProductPickerOpen, setIsProductPickerOpen] = useState(false)
+  const [isProductOrderOpen, setIsProductOrderOpen] = useState(false)
+  const [editingProductOrder, setEditingProductOrder] = useState<string[]>([])
+  const [editingProductOrderRevision, setEditingProductOrderRevision] = useState(0)
+  const [isSavingProductOrder, setIsSavingProductOrder] = useState(false)
+  const [productOrderError, setProductOrderError] = useState<string | null>(null)
+  const [confirmProductOrderReset, setConfirmProductOrderReset] = useState(false)
+  const [draggingProductId, setDraggingProductId] = useState<string | null>(null)
+  const dragTargetProductId = useRef<string | null>(null)
   const [isDistributorPickerOpen, setIsDistributorPickerOpen] = useState(false)
   const [isWarehousePickerOpen, setIsWarehousePickerOpen] = useState(false)
   const [sharingDispatch, setSharingDispatch] = useState<DistDispatch | null>(null)
@@ -468,7 +476,10 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     [members],
   )
 
-  const activeProducts = useMemo(() => sortDispatchProducts(data.products.filter((product) => product.active !== false)), [data.products])
+  const activeProducts = useMemo(() => sortDispatchProducts(
+    data.products.filter(product => product.active !== false && !product.deleted),
+    data.dispatchProductOrder?.enabled ? data.dispatchProductOrder.productIds : undefined,
+  ), [data.products, data.dispatchProductOrder])
 
   const draftLotIssues = useMemo(
     () => validateDispatchLotDrafts(draftLines, activeProducts, data.lots, lotLocation, todayBolivia),
@@ -479,6 +490,14 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     const term = search.trim().toLowerCase()
     return term ? activeProducts.filter((product) => product.name.toLowerCase().includes(term)) : activeProducts
   }, [activeProducts, search])
+
+  const orderedDraftLines = useMemo(() => {
+    const productPositions = new Map(activeProducts.map((product, index) => [product.id, index]))
+    return [...draftLines].sort((a, b) =>
+      (productPositions.get(a.productId) ?? Number.MAX_SAFE_INTEGER) -
+      (productPositions.get(b.productId) ?? Number.MAX_SAFE_INTEGER),
+    )
+  }, [activeProducts, draftLines])
 
   useEffect(() => {
     if (!isProductPickerOpen) return
@@ -546,9 +565,75 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-dispatch-product-search]')?.focus())
   }
 
+  const canManageProductOrder = session.can('dist.dispatch.order')
+  const openProductOrder = () => {
+    setEditingProductOrder(activeProducts.map(product => product.id))
+    setEditingProductOrderRevision(data.dispatchProductOrder?.revision || 0)
+    setProductOrderError(null)
+    setConfirmProductOrderReset(false)
+    setIsProductOrderOpen(true)
+  }
+  const moveProductOrderItem = (fromId: string, toId: string) => {
+    setEditingProductOrder(current => moveDispatchProduct(current.map(id => ({ id })), fromId, toId).map(product => product.id))
+  }
+  const startProductOrderDrag = (event: ReactPointerEvent<HTMLButtonElement>, productId: string) => {
+    event.preventDefault()
+    setDraggingProductId(productId)
+    dragTargetProductId.current = productId
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const updateProductOrderDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const draggedId = draggingProductId
+    if (!draggedId) return
+    const targetId = document.elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>('[data-dispatch-order-id]')?.dataset.dispatchOrderId
+    if (targetId) dragTargetProductId.current = targetId
+  }
+  const finishProductOrderDrag = (event: ReactPointerEvent<HTMLButtonElement>, commit = true) => {
+    const draggedId = draggingProductId
+    const targetId = dragTargetProductId.current
+    setDraggingProductId(null)
+    dragTargetProductId.current = null
+    if (commit && draggedId && targetId) moveProductOrderItem(draggedId, targetId)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+  const closeProductOrder = () => {
+    if (isSavingProductOrder) return
+    setIsProductOrderOpen(false)
+    setProductOrderError(null)
+    setConfirmProductOrderReset(false)
+  }
+  const handleSaveProductOrder = async () => {
+    if (isSavingProductOrder || data.dispatchProductOrderLoading || editingProductOrder.length !== activeProducts.length) return
+    setIsSavingProductOrder(true)
+    setProductOrderError(null)
+    try {
+      await saveDispatchProductOrder(editingProductOrder, editingProductOrderRevision)
+      setIsProductOrderOpen(false)
+    } catch (caught) {
+      setProductOrderError((caught as Error).message || 'No se pudo guardar el orden. Revisa la conexión y vuelve a intentarlo.')
+    } finally {
+      setIsSavingProductOrder(false)
+    }
+  }
+  const handleResetProductOrder = async () => {
+    if (isSavingProductOrder || data.dispatchProductOrderLoading) return
+    setIsSavingProductOrder(true)
+    setProductOrderError(null)
+    try {
+      await resetDispatchProductOrder(editingProductOrderRevision)
+      setIsProductOrderOpen(false)
+      setConfirmProductOrderReset(false)
+    } catch (caught) {
+      setProductOrderError((caught as Error).message || 'No se pudo restablecer el orden. Revisa la conexión e inténtalo nuevamente.')
+    } finally {
+      setIsSavingProductOrder(false)
+    }
+  }
+
   const buildLines = (): DistDispatchLine[] => {
     const lines: DistDispatchLine[] = []
-    for (const draft of draftLines) {
+    for (const draft of orderedDraftLines) {
       const quantity = round2(Number(draft.quantity))
       if (!draft.productId || !(quantity > 0)) continue
       const product = activeProducts.find((item) => item.id === draft.productId)
@@ -679,7 +764,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const lineEditor = (
     <div className="grid gap-3">
       <div className="grid gap-2">
-        {draftLines.map((line) => {
+        {orderedDraftLines.map((line) => {
           const product = activeProducts.find(item => item.id === line.productId)
           if (!product) return null
           const lots = eligibleLots(product.id)
@@ -756,15 +841,11 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       title="Despachos"
       subtitle="Salidas a ruta y aumentos de carga"
       actions={
-        canDispatch ? (
-          <PrimaryButton
-            onClick={() => {
-              resetDraft()
-              setIsNewOpen(true)
-            }}
-          >
-            <Truck size={16} /> Nuevo
-          </PrimaryButton>
+        canDispatch || canManageProductOrder ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            {canManageProductOrder && <SecondaryButton disabled={data.dispatchProductOrderLoading} onClick={openProductOrder}><GripVertical size={16} /> Organizar productos</SecondaryButton>}
+            {canDispatch && <PrimaryButton onClick={() => { resetDraft(); setIsNewOpen(true) }}><Truck size={16} /> Nuevo</PrimaryButton>}
+          </div>
         ) : undefined
       }
     >
@@ -1115,6 +1196,60 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         footer={confirmingLoadType === 'addition' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting || draftLotIssues.length > 0} onClick={() => void submitAddition()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
       >
         {confirmingLoadType === 'addition' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades adicionales que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : lineEditor}
+      </Modal>
+
+      <Modal
+        isOpen={isProductOrderOpen}
+        onClose={closeProductOrder}
+        title="Organizar productos"
+        subtitle="Este orden se comparte para todos los despachos. Arrastra las filas o usa las flechas."
+        size="xl"
+        footer={<div className="grid gap-2 sm:grid-cols-3">
+          <SecondaryButton disabled={isSavingProductOrder || data.dispatchProductOrderLoading} onClick={() => setConfirmProductOrderReset(true)}><RotateCcw size={15} /> Restablecer orden predeterminado</SecondaryButton>
+          <SecondaryButton disabled={isSavingProductOrder} onClick={closeProductOrder}><X size={15} /> Cancelar</SecondaryButton>
+          <PrimaryButton disabled={isSavingProductOrder || data.dispatchProductOrderLoading || editingProductOrder.length === 0 || editingProductOrder.length !== activeProducts.length} onClick={() => void handleSaveProductOrder()}><Save size={15} /> {isSavingProductOrder ? 'Guardando…' : 'Guardar orden'}</PrimaryButton>
+        </div>}
+      >
+        <div className="grid min-w-0 gap-3">
+          <p id="dispatch-order-drag-hint" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs font-semibold leading-relaxed text-blue-900">El catálogo general, sus precios y existencias no cambian. Los productos nuevos se mostrarán al final hasta que vuelvas a guardar una organización.</p>
+          {data.dispatchProductOrderLoading && <p role="status" className="rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-600">Cargando el orden compartido…</p>}
+          {productOrderError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-800">{productOrderError}</p>}
+          {editingProductOrder.length !== activeProducts.length && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">El catálogo cambió mientras organizabas. Cancela y vuelve a abrir para incluir los productos activos actuales.</p>}
+          {editingProductOrder.length === 0 && !data.dispatchProductOrderLoading && <p className="rounded-xl border border-dashed border-slate-300 p-5 text-center text-sm font-semibold text-slate-500">No hay productos activos para organizar.</p>}
+          <ol aria-label="Orden de productos para despacho" className="grid max-h-[55vh] min-w-0 gap-2 overflow-y-auto overscroll-contain pr-1">
+            {editingProductOrder.map((productId, index) => {
+              const product = activeProducts.find(item => item.id === productId)
+              if (!product) return null
+              return <li
+                key={product.id}
+                data-dispatch-order-id={product.id}
+                className={`grid min-w-0 gap-2 rounded-2xl border p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center ${draggingProductId === product.id ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-sm font-black tabular-nums text-slate-700" aria-label={`Posición ${index + 1}`}>{index + 1}</span>
+                  <span className="min-w-0"><strong className="block break-words text-sm text-slate-900">{product.name}</strong><span className="mt-0.5 block break-words text-xs font-medium text-slate-500">{product.presentation || (product.unitType === 'kg' ? 'A granel · kg' : product.unitType === 'package' ? 'Paquete' : 'Unidad')}</span></span>
+                </div>
+                <div className="flex items-center justify-end gap-1">
+                  <button type="button" aria-label={`Subir ${product.name}`} title="Subir" disabled={index === 0 || isSavingProductOrder} onClick={() => moveProductOrderItem(product.id, editingProductOrder[index - 1])} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 disabled:opacity-40"><ArrowUp size={17} /></button>
+                  <button type="button" aria-label={`Bajar ${product.name}`} title="Bajar" disabled={index === editingProductOrder.length - 1 || isSavingProductOrder} onClick={() => moveProductOrderItem(product.id, editingProductOrder[index + 1])} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 disabled:opacity-40"><ArrowDown size={17} /></button>
+                  <button
+                    type="button"
+                    aria-label={`Arrastrar ${product.name}`}
+                    aria-describedby="dispatch-order-drag-hint"
+                    onPointerDown={event => startProductOrderDrag(event, product.id)}
+                    onPointerMove={updateProductOrderDrag}
+                    onPointerUp={finishProductOrderDrag}
+                    onPointerCancel={event => finishProductOrderDrag(event, false)}
+                    onLostPointerCapture={finishProductOrderDrag}
+                    className="flex h-10 w-10 touch-none select-none items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-slate-600 active:cursor-grabbing"
+                    title="Arrastra para cambiar de posición"
+                  ><GripVertical size={18} /></button>
+                </div>
+              </li>
+            })}
+          </ol>
+          {confirmProductOrderReset && <div role="alert" className="grid gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><strong>¿Restablecer el orden predeterminado?</strong><span>Se quitará el orden personalizado compartido y volverá el orden inicial por categoría y nombre.</span><div className="flex flex-wrap justify-end gap-2"><SecondaryButton disabled={isSavingProductOrder} onClick={() => setConfirmProductOrderReset(false)}>Seguir organizando</SecondaryButton><PrimaryButton disabled={isSavingProductOrder || data.dispatchProductOrderLoading} onClick={() => void handleResetProductOrder()}>{isSavingProductOrder ? 'Restableciendo…' : 'Sí, restablecer orden'}</PrimaryButton></div></div>}
+        </div>
       </Modal>
 
       <ChoiceModal isOpen={isWarehousePickerOpen} onClose={() => setIsWarehousePickerOpen(false)} title="Almacén de origen" options={[{ value: 'central', label: 'Almacén central' }, ...data.warehouses.filter(w => w.active).map(w => ({ value: w.id, label: w.name }))]} selectedValue={warehouseId} onSelect={value => { setWarehouseId(value); setDraftLines([]) }} />

@@ -1,5 +1,5 @@
 import type { DistLot, DistProduct } from '../../types'
-import { dispatchLotIneligibility, dispatchLotFifoDate, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, validateDispatchLotDrafts } from '../dispatchSelection.ts'
+import { dispatchLotIneligibility, dispatchLotFifoDate, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, validateDispatchLotDrafts } from '../dispatchSelection.ts'
 
 const product = (id: string, name: string, category: string, sortOrder: number): DistProduct => ({
   id, name, category, unitType: 'kg', referencePrice: 10, active: true, sortOrder,
@@ -33,6 +33,15 @@ function check(condition: unknown, message: string) {
 const orderedProducts = sortDispatchProducts([pork, sausage, mortadella])
 check(orderedProducts.map(item => item.category).join('|') === 'Al vacío|Granel|Producción', 'productos agrupados operativamente por categoría, no por creación')
 check(sortDispatchProducts([pork, sausage, mortadella]).map(item => item.id).join(',') === orderedProducts.map(item => item.id).join(','), 'orden de productos estable')
+const customOrder = sortDispatchProducts([pork, sausage, mortadella], ['pork', 'mortadella', 'sausage'])
+check(customOrder.map(item => item.id).join(',') === 'pork,mortadella,sausage', 'orden guardado conserva posiciones incluso entre categorías')
+const newProduct = product('new', 'Producto nuevo', 'Abarrotes', 0)
+const withNewProduct = sortDispatchProducts([sausage, newProduct, mortadella, pork], ['pork', 'mortadella', 'sausage'])
+check(withNewProduct.map(item => item.id).join(',') === 'pork,mortadella,sausage,new', 'producto nuevo se añade al final del orden personalizado')
+const inactive = { ...product('inactive', 'Producto inactivo', 'Granel', 2), active: false }
+check(sortDispatchProducts([inactive, pork, sausage].filter(item => item.active !== false), ['pork', 'sausage']).map(item => item.id).join(',') === 'pork,sausage', 'productos inactivos no aparecen en la lista ordenada')
+check(moveDispatchProduct([pork, sausage, mortadella], 'sausage', 'pork').map(item => item.id).join(',') === 'sausage,pork,mortadella', 'movimiento manual puede cruzar categorías')
+check(moveDispatchProduct([pork, sausage], 'missing', 'pork').map(item => item.id).join(',') === 'pork,sausage', 'movimiento de identificador inexistente deja intacta la lista')
 
 const orderedFifo = sortDispatchLotsFifo([newer, oldest, missingManufacture])
 check(orderedFifo.map(item => item.id).join(',') === 'lot-fallback,lot-old,lot-new', 'FIFO por elaboración y fecha de ingreso de respaldo')
@@ -62,4 +71,4 @@ const multipleErrors = validateDispatchLotDrafts([
 ], [pork], [oldest, ineligible], 'central', '2026-10-30')
 check(multipleErrors.length >= 3, 'todos los errores de varios productos y lotes se devuelven para mostrarlos juntos')
 
-console.log('11 comprobaciones de selección y validación de lotes aprobadas')
+console.log('17 comprobaciones de selección y validación de lotes aprobadas')
