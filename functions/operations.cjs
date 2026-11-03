@@ -390,9 +390,13 @@ class Operation {
   }
   processingMovementAllowed(lot, loc, options) {
     if (!lot.processingCommercialBlocked) return true;
-    // Commercial release is written only by the Quality-authorized transaction.
-    // Preserve the derived accounting path after release.
-    const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && (processingDerivedSalesEmulatorOnly() || lot.processingCommercialRelease?.status === 'released' && lot.processingCommercialRelease.batchId === lot.processingBatchId)
+    // Keep the derived accounting path after a valid commercial release. Admin
+    // adjustments are narrower: only released finished sacheteado lots qualify.
+    const releasedFinished = lot.processingDestinationKind === 'finished'
+      && lot.processingCommercialRelease?.status === 'released'
+      && lot.processingCommercialRelease.batchId === lot.processingBatchId;
+    const authorizedMovement = (options.processingDispatch === true || options.processingTransfer === true || options.processingSale === true) && (processingDerivedSalesEmulatorOnly() || releasedFinished)
+      || options.processingAdjustment === true && releasedFinished && !lot.processingRepackId && !lot.quarantined
       || options.processingReturn === true && loc.startsWith('route__')
       || options.processingRepack === true && processingRepackAvailable();
     if (!authorizedMovement || lot.processingDestinationKind !== 'finished') return false;
@@ -478,13 +482,24 @@ class Operation {
     if (lot.processingCostCentsRemaining !== null) lot.processingCostCentsRemaining -= part.costCents;
     this.assertProcessingLocation(lot, loc);
   }
-  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false, processingReturn = false, processingSale = false, processingRepack = false } = {}) {
+  async take(pid, loc, quantity, { allowExpired = false, allowPendingOrigin = loc.startsWith('route__'), lotId, allocationsRequested, precision: requestedPrecision, processingCourtesyReservation, processingPhysicalWeightG, processingCostCents, processingDispatch = false, processingTransfer = false, processingReturn = false, processingSale = false, processingAdjustment = false, processingRepack = false } = {}) {
     const e = await this.loadStock(pid, loc);
     const precision = requestedPrecision ?? quantityPrecision(e.p);
     const amountPrecision = requestedPrecision ?? quantityPrecision(e.p);
     quantity = this.amount(quantity, e.p, false, amountPrecision);
     const reservationRows = await this.processingReservationsForProduct(pid);
     for (const lot of e.lots.filter(l => !lotId || l.id === lotId)) this.assertReservationAggregate(lot, loc, reservationRows.filter(row => row.lotId === lot.id));
+    if (processingAdjustment && lotId) {
+      const selectedLot = e.lots.find(lot => lot.id === lotId);
+      if (selectedLot?.processingCommercialBlocked) {
+        check(selectedLot.processingDestinationKind === 'finished' && !selectedLot.processingRepackId, `El lote ${selectedLot.lotCode || selectedLot.id} no es un lote terminado de sacheteado elegible para ajuste.`);
+        check(selectedLot.processingCommercialRelease?.status === 'released' && selectedLot.processingCommercialRelease.batchId === selectedLot.processingBatchId, `El lote ${selectedLot.lotCode || selectedLot.id} no tiene una liberación comercial válida y no puede ajustarse.`);
+        check(!selectedLot.quarantined, `El lote ${selectedLot.lotCode || selectedLot.id} está en cuarentena y no puede ajustarse.`);
+        const held = selectedLot.processingUnavailable?.[loc] || {};
+        check(Number(held.courtesy || 0) + Number(held.repackPending || 0) + Number(held.reviewHold || 0) === 0, `El lote ${selectedLot.lotCode || selectedLot.id} tiene unidades reservadas o retenidas y no puede ajustarse.`);
+        check(origins.pending(selectedLot, loc) === 0 && selectedLot.processingSourceAllocationBasis, `El lote ${selectedLot.lotCode || selectedLot.id} tiene origen pendiente de conciliación y no puede ajustarse.`);
+      }
+    }
     const unavailable = lot => {
       const held = lot.processingUnavailable?.[loc] || {};
       return roundAt((Number(held.courtesy) || 0) + (Number(held.repackPending) || 0) + (Number(held.reviewHold) || 0), precision);
@@ -494,7 +509,7 @@ class Operation {
       if (!lot.processingCommercialBlocked) return true;
       const proof = processingCourtesyReservation;
       const courtesyAllowed = Boolean(proof && proof.purpose === 'courtesy' && proof.location === loc && proof.lotId === lot.id && proof.batchId && proof.batchId === lot.processingBatchId && lot.processingDestinationKind === 'courtesy');
-      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingRepack });
+      return courtesyAllowed || this.processingMovementAllowed(lot, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingAdjustment, processingRepack });
     };
     if (Array.isArray(allocationsRequested)) {
       check(allocationsRequested.length > 0, "Distribuye la cantidad entre uno o más lotes.");
@@ -549,7 +564,9 @@ class Operation {
       check(false, 'La venta comercial de sachets derivados todavía no está habilitada para usuarios reales; el stock permanece bloqueado hasta completar y auditar todo el ciclo comercial.');
     check(
       roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
-      `Stock disponible insuficiente de ${e.p.name}. Revisa cantidades, vencimientos y reservas por origen pendiente; esas reservas no se pueden vender ni despachar.`,
+      processingAdjustment
+        ? `Stock libre insuficiente de ${e.p.name}. Revisa la cantidad, el lote seleccionado y sus bloqueos vigentes.`
+        : `Stock disponible insuficiente de ${e.p.name}. Revisa cantidades, vencimientos y reservas por origen pendiente; esas reservas no se pueden vender ni despachar.`,
     );
     let remaining = quantity;
     const allocations = [];
@@ -559,7 +576,7 @@ class Operation {
       remaining = roundAt(remaining - q, precision);
       if (l.processingCommercialBlocked) {
         if (!processingCourtesyReservation) {
-          if (!this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingRepack })) {
+          if (!this.processingMovementAllowed(l, loc, { processingDispatch, processingTransfer, processingReturn, processingSale, processingAdjustment, processingRepack })) {
             const error = new Error('El lote derivado de elaboración sigue bloqueado para venta, cortesía o movimiento no autorizado.');
             if (processingDispatch || processingTransfer) error.code = 'processing/logistics-not-authorized';
             throw error;
@@ -2726,15 +2743,32 @@ async function adjustment(o, p) {
     q < 0,
     "Los aumentos deben registrarse como ingreso con lote y fechas.",
   );
+  const selectedLot = p.line.lotId ? e.lots.find(lot => lot.id === p.line.lotId) : null;
+  let processingAdjustment = false;
+  if (selectedLot?.processingCommercialBlocked) {
+    check(selectedLot.processingDestinationKind === 'finished' && !selectedLot.processingRepackId, `El lote ${selectedLot.lotCode || selectedLot.id} no es un lote terminado de sacheteado elegible para ajuste.`);
+    const batch = await o.read('distProcessingBatches', selectedLot.processingBatchId);
+    check(batch?.status === 'confirmed'
+      && ['bagging','portioning'].includes(batch.processType)
+      && batch.result?.derivedLots?.some(row => row.lotId === selectedLot.id && row.destinationKind === 'finished'),
+    `El lote ${selectedLot.lotCode || selectedLot.id} no tiene un batch de sacheteado confirmado y trazable.`);
+    processingAdjustment = true;
+  }
   const parts = await o.take(p.line.productId, loc, -q, {
     allowExpired: true,
     lotId: p.line.lotId,
+    processingAdjustment,
   });
+  const lossCostKnown = parts.every((part) => part.processingAllocation
+    ? Number.isSafeInteger(part.processingAllocation.costCents)
+    : Number.isFinite(part.productionCost));
   o.ledger(p.line.productId, -q, loc, null, "adjustment", {
     allocations: parts,
     note: p.note,
-    lossCost: parts.every((a) => a.productionCost !== null)
-      ? round(parts.reduce((s, a) => s + a.quantity * a.productionCost, 0))
+    lossCost: lossCostKnown
+      ? round(parts.reduce((sum, part) => sum + (part.processingAllocation
+        ? part.processingAllocation.costCents / 100
+        : part.quantity * part.productionCost), 0))
       : null,
   });
   return { id: o.id };
