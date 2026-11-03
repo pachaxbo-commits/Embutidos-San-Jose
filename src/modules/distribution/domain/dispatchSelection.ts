@@ -66,6 +66,17 @@ export function moveDispatchProduct<T extends { id: string }>(products: readonly
   return next
 }
 
+/** Toggle one product in a draft without changing the user's selection order. */
+export function toggleDispatchDraftProduct<T extends { productId: string }>(
+  lines: readonly T[],
+  productId: string,
+  createLine: () => T,
+): T[] {
+  return lines.some(line => line.productId === productId)
+    ? lines.filter(line => line.productId !== productId)
+    : [...lines, createLine()]
+}
+
 /**
  * If a catalog change adds active products after an order was saved, keep all
  * configured products in their exact sequence and append new ones by default.

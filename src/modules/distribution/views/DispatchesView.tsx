@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { AlertTriangle, ArrowDown, ArrowDownRight, ArrowUp, ArrowUpRight, Check, Copy, Download, FileText, GripVertical, Mail, MessageCircle, Minus, PackagePlus, Pencil, Plus, Printer, RotateCcw, Save, Search, Send, Trash2, Truck, Undo2, X } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
@@ -23,7 +23,7 @@ import {
   getMailtoUrl,
 } from '../data/distributionDocumentPrintService'
 import { Capacitor } from '@capacitor/core'
-import { dispatchLotIneligibility, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, validateDispatchLotDrafts } from '../domain/dispatchSelection'
+import { dispatchLotIneligibility, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../domain/dispatchSelection'
 
 interface DraftLine {
   id: string
@@ -77,6 +77,9 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [confirmingLoadType, setConfirmingLoadType] = useState<'dispatch' | 'addition' | null>(null)
   const [search, setSearch] = useState('')
   const [isProductPickerOpen, setIsProductPickerOpen] = useState(false)
+  const [isProductPickerExpanded, setIsProductPickerExpanded] = useState(false)
+  const [highlightedDispatchIssue, setHighlightedDispatchIssue] = useState<string | null>(null)
+  const pendingProductPickerScrollRestore = useRef<number | null>(null)
   const [isProductOrderOpen, setIsProductOrderOpen] = useState(false)
   const [editingProductOrder, setEditingProductOrder] = useState<string[]>([])
   const [editingProductOrderRevision, setEditingProductOrderRevision] = useState(0)
@@ -491,13 +494,17 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     return term ? activeProducts.filter((product) => product.name.toLowerCase().includes(term)) : activeProducts
   }, [activeProducts, search])
 
-  const orderedDraftLines = useMemo(() => {
-    const productPositions = new Map(activeProducts.map((product, index) => [product.id, index]))
-    return [...draftLines].sort((a, b) =>
-      (productPositions.get(a.productId) ?? Number.MAX_SAFE_INTEGER) -
-      (productPositions.get(b.productId) ?? Number.MAX_SAFE_INTEGER),
-    )
-  }, [activeProducts, draftLines])
+  // The shared catalog order only controls search results. Draft lines preserve
+  // the order in which the operator selected products for this dispatch.
+  const orderedDraftLines = draftLines
+
+  useLayoutEffect(() => {
+    const scrollTop = pendingProductPickerScrollRestore.current
+    if (!isProductPickerOpen || scrollTop === null) return
+    const pickerScroller = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Productos del despacho"] .overflow-y-auto')
+    if (pickerScroller) pickerScroller.scrollTop = scrollTop
+    pendingProductPickerScrollRestore.current = null
+  }, [draftLines, isProductPickerOpen])
 
   useEffect(() => {
     if (!isProductPickerOpen) return
@@ -552,18 +559,48 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
   const validateLotAssignments = (): string | null => draftLotIssues[0]?.message || null
 
-  const toggleDraftProduct = (productId: string) => {
-    setDraftLines(current => {
-      const exists = current.some(line => line.productId === productId)
-      const next = exists
-        ? current.filter(line => line.productId !== productId)
-        : [...current, { id: newOperationId('draft'), productId, quantity: '', allocations: [] }]
-      const order = new Map(activeProducts.map((product, index) => [product.id, index]))
-      return next.sort((a, b) => (order.get(a.productId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.productId) ?? Number.MAX_SAFE_INTEGER))
-    })
-    setSearch('')
-    window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-dispatch-product-search]')?.focus())
+  const capturePickerScrollPosition = () => {
+    if (!isProductPickerOpen) return
+    const pickerScroller = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Productos del despacho"] .overflow-y-auto')
+    if (pickerScroller) pendingProductPickerScrollRestore.current = pickerScroller.scrollTop
   }
+
+  const toggleDraftProduct = (productId: string) => {
+    const pickerScroller = isProductPickerOpen
+      ? document.querySelector<HTMLElement>('[role="dialog"][aria-label="Productos del despacho"] .overflow-y-auto')
+      : null
+    const pickerScrollTop = pendingProductPickerScrollRestore.current ?? pickerScroller?.scrollTop
+    if (pickerScrollTop !== undefined) pendingProductPickerScrollRestore.current = pickerScrollTop
+    setDraftLines(current => toggleDispatchDraftProduct(current, productId, () => ({
+      id: newOperationId('draft'), productId, quantity: '', allocations: [],
+    })))
+  }
+
+  const goToDispatchIssue = (issue: typeof draftLotIssues[number]) => {
+    setHighlightedDispatchIssue(issue.key)
+    const target = Array.from(document.querySelectorAll<HTMLElement>('[data-dispatch-line-id], [data-dispatch-allocation-id]'))
+      .find(element => issue.allocationId
+        ? element.dataset.dispatchAllocationId === issue.allocationId
+        : element.dataset.dispatchLineId === issue.lineId)
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    target?.querySelector<HTMLElement>('input:not([type="checkbox"]), select')?.focus({ preventScroll: true })
+    window.setTimeout(() => setHighlightedDispatchIssue(current => current === issue.key ? null : current), 2400)
+  }
+
+  const renderContinueFooter = (onContinue: () => void) => (
+    <div className="grid w-full gap-2">
+      {draftLotIssues.length > 0 && <section aria-label="Errores pendientes" className="max-h-[26dvh] overflow-y-auto overscroll-contain rounded-xl border border-rose-300 bg-rose-50 p-3 text-left">
+        <h3 className="text-xs font-black text-rose-950">Errores pendientes ({draftLotIssues.length})</h3>
+        <ul className="mt-2 grid gap-2">
+          {draftLotIssues.map(issue => <li key={issue.key} className="flex min-w-0 items-start justify-between gap-2 border-t border-rose-200 pt-2 first:border-t-0 first:pt-0">
+            <span className="min-w-0 break-words text-[11px] font-semibold leading-snug text-rose-900">{issue.message}</span>
+            <button type="button" onClick={() => goToDispatchIssue(issue)} className="min-h-9 shrink-0 rounded-lg bg-white px-2 text-[10px] font-extrabold text-rose-800 ring-1 ring-rose-200">Ir al error</button>
+          </li>)}
+        </ul>
+      </section>}
+      <PrimaryButton full disabled={isSubmitting || draftLotIssues.length > 0} onClick={onContinue}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>
+    </div>
+  )
 
   const canManageProductOrder = session.can('dist.dispatch.order')
   const openProductOrder = () => {
@@ -773,7 +810,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           const merma = product.unitType === 'kg' ? round2(Number(line.dispatchMerma) || 0) : 0
           const total = round2(normal + merma)
           const complete = total > 0 && Math.abs(assigned - total) < 0.01
-          return <div key={line.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+          return <div key={line.id} data-dispatch-line-id={line.id} data-dispatch-product-line={line.productId} className={`grid gap-3 rounded-2xl border bg-slate-50 p-3 transition-shadow ${draftLotIssues.some(issue => issue.lineId === line.id && issue.key === highlightedDispatchIssue) ? 'border-rose-500 ring-4 ring-rose-200' : 'border-slate-200'}`}>
             <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Apto para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p>{dispatchableDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-indigo-700">Incluye sachets terminados con trazabilidad. La venta comercial sigue bloqueada.</p> : null}</div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
             <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
             {product.unitType === 'kg' && (
@@ -803,7 +840,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               <div className="grid gap-2">{line.allocations.map(part => {
                 const selectedLot = data.lots.find(item => item.id === part.lotId)
                 const issues = draftLotIssues.filter(issue => issue.lineId === line.id && issue.allocationId === part.id)
-                return <div key={part.id} className="grid min-w-0 gap-2 rounded-xl border border-slate-200 p-2 sm:grid-cols-[minmax(0,1fr)_140px_40px] sm:items-start">
+                return <div key={part.id} data-dispatch-allocation-id={part.id} className={`grid min-w-0 gap-2 rounded-xl border p-2 transition-shadow sm:grid-cols-[minmax(0,1fr)_140px_40px] sm:items-start ${highlightedDispatchIssue && issues.some(issue => issue.key === highlightedDispatchIssue) ? 'border-rose-500 ring-4 ring-rose-200' : 'border-slate-200'}`}>
                   <div className="min-w-0 grid gap-1">
                     <SelectInput aria-label={`Lote de ${product.name}`} value={part.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, lotId: event.target.value } : entry) } : item))}>
                       <option value="">Selecciona lote</option>
@@ -1162,7 +1199,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         title={confirmingLoadType === 'dispatch' ? 'Confirmar carga física' : 'Nuevo despacho'}
         subtitle="Descuenta almacen central y carga la ruta"
         size="lg"
-        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting || draftLotIssues.length > 0} onClick={() => void submitDispatch()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
+        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div></div> : renderContinueFooter(() => { void submitDispatch() })}
       >
         {confirmingLoadType === 'dispatch' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p><p className="text-sm font-bold text-slate-700">{selectedDistributor?.displayName || 'Distribuidor'} · {data.routes.find(route => route.id === routeId)?.name || 'Ruta'}</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : <div className="grid gap-3">
           <Field label="Almacen de origen"><ChoiceButton disabled={session.role === 'warehouse'} placeholder="Selecciona almacén" label={warehouseId === 'central' ? 'Almacén central' : data.warehouses.find(w => w.id === warehouseId)?.name} onClick={() => setIsWarehousePickerOpen(true)} /></Field>
@@ -1193,7 +1230,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         title={confirmingLoadType === 'addition' ? 'Confirmar aumento de carga' : 'Aumento de carga'}
         subtitle={additionTarget ? `${additionTarget.routeName} · ${additionTarget.distributorName}` : ''}
         size="lg"
-        footer={confirmingLoadType === 'addition' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div></div> : <PrimaryButton full disabled={isSubmitting || draftLotIssues.length > 0} onClick={() => void submitAddition()}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>}
+        footer={confirmingLoadType === 'addition' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitAddition(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar aumento'}</PrimaryButton></div></div> : renderContinueFooter(() => { void submitAddition() })}
       >
         {confirmingLoadType === 'addition' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades adicionales que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : lineEditor}
       </Modal>
@@ -1254,22 +1291,44 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
       <ChoiceModal isOpen={isWarehousePickerOpen} onClose={() => setIsWarehousePickerOpen(false)} title="Almacén de origen" options={[{ value: 'central', label: 'Almacén central' }, ...data.warehouses.filter(w => w.active).map(w => ({ value: w.id, label: w.name }))]} selectedValue={warehouseId} onSelect={value => { setWarehouseId(value); setDraftLines([]) }} />
       <ChoiceModal isOpen={isDistributorPickerOpen} onClose={() => setIsDistributorPickerOpen(false)} title="Selecciona distribuidor" subtitle="La ruta se asignará automáticamente" searchable options={distributors.map(member => ({ value: member.uid, label: member.displayName, description: member.routeId ? data.routes.find(route => route.id === member.routeId)?.name ?? 'Ruta de registro anterior' : 'Sin ruta asignada', disabled: !member.routeId }))} selectedValue={distributorUid} onSelect={selectDistributor} />
-      <Modal isOpen={isProductPickerOpen} onClose={() => { setIsProductPickerOpen(false); setSearch('') }} title="Productos del despacho" subtitle="Selecciona varios y escribe la cantidad" size="xl" footer={<PrimaryButton full onClick={() => { setIsProductPickerOpen(false); setSearch('') }}>Listo · {draftLines.length} producto{draftLines.length === 1 ? '' : 's'}</PrimaryButton>}>
+      <Modal
+        isOpen={isProductPickerOpen}
+        onClose={() => { setIsProductPickerOpen(false); setSearch(''); setIsProductPickerExpanded(false) }}
+        title="Productos del despacho"
+        subtitle="Selecciona varios y escribe la cantidad"
+        size="xl"
+        mobileMaxHeight={isProductPickerExpanded ? 'calc(100dvh - var(--safe-top) - 1rem)' : '58dvh'}
+        footer={<PrimaryButton full onClick={() => { setIsProductPickerOpen(false); setSearch(''); setIsProductPickerExpanded(false) }}>Listo · {draftLines.length} producto{draftLines.length === 1 ? '' : 's'}</PrimaryButton>}
+      >
         <div className="grid min-w-0 gap-3">
-          <div className="sticky top-0 z-10 grid gap-2 border-b border-slate-200 bg-white pb-3">
-            <div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput data-dispatch-product-search value={search} onChange={event => setSearch(event.target.value)} aria-label="Buscar productos del despacho" className="pl-9" placeholder="Buscar producto..." /></div>
-            <div aria-live="polite" className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px]"><strong className="mr-1 text-slate-700">{draftLines.length} producto{draftLines.length === 1 ? '' : 's'} agregado{draftLines.length === 1 ? '' : 's'}.</strong>{draftLines.slice(0, 5).map(line => <span key={line.productId} className="max-w-full truncate rounded-full bg-[var(--primary-soft)] px-2 py-1 font-bold text-[var(--primary)]">{activeProducts.find(product => product.id === line.productId)?.name}</span>)}{draftLines.length > 5 && <span className="rounded-full bg-slate-100 px-2 py-1 font-bold text-slate-600">+{draftLines.length - 5} más</span>}<span className="text-slate-500">· el buscador queda abierto para agregar el siguiente.</span></div>
+          <div className="sticky top-0 z-10 grid gap-2 border-b border-slate-200 bg-white pb-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="relative min-w-0 flex-1"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><TextInput data-dispatch-product-search value={search} onChange={event => setSearch(event.target.value)} aria-label="Buscar productos del despacho" className="pl-9" placeholder="Buscar producto..." /></div>
+              <button type="button" onClick={() => setIsProductPickerExpanded(current => !current)} aria-expanded={isProductPickerExpanded} className="min-h-10 shrink-0 rounded-xl bg-slate-100 px-3 text-xs font-extrabold text-slate-700 sm:hidden">{isProductPickerExpanded ? 'Reducir' : 'Expandir'}</button>
+            </div>
+            <div aria-live="polite" className="flex min-h-7 min-w-0 items-center gap-2 text-[11px]"><strong className="shrink-0 text-slate-700">{draftLines.length} seleccionado{draftLines.length === 1 ? '' : 's'}</strong><span className="truncate text-slate-500">· el buscador queda abierto para agregar el siguiente.</span></div>
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {filteredProducts.filter(product => (central.get(product.id) ?? 0) > 0 || draftLines.some(line => line.productId === product.id)).map(product => {
               const draft = draftLines.find(line => line.productId === product.id)
-              return <div key={product.id} className={`min-w-0 overflow-hidden rounded-2xl border ${draft ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}>
-                {product.photoDataUrl && <img src={product.photoDataUrl} alt={`Foto de ${product.name}`} onError={(event) => { event.currentTarget.style.display = 'none' }} className="aspect-[16/8] w-full object-cover" />}
-                <button type="button" aria-pressed={Boolean(draft)} onClick={() => toggleDraftProduct(product.id)} className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
-                  <span className="grid gap-1"><span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{product.category || 'Sin categoría'}</span><span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span></span>
-                  <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>{formatQty(central.get(product.id) ?? 0, product.unitType)}</span>{draft && <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--primary)] text-white"><Check size={13} /></span>}</span>
+              return <div key={product.id} data-dispatch-product-card={product.id} onPointerDownCapture={event => {
+                const target = event.target
+                if (!(target instanceof Element) || !target.closest('button, input, select, textarea')) capturePickerScrollPosition()
+              }} onClick={event => {
+                const target = event.target
+                if (target instanceof Element && target.closest('label, input, button, select, textarea')) return
+                toggleDraftProduct(product.id)
+              }} className={'min-w-0 overflow-hidden rounded-2xl border transition-colors ' + (draft ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white')}>
+                <button type="button" aria-label={'Seleccionar ' + product.name} aria-pressed={Boolean(draft)} onPointerDownCapture={capturePickerScrollPosition} onClick={() => toggleDraftProduct(product.id)} className="block w-full cursor-pointer text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]">
+                  {product.photoDataUrl && <img src={product.photoDataUrl} alt="" aria-hidden="true" onError={event => { event.currentTarget.style.visibility = 'hidden' }} className="aspect-[16/8] w-full object-cover" />}
+                  <span className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
+                    <span className="grid gap-1"><span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{product.category || 'Sin categoría'}</span><span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span></span>
+                    <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>{formatQty(central.get(product.id) ?? 0, product.unitType)}</span><span aria-hidden="true" className={'flex h-5 w-5 shrink-0 items-center justify-center rounded-full ' + (draft ? 'bg-[var(--primary)] text-white' : 'text-transparent')}><Check size={13} /></span></span>
+                  </span>
                 </button>
-                {draft && <div className="border-t border-[var(--primary)]/15 p-2"><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={`Cantidad normal (${product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u'})`} onChange={event => setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /></div>}
+                <div className="min-h-[60px] border-t border-slate-200 p-2">
+                  {draft ? <NumberInput aria-label={'Cantidad normal de ' + product.name} value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={'Cantidad normal (' + (product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u') + ')'} onChange={event => setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /> : <div aria-hidden="true" className="flex min-h-10 items-center justify-center rounded-xl bg-slate-50 px-2 text-center text-[10px] font-medium text-slate-400">Selecciona para ingresar cantidad</div>}
+                </div>
               </div>
             })}
           </div>
