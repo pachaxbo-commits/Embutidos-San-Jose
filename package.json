@@ -22,6 +22,7 @@
     "test:processing-ui-e2e": "node scripts/run-processing-ui-e2e.mjs",
     "test:processing-tutorial-e2e": "node scripts/run-processing-ui-e2e.mjs --tutorial-only",
     "test:processing-availability": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingAvailability.test.cjs\"",
+    "test:processing-adjustment": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node --experimental-strip-types firebase/tests/processingAdjustment.test.mjs\"",
     "test:processing-reservations": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore \"node firebase/tests/processingReservations.test.mjs\"",
     "test:access": "node firebase/tests/exclusiveAccessRules.test.mjs",
     "test:distribution": "node --experimental-strip-types src/modules/distribution/domain/__tests__/distributionEngine.test.ts",
