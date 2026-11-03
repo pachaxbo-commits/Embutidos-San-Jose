@@ -583,7 +583,9 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         ? element.dataset.dispatchAllocationId === issue.allocationId
         : element.dataset.dispatchLineId === issue.lineId)
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    target?.querySelector<HTMLElement>('input:not([type="checkbox"]), select')?.focus({ preventScroll: true })
+    const field = target?.querySelector<HTMLElement>('input[type="number"]')
+      || target?.querySelector<HTMLElement>('input:not([type="checkbox"]), select')
+    field?.focus({ preventScroll: true })
     window.setTimeout(() => setHighlightedDispatchIssue(current => current === issue.key ? null : current), 2400)
   }
 

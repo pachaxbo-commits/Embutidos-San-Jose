@@ -55,8 +55,36 @@ try {
         }),
       ])
     }))
+    await Promise.all(products
+      .filter(product => product.id.startsWith('qa-dispatch-order-'))
+      .map(product => setDoc(doc(db, 'restaurants/sanjose/distLots', `qa-lot-${product.id}`), {
+        id: `qa-lot-${product.id}`,
+        productId: product.id,
+        productName: product.name,
+        lotCode: `QA-${product.name.replaceAll(' ', '-').toUpperCase()}`,
+        unitType: 'package',
+        manufacturedOn: '2026-10-01',
+        expiresOn: '2026-12-01',
+        quantities: { central: 100 },
+        restaurantId: 'sanjose',
+        createdAt: '2026-10-01T00:00:00.000Z',
+        createdBy: 'dispatch-picker-test',
+      })))
+    await setDoc(doc(db, 'restaurants/sanjose/distLots', 'qa-lot-viena-3kg'), {
+      id: 'qa-lot-viena-3kg',
+      productId: 'gra-viena',
+      productName: 'Salchicha tipo Viena',
+      lotCode: 'VIENA-TEST-3KG',
+      unitType: 'kg',
+      manufacturedOn: '2026-10-01',
+      expiresOn: '2026-12-01',
+      quantities: { central: 3 },
+      restaurantId: 'sanjose',
+      createdAt: '2026-10-01T00:00:00.000Z',
+      createdBy: 'dispatch-picker-test',
+    })
   })
-  console.log(`${products.length} productos y saldos sintéticos cargados solo en Firestore Emulator.`)
+  console.log(`${products.length} productos, lotes para orden y un lote de 3 kg cargados solo en Firestore Emulator.`)
 } finally {
   await env.cleanup()
 }
