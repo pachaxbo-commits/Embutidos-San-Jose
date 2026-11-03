@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, type CSSProperties, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBackHandler } from '../../hooks/useBackHandler'
 
@@ -13,6 +13,8 @@ interface ModalProps {
   size?: 'sm' | 'md' | 'lg' | 'xl'
   /** En movil se presenta como hoja inferior; en escritorio como dialogo centrado */
   variant?: 'sheet' | 'dialog'
+  /** Altura máxima de la hoja en móvil; en escritorio conserva el tamaño habitual. */
+  mobileMaxHeight?: string
 }
 
 const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
@@ -42,6 +44,7 @@ export function Modal({
   footer,
   size = 'md',
   variant = 'sheet',
+  mobileMaxHeight,
 }: ModalProps) {
   useBackHandler(isOpen, () => {
     onClose()
@@ -67,7 +70,7 @@ export function Modal({
   return (
     <div
       className={`fixed inset-0 z-50 flex bg-slate-900/40 ${
-        isSheet ? 'items-end sm:items-center' : 'items-center'
+        isSheet ? (mobileMaxHeight ? 'items-end min-[641px]:items-center' : 'items-end sm:items-center') : 'items-center'
       } justify-center sm:p-4`}
       role="dialog"
       aria-modal="true"
@@ -81,10 +84,12 @@ export function Modal({
       />
 
       <div
-        className={`relative z-10 flex w-full ${SIZE_CLASS[size]} flex-col overflow-hidden bg-white shadow-modal ${
-          isSheet ? 'rounded-t-3xl sm:rounded-3xl' : 'rounded-3xl'
+        className={`relative z-10 flex w-full ${SIZE_CLASS[size]} flex-col overflow-hidden bg-white shadow-modal ${mobileMaxHeight ? 'max-h-[var(--modal-mobile-max-height)] min-[641px]:max-h-[calc(100dvh-var(--safe-top)-1rem)]' : ''} ${
+          isSheet ? (mobileMaxHeight ? 'rounded-t-3xl min-[641px]:rounded-3xl' : 'rounded-t-3xl sm:rounded-3xl') : 'rounded-3xl'
         }`}
-        style={{ maxHeight: 'calc(100dvh - var(--safe-top) - 1rem)' }}
+        style={mobileMaxHeight
+          ? { '--modal-mobile-max-height': mobileMaxHeight } as CSSProperties
+          : { maxHeight: 'calc(100dvh - var(--safe-top) - 1rem)' }}
       >
         <header className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
           <div className="min-w-0">

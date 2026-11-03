@@ -1,5 +1,5 @@
 import type { DistLot, DistProduct } from '../../types'
-import { dispatchLotIneligibility, dispatchLotFifoDate, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, validateDispatchLotDrafts } from '../dispatchSelection.ts'
+import { dispatchLotIneligibility, dispatchLotFifoDate, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../dispatchSelection.ts'
 
 const product = (id: string, name: string, category: string, sortOrder: number): DistProduct => ({
   id, name, category, unitType: 'kg', referencePrice: 10, active: true, sortOrder,
@@ -35,6 +35,17 @@ check(orderedProducts.map(item => item.category).join('|') === 'Al vacío|Granel
 check(sortDispatchProducts([pork, sausage, mortadella]).map(item => item.id).join(',') === orderedProducts.map(item => item.id).join(','), 'orden de productos estable')
 const customOrder = sortDispatchProducts([pork, sausage, mortadella], ['pork', 'mortadella', 'sausage'])
 check(customOrder.map(item => item.id).join(',') === 'pork,mortadella,sausage', 'orden guardado conserva posiciones incluso entre categorías')
+const catalog = ['A', 'B', 'C', 'D'].map(id => product(id, `Producto ${id}`, 'Despacho', 0))
+let selectedDraft: Array<{ productId: string; quantity: string }> = []
+for (const productId of ['C', 'A', 'D', 'B']) {
+  selectedDraft = toggleDispatchDraftProduct(selectedDraft, productId, () => ({ productId, quantity: '' }))
+}
+check(selectedDraft.map(line => line.productId).join(',') === 'C,A,D,B', 'borrador conserva C, A, D, B según el orden de selección aunque el catálogo sea A, B, C, D')
+selectedDraft = toggleDispatchDraftProduct(selectedDraft, 'A', () => ({ productId: 'A', quantity: '' }))
+check(selectedDraft.map(line => line.productId).join(',') === 'C,D,B', 'desmarcar un producto solo lo elimina de su posición')
+selectedDraft = toggleDispatchDraftProduct(selectedDraft, 'A', () => ({ productId: 'A', quantity: '' }))
+check(selectedDraft.map(line => line.productId).join(',') === 'C,D,B,A', 'volver a marcar un producto lo agrega al final del orden actual')
+check(sortDispatchProducts(catalog).map(item => item.id).join(',') === 'A,B,C,D', 'el orden de selección del borrador no modifica el catálogo global')
 const newProduct = product('new', 'Producto nuevo', 'Abarrotes', 0)
 const withNewProduct = sortDispatchProducts([sausage, newProduct, mortadella, pork], ['pork', 'mortadella', 'sausage'])
 check(withNewProduct.map(item => item.id).join(',') === 'pork,mortadella,sausage,new', 'producto nuevo se añade al final del orden personalizado')
@@ -71,4 +82,4 @@ const multipleErrors = validateDispatchLotDrafts([
 ], [pork], [oldest, ineligible], 'central', '2026-10-30')
 check(multipleErrors.length >= 3, 'todos los errores de varios productos y lotes se devuelven para mostrarlos juntos')
 
-console.log('17 comprobaciones de selección y validación de lotes aprobadas')
+console.log('21 comprobaciones de selección, orden de borrador y validación de lotes aprobadas')
