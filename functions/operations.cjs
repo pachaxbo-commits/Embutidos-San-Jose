@@ -5630,6 +5630,115 @@ async function updateLot(o, p) {
   });
   return updated;
 }
+handlers.rectifyProcessingCommercialUnit = async (o, p) => {
+  o.admin();
+  check(typeof p.reason === 'string' && p.reason.trim().length >= 12, 'Registra el motivo administrativo de la rectificación.');
+  const batchId = safeId(p.batchId), lotId = safeId(p.lotId), destinationId = safeId(p.destinationId), productId = safeId(p.productId);
+  const batch = await o.read('distProcessingBatches', batchId);
+  check(batch?.status === 'confirmed' && ['bagging', 'portioning'].includes(batch.processType), 'La rectificación requiere una elaboración confirmada de sacheteado.');
+  if (batch.commercialUnitRectification) {
+    const prior = batch.commercialUnitRectification;
+    check(prior.lotId === lotId && prior.productId === productId && prior.toQuantity === Number(p.toQuantity) && prior.toUnitType === p.toUnitType && prior.netWeightG === Number(p.netWeightG) && prior.nominalWeightG === Number(p.nominalWeightG), 'Este batch ya tiene una rectificación distinta; requiere revisión administrativa.');
+    return { batchId, lotId, productId, rectificationId: prior.id, quantity: prior.toQuantity, unitType: prior.toUnitType, physicalWeightG: prior.netWeightG, costCents: prior.costCents, duplicate: true };
+  }
+  const lot = await o.read('distLots', lotId);
+  check(lot && lot.productId === productId && lot.processingBatchId === batchId && lot.processingDestinationId === destinationId && lot.processingDestinationKind === 'finished' && !lot.derivedReturn && !lot.processingRepackId, 'El lote no corresponde al destino terminado de este batch.');
+  const product = await o.product(productId);
+  check(product.unitType === 'unit' && p.toUnitType === 'package' && Number.isSafeInteger(Number(p.toQuantity)) && Number(p.toQuantity) > 1, 'Esta rectificación solo admite convertir la cuenta comercial de unidades a paquetes.');
+  check(Number.isSafeInteger(Number(p.netWeightG)) && Number(p.netWeightG) > 0 && Number.isSafeInteger(Number(p.nominalWeightG)) && Number(p.nominalWeightG) > 0, 'El peso físico y el nominal deben ser gramos enteros positivos.');
+  const output = batch.destinations?.find(row => row.id === destinationId);
+  const resultOutput = batch.result?.derivedLots?.find(row => row.lotId === lotId && row.destinationId === destinationId);
+  check(output?.kind === 'finished' && output.productId === productId && output.commercialUnit === 'unit' && output.commercialQuantity === 1 && output.netWeightG === Number(p.netWeightG) && output.nominalWeightG === Number(p.nominalWeightG), 'El destino del batch ya no coincide con los valores iniciales esperados.');
+  check(resultOutput?.commercialQuantity === 1 && resultOutput.unitType === 'unit' && resultOutput.netWeightG === output.netWeightG, 'El resumen original del batch no concilia con el destino.');
+  const originalOperation = await o.read('distOperations', batch.operationId);
+  check(originalOperation?.type === 'confirmProcessingBatch' && originalOperation.status === 'confirmed' && originalOperation.payload?.batchId === batchId, 'No se verificó la operación original confirmada.');
+  check(batch.sourceLocation === 'central' && Number.isSafeInteger(batch.inputWeightG), 'Esta corrección especializada requiere el almacén central y una entrada original íntegra.');
+  check(batch.destinations.reduce((sum, row) => sum + Number(row.netWeightG || 0), 0) === batch.inputWeightG, 'La masa original del batch no concilia; no se aplicó la rectificación.');
+  const discardWeightG = batch.destinations.filter(row => row.kind === 'discard').reduce((sum, row) => sum + Number(row.netWeightG || 0), 0);
+  check(discardWeightG === Number(p.discardWeightG), 'El descarte confirmado cambió; no se aplicó la rectificación.');
+  check(Number(p.toQuantity) * Number(p.nominalWeightG) <= Number(p.netWeightG) * 2, 'La cantidad de paquetes no corresponde al peso físico y nominal confirmados.');
+
+  const entry = await o.loadStock(productId, 'central');
+  check(entry.p.unitType === 'unit', 'La unidad del SKU cambió desde que se revisó el caso.');
+  check(entry.lots.filter(row => row.id === lotId).length === 1, 'No se encontró un único lote derivado correspondiente.');
+  const stockLot = entry.lots.find(row => row.id === lotId);
+  const locationRows = Object.entries(stockLot.quantities || {}).filter(([, quantity]) => Number(quantity || 0) > 0);
+  check(locationRows.length === 1 && locationRows[0][0] === 'central' && Number(locationRows[0][1]) === 1, 'El lote ya se movió o cambió de cantidad; requiere conciliación manual.');
+  check(!stockLot.quarantined && !stockLot.processingReview && !stockLot.processingRepackId, 'El lote tiene cuarentena, revisión o reenvasado incompatible con la rectificación.');
+  const held = stockLot.processingUnavailable?.central || {};
+  check(Number(held.courtesy || 0) + Number(held.repackPending || 0) + Number(held.reviewHold || 0) === 0, 'El lote tiene una reserva o retención incompatible con la rectificación.');
+  check(stockLot.processingCommercialBlocked === true && stockLot.processingPhysicalWeightGRemaining === Number(p.netWeightG), 'El lote no conserva el peso físico original o su estado de elaboración cambió.');
+  const packageLedger = stockLot.processingPackageWeightLedger;
+  check(packageLedger?.packageCount === 1 && packageLedger.measuredNetWeightG === Number(p.netWeightG) && packageLedger.consumedCount === 0 && packageLedger.consumedWeightG === 0, 'El ledger de peso ya fue consumido o no coincide con el registro inicial.');
+  const segments = stockLot.processingByLocation?.central?.segments || [];
+  check(segments.length === 1 && segments[0].batchId === batchId && segments[0].destinationId === destinationId && segments[0].remainingQuantity === 1 && segments[0].remainingWeightG === Number(p.netWeightG) && (segments[0].remainingCostCents ?? null) === (stockLot.processingCostCentsRemaining ?? null), 'Las asignaciones de processing ya se movieron o no concilian con el lote.');
+  check((stockLot.processingCostCentsRemaining ?? null) === (resultOutput.costCents ?? null) && (stockLot.processingCostTotalCents ?? null) === (resultOutput.costCents ?? null), 'El costo restante ya cambió; no se aplicó la rectificación.');
+  const balance = entry.balances.get('central');
+  check(Number(balance?.quantity) === 1 && roundAt(entry.lots.reduce((sum, row) => sum + Number(row.quantities?.central || 0), 0), 0) === 1, 'El balance y sus lotes no concilian en una unidad antes de rectificar.');
+  const reservations = await o.query('distStockReservations', 'lotId', lotId);
+  check(!reservations.some(row => ['active', 'partially_consumed'].includes(row.status) && Number(row.remainingQuantity || 0) > 0), 'El lote tiene una reserva activa; no se aplicó la rectificación.');
+  const productMovements = await o.query('distStockMovements', 'productId', productId);
+  const batchMovements = await o.query('distStockMovements', 'batchId', batchId);
+  const outputMovements = batchMovements.filter(row => row.type === 'processing_output' && row.lotId === lotId && row.destinationId === destinationId);
+  check(outputMovements.length === 1 && outputMovements[0].unitType === 'unit' && outputMovements[0].quantity === 1 && outputMovements[0].commercialQuantity === 1 && outputMovements[0].physicalWeightG === Number(p.netWeightG) && (outputMovements[0].costCents ?? null) === (resultOutput.costCents ?? null), 'El movimiento original de producto terminado no coincide con el lote.');
+  check(productMovements.length === 1 && productMovements[0].id === outputMovements[0].id, 'El SKU tiene ventas, despachos u otros movimientos posteriores incompatibles.');
+  const sourceConsumption = batchMovements.find(row => row.type === 'processing_consumption');
+  const discardMovements = batchMovements.filter(row => row.type === 'processing_discard');
+  check(sourceConsumption?.batchId === batchId && discardMovements.reduce((sum, row) => sum + Number(row.physicalWeightG || 0), 0) === discardWeightG, 'No se verificó la trazabilidad original de consumo y descarte.');
+
+  const now = o.now;
+  const correctedQuantity = Number(p.toQuantity);
+  const rectificationId = `processing_unit_rectification_${sha256(`${batchId}:${o.id}`).slice(0, 40)}`;
+  const previous = { productUnitType: product.unitType, productPresentation: product.presentation || '', documentedPackageWeightKg: product.documentedPackageWeightKg ?? null, commercialQuantity: output.commercialQuantity, commercialUnit: output.commercialUnit, lotQuantity: Number(stockLot.quantities.central), balanceQuantity: Number(balance.quantity), packageCount: packageLedger.packageCount, weightG: stockLot.processingPhysicalWeightGRemaining, costCents: stockLot.processingCostCentsRemaining ?? null };
+  const rectification = { id: rectificationId, batchId, lotId, destinationId, productId, operationId: o.id, reason: p.reason.trim(), fromQuantity: 1, fromUnitType: 'unit', toQuantity: correctedQuantity, toUnitType: 'package', netWeightG: Number(p.netWeightG), nominalWeightG: Number(p.nominalWeightG), discardWeightG, costCents: stockLot.processingCostCentsRemaining ?? null, previous, createdAt: now, createdBy: o.actor, createdByName: o.member.displayName || o.actor };
+
+  product.unitType = 'package';
+  product.presentation = String(p.presentation || 'Paquete de 1 kg').trim().slice(0, 80);
+  product.documentedPackageWeightKg = Number(p.nominalWeightG) / 1000;
+  product.updatedAt = now;
+  product.updatedBy = o.actor;
+  product.commercialUnitRectifications = [...(product.commercialUnitRectifications || []).slice(-19), rectification];
+  o.put('distProducts', productId, product);
+  entry.p.unitType = 'package';
+  entry.p.presentation = product.presentation;
+  entry.p.documentedPackageWeightKg = product.documentedPackageWeightKg;
+  stockLot.unitType = 'package';
+  stockLot.quantities.central = correctedQuantity;
+  packageLedger.packageCount = correctedQuantity;
+  stockLot.processingByLocation.central.segments[0].remainingQuantity = correctedQuantity;
+  stockLot.commercialUnitRectification = rectification;
+  stockLot.updatedAt = now;
+  stockLot.updatedBy = o.actor;
+  balance.unitType = 'package';
+  balance.productName = product.name;
+  balance.updatedAt = now;
+  o.move(entry, 'central', correctedQuantity - 1, 0);
+  o.put('distLots', lotId, stockLot);
+
+  batch.destinations.find(row => row.id === destinationId).commercialQuantity = correctedQuantity;
+  batch.destinations.find(row => row.id === destinationId).commercialUnit = 'package';
+  batch.destinations.find(row => row.id === destinationId).nominalWeightG = Number(p.nominalWeightG);
+  const batchResultOutput = batch.result.derivedLots.find(row => row.lotId === lotId);
+  batchResultOutput.commercialQuantity = correctedQuantity;
+  batchResultOutput.unitType = 'package';
+  const originalOutputMovement = outputMovements[0];
+  originalOutputMovement.commercialUnitRectification = { rectificationId, correctedCommercialQuantity: correctedQuantity, correctedCommercialUnit: 'package', recordedAt: now, operationId: o.id };
+  o.put('distStockMovements', originalOutputMovement.id, originalOutputMovement);
+  const correctionMovementId = o.ledger(productId, correctedQuantity - 1, null, 'central', 'processing_commercial_rectification', {
+    batchId, lotId, destinationId, lotCode: stockLot.lotCode, physicalEffect: false, physicalWeightG: 0, costCents: 0, costTotal: 0,
+    commercialQuantityDelta: correctedQuantity - 1, previousCommercialQuantity: 1, correctedCommercialQuantity: correctedQuantity, previousUnitType: 'unit', correctedUnitType: 'package',
+    sourceMovementId: originalOutputMovement.id, sourceLotIds: stockLot.processingSourceLotIds, sourceAllocations: stockLot.processingSourceAllocations, sourceAllocationBasis: stockLot.processingSourceAllocationBasis,
+    reason: p.reason.trim(), note: 'Rectificación administrativa de unidad/cantidad comercial; no representa una nueva entrada física ni cambia gramos o costo.',
+  }, 0);
+  batch.movementIds = [...new Set([...(batch.movementIds || []), correctionMovementId])];
+  const auditId = `processing_audit_${sha256(`${batchId}:commercial-unit-rectification:${o.id}`).slice(0, 40)}`;
+  batch.auditEventIds = [...new Set([...(batch.auditEventIds || []), auditId])];
+  batch.commercialUnitRectification = rectification;
+  o.put('distProcessingBatches', batchId, batch);
+  o.put('distProcessingBatchAudit', auditId, { id: auditId, ...o.base(), batchId, operationId: o.id, event: 'commercial_unit_rectification', reason: p.reason.trim(), previous, corrected: { commercialQuantity: correctedQuantity, commercialUnit: 'package', netWeightG: Number(p.netWeightG), nominalWeightG: Number(p.nominalWeightG), physicalWeightG: stockLot.processingPhysicalWeightGRemaining, costCents: stockLot.processingCostCentsRemaining ?? null }, references: { lotId, productId, destinationId, originalOutputMovementId: originalOutputMovement.id, correctionMovementId }, createdAt: now, createdBy: o.actor, createdByName: o.member.displayName || o.actor, physicalDeltaG: 0 });
+  return { batchId, lotId, productId, rectificationId, movementId: correctionMovementId, quantity: correctedQuantity, unitType: 'package', physicalWeightG: Number(p.netWeightG), costCents: stockLot.processingCostCentsRemaining ?? null, duplicate: false };
+};
+
 handlers.updateLot = updateLot;
 handlers.resolveQuarantine = async (o, p) => {
   o.admin();

@@ -5,7 +5,7 @@ export type ProductMovementFilter = 'all' | 'losses' | 'differences' | 'dispatch
 const recoverableOrLoss = new Set(['return_merma', 'return_waste', 'return_waste_unassigned', 'dispatch_waste', 'quarantine_discard', 'processing_discard'])
 const dispatches = new Set(['dispatch', 'dispatch_addition', 'dispatch_correction', 'dispatch_merma_sale'])
 const returns = new Set(['return', 'return_merma', 'return_waste', 'return_waste_unassigned'])
-const intakeAdjustment = new Set(['intake', 'adjustment', 'transfer', 'sale', 'sale_correction', 'courtesy', 'quarantine_release', 'processing_consumption', 'processing_output'])
+const intakeAdjustment = new Set(['intake', 'adjustment', 'transfer', 'sale', 'sale_correction', 'courtesy', 'quarantine_release', 'processing_consumption', 'processing_output', 'processing_commercial_rectification'])
 
 export function isDispatchWithMerma(movement: DistStockMovement): boolean {
   return dispatches.has(movement.type) && Number(movement.dispatchMerma || 0) > 0

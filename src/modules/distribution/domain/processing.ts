@@ -270,6 +270,20 @@ export interface ConfirmProcessingBatchInput {
   otherDestinationsG?: number
 }
 
+export interface RectifyProcessingCommercialUnitInput {
+  batchId: string
+  lotId: string
+  destinationId: string
+  productId: string
+  toQuantity: number
+  toUnitType: 'package'
+  netWeightG: number
+  nominalWeightG: number
+  discardWeightG: number
+  presentation: string
+  reason: string
+}
+
 export interface PackageWeightLedger {
   packageCount: number
   measuredNetWeightG: number
@@ -352,6 +366,7 @@ export interface ProcessingBatch {
   confirmedBy?: string
   auditEventIds: string[]
   reversal: { status: ProcessingReversalStatus; dependencyIds: string[]; reason?: string }
+  commercialUnitRectification?: { id: string; batchId: string; lotId: string; destinationId: string; productId: string; operationId: string; reason: string; fromQuantity: number; fromUnitType: UnitType; toQuantity: number; toUnitType: UnitType; netWeightG: number; nominalWeightG: number; discardWeightG: number; costCents: number | null; previous: Record<string, unknown>; createdAt: string; createdBy: string; createdByName: string }
 }
 
 export interface ProcessingAuditEvent {

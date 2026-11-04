@@ -1,8 +1,8 @@
-import { allocateKnownCost, calculateNominalWeightSummary, calculateProcessingAvailability, calculateSourceCost, canReverseProcessingBatch, canTransitionProcessingStatus, conservativeExpiry, consumePackageWeight, createPackageWeightLedger, processingOverweightMermaG, ProcessingValidationError, reconcileProcessingMass, validateCostComponents, validateProcessingSources } from '../processingDomain.ts'
+import { allocateKnownCost, calculateNominalWeightSummary, calculateProcessingAvailability, calculateSourceCost, canReverseProcessingBatch, canTransitionProcessingStatus, conservativeExpiry, consumePackageWeight, createPackageWeightLedger, isSuspiciousProcessingQuantity, processingOverweightMermaG, ProcessingValidationError, reconcileProcessingMass, validateCostComponents, validateProcessingSources } from '../processingDomain.ts'
 import type { ProcessingCostComponent, ProcessingDestination, ProcessingSourceAllocation } from '../processing.ts'
 
 const assert = {
-  equal(actual: unknown, expected: unknown) { if (actual !== expected) throw new Error(`Expected ${String(expected)}, got ${String(actual)}`) },
+  equal(actual: unknown, expected: unknown, label = '') { if (actual !== expected) throw new Error(`${label ? `${label}: ` : ''}Expected ${String(expected)}, got ${String(actual)}`) },
   deepEqual(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`) },
   throws(fn: () => unknown, predicate: (error: unknown) => boolean) { try { fn() } catch (error) { if (predicate(error)) return; throw error } throw new Error('Expected function to throw') },
 }
@@ -15,6 +15,10 @@ throwsWith(() => reconcileProcessingMass(10_000,[destination('sachets',9_000)]),
 assert.equal(reconcileProcessingMass(10_000,[destination('nominal-250-but-measured-9000',9_000),destination('courtesy',1_000)]).differenceG,0)
 assert.deepEqual(calculateNominalWeightSummary(40, 1000, 40500), { commercialQuantity: 40, nominalWeightGPerPackage: 1000, nominalTotalWeightG: 40000, netWeightG: 40500, nominalVarianceG: 500, overweightMermaG: 500, averageNetWeightG: 1012.5 })
 assert.equal(calculateNominalWeightSummary(40, 1000, 39800)?.nominalVarianceG, -200)
+assert.equal(isSuspiciousProcessingQuantity('unit', 1, 1000, 99000), true, 'advierte 1 unidad nominal de 1.000 g con 99.000 g reales')
+assert.equal(isSuspiciousProcessingQuantity('package', 99, 1000, 99000), false, '99 paquetes de 1.000 g con 99.000 g reales son coherentes')
+assert.equal(isSuspiciousProcessingQuantity('package', 1, 1000, 1000), false, 'un paquete de 1.000 g no dispara advertencia')
+assert.equal(isSuspiciousProcessingQuantity('kg', 1, 1000, 99000), false, 'el control de paquete no cambia la unidad kg')
 assert.equal(processingOverweightMermaG([{ kind: 'finished', commercialQuantity: 40, nominalWeightG: 1000, netWeightG: 40500 }, { kind: 'discard', commercialQuantity: 0, netWeightG: 550 }]), 500)
 assert.deepEqual(reconcileProcessingMass(41050, [destination('finished', 40500), destination('discard', 550)]), { inputWeightG: 41050, outputWeightG: 41050, differenceG: 0 })
 

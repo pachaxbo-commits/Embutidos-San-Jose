@@ -43,6 +43,7 @@ export type StockMovementType =
   | 'reservation_released' // liberación de reserva: sin cambio físico
   | 'processing_consumption' // consumo físico del producto de origen en elaboración
   | 'processing_output' // entrada de una presentación derivada (bloqueada si falta trazabilidad posterior)
+  | 'processing_commercial_rectification' // corrige cantidad/unidad comercial sin nueva entrada física
   | 'processing_discard' // clasificación de gramos descartados dentro del consumo del batch; sin segundo delta físico
 
 export interface DistBaseDoc {
@@ -78,6 +79,7 @@ export interface DistProduct {
   approximateWeightKg?: number
   /** Peso neto documentado por paquete, expresado en kg. */
   documentedPackageWeightKg?: number
+  commercialUnitRectifications?: Array<{ id: string; batchId: string; lotId: string; destinationId: string; fromUnitType: UnitType; toUnitType: UnitType; fromQuantity: number; toQuantity: number; netWeightG: number; nominalWeightG: number; createdAt: string; createdBy: string; reason: string }>
   active: boolean
   sortOrder: number
   restaurantId: string
@@ -164,6 +166,8 @@ export interface DistStockMovement extends DistBaseDoc {
   destinationKind?: string
   physicalWeightG?: number
   commercialQuantity?: number
+  commercialQuantityDelta?: number
+  physicalEffect?: boolean
   costCents?: number | null
   processingCostCents?: number | null
   costTotal?: number | null
@@ -172,6 +176,7 @@ export interface DistStockMovement extends DistBaseDoc {
   processingWeightBasis?: import('./domain/processing.ts').ProcessingWeightBasis[]
   processingAllocationMethod?: 'documented_average_not_individual_measurement'
   processingCommercialBlocked?: boolean
+  commercialUnitRectification?: { rectificationId: string; correctedCommercialQuantity: number; correctedCommercialUnit: UnitType; recordedAt: string; operationId: string }
   sourceLotIds?: string[]
   sourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[]
   allocations?: DistLotAllocation[]
@@ -864,6 +869,7 @@ export interface DistLot {
  processingSourceLotIds?: string[];
  processingSourceAllocations?: import('./domain/processing.ts').ProcessingDestinationSourceAllocation[];
  processingSourceAllocationBasis?: 'batch_blend_accounting_allocation' | 'repack_origin_reference';
+ commercialUnitRectification?: { id: string; batchId: string; destinationId: string; productId: string; operationId: string; reason: string; fromQuantity: number; fromUnitType: UnitType; toQuantity: number; toUnitType: UnitType; netWeightG: number; nominalWeightG: number; discardWeightG: number; costCents: number | null; createdAt: string; createdBy: string; createdByName: string };
  packagedOn?: string;
  id: string; restaurantId: string; productId: string; productName: string; unitType: UnitType;
  lotCode: string; manufacturedOn: string; expiresOn: string; productionCost: number | null;

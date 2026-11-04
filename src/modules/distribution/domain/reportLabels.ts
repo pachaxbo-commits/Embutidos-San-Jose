@@ -46,6 +46,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   reservation_released: 'Reserva liberada (sin movimiento físico)',
   processing_consumption: 'Consumo de producto en elaboración',
   processing_output: 'Producto terminado de elaboración',
+  processing_commercial_rectification: 'Rectificación de unidad comercial (sin ingreso físico)',
   processing_discard: 'Descarte confirmado de elaboración',
   overage: 'Sobrante',
   exchange: 'Cambio de producto',

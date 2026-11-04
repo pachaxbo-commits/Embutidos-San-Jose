@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, LoadingState, Screen } from '../../../components/ui/Screen'
-import { calculateNominalWeightSummary, processingOverweightMermaG, reconcileProcessingMass } from '../domain/processingDomain'
+import { calculateNominalWeightSummary, isSuspiciousProcessingQuantity, processingOverweightMermaG, reconcileProcessingMass } from '../domain/processingDomain'
 import { decimalInputToScaledInteger, formatKgFromGrams, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity, normalizeProcessingUiType } from '../domain/processingUi'
 import { newOperationId, warehouseBalanceId, loadProcessingBatchPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
 import { stockAvailability } from '../domain/stockAvailability'
@@ -70,6 +70,18 @@ function getErrorAnchor(message: string): { anchor: string; formStep: number } |
   return match ? { anchor: match[1], formStep: match[2] } : null
 }
 
+function commercialUnitLabel(unitType: DistProduct['unitType'], quantity: number) {
+  if (unitType === 'package') return quantity === 1 ? 'paquete' : 'paquetes'
+  if (unitType === 'unit') return quantity === 1 ? 'unidad' : 'unidades'
+  return 'kg'
+}
+
+function suspiciousQuantityMessage(product: DistProduct, quantity: number, nominalWeightG: number, netWeightG: number) {
+  if (!isSuspiciousProcessingQuantity(product.unitType, quantity, nominalWeightG, netWeightG)) return ''
+  const label = commercialUnitLabel(product.unitType, quantity)
+  return `Registraste ${quantity} ${label} de ${formatGrams(nominalWeightG)} g, pero el peso neto real total es ${formatGrams(netWeightG)} g. Revisa la cantidad comercial y la unidad del producto antes de confirmar. El sistema no infiere ni corrige la cantidad automáticamente.`
+}
+
 export function SacheteadoView({ session, data }: DistributionViewProps) {
   const today = todayKey()
   const fixedLocation = session.role === 'warehouse' ? (session.warehouseId || 'central') : 'central'
@@ -108,6 +120,14 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
     netWeightG: gramsInput(destination.netWeightG) || 0,
   })))
   const physicalDiscardG = draft.destinations.reduce((sum, destination) => sum + (destination.kind === 'discard' ? gramsInput(destination.netWeightG) || 0 : 0), 0)
+  const quantityWarnings = draft.destinations.flatMap(destination => {
+    if (destination.kind === 'discard') return []
+    const target = data.products.find(product => product.id === destination.productId && product.active && !product.deleted)
+    if (!target) return []
+    const quantity = Number(destination.commercialQuantity.replace(',', '.'))
+    const warning = suspiciousQuantityMessage(target, quantity, gramsInput(destination.nominalWeightG) || 0, gramsInput(destination.netWeightG) || 0)
+    return warning ? [warning] : []
+  })
   const massError = useMemo(() => {
     if (!inputWeightG || !draft.destinations.length) return 'Ingresa el peso medido de origen y asigna todos los destinos.'
     try { reconcileProcessingMass(inputWeightG, draft.destinations.map(destination => ({ id: destination.id, netWeightG: gramsInput(destination.netWeightG) || 0 }))); return '' }
@@ -267,6 +287,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
     setError(''); setMessage('')
     let payload: ConfirmProcessingBatchInput
     try { payload = validateAndBuildPayload() } catch (reason) { setError((reason as Error).message); return }
+    if (quantityWarnings.length) { setStep(1); setError(quantityWarnings[0]); return }
     if (warehouseNeedsAdmin) { setError('Este borrador incluye cortesía o descarte, que requieren confirmación de Administración. Se guardó solo en este dispositivo; no se envió al servidor ni reservó stock.'); return }
     const pendingDraft = { ...draft, operationPending: true }
     if (!persistDraft(session.uid, pendingDraft)) { setError('No se pudo guardar el identificador seguro en este dispositivo. No se envió la elaboración; libera espacio o habilita almacenamiento e inténtalo nuevamente.'); return }
@@ -369,8 +390,12 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
             <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Destino {index + 1}</h3>{draft.destinations.length > 1 && <button type="button" aria-label="Quitar destino" onClick={() => editDraft(current => ({ ...current, destinations: current.destinations.filter(row => row.id !== destination.id) }))} className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-rose-700"><Trash2 size={16} /></button>}</div>
             <div className="grid min-w-0 gap-3 sm:grid-cols-2">
               <Field label="Destino físico" required><SelectInput data-processing-anchor="destination-kind" value={destination.kind} onChange={event => updateDestination(destination.id, { kind: event.target.value as ProcessingDestinationKind, productId: event.target.value === 'discard' ? '' : destination.productId })}>{Object.entries(labelKind).filter(([key]) => key !== 'other').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</SelectInput></Field>
-              {destination.kind !== 'discard' && <Field label="SKU terminado existente" required><SelectInput data-processing-anchor="finished-product" value={destination.productId} onChange={event => updateDestination(destination.id, { productId: event.target.value, commercialQuantity: '' })}><option value="">Selecciona SKU</option>{destinationsProducts.map(product => <option key={product.id} value={product.id}>{product.name} · {product.unitType}</option>)}</SelectInput></Field>}
-              {destination.kind !== 'discard' && <Field label={`Cantidad comercial ${target ? `(${target.unitType})` : ''}`} required hint={target?.unitType === 'kg' ? 'Debe coincidir exactamente con los gramos netos.' : 'Paquetes/unidades enteros; no se infiere su peso.'}><NumberInput data-processing-anchor="commercial-quantity" min="0" step={target?.unitType === 'kg' ? '0.001' : '1'} value={destination.commercialQuantity} onChange={event => updateDestination(destination.id, { commercialQuantity: event.target.value })} placeholder={target?.unitType === 'kg' ? '0,000' : '0'} /></Field>}
+              {destination.kind !== 'discard' && <Field label="SKU terminado existente" required hint="La categoría y la unidad son campos distintos. Revise la unidad del SKU; esa unidad es la que se registrará en Inventario."><SelectInput data-processing-anchor="finished-product" value={destination.productId} onChange={event => updateDestination(destination.id, { productId: event.target.value, commercialQuantity: '' })}><option value="">Selecciona SKU</option>{destinationsProducts.map(product => <option key={product.id} value={product.id}>{product.name} · {product.unitType}</option>)}</SelectInput></Field>}
+              {destination.kind !== 'discard' && <div data-processing-anchor="commercial-quantity">
+                <Field label={`Cantidad comercial ${target ? `(${target.unitType})` : ''}`} required hint={target?.unitType === 'kg' ? 'Debe coincidir exactamente con los gramos netos.' : 'Número de paquetes/unidades que quedarán registrados en Inventario. Ejemplo: si obtiene 99 bolsas de 1 kg, escriba 99. El peso no infiere esta cantidad.'}><NumberInput min="0" step={target?.unitType === 'kg' ? '0.001' : '1'} value={destination.commercialQuantity} onChange={event => updateDestination(destination.id, { commercialQuantity: event.target.value })} placeholder={target?.unitType === 'kg' ? '0,000' : '0'} /></Field>
+                {target && target.unitType !== 'kg' && Number.isSafeInteger(Number(destination.commercialQuantity.replace(',', '.'))) && Number(destination.commercialQuantity.replace(',', '.')) > 0 && <p className="mt-1 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs font-extrabold text-sky-950" aria-live="polite">Inventario que se creará: {Number(destination.commercialQuantity.replace(',', '.'))} {commercialUnitLabel(target.unitType, Number(destination.commercialQuantity.replace(',', '.')))}</p>}
+                {target && (() => { const warning = suspiciousQuantityMessage(target, Number(destination.commercialQuantity.replace(',', '.')), gramsInput(destination.nominalWeightG) || 0, gramsInput(destination.netWeightG) || 0); return warning ? <p role="alert" className="mt-2 flex gap-2 rounded-xl border-2 border-rose-400 bg-rose-50 p-3 text-xs font-extrabold text-rose-950"><AlertTriangle className="shrink-0" size={17} />{warning}</p> : null })()}
+              </div>}
               <div data-processing-anchor={destination.kind === 'discard' ? 'discard' : 'net-weight'}><Field label="Peso neto real medido (g)" required><NumberInput min="1" step="1" value={destination.netWeightG} onChange={event => updateDestination(destination.id, { netWeightG: event.target.value })} placeholder="Ej. 9000" /></Field><ProcessingContextHelp topic={destination.kind === 'discard' ? 'discard' : 'netWeight'} /></div>
               {destination.kind !== 'discard' && <div data-processing-anchor="nominal-weight"><Field label="Peso nominal (g, informativo)"><NumberInput min="1" step="1" value={destination.nominalWeightG} onChange={event => updateDestination(destination.id, { nominalWeightG: event.target.value })} placeholder="Ej. 250" /></Field><ProcessingContextHelp topic="nominalWeight" /></div>}
               {destination.kind !== 'discard' && <Field label="Lote nuevo" required><TextInput data-processing-anchor="lot-code" maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value })} placeholder="Código de lote" /></Field>}
@@ -427,6 +452,23 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
 
       {step === 3 && <div className="space-y-3">
         <SectionCard title="Paso 4 · Revisar y confirmar">
+          <div data-processing-anchor="inventory-result" className="mb-3 rounded-2xl border-2 border-indigo-300 bg-indigo-50 p-4 text-indigo-950">
+            <p className="text-xs font-black uppercase tracking-wide">Inventario resultante</p>
+            {draft.destinations.filter(destination => destination.kind === 'finished').map(destination => {
+              const product = data.products.find(item => item.id === destination.productId)
+              const quantity = Number(destination.commercialQuantity.replace(',', '.'))
+              const unit = product?.unitType || 'unit'
+              const nominalWeightG = gramsInput(destination.nominalWeightG) || 0
+              const warning = product ? suspiciousQuantityMessage(product, quantity, nominalWeightG, gramsInput(destination.netWeightG) || 0) : ''
+              return <div key={destination.id} className="mt-2 rounded-xl border border-indigo-200 bg-white p-3">
+                <p className="font-extrabold">{product?.name || 'Producto terminado'}</p>
+                <p className="mt-1 text-lg font-black">{Number.isFinite(quantity) ? quantity : 0} {commercialUnitLabel(unit, quantity)}</p>
+                <p className="text-xs">Peso físico total: {formatKgFromGrams(gramsInput(destination.netWeightG) || 0)}</p>
+                {nominalWeightG > 0 && <p className="text-xs">Peso nominal: {formatGrams(nominalWeightG)} g por {unit === 'package' ? 'paquete' : unit === 'unit' ? 'unidad' : 'kg'}</p>}
+                {warning && <p role="alert" className="mt-2 rounded-lg border border-rose-300 bg-rose-50 p-2 text-xs font-extrabold text-rose-900">{warning}</p>}
+              </div>
+            })}
+          </div>
            <div data-processing-anchor="summary-metrics" className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Metric label="Entrada real" value={formatKgFromGrams(inputWeightG)} /><Metric label="Destinos físicos" value={formatKgFromGrams(outputWeightG)} /><Metric label="Peso del proceso pendiente de asignar" value={`${massDifferenceG > 0 ? formatGrams(massDifferenceG) : 0} g`} tone={massDifferenceG === 0 ? 'ok' : 'bad'} /><Metric label="Almacén" value={locationOptions.find(item => item.id === location)?.name || location} /></div>
           <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Merma por sobrepeso no cobrado, incluida en sachets: {formatGrams(overweightMermaG)} g. Está incluida en el peso físico y costo del producto terminado; no crea otro movimiento ni otro destino. Descarte físico real: {formatGrams(physicalDiscardG)} g. Merma total informativa: {formatGrams(overweightMermaG + physicalDiscardG)} g; esta suma no genera descuentos ni costos adicionales.</p>
           <div className="mt-3 space-y-2">{draft.sources.map(source => { const lot = data.lots.find(item => item.id === source.lotId); return <div key={source.lotId} className="flex min-w-0 justify-between gap-2 rounded-xl bg-slate-50 p-3 text-xs"><span className="min-w-0 break-words"><b>{lot?.productName || selectedProduct?.name}</b> · lote <b>{lot?.lotCode || source.lotId}</b><br /><span className="text-slate-500">Asignación contable del proceso; no es identificación física individual verificada.</span></span><b className="shrink-0 tabular-nums">{source.quantityKg || '0'} kg</b></div>})}</div>
@@ -440,7 +482,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
            <div data-processing-anchor="save-draft" className="mt-2 flex flex-wrap gap-2"><SecondaryButton onClick={() => { if (persistDraft(session.uid, draft)) setMessage('Borrador guardado solo en este dispositivo. No reservó ni consumió stock.'); else setError('No se pudo guardar el borrador en este dispositivo.') }}><Save size={15} />Guardar borrador</SecondaryButton><span className="self-center text-[11px] font-semibold text-slate-500">El borrador no cambia inventario. Se vuelve a validar contra los lotes actuales al confirmar.</span></div>
         </SectionCard>
         {warehouseNeedsAdmin && <div role="status" className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Esta elaboración contiene una cortesía o descarte que debe confirmar Administración. El borrador permanece local; no hay solicitud de aprobación enviada.</div>}
-         <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><div data-processing-anchor="confirm"><PrimaryButton full disabled={Boolean(massError) || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown' || submitState === 'confirmed'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : submitState === 'confirmed' ? 'Confirmada' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton></div></div>
+         <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><div data-processing-anchor="confirm"><PrimaryButton full disabled={Boolean(massError) || quantityWarnings.length > 0 || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown' || submitState === 'confirmed'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : submitState === 'confirmed' ? 'Confirmada' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton>{quantityWarnings.length > 0 && <p className="mt-2 text-xs font-extrabold text-rose-800">Corrige la cantidad comercial antes de confirmar.</p>}</div></div>
       </div>}
 
       {step < 3 && <div className="grid grid-cols-2 gap-2"><SecondaryButton full disabled={step === 0} onClick={() => setStep(value => Math.max(0, value - 1))}><ChevronLeft size={16} />Anterior</SecondaryButton><PrimaryButton full onClick={() => setStep(value => Math.min(3, value + 1))}>Continuar<ChevronRight size={16} /></PrimaryButton></div>}

@@ -34,7 +34,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
   dispatch_waste: 'Pérdida registrada al despachar',
   customer_return: 'Devolución del cliente',
   quarantine_release: 'Liberación auditada de cuarentena', quarantine_discard: 'Descarte auditado de cuarentena',
-  processing_consumption: 'Consumo en elaboración', processing_output: 'Salida de elaboración', processing_discard: 'Descarte confirmado en elaboración',
+  processing_consumption: 'Consumo en elaboración', processing_output: 'Salida de elaboración', processing_commercial_rectification: 'Rectificación administrativa de cantidad (sin ingreso físico)', processing_discard: 'Descarte confirmado en elaboración',
 }
 
 /**

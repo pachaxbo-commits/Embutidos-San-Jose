@@ -78,9 +78,14 @@ export function Harness() {
       { id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', unitType: 'kg', active: true, productionCost: 5 },
       { id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 250 g', unitType: 'package', active: true, productionCost: 999 },
       { id: 'qa-assessment-product', restaurantId: 'sanjose', name: 'QA Paquete para evaluación', unitType: 'package', active: true, productionCost: null },
+      { id: 'qa-quantity-source', restaurantId: 'sanjose', name: 'QA Mortadela a granel', category: 'Granel', unitType: 'kg', active: true, productionCost: 5 },
+      { id: 'qa-quantity-target', restaurantId: 'sanjose', name: 'QA Mortadela jamonada porcionada 1 kg', category: 'Otros', presentation: 'Bolsa 1 kg', unitType: 'package', documentedPackageWeightKg: 1, active: true, productionCost: 999 },
     ],
-    lots: [sourceLot, otherLot, assessmentLot, freeLot],
-    balances: [{ id: 'central__qa-source-product', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-source-product', unitType: 'kg', quantity: 4 }],
+    lots: [sourceLot, otherLot, assessmentLot, freeLot, { id: 'qa-quantity-source-lot', restaurantId: 'sanjose', productId: 'qa-quantity-source', productName: 'QA Mortadela a granel', unitType: 'kg', lotCode: 'ORIGEN-QA-CANTIDAD', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 99 } }],
+    balances: [
+      { id: 'central__qa-source-product', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-source-product', unitType: 'kg', quantity: 4 },
+      { id: 'central__qa-quantity-source', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-quantity-source', unitType: 'kg', quantity: 99 },
+    ],
     warehouses: [], stockMovements: [], operations: [],
   } as unknown as DistributionData
 
