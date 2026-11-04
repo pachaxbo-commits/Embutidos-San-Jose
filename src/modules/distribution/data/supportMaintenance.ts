@@ -1,6 +1,7 @@
 import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth'
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
+import { getFirebaseEmulatorHost, isFirebaseEmulatorEnabled } from '../../../lib/firebaseEmulator'
 
 export interface SupportSettings {
   companyName: string
@@ -90,8 +91,8 @@ async function callable<TInput, TOutput>(name: string) {
   if (!context) throw new Error('Firebase no está configurado.')
   const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
   const functions = getFunctions(context.app, 'us-central1')
-  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !maintenanceEmulatorConnected) {
-    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+  if (isFirebaseEmulatorEnabled() && !maintenanceEmulatorConnected) {
+    connectFunctionsEmulator(functions, getFirebaseEmulatorHost(), 5001)
     maintenanceEmulatorConnected = true
   }
   return httpsCallable<TInput, TOutput>(functions, name)

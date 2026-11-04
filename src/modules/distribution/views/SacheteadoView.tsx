@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, LoadingState, Screen } from '../../../components/ui/Screen'
-import { reconcileProcessingMass } from '../domain/processingDomain'
+import { calculateNominalWeightSummary, processingOverweightMermaG, reconcileProcessingMass } from '../domain/processingDomain'
 import { decimalInputToScaledInteger, formatKgFromGrams, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity, normalizeProcessingUiType } from '../domain/processingUi'
 import { newOperationId, warehouseBalanceId, loadProcessingBatchPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
 import { stockAvailability } from '../domain/stockAvailability'
@@ -15,6 +15,7 @@ import { ProcessingGuide } from './ProcessingGuide'
 import { ProcessingContextHelp, ProcessingWalkthrough } from './ProcessingWalkthrough'
 import { ProcessingReportsView } from './ProcessingReportsView'
 import { ProcessingCommercialRelease } from './ProcessingCommercialRelease'
+import { Modal } from '../../../components/ui/Modal'
 
 type SourceRow = { lotId: string; quantityKg: string }
 type DestinationDraft = {
@@ -87,6 +88,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
   const [historyCursor, setHistoryCursor] = useState<ProcessingBatchPage['cursor']>(null)
   const [historyHasMore, setHistoryHasMore] = useState(false)
   const [walkthroughOpen, setWalkthroughOpen] = useState(false)
+  const [showDifferenceAssignment, setShowDifferenceAssignment] = useState(false)
   const submitLock = useRef(false)
   const location = session.role === 'admin' ? draft.location : fixedLocation
   const locationKey = location === 'central' ? 'central' : `warehouse__${location}`
@@ -99,13 +101,20 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
   const inputWeightG = sourceRows.reduce((sum, row) => sum + (row.grams || 0), 0)
   const outputWeightG = draft.destinations.reduce((sum, destination) => sum + (gramsInput(destination.netWeightG) || 0), 0)
   const massDifferenceG = inputWeightG - outputWeightG
+  const overweightMermaG = processingOverweightMermaG(draft.destinations.map(destination => ({
+    kind: destination.kind,
+    commercialQuantity: Number(destination.commercialQuantity.replace(',', '.')),
+    nominalWeightG: gramsInput(destination.nominalWeightG) || undefined,
+    netWeightG: gramsInput(destination.netWeightG) || 0,
+  })))
+  const physicalDiscardG = draft.destinations.reduce((sum, destination) => sum + (destination.kind === 'discard' ? gramsInput(destination.netWeightG) || 0 : 0), 0)
   const massError = useMemo(() => {
     if (!inputWeightG || !draft.destinations.length) return 'Ingresa el peso medido de origen y asigna todos los destinos.'
     try { reconcileProcessingMass(inputWeightG, draft.destinations.map(destination => ({ id: destination.id, netWeightG: gramsInput(destination.netWeightG) || 0 }))); return '' }
     catch {
       const difference = inputWeightG - outputWeightG
-      if (difference > 0) return `La entrada es ${inputWeightG} g y los destinos suman ${outputWeightG} g. Faltan asignar ${difference} g.`
-      return `La entrada es ${inputWeightG} g y los destinos suman ${outputWeightG} g. Los destinos exceden la entrada por ${Math.abs(difference)} g.`
+      if (difference > 0) return `Quedan ${difference} g del producto de origen sin destino físico. Si fueron descartados, añade «Descarte físico real». Si quedaron separados, en revisión o para otro destino, registra lo que realmente ocurrió. No modifiques los pesos únicamente para hacerlos coincidir.`
+      return `La entrada es ${inputWeightG} g y los destinos suman ${outputWeightG} g. Los destinos exceden la entrada por ${Math.abs(difference)} g; revisa los pesos medidos.`
     }
   }, [inputWeightG, outputWeightG, draft.destinations])
   const selectedLotIds = new Set(draft.sources.map(source => source.lotId))
@@ -144,6 +153,12 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
   const addSource = (lot: DistLot) => editDraft(current => current.sources.some(source => source.lotId === lot.id) ? current : ({ ...current, sources: [...current.sources, { lotId: lot.id, quantityKg: '' }] }))
   const removeSource = (lotId: string) => editDraft(current => ({ ...current, sources: current.sources.filter(source => source.lotId !== lotId) }))
   const updateDestination = (destinationId: string, patch: Partial<DestinationDraft>) => editDraft(current => ({ ...current, destinations: current.destinations.map(item => item.id === destinationId ? { ...item, ...patch } : item) }))
+  const assignMassDifference = (kind: ProcessingDestinationKind) => {
+    if (!(massDifferenceG > 0)) return
+    const destination = { ...freshDestination(today), kind, netWeightG: String(massDifferenceG), productId: '', commercialQuantity: '', reason: '' }
+    editDraft(current => ({ ...current, destinations: [...current.destinations, destination] }))
+    setShowDifferenceAssignment(false)
+  }
 
   const validateAndBuildPayload = (): ConfirmProcessingBatchInput => {
     if (!draft.sourceProductId || !selectedProduct) throw new Error('Selecciona el producto a granel de origen.')
@@ -347,7 +362,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
       </SectionCard>}
 
       {step === 1 && <SectionCard title="Paso 2 · Producción y destinos físicos" action={<SecondaryButton onClick={() => editDraft(current => ({ ...current, destinations: [...current.destinations, freshDestination(today)] }))}><Plus size={15} />Añadir salida</SecondaryButton>}>
-        <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs text-sky-950"><b>El peso nominal es informativo.</b> Registra el peso neto total realmente medido; no se calcula desde el catálogo ni desde el nominal.</div>
+        <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs text-sky-950"><b>Peso nominal:</b> peso comercial declarado de un paquete. El sistema calcula el total nominal multiplicándolo por la cantidad. <b>Peso neto real:</b> total medido del alimento terminado, sin plástico. El sobrepeso sobre el nominal se informa como merma no cobrada, pero queda dentro del producto y de su costo; no se agrega otra vez como destino físico.</div>
         <div className="space-y-3">{draft.destinations.map((destination, index) => {
           const target = destinationsProducts.find(product => product.id === destination.productId)
           return <article key={destination.id} className="min-w-0 rounded-2xl border border-slate-200 p-3">
@@ -363,12 +378,22 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
               {destination.kind !== 'discard' && <Field label="Fecha de embolsado" required><TextInput data-processing-anchor="packaged-date" type="date" max={today} value={destination.packagedOn} onChange={event => updateDestination(destination.id, { packagedOn: event.target.value })} /></Field>}
               {destination.kind !== 'discard' && <div data-processing-anchor="expiry-date"><Field label="Vencimiento" required hint="San José define el vencimiento de la presentación terminada; puede ser posterior al lote de granel, pero no anterior al embolsado."><TextInput type="date" value={destination.expiresOn} onChange={event => updateDestination(destination.id, { expiresOn: event.target.value })} /></Field><ProcessingContextHelp topic="expiry" /></div>}
               {target && target.unitType !== 'kg' && <div data-processing-anchor="weight-basis"><Field label="Base del peso real" required><SelectInput value={destination.weightBasis} onChange={event => updateDestination(destination.id, { weightBasis: event.target.value as ProcessingWeightBasis })}><option value="measured_total">Peso total medido</option><option value="documented_average">Promedio documentado</option></SelectInput></Field><ProcessingContextHelp topic="weightBasis" /></div>}
+              {destination.kind === 'finished' && (() => {
+                const summary = calculateNominalWeightSummary(Number(destination.commercialQuantity.replace(',', '.')), gramsInput(destination.nominalWeightG) || 0, gramsInput(destination.netWeightG) || 0)
+                if (!summary) return null
+                return <div className="sm:col-span-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-950" aria-label="Resumen de peso nominal, real y merma por sobrepeso">
+                  <p className="font-extrabold">{summary.commercialQuantity} paquetes × {formatGrams(summary.nominalWeightGPerPackage)} g nominales = {formatGrams(summary.nominalTotalWeightG)} g de peso nominal total</p>
+                  <p className="mt-1">Peso neto real: <b>{formatGrams(summary.netWeightG)} g</b> · promedio físico informativo: <b>{formatGrams(summary.averageNetWeightG)} g por paquete</b> (no significa que cada paquete pese lo mismo).</p>
+                  {summary.nominalVarianceG > 0 ? <p className="mt-1 font-bold text-amber-900">Sobrepeso no cobrado / merma incluida en sachets: {formatGrams(summary.overweightMermaG)} g. Permanece dentro del producto terminado y de su costo; no es descarte físico ni se suma otra vez a la conciliación.</p> : summary.nominalVarianceG < 0 ? <p className="mt-1 font-bold text-amber-900">El peso real total está {formatGrams(Math.abs(summary.nominalVarianceG))} g por debajo del nominal. Revise la medición; no se asume automáticamente pérdida.</p> : <p className="mt-1">Peso real igual al nominal total.</p>}
+                </div>
+              })()}
               {['courtesy', 'repack_pending', 'review_hold', 'discard'].includes(destination.kind) && <Field label="Motivo / condición" required><TextArea value={destination.reason} onChange={event => updateDestination(destination.id, { reason: event.target.value })} placeholder={destination.kind === 'discard' ? 'Motivo del descarte real' : 'Por qué se separa este producto'} /></Field>}
               {destination.kind === 'courtesy' && <div className="sm:col-span-2 rounded-xl border border-amber-200 bg-amber-50 p-3"><p className="text-xs font-bold text-amber-950">Reservado para cortesía; no se puede vender ni liberar desde esta pantalla.</p>{canAdmin ? <><label className="mt-2 flex min-h-11 items-center gap-2 text-xs font-bold"><input type="checkbox" checked={destination.qualityConfirmed} onChange={event => updateDestination(destination.id, { qualityConfirmed: event.target.checked })} />Confirmo aptitud para cortesía</label><Field label="Motivo de aptitud" required><TextArea value={destination.qualityReason} onChange={event => updateDestination(destination.id, { qualityReason: event.target.value })} /></Field></> : <p className="mt-2 text-xs">Solo Administración puede confirmar la aptitud. Guarda el borrador para que lo revise; todavía no se envía.</p>}</div>}
               {destination.kind === 'discard' && !canAdmin && <div className="sm:col-span-2 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-900">El descarte requiere confirmación directa de Administración. Este formulario queda como borrador local sin cambios de stock.</div>}
             </div>
           </article>
         })}</div>
+        {massDifferenceG > 0 && <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><p className="font-extrabold">Peso del proceso todavía sin destino: {formatGrams(massDifferenceG)} g</p><p className="mt-1 text-xs">Quedan {formatGrams(massDifferenceG)} g del producto de origen sin destino físico. Si fueron descartados, añade «Descarte físico real». Si quedaron separados, en revisión o para otro destino, registra lo que realmente ocurrió. No modifiques los pesos únicamente para hacerlos coincidir.</p><div className="mt-2"><SecondaryButton onClick={() => setShowDifferenceAssignment(true)}>Asignar diferencia</SecondaryButton></div></div>}
       </SectionCard>}
 
       {step === 2 && <div className="space-y-3">
@@ -402,11 +427,12 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
 
       {step === 3 && <div className="space-y-3">
         <SectionCard title="Paso 4 · Revisar y confirmar">
-           <div data-processing-anchor="summary-metrics" className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Metric label="Entrada real" value={formatKgFromGrams(inputWeightG)} /><Metric label="Destinos físicos" value={formatKgFromGrams(outputWeightG)} /><Metric label="Diferencia" value={`${massDifferenceG > 0 ? '+' : ''}${massDifferenceG} g`} tone={massDifferenceG === 0 ? 'ok' : 'bad'} /><Metric label="Almacén" value={locationOptions.find(item => item.id === location)?.name || location} /></div>
+           <div data-processing-anchor="summary-metrics" className="grid grid-cols-2 gap-2 sm:grid-cols-4"><Metric label="Entrada real" value={formatKgFromGrams(inputWeightG)} /><Metric label="Destinos físicos" value={formatKgFromGrams(outputWeightG)} /><Metric label="Peso del proceso pendiente de asignar" value={`${massDifferenceG > 0 ? formatGrams(massDifferenceG) : 0} g`} tone={massDifferenceG === 0 ? 'ok' : 'bad'} /><Metric label="Almacén" value={locationOptions.find(item => item.id === location)?.name || location} /></div>
+          <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Merma por sobrepeso no cobrado, incluida en sachets: {formatGrams(overweightMermaG)} g. Está incluida en el peso físico y costo del producto terminado; no crea otro movimiento ni otro destino. Descarte físico real: {formatGrams(physicalDiscardG)} g. Merma total informativa: {formatGrams(overweightMermaG + physicalDiscardG)} g; esta suma no genera descuentos ni costos adicionales.</p>
           <div className="mt-3 space-y-2">{draft.sources.map(source => { const lot = data.lots.find(item => item.id === source.lotId); return <div key={source.lotId} className="flex min-w-0 justify-between gap-2 rounded-xl bg-slate-50 p-3 text-xs"><span className="min-w-0 break-words"><b>{lot?.productName || selectedProduct?.name}</b> · lote <b>{lot?.lotCode || source.lotId}</b><br /><span className="text-slate-500">Asignación contable del proceso; no es identificación física individual verificada.</span></span><b className="shrink-0 tabular-nums">{source.quantityKg || '0'} kg</b></div>})}</div>
           <div className="mt-3 space-y-2">{draft.destinations.map(destination => { const product = data.products.find(item => item.id === destination.productId); return <div key={destination.id} className="flex min-w-0 justify-between gap-2 rounded-xl border border-slate-200 p-3 text-xs"><span className="min-w-0 break-words"><b>{product?.name || labelKind[destination.kind]}</b> · {labelKind[destination.kind]}<br />{destination.kind !== 'discard' ? `Lote ${destination.lotCode || 'sin completar'} · ${destination.commercialQuantity || '0'} ${product?.unitType || ''}` : `Motivo: ${destination.reason || 'pendiente'}`}</span><b className="shrink-0 tabular-nums">{destination.netWeightG || '0'} g</b></div>})}</div>
            {massError ? <div role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-900">{massError}{Math.abs(massDifferenceG) === 1 ? ' La diferencia de 1 g bloquea la confirmación; no se redondea.' : ''}<ProcessingContextHelp topic="difference" /></div> : <p className="mt-3 flex items-center gap-2 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-900"><CheckCircle2 size={17} />Masa conciliada exactamente: 0 g de diferencia.</p>}
-          <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Los lotes derivados permanecerán bloqueados para venta y despacho hasta la liberación autorizada de Calidad desde el detalle del historial. Materiales y costos auxiliares son informativos; no se capitalizan ni alteran Egresos o Resultado.</p>
+          <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Los lotes derivados permanecen pendientes de liberación comercial; Administración los revisa y usa «Liberar para despacho y venta» desde el historial. Materiales y costos auxiliares son informativos; no se capitalizan ni alteran Egresos o Resultado.</p>
           <Field label="Notas del proceso"><TextArea value={draft.notes} onChange={event => editDraft(current => ({ ...current, notes: event.target.value }))} /></Field>
         </SectionCard>
         <SectionCard title="Identificadores y borrador local">
@@ -418,6 +444,11 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
       </div>}
 
       {step < 3 && <div className="grid grid-cols-2 gap-2"><SecondaryButton full disabled={step === 0} onClick={() => setStep(value => Math.max(0, value - 1))}><ChevronLeft size={16} />Anterior</SecondaryButton><PrimaryButton full onClick={() => setStep(value => Math.min(3, value + 1))}>Continuar<ChevronRight size={16} /></PrimaryButton></div>}
+      <Modal isOpen={showDifferenceAssignment} onClose={() => setShowDifferenceAssignment(false)} title="Asignar diferencia física" subtitle={`Quedan ${formatGrams(massDifferenceG)} g por asignar. Elige solo lo que ocurrió realmente.`}>
+        <div className="grid gap-2">
+          {([['discard', 'Descarte físico real'], ['review_hold', 'Inmovilizado para revisión'], ['repack_pending', 'Pendiente de reenvasado'], ['courtesy', 'Reservado para cortesía']] as Array<[ProcessingDestinationKind, string]>).map(([kind, label]) => <button key={kind} type="button" onClick={() => assignMassDifference(kind)} className="min-h-12 rounded-xl border border-slate-200 px-3 text-left text-sm font-extrabold text-slate-800 hover:border-sky-400 hover:bg-sky-50">{label} · {formatGrams(massDifferenceG)} g</button>)}
+        </div>
+      </Modal>
       <p className="text-center text-[10px] font-semibold text-slate-400">Borrador local · ID estable {draft.batchId}</p>
     </div>}
      {tab === 'new' && walkthroughOpen && <ProcessingWalkthrough open onClose={() => setWalkthroughOpen(false)} onFormStepChange={setStep} />}
@@ -426,6 +457,10 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
 
 function Metric({ label, value, tone = 'normal' }: { label: string; value: string; tone?: 'normal' | 'ok' | 'bad' }) {
   return <div className={`min-w-0 rounded-xl border p-3 ${tone === 'ok' ? 'border-emerald-200 bg-emerald-50' : tone === 'bad' ? 'border-rose-200 bg-rose-50' : 'border-slate-200 bg-white'}`}><p className="text-[10px] font-black uppercase text-slate-500">{label}</p><p className="mt-1 break-words text-sm font-black tabular-nums">{value}</p></div>
+}
+
+function formatGrams(value: number) {
+  return new Intl.NumberFormat('es-BO', { maximumFractionDigits: 1 }).format(value)
 }
 
 function BatchDetail({ batch, products, locations }: { batch: ProcessingBatch; products: DistProduct[]; locations: Array<{ id: string; name: string }> }) {

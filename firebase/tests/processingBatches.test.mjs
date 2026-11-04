@@ -111,6 +111,33 @@ try {
   pass(laterExpiryBatch.destinations.find(row => row.id === 'finished').netWeightG === 19539 && laterExpiryBatch.destinations.find(row => row.id === 'finished').nominalWeightG === 500 && laterExpiryLot.processingPackageWeightLedger.measuredNetWeightG === 19539, '39 paquetes conservan 19.539 g reales frente a nominal de 500 g; nominal y peso físico siguen separados')
   pass(laterExpiryBatch.packagingMaterials.length === 1 && laterExpiryBatch.inputWeightG === 20000 && laterExpiryBatch.destinations.reduce((sum, row) => sum + row.netWeightG, 0) === 20000 && (await read('distBalances', `central__${expirySource}`)).quantity === 0, 'bolsas/materiales no se restan automáticamente del neto: entrada 20.000 g = 19.539 g terminado + 461 g descarte')
 
+  const overweightSource = `${prefix}-overweight-source`, overweightSourceLot = `${prefix}-overweight-source-lot`, overweightPackage = `${prefix}-overweight-package`
+  await fixtureProduct(overweightSource, 'kg', 5)
+  await fixtureProduct(overweightPackage, 'package', 999, 1)
+  await fixtureLot(overweightSource, overweightSourceLot, 'central', 41.05, 5)
+  const overweightPayload = validPayload(`${prefix}-overweight-business`, overweightSource, [{ lotId: overweightSourceLot, quantity: 41.05, measuredNetWeightG: 41050 }])
+  overweightPayload.processingDate = boliviaDate(-1)
+  overweightPayload.inputWeightG = 41050
+  overweightPayload.destinations = [
+    { id: 'finished-40x1000', kind: 'finished', productId: overweightPackage, commercialQuantity: 40, netWeightG: 40500, nominalWeightG: 1000, weightBasis: 'measured_total', lotCode: `SACH-${prefix}-overweight`, manufacturedOn: boliviaDate(-3), packagedOn: boliviaDate(-1), expiresOn: boliviaDate(30) },
+    { id: 'physical-discard-550', kind: 'discard', netWeightG: 550, reason: 'QA recortes retirados y pesados' },
+  ]
+  const overweightMissingDiscard = structuredClone(overweightPayload)
+  overweightMissingDiscard.batchId = `${prefix}-overweight-missing-discard`
+  overweightMissingDiscard.destinations = [overweightPayload.destinations[0]]
+  const missingOverweightDiscard = await run(ids.admin, 'confirmProcessingBatch', overweightMissingDiscard, `${prefix}-overweight-missing-discard-op`, 'rejected')
+  pass(missingOverweightDiscard.error.includes('diferencia 550 g') && (await read('distBalances', `central__${overweightSource}`)).quantity === 41.05, 'merma nominal de 500 g no se suma a la masa: sin descarte permanecen 550 g físicos pendientes y no cambia inventario')
+  const overweightConfirmation = await run(ids.admin, 'confirmProcessingBatch', overweightPayload, `${prefix}-overweight-business-op`)
+  const overweightBatch = await read('distProcessingBatches', overweightPayload.batchId)
+  const overweightDerivedRef = overweightBatch.result.derivedLots.find(row => row.destinationId === 'finished-40x1000')
+  const overweightDerivedLot = await read('distLots', overweightDerivedRef.lotId)
+  const overweightDiscardMove = (await root.collection('distStockMovements').where('batchId', '==', overweightPayload.batchId).get()).docs.map(snapshot => snapshot.data()).find(movement => movement.type === 'processing_discard')
+  const overweightFinished = overweightBatch.destinations.find(row => row.id === 'finished-40x1000')
+  pass(overweightConfirmation.status === 'confirmed' && overweightFinished.commercialQuantity === 40 && overweightFinished.netWeightG === 40500 && overweightFinished.nominalWeightG === 1000, '40 paquetes conservan quantity 40, peso neto real 40.500 g y nominal 1.000 g por paquete')
+  pass(overweightDerivedLot.quantities.central === 40 && overweightDerivedLot.processingPhysicalWeightGRemaining === 40500 && overweightDerivedLot.processingPackageWeightLedger.measuredNetWeightG === 40500 && overweightDerivedLot.processingPackageWeightLedger.packageCount === 40, 'el lote terminado conserva 40 paquetes y 40.500 g físicos; los 500 g de merma comercial ya están incluidos')
+  pass(overweightBatch.inputWeightG === 41050 && overweightBatch.destinations.reduce((sum, row) => sum + row.netWeightG, 0) === 41050 && overweightDiscardMove.physicalWeightG === 550, 'conciliación física 41.050 = 40.500 terminado + 550 descarte real, sin doble destino por sobrepeso')
+  pass(overweightFinished.costCents === overweightDerivedLot.processingCostCentsRemaining && overweightBatch.destinations.reduce((sum, row) => sum + row.costCents, 0) === overweightBatch.sourceCostCents, 'el costo de los 500 g permanece asignado al producto terminado y el costo total se distribuye una sola vez')
+
   const batchId = `${prefix}-valid-batch`
   const payload = validPayload(batchId)
   const confirmed = await run(ids.admin, 'confirmProcessingBatch', payload, `${prefix}-valid-batch-op`)

@@ -1,3 +1,5 @@
+import { getFirebaseEmulatorHost, isFirebaseEmulatorEnabled } from './firebaseEmulator'
+
 export type DiagnosticCategory = 'render' | 'asynchronous' | 'permission' | 'synchronization' | 'data' | 'unknown'
 export type DiagnosticSource = 'react_render' | 'window_error' | 'unhandled_rejection' | 'handled_operation_failure'
 
@@ -250,8 +252,8 @@ export async function flushDiagnosticQueue() {
     if (!context || context.restaurantId !== diagnosticSession.restaurantId || context.auth.currentUser?.uid !== diagnosticSession.uid) return
     const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
     const functions = getFunctions(context.app, 'us-central1')
-    if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !functionsEmulatorConnected) {
-      connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+    if (isFirebaseEmulatorEnabled() && !functionsEmulatorConnected) {
+      connectFunctionsEmulator(functions, getFirebaseEmulatorHost(), 5001)
       functionsEmulatorConnected = true
     }
     const call = httpsCallable(functions, 'manageSanJoseDiagnostics')
@@ -287,8 +289,8 @@ async function callDiagnosticFunction<T>(payload: Record<string, unknown>): Prom
   if (!context) throw new Error('Firebase no está configurado.')
   const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
   const functions = getFunctions(context.app, 'us-central1')
-  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !functionsEmulatorConnected) {
-    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+  if (isFirebaseEmulatorEnabled() && !functionsEmulatorConnected) {
+    connectFunctionsEmulator(functions, getFirebaseEmulatorHost(), 5001)
     functionsEmulatorConnected = true
   }
   const call = httpsCallable<Record<string, unknown>, T>(functions, 'manageSanJoseDiagnostics')

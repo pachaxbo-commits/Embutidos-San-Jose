@@ -9,6 +9,7 @@
     "emulators": "firebase emulators:start --only \"firestore,auth,functions\" --project demo-pachax-audit",
     "build": "node scripts/build-app.mjs web",
     "build:android": "node scripts/build-app.mjs android",
+    "build:android:qa": "node scripts/build-app.mjs android-qa",
     "test:build-config": "node scripts/test-firebase-build-config.mjs",
     "typecheck": "tsc -b",
     "lint": "eslint .",

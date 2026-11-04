@@ -108,12 +108,12 @@ export function ProcessingWalkthrough({ open, onClose, onFormStepChange }: { ope
 
 const CONTEXTUAL_HELP: Record<string, string> = {
   sourceQuantity: 'Ingrese los kg que realmente retiró de este lote. Esa es la cantidad que el servidor descontará del inventario.',
-  netWeight: 'Peso neto total del alimento de todos los sachets, sin bolsas. El sistema no descuenta la tara.',
-  nominalWeight: 'Peso comercial por sachet; es informativo y nunca reemplaza el peso real total.',
+  netWeight: 'Peso neto REAL total del alimento de todos los sachets, sin bolsas. No es el peso de un solo sachet y el sistema no descuenta la tara.',
+  nominalWeight: 'Peso nominal = peso comercial declarado de UN paquete (por ejemplo, 1.000 g). El sistema calcula el nominal total multiplicándolo por la cantidad; no es el peso real.',
   weightBasis: 'Peso total medido es una medición física neta. Promedio documentado requiere respaldo; esta opción no calcula el peso.',
   discard: 'Registre solo alimento físicamente descartado, con peso real y motivo. No es una diferencia para ajustar.',
   expiry: 'Vencimiento asignado al producto terminado. Puede superar al granel; debe ser igual o posterior al embolsado.',
-  difference: 'La diferencia debe ser exactamente 0 g. Revise el pesaje y los destinos físicos, no ajuste cifras para habilitar Confirmar.',
+  difference: 'El peso del proceso pendiente es entrada real menos destinos físicos y debe quedar en 0 g. La merma por sobrepeso no cobrado se calcula aparte; queda dentro del sachet y no se agrega otra vez a los destinos.',
 }
 
 export function ProcessingContextHelp({ topic }: { topic: keyof typeof CONTEXTUAL_HELP }) {
