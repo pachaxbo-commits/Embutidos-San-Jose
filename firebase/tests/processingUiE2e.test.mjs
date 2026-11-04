@@ -13,7 +13,6 @@ const req = createRequire(new URL('../../functions/package.json', import.meta.ur
 const { initializeApp } = req('firebase-admin/app')
 const { getAuth } = req('firebase-admin/auth')
 const { getFirestore } = req('firebase-admin/firestore')
-const { processCommand } = req('./operations.cjs')
 const app = initializeApp({ projectId: 'demo-pachax-audit' }, 'processing-ui-e2e')
 const auth = getAuth(app)
 const db = getFirestore(app)
@@ -52,6 +51,17 @@ async function waitForVite() {
   throw new Error('Vite QA server did not become ready.')
 }
 
+async function waitForOperation(ref, expectedStatus = 'confirmed') {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const snapshot = await ref.get()
+    const operation = snapshot.data()
+    if (operation?.status === expectedStatus) return operation
+    if (operation?.status === 'rejected') throw new Error(`La operación ${ref.id} fue rechazada: ${operation.error || 'sin detalle'}`)
+    await delay(250)
+  }
+  throw new Error(`La operación ${ref.id} no llegó al estado ${expectedStatus} desde el trigger de Emulator.`)
+}
+
 try {
   const qaAccounts = [
     { uid, email, role: 'admin', name: 'Administración QA' },
@@ -69,6 +79,10 @@ try {
   await root.collection('distProducts').doc('qa-source-product').set({ id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', unitType: 'kg', active: true, productionCost: 5 })
   await root.collection('distProducts').doc('qa-sachet-product').set({ id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 1 kg', unitType: 'package', active: true, productionCost: 999 })
   await root.collection('distProducts').doc('qa-assessment-product').set({ id: 'qa-assessment-product', restaurantId: 'sanjose', name: 'QA Paquete para evaluación', unitType: 'package', active: true, productionCost: null })
+  await root.collection('distProducts').doc('qa-quantity-source').set({ id: 'qa-quantity-source', restaurantId: 'sanjose', name: 'QA Mortadela a granel', category: 'Granel', unitType: 'kg', active: true, productionCost: 5 })
+  await root.collection('distProducts').doc('qa-quantity-target').set({ id: 'qa-quantity-target', restaurantId: 'sanjose', name: 'QA Mortadela jamonada porcionada 1 kg', category: 'Otros', presentation: 'Bolsa 1 kg', unitType: 'package', documentedPackageWeightKg: 1, active: true, productionCost: 999 })
+  await root.collection('distLots').doc('qa-quantity-source-lot').set({ id: 'qa-quantity-source-lot', restaurantId: 'sanjose', productId: 'qa-quantity-source', productName: 'QA Mortadela a granel', unitType: 'kg', lotCode: 'ORIGEN-QA-CANTIDAD', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 99 } })
+  await root.collection('distBalances').doc('central__qa-quantity-source').set({ id: 'central__qa-quantity-source', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-quantity-source', unitType: 'kg', quantity: 99 })
   await root.collection('distLots').doc('qa-source-lot').set({ id: 'qa-source-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-ORIGEN-2KG', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 2, reviewHold: 0 } }, processingReview: { caseId: 'qa-processing-case', revision: 0, status: 'pending_review', updatedAt: date, updatedBy: uid } })
   await root.collection('distLots').doc('qa-other-lot').set({ id: 'qa-other-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-1KG', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 1 } }, processingReview: { caseId: 'qa-other-case', revision: 0, status: 'authorized_for_repack', updatedAt: date, updatedBy: uid } })
   await root.collection('distLots').doc('qa-free-lot').set({ id: 'qa-free-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-LIBRE-1KG', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
@@ -115,8 +129,8 @@ try {
     sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración', dispatchId: '',
     lines: [{ productId: voidProductId, quantity: 1, actualUnitPrice: 45 }], cashAmount: 0, qrAmount: 45, creditAmount: 0, paymentKind: 'qr',
   } })
-  await processCommand(db, voidOperationRef)
-  assert.equal((await voidOperationRef.get()).data()?.status, 'confirmed', 'venta QR fixture de sachet creada por la operación real de Emulator')
+  await waitForOperation(voidOperationRef)
+  assert.equal((await voidOperationRef.get()).data()?.status, 'confirmed', 'venta QR fixture de sachet creada por el trigger real de Emulator')
   await root.collection('distQrVerifications').doc(`sale_${voidSaleOperationId}`).set({
     id: `sale_${voidSaleOperationId}`, restaurantId: 'sanjose', routeId: 'administracion', sourceType: 'sale',
     sourceId: voidSaleOperationId, sourceRevision: 0, amount: 45, reference: 'QA-QR-IN-2026-001', verifiedBy: uid, verifiedAt: date,
@@ -287,8 +301,7 @@ try {
     destinations: [{ id: 'finished', kind: 'finished', productId: releaseUiTargetId, commercialQuantity: 4, netWeightG: 1000, nominalWeightG: 250, weightBasis: 'measured_total', lotCode: releaseUiLotCode, manufacturedOn: '2026-10-20', packagedOn: boliviaDayKey, expiresOn: safeExpiry }],
     packagingMaterials: [], costComponents: [],
   } })
-  await processCommand(db, releaseUiBatchOperation)
-  const releaseUiBatchResult = (await releaseUiBatchOperation.get()).data()
+  const releaseUiBatchResult = await waitForOperation(releaseUiBatchOperation)
   assert.equal(releaseUiBatchResult.status, 'confirmed', `synthetic batch for release UI: ${releaseUiBatchResult.error || ''}`)
   const releaseUiLotId = releaseUiBatchResult.result.derivedLots.find(row => row.destinationKind === 'finished').lotId
   const releaseUiMovementCount = (await root.collection('distStockMovements').get()).size
@@ -318,6 +331,57 @@ try {
   console.log('PASS release UI: Administración libera batch existente sin autorización de Calidad; UI confirma y conserva stock/trazabilidad')
   await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html')
   await page.getByRole('heading', { name: 'Sacheteado y Embolsado' }).waitFor()
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: 'Nueva elaboración', exact: true }).click()
+  await page.locator('[data-processing-anchor="source-product"]').selectOption('qa-quantity-source')
+  await page.getByRole('checkbox', { name: 'Seleccionar lote ORIGEN-QA-CANTIDAD' }).check()
+  await page.getByLabel('Kg reales utilizados').fill('99')
+  await page.getByRole('button', { name: 'Continuar', exact: true }).click()
+  await page.getByLabel('SKU terminado existente').selectOption('qa-quantity-target')
+  await page.getByLabel(/Cantidad comercial/).fill('1')
+  await page.getByLabel('Peso neto real medido (g)').first().fill('99000')
+  await page.getByLabel('Peso nominal (g, informativo)').fill('1000')
+  await page.getByLabel('Lote nuevo').fill('QA-CANTIDAD-99')
+  await page.locator('[data-processing-anchor="expiry-date"] input[type="date"]').fill('2026-12-31')
+  assert.equal(await page.getByText('Inventario que se creará: 1 paquete', { exact: true }).count(), 1, 'la categoría Otros no cambia la unidad package del SKU')
+  const quantityWarningText = 'Registraste 1 paquete de 1.000 g, pero el peso neto real total es 99.000 g.'
+  await page.getByRole('alert').filter({ hasText: quantityWarningText }).waitFor()
+  await page.getByRole('button', { name: 'Continuar', exact: true }).click()
+  await page.getByRole('button', { name: 'Continuar', exact: true }).click()
+  await page.getByText('Masa conciliada exactamente: 0 g de diferencia.', { exact: true }).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Confirmar elaboración', exact: true }).isDisabled(), true, 'la cantidad absurda bloquea confirmación aunque la masa concilie')
+  await page.getByText(quantityWarningText, { exact: false }).first().waitFor()
+  await page.getByRole('button', { name: '2. Producción', exact: true }).click()
+  await page.getByLabel(/Cantidad comercial/).fill('99')
+  await page.getByText('Inventario que se creará: 99 paquetes', { exact: true }).waitFor()
+  assert.equal(await page.getByRole('alert').filter({ hasText: quantityWarningText }).count(), 0, 'la advertencia desaparece al corregir la cantidad')
+  await page.getByRole('button', { name: 'Continuar', exact: true }).click()
+  await page.getByRole('button', { name: 'Continuar', exact: true }).click()
+  const resultingInventory = page.locator('[data-processing-anchor="inventory-result"]')
+  await resultingInventory.getByText('99 paquetes', { exact: true }).waitFor()
+  await resultingInventory.getByText('Peso físico total: 99.000 kg', { exact: true }).waitFor()
+  await resultingInventory.getByText('Peso nominal: 1.000 g por paquete', { exact: true }).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Confirmar elaboración', exact: true }).isEnabled(), true)
+  await page.getByRole('button', { name: 'Confirmar elaboración', exact: true }).click()
+  const quantityConfirmation = page.getByRole('status').filter({ hasText: /Elaboración .* confirmada por el servidor/ })
+  try { await quantityConfirmation.waitFor({ timeout: 30000 }) }
+  catch (error) { throw new Error(`La elaboración de cantidad QA no se confirmó. alertas=${JSON.stringify(await page.getByRole('alert').allTextContents())}; status=${JSON.stringify(await page.getByRole('status').allTextContents())}; pantalla=${(await page.locator('#root').innerText()).slice(-2500)}`, { cause: error }) }
+  const confirmedBatchId = (await quantityConfirmation.innerText()).match(/Elaboración (.+) confirmada por el servidor/)?.[1]
+  assert.ok(confirmedBatchId, 'el estado identifica la elaboración confirmada por el servidor')
+  const quantityBatch = (await root.collection('distProcessingBatches').doc(confirmedBatchId).get()).data()
+  assert.ok(quantityBatch, 'elaboración sintética confirmada por el servidor')
+  assert.equal(quantityBatch.destinations.find(row => row.kind === 'finished').commercialQuantity, 99)
+  assert.equal(quantityBatch.destinations.find(row => row.kind === 'finished').commercialUnit, 'package')
+  const quantityOutput = quantityBatch.result.derivedLots.find(row => row.destinationKind === 'finished')
+  const quantityLot = (await root.collection('distLots').doc(quantityOutput.lotId).get()).data()
+  assert.equal(quantityLot.quantities.central, 99)
+  assert.equal(quantityLot.processingPhysicalWeightGRemaining, 99000)
+  assert.equal(quantityLot.processingPackageWeightLedger.packageCount, 99)
+  assert.equal(quantityLot.processingPackageWeightLedger.measuredNetWeightG, 99000)
+  assert.equal((await root.collection('distBalances').doc('central__qa-quantity-target').get()).data().quantity, 99)
+  assert.equal((await root.collection('distProducts').doc('qa-quantity-target').get()).data().category, 'Otros')
+  console.log('PASS Cantidad comercial: UI bloquea 1 paquete/99.000 g; al corregir a 99 crea 99 paquetes con 99.000 g, aunque category=Otros')
 
   await page.setViewportSize({ width: 360, height: 800 })
   await page.getByRole('button', { name: 'Nueva elaboración', exact: true }).click()

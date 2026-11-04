@@ -1,4 +1,4 @@
-import type { DistLot } from '../types.ts'
+import type { DistLot, UnitType } from '../types.ts'
 import type { PackageWeightLedger, ProcessingAvailabilityInput, ProcessingBatch, ProcessingCostComponent, ProcessingDestination, ProcessingSourceAllocation, ProcessingStatus } from './processing.ts'
 
 export class ProcessingValidationError extends Error {
@@ -40,6 +40,19 @@ export function calculateNominalWeightSummary(commercialQuantity: number, nomina
     overweightMermaG: Math.max(netWeightG - nominalTotalWeightG, 0),
     averageNetWeightG: netWeightG / commercialQuantity,
   }
+}
+
+/**
+ * Flags an implausibly heavy package/unit count before processing can be
+ * confirmed. The nominal weight is informational; it never derives quantity.
+ */
+export function isSuspiciousProcessingQuantity(unitType: UnitType, commercialQuantity: number, nominalWeightG: number, netWeightG: number): boolean {
+  if (unitType === 'kg' || !Number.isSafeInteger(commercialQuantity) || commercialQuantity <= 0
+      || !Number.isSafeInteger(nominalWeightG) || nominalWeightG <= 0
+      || !Number.isSafeInteger(netWeightG) || netWeightG <= 0) return false
+  const nominalTotalWeightG = commercialQuantity * nominalWeightG
+  if (!Number.isSafeInteger(nominalTotalWeightG)) return false
+  return netWeightG > nominalTotalWeightG * 2
 }
 
 /** Derive informative overweight merma from already-recorded batch facts. Never a physical destination or stock movement. */

@@ -29,7 +29,7 @@ import {
   type Unsubscribe,
   type WriteBatch,
 } from 'firebase/firestore'
-import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord, ProcessingRepackRecord, ProcessingEvidenceRecord, ProcessingQualityAuthorization } from '../domain/processing'
+import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord, ProcessingRepackRecord, ProcessingEvidenceRecord, ProcessingQualityAuthorization, RectifyProcessingCommercialUnitInput } from '../domain/processing'
 import { validateRepackOperationContract } from '../domain/processing'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
 import { getFirebaseEmulatorHost, isFirebaseEmulatorEnabled } from '../../../lib/firebaseEmulator'
@@ -258,6 +258,11 @@ export async function getProcessingOperationState(operationId: string, expectedT
 /** Entrada oficial al backend; nunca modifica lotes ni balances desde el cliente. */
 export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput, operationId: string): Promise<unknown> {
   return submitOperation('confirmProcessingBatch', input, operationId)
+}
+
+/** Corrección administrativa transaccional que conserva el peso y costo del batch original. */
+export async function rectifyProcessingCommercialUnit(input: RectifyProcessingCommercialUnitInput, operationId: string): Promise<unknown> {
+  return submitOperation('rectifyProcessingCommercialUnit', input, operationId)
 }
 
 export async function releaseProcessingLot(input: { lotId: string; reason: string; authorizationReference?: string }, operationId: string): Promise<unknown> {
