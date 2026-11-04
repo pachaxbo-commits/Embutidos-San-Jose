@@ -32,6 +32,7 @@ import {
 import type { ProcessingBatch, ProcessingReservation, ConfirmProcessingBatchInput, RecordProcessingReviewInput, RepackOperationInput, ProcessingReviewRecord, ProcessingRepackRecord, ProcessingEvidenceRecord, ProcessingQualityAuthorization } from '../domain/processing'
 import { validateRepackOperationContract } from '../domain/processing'
 import { assertFirebaseWritesAllowed, getFirebaseContext } from '../../../lib/firebase'
+import { getFirebaseEmulatorHost, isFirebaseEmulatorEnabled } from '../../../lib/firebaseEmulator'
 import { centralBalanceId, resolveVoidedSaleReceiptSnapshot, round2, toDayKey } from '../domain/engine'
 import type {
   DistBalance,
@@ -278,8 +279,8 @@ export async function uploadProcessingEvidence(input: { lotId: string; reservati
   const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
   const objectPath = `processing-evidence/sanjose/${input.location}/${input.reservationId}/${input.reviewCaseId}/${input.reviewRevision}/${context.uid}/${input.evidenceId}`
   const storage = getStorage(context.app)
-  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !processingStorageEmulatorConnected) {
-    connectStorageEmulator(storage, window.location.hostname || '127.0.0.1', 9199)
+  if (isFirebaseEmulatorEnabled() && !processingStorageEmulatorConnected) {
+    connectStorageEmulator(storage, getFirebaseEmulatorHost(), 9199)
     processingStorageEmulatorConnected = true
   }
   const object = storageRef(storage, objectPath)
@@ -1613,8 +1614,8 @@ export async function listDistributorPurchaseSuppliers(): Promise<Array<{ id: st
   if (!context) throw new Error('Firebase no está configurado.')
   const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
   const functions = getFunctions(context.app, 'us-central1')
-  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !distributorSupplierFunctionsEmulatorConnected) {
-    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+  if (isFirebaseEmulatorEnabled() && !distributorSupplierFunctionsEmulatorConnected) {
+    connectFunctionsEmulator(functions, getFirebaseEmulatorHost(), 5001)
     distributorSupplierFunctionsEmulatorConnected = true
   }
   const call = httpsCallable<void, Array<{ id: string; name: string }>>(functions, 'listDistributorPurchaseSuppliers')

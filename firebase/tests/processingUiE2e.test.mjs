@@ -363,12 +363,13 @@ try {
   assert.equal(await walkthrough.count(), 0, 'Cerrar elimina el walkthrough')
   await page.getByRole('button', { name: 'Tutorial', exact: true }).click()
   assert.match(await page.getByRole('dialog', { name: /Tutorial de sacheteado/ }).innerText(), /Paso 1 de 20/i, 'el tutorial se puede reabrir desde el inicio')
+  await page.locator('[data-processing-anchor="source-product"]').waitFor()
   await page.getByRole('button', { name: 'Cerrar tutorial' }).click()
   assert.equal(await page.evaluate(key => localStorage.getItem(key), walkthroughDraftKey), walkthroughDraftBefore, 'el tutorial no cambia ningún valor del borrador local')
   assert.equal((await root.collection('distOperations').get()).size, operationsBeforeWalkthrough, 'el tutorial no crea operaciones ni confirma movimientos')
   console.log('PASS: walkthrough interactivo de 20 pasos; navegación, anchors, flecha, scroll y tooltips dentro de 320/360/390/414/768/1440 px; no cambia borrador ni crea operaciones')
 
-  await page.getByLabel('Producto a granel · unidad kg').selectOption('qa-source-product')
+  await page.locator('[data-processing-anchor="source-product"]').selectOption('qa-source-product')
   await page.getByRole('checkbox', { name: 'Seleccionar lote QA-LIBRE-1KG' }).check()
   await page.getByLabel('Kg reales utilizados').fill('41.05')
   await page.getByRole('button', { name: 'Continuar', exact: true }).click()
@@ -398,8 +399,9 @@ try {
   await page.getByText('Masa conciliada exactamente: 0 g de diferencia.', { exact: true }).waitFor()
   assert.equal((await root.collection('distOperations').get()).size, operationsBeforeWalkthrough, 'la vista del resumen no confirma ni crea operaciones')
   console.log('PASS: Playwright UI 41.050/40.500/550 g; sobrepeso 500 g y merma informativa 1.050 g se separan de la masa y no crean operaciones')
+  await page.getByRole('button', { name: '1. Origen', exact: true }).click()
   if (process.env.SANJOSE_WALKTHROUGH_ONLY !== 'true') {
-  await page.getByLabel('Producto a granel · unidad kg').selectOption('qa-source-product')
+  await page.locator('[data-processing-anchor="source-product"]').selectOption('qa-source-product')
   await page.getByRole('checkbox', { name: 'Seleccionar lote QA-LIBRE-1KG' }).check()
   const mobileKgInput = page.getByLabel('Kg reales utilizados')
   assert.equal(await mobileKgInput.getAttribute('inputmode'), 'decimal', 'el campo de kilogramos solicita teclado decimal en Android')
@@ -663,7 +665,9 @@ try {
   await page.getByRole('button', { name: 'Reactivar', exact: true }).click()
   await page.getByText('Activo', { exact: true }).last().waitFor({ timeout: 30000 })
   await page.locator('[role="dialog"][aria-label="Proveedores"]').getByRole('button', { name: 'Cerrar', exact: true }).last().click()
-  await page.getByRole('button', { name: 'Nueva compra', exact: true }).click()
+  // El título del formulario fue actualizado a «Registrar compra a proveedor»;
+  // conservar el recorrido con el nombre visible actual, sin cambiar Compras.
+  await page.getByRole('button', { name: 'Registrar compra a proveedor', exact: true }).click()
   await page.getByLabel('Tipo de comprobante').selectOption('invoice')
   await page.getByLabel('Número de comprobante').fill('0007-A')
   assert.equal(await page.getByLabel('Número de comprobante').inputValue(), '0007-A', 'el formulario de compra conserva ceros iniciales y series en el comprobante')

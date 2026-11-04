@@ -33,6 +33,7 @@ import {
 } from 'firebase/firestore'
 import type { RestaurantMember, UserRole } from '../types'
 import { TenantContextService } from '../services/tenantService'
+import { getFirebaseEmulatorHost, isFirebaseEmulatorEnabled } from './firebaseEmulator'
 
 interface FirebaseWebConfig {
   apiKey: string
@@ -134,7 +135,7 @@ async function getFirebaseRuntime(): Promise<FirebaseRuntime | null> {
       const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig)
       let db: Firestore
 
-      const useEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
+      const useEmulator = isFirebaseEmulatorEnabled()
 
       // La persistencia local tiene que configurarse ANTES de la primera
       // llamada a getFirestore: si se pide la instancia primero, Firestore
@@ -162,7 +163,7 @@ async function getFirebaseRuntime(): Promise<FirebaseRuntime | null> {
       const auth = getAuth(app)
 
       if (useEmulator) {
-        const host = window.location.hostname || 'localhost'
+        const host = getFirebaseEmulatorHost()
         // Custom ports for PACHAX: 8085 for Firestore, 9095 for Auth
         connectFirestoreEmulator(db, host, 8085)
         connectAuthEmulator(auth, `http://${host}:9095`, { disableWarnings: true })
@@ -216,8 +217,8 @@ function createSecondaryAuth(label: string): { app: FirebaseApp; auth: Auth } | 
   const app = initializeApp(firebaseConfig, `${label}-${Date.now()}`)
   const auth = getAuth(app)
 
-  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true') {
-    const host = window.location.hostname || 'localhost'
+  if (isFirebaseEmulatorEnabled()) {
+    const host = getFirebaseEmulatorHost()
     connectAuthEmulator(auth, `http://${host}:9095`, { disableWarnings: true })
   }
 
@@ -337,8 +338,8 @@ async function callMemberAdministration<TResult>(payload: Record<string, unknown
   if (!context) throw new Error('Firebase no esta configurado.')
   const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
   const functions = getFunctions(context.app, 'us-central1')
-  if (import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && !functionsEmulatorConnected) {
-    connectFunctionsEmulator(functions, window.location.hostname || 'localhost', 5001)
+  if (isFirebaseEmulatorEnabled() && !functionsEmulatorConnected) {
+    connectFunctionsEmulator(functions, getFirebaseEmulatorHost(), 5001)
     functionsEmulatorConnected = true
   }
   const call = httpsCallable<Record<string, unknown>, TResult>(functions, 'changeSanJoseMemberPassword')
