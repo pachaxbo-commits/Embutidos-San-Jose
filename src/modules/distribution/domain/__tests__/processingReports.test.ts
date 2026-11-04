@@ -18,6 +18,16 @@ assertEqual(filterProcessingBatches([batch], { from: '2026-10-30' }).length, 0)
 const production = buildProcessingBatchReport([batch])
 assertEqual(production.rows.length, 1)
 assertEqual(production.rows[0][7], '0 g')
+const weightBusinessCase: ProcessingBatch = { ...batch, id: 'batch-weight-business-case', inputWeightG: 41050, destinations: [
+  { ...batch.destinations[0], commercialQuantity: 40, nominalWeightG: 1000, netWeightG: 40500 },
+  { ...batch.destinations[0], id: 'discard-550', kind: 'discard', productId: undefined, commercialQuantity: 0, nominalWeightG: undefined, netWeightG: 550, costCents: 0 },
+] }
+const weightBusinessReport = buildProcessingBatchReport([weightBusinessCase])
+assertEqual(weightBusinessReport.rows[0][6], '41.050 kg', 'reporta salida física total de 40.500 g terminado y 550 g descarte')
+assertEqual(weightBusinessReport.rows[0][7], '0 g', 'balance físico concilia sin sumar merma comercial')
+assertEqual(weightBusinessReport.rows[0][8], '500 g · permanece dentro del peso/costo del terminado', 'reporta sobrepeso no cobrado sin deducción adicional')
+assertEqual(weightBusinessReport.rows[0][9], '550 g', 'reporta el descarte físico separadamente')
+assertMatch(String(weightBusinessReport.rows[0][10]), /^1050 g · informativa, no genera movimientos adicionales/, 'merma total se muestra solo informativa y no duplica movimientos')
 const trace = buildProcessingLotTraceReport([batch], { outputLot: 'DER-1' })
 assertMatch(String(trace.rows[0][8]), /asignación contable, no identificación física/)
 assertEqual(trace.rows[0][0], 'DER-1')

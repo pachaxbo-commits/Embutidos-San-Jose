@@ -1,5 +1,6 @@
 import type { ProcessingBatch, ProcessingRepackRecord, ProcessingReviewRecord } from './processing'
 import type { DistLot, DistProduct } from '../types'
+import { processingOverweightMermaG } from './processingDomain.ts'
 
 export interface ProcessingReportFilters {
   from?: string
@@ -86,13 +87,15 @@ export function filterProcessingRepackings(rows: ProcessingRepackRecord[], filte
 export function buildProcessingBatchReport(rows: ProcessingBatch[], products: DistProduct[] = []) {
   return {
     name: 'Elaboraciones de sacheteado',
-    headers: ['Fecha', 'Tipo', 'Producto de origen', 'Lotes de origen y aporte contable', 'Entrada neta', 'Destinos y presentaciones medidas', 'Salida neta documentada', 'Diferencia', 'Costo histórico de origen', 'Materiales (informativos)', 'Responsable', 'Almacén', 'Estado'],
+    headers: ['Fecha', 'Tipo', 'Producto de origen', 'Lotes de origen y aporte contable', 'Entrada neta', 'Destinos y presentaciones medidas', 'Salida neta documentada', 'Peso del proceso pendiente', 'Merma por sobrepeso no cobrado (informativa)', 'Descarte físico real', 'Merma total informativa (sin doble descuento)', 'Costo histórico de origen', 'Materiales (informativos)', 'Responsable', 'Almacén', 'Estado'],
     rows: rows.map(normalizeProcessingReportBatch).map(batch => {
       const outputWeight = batch.destinations.reduce((sum, row) => sum + (Number.isSafeInteger(row.netWeightG) ? row.netWeightG : 0), 0)
+      const overweightMermaG = processingOverweightMermaG(batch.destinations)
+      const physicalDiscardG = batch.destinations.reduce((sum, row) => sum + (row.kind === 'discard' && Number.isSafeInteger(row.netWeightG) ? row.netWeightG : 0), 0)
       const source = batch.sourceAllocations.map(row => `${row.lotCode || row.lotId}: ${kg(row.measuredNetWeightG)} · ${money(row.historicalCostCents)}`).join(' | ')
       const destinations = batch.destinations.map(row => `${productName(row.productId, products)} (${row.kind}) · lote ${row.lotCode || 'sin código'} · ${row.commercialQuantity} ${row.commercialUnit || ''} · ${kg(row.netWeightG)} netos · costo histórico ${money(row.costCents)}`).join(' | ')
       const materials = batch.packagingMaterials.map(row => `${row.description || 'Material'}: ${(row.quantityMilli / 1000).toFixed(3)} usados; ${(row.damagedQuantityMilli / 1000).toFixed(3)} dañados; ${money(row.costCents)} informativo`).join(' | ')
-      return [dateKey(batch.processingDate || batch.dayKey || batch.createdAt), processName[batch.processType], batch.sourceProductName || productName(batch.sourceProductId, products), source, kg(batch.inputWeightG), destinations, kg(outputWeight), `${batch.inputWeightG - outputWeight} g`, money(batch.sourceCostCents), materials || 'Sin materiales', batch.responsibleName, batch.sourceLocation, batchStatusName[batch.status]]
+      return [dateKey(batch.processingDate || batch.dayKey || batch.createdAt), processName[batch.processType], batch.sourceProductName || productName(batch.sourceProductId, products), source, kg(batch.inputWeightG), destinations, kg(outputWeight), `${batch.inputWeightG - outputWeight} g`, `${overweightMermaG} g · permanece dentro del peso/costo del terminado`, `${physicalDiscardG} g`, `${overweightMermaG + physicalDiscardG} g · informativa, no genera movimientos adicionales`, money(batch.sourceCostCents), materials || 'Sin materiales', batch.responsibleName, batch.sourceLocation, batchStatusName[batch.status]]
     }),
   }
 }

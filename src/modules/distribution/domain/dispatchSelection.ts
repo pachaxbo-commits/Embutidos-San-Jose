@@ -1,4 +1,5 @@
 import type { DistLot, DistProduct } from '../types'
+import { processingDispatchIneligibility } from './processingCommercialAvailability.ts'
 
 const spanishSort = new Intl.Collator('es', { sensitivity: 'base', numeric: true })
 
@@ -97,6 +98,7 @@ export interface DispatchLotIssue {
   key: string
   lineId: string
   allocationId?: string
+  severity: 'incomplete' | 'error'
   message: string
 }
 
@@ -113,16 +115,8 @@ export function dispatchLotIneligibility(lot: DistLot, productId: string, locati
   const pendingOrigin = Number(lot.pendingOrigins?.[location]?.reduce((sum, row) => sum + Number(row.quantity || 0), 0) || 0)
   if (pendingOrigin > 0) return 'tiene origen físico pendiente de revisión'
 
-  if (lot.processingCommercialBlocked) {
-    const unavailable = lot.processingUnavailable?.[location]
-    const isFinishedAndTraceable = lot.processingDestinationKind === 'finished'
-      && Array.isArray(lot.processingByLocation?.[location]?.segments)
-      && lot.processingByLocation[location].segments.length > 0
-      && !Number(unavailable?.courtesy || 0)
-      && !Number(unavailable?.repackPending || 0)
-      && !Number(unavailable?.reviewHold || 0)
-    if (!isFinishedAndTraceable) return 'proviene de sacheteado y todavía está bloqueado para despacho por trazabilidad o revisión'
-  }
+  const processingReason = processingDispatchIneligibility(lot, location, today)
+  if (processingReason) return processingReason
   return null
 }
 
@@ -142,10 +136,11 @@ export function validateDispatchLotDrafts(
     const quantity = Number(line.quantity)
     const dispatchMerma = product.unitType === 'kg' ? Number(line.dispatchMerma || 0) : 0
     const target = roundQuantity((Number.isFinite(quantity) ? quantity : 0) + (Number.isFinite(dispatchMerma) ? dispatchMerma : 0))
-    const addIssue = (allocationId: string | undefined, message: string) => issues.push({
+    const addIssue = (allocationId: string | undefined, message: string, severity: DispatchLotIssue['severity'] = 'incomplete') => issues.push({
       key: `${line.id}:${allocationId || 'line'}:${issues.length}`,
       lineId: line.id,
       ...(allocationId ? { allocationId } : {}),
+      severity,
       message,
     })
 
@@ -171,12 +166,12 @@ export function validateDispatchLotDrafts(
 
       const lot = lotById.get(part.lotId)
       if (!lot) {
-        addIssue(part.id, `Producto ${product.name} · lote ${lotLabel}: ya no aparece en inventario. Actualiza la pantalla y selecciona otro lote.`)
+        addIssue(part.id, `Producto ${product.name} · lote ${lotLabel}: ya no aparece en inventario. Actualiza la pantalla y selecciona otro lote.`, 'error')
         continue
       }
 
       const reason = dispatchLotIneligibility(lot, product.id, location, today)
-      if (reason) addIssue(part.id, `Producto ${product.name} · lote ${lot.lotCode || lot.id}: no se puede despachar porque ${reason}.`)
+      if (reason) addIssue(part.id, `Producto ${product.name} · lote ${lot.lotCode || lot.id}: no se puede despachar porque ${reason}.`, 'error')
 
       const entered = Number(part.quantity)
       if (!Number.isFinite(entered) || !(entered > 0)) {
@@ -193,14 +188,14 @@ export function validateDispatchLotDrafts(
       const available = roundQuantity(Number(lot.quantities[location]) || 0)
       if (entered > available) {
         const excess = roundQuantity(entered - available)
-        addIssue(firstAllocationByLot.get(lotId), `Producto ${product.name} · lote ${lot.lotCode || lot.id}: ingresado ${entered} ${product.unitType}, disponible ${available} ${product.unitType}; exceso ${excess} ${product.unitType}. Reduce la cantidad o elige otro lote.`)
+        addIssue(firstAllocationByLot.get(lotId), `Producto ${product.name} · lote ${lot.lotCode || lot.id}: ingresado ${entered} ${product.unitType}, disponible ${available} ${product.unitType}; exceso ${excess} ${product.unitType}. Reduce la cantidad o elige otro lote.`, 'error')
       }
     }
 
     const duplicates = [...new Set(selectedIds)].filter(id => selectedIds.filter(value => value === id).length > 1)
     for (const lotId of duplicates) {
       const lot = lotById.get(lotId)
-      addIssue(firstAllocationByLot.get(lotId), `Producto ${product.name} · lote ${lot?.lotCode || lotId}: está repetido. Deja una sola asignación para cada lote.`)
+      addIssue(firstAllocationByLot.get(lotId), `Producto ${product.name} · lote ${lot?.lotCode || lotId}: está repetido. Deja una sola asignación para cada lote.`, 'error')
     }
 
     const assigned = roundQuantity([...totalsByLot.values()].reduce((sum, value) => sum + value, 0))
@@ -208,7 +203,7 @@ export function validateDispatchLotDrafts(
       const difference = roundQuantity(Math.abs(target - assigned))
       addIssue(undefined, assigned < target
         ? `Producto ${product.name}: faltan distribuir ${difference} ${product.unitType}. Asignado ${assigned} de ${target}.`
-        : `Producto ${product.name}: sobran ${difference} ${product.unitType} asignados. Asignado ${assigned} de ${target}.`)
+        : `Producto ${product.name}: sobran ${difference} ${product.unitType} asignados. Asignado ${assigned} de ${target}.`, assigned < target ? 'incomplete' : 'error')
     }
   }
 

@@ -85,7 +85,7 @@ export function ProcessingReportsView({ session, products, lots, locationOptions
       : mode === 'trace'
         ? buildProcessingLotTraceReport(filteredBatches, { productId, outputLot }, products, lots)
         : { ...buildProcessingQualityReport(reviews, repackings, products, lots), rows: qualityRows }
-    const locationColumn = mode === 'batches' ? 11 : mode === 'trace' ? 11 : 14
+    const locationColumn = mode === 'batches' ? 14 : mode === 'trace' ? 11 : 14
     const readableLocation = (value: unknown) => value === 'central'
       ? 'Almacén central'
       : locationOptions.find(option => value === `warehouse__${option.id}`)?.name || String(value ?? 'No registrado')

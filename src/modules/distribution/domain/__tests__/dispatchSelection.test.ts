@@ -76,6 +76,20 @@ check(dispatchLotIneligibility(ineligible, pork.id, 'central', '2026-10-30')?.in
 const missingLot = validateDispatchLotDrafts([{ ...validDraft[0], allocations: [{ id: 'missing', lotId: 'deleted-lot', quantity: '3' }] }], [pork], [oldest], 'central', '2026-10-30')
 check(missingLot.some(issue => issue.message.includes('lote deleted-lot: ya no aparece en inventario')), 'lote inexistente identificado con el producto')
 
+const derivedBase = lot({ id: 'derived-sachet', lotCode: 'SACH-40', productId: 'pork', productName: pork.name, unitType: 'package', quantities: { central: 40 }, processingCommercialBlocked: true, processingDestinationKind: 'finished', processingBatchId: 'batch-derived', processingSourceAllocationBasis: 'batch_blend_accounting_allocation', processingPhysicalWeightGRemaining: 40500, processingCostCentsRemaining: 10000, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } }, processingByLocation: { central: { segments: [{ segmentId: 'segment-1', batchId: 'batch-derived', destinationId: 'finished-1', sourceMovementId: 'movement-1', weightBasis: 'measured_total', remainingQuantity: 40, remainingWeightG: 40500, remainingCostCents: 10000 }] } } })
+const unreleasedDerived = { ...derivedBase, processingCommercialRelease: undefined }
+check(dispatchLotIneligibility(unreleasedDerived, pork.id, 'central', '2026-10-30')?.includes('pendiente de liberación comercial'), 'lote terminado derivado trazable sin liberación no es apto para despacho')
+const unreleasedResult = validateDispatchLotDrafts([{ id: 'derived-line', productId: pork.id, quantity: '40', allocations: [{ id: 'derived-allocation', lotId: derivedBase.id, quantity: '40' }] }], [pork], [unreleasedDerived], 'central', '2026-10-30')
+check(unreleasedResult.some(issue => issue.severity === 'error' && issue.message.includes('pendiente de liberación')), 'lote derivado no liberado se clasifica como error real y bloquea continuar')
+const releasedDerived = { ...derivedBase, processingCommercialRelease: { status: 'released' as const, batchId: 'batch-derived', approvedBy: 'admin', approvedAt: '2026-10-30T12:00:00.000Z', operationId: 'release-1', reason: 'Apto para despacho y venta', physicalWeightG: 40500, costCents: 10000 } }
+check(dispatchLotIneligibility(releasedDerived, pork.id, 'central', '2026-10-30') === null, 'mismo lote es apto al tener liberación coincidente y segmentos conciliados')
+check(dispatchLotIneligibility({ ...releasedDerived, processingCommercialRelease: { ...releasedDerived.processingCommercialRelease, batchId: 'another-batch' } }, pork.id, 'central', '2026-10-30')?.includes('pendiente de liberación comercial'), 'release cuyo batchId no coincide no habilita despacho')
+check(dispatchLotIneligibility({ ...releasedDerived, quarantined: true }, pork.id, 'central', '2026-10-30')?.includes('cuarentena'), 'liberación no omite cuarentena')
+
+const unfinished = validateDispatchLotDrafts([{ id: 'unfinished', productId: pork.id, quantity: '', allocations: [] }], [pork], [oldest], 'central', '2026-10-30')
+check(unfinished.length === 1 && unfinished[0].severity === 'incomplete', 'producto aún sin cantidad se presenta como pendiente, no como error rojo')
+check(overLimit.every(issue => issue.severity === 'error'), 'exceso real de stock se mantiene como error que bloquea continuar')
+
 const multipleErrors = validateDispatchLotDrafts([
   { ...validDraft[0], id: 'line-a', quantity: '5', allocations: [{ id: 'a', lotId: oldest.id, quantity: '5' }] },
   { ...validDraft[0], id: 'line-b', quantity: '4', allocations: [{ id: 'b', lotId: ineligible.id, quantity: '4' }] },

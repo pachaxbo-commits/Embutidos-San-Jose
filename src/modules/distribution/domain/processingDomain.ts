@@ -26,6 +26,31 @@ export function reconcileProcessingMass(inputWeightG: number, destinations: Pick
   return { inputWeightG, outputWeightG, differenceG }
 }
 
+export function calculateNominalWeightSummary(commercialQuantity: number, nominalWeightG: number, netWeightG: number) {
+  if (![commercialQuantity, nominalWeightG, netWeightG].every(Number.isFinite)
+      || commercialQuantity <= 0 || nominalWeightG <= 0 || netWeightG <= 0) return null
+  const nominalTotalWeightG = commercialQuantity * nominalWeightG
+  return {
+    commercialQuantity,
+    nominalWeightGPerPackage: nominalWeightG,
+    nominalTotalWeightG,
+    netWeightG,
+    nominalVarianceG: netWeightG - nominalTotalWeightG,
+    /** Economic/commercial giveaway only; remains inside finished product. */
+    overweightMermaG: Math.max(netWeightG - nominalTotalWeightG, 0),
+    averageNetWeightG: netWeightG / commercialQuantity,
+  }
+}
+
+/** Derive informative overweight merma from already-recorded batch facts. Never a physical destination or stock movement. */
+export function processingOverweightMermaG(destinations: Array<Pick<ProcessingDestination, 'kind' | 'commercialQuantity' | 'nominalWeightG' | 'netWeightG'>>): number {
+  return destinations.reduce((sum, destination) => {
+    if (destination.kind !== 'finished' || !Number.isFinite(destination.commercialQuantity)
+      || !Number.isFinite(destination.nominalWeightG) || !Number.isSafeInteger(destination.netWeightG)) return sum
+    return sum + Math.max(destination.netWeightG - destination.commercialQuantity * (destination.nominalWeightG || 0), 0)
+  }, 0)
+}
+
 export function validateProcessingSources(sources: ProcessingSourceAllocation[], expectedProductId: string, today: string): void {
   if (!sources.length) fail('Selecciona al menos un lote de origen.')
   const lotIds = new Set<string>()

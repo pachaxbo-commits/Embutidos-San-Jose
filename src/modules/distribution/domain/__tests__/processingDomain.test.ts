@@ -1,4 +1,4 @@
-import { allocateKnownCost, calculateProcessingAvailability, calculateSourceCost, canReverseProcessingBatch, canTransitionProcessingStatus, conservativeExpiry, consumePackageWeight, createPackageWeightLedger, ProcessingValidationError, reconcileProcessingMass, validateCostComponents, validateProcessingSources } from '../processingDomain.ts'
+import { allocateKnownCost, calculateNominalWeightSummary, calculateProcessingAvailability, calculateSourceCost, canReverseProcessingBatch, canTransitionProcessingStatus, conservativeExpiry, consumePackageWeight, createPackageWeightLedger, processingOverweightMermaG, ProcessingValidationError, reconcileProcessingMass, validateCostComponents, validateProcessingSources } from '../processingDomain.ts'
 import type { ProcessingCostComponent, ProcessingDestination, ProcessingSourceAllocation } from '../processing.ts'
 
 const assert = {
@@ -13,6 +13,10 @@ assert.deepEqual(reconcileProcessingMass(10_000, [destination('sachets',9_000),d
 throwsWith(() => reconcileProcessingMass(10_000,[destination('sachets',9_001),destination('courtesy',700),destination('discard',300)]),'1 g')
 throwsWith(() => reconcileProcessingMass(10_000,[destination('sachets',9_000)]),'sin destino')
 assert.equal(reconcileProcessingMass(10_000,[destination('nominal-250-but-measured-9000',9_000),destination('courtesy',1_000)]).differenceG,0)
+assert.deepEqual(calculateNominalWeightSummary(40, 1000, 40500), { commercialQuantity: 40, nominalWeightGPerPackage: 1000, nominalTotalWeightG: 40000, netWeightG: 40500, nominalVarianceG: 500, overweightMermaG: 500, averageNetWeightG: 1012.5 })
+assert.equal(calculateNominalWeightSummary(40, 1000, 39800)?.nominalVarianceG, -200)
+assert.equal(processingOverweightMermaG([{ kind: 'finished', commercialQuantity: 40, nominalWeightG: 1000, netWeightG: 40500 }, { kind: 'discard', commercialQuantity: 0, netWeightG: 550 }]), 500)
+assert.deepEqual(reconcileProcessingMass(41050, [destination('finished', 40500), destination('discard', 550)]), { inputWeightG: 41050, outputWeightG: 41050, differenceG: 0 })
 
 const packages = createPackageWeightLedger(3,1_001,'documented_average')
 const first = consumePackageWeight(packages,1)

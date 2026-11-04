@@ -24,6 +24,7 @@ import {
 } from '../data/distributionDocumentPrintService'
 import { Capacitor } from '@capacitor/core'
 import { dispatchLotIneligibility, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../domain/dispatchSelection'
+import { processingCommerciallyAvailable, processingDispatchIneligibility } from '../domain/processingCommercialAvailability'
 
 interface DraftLine {
   id: string
@@ -57,14 +58,14 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const todayBolivia = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz' }).format(new Date())
   const dispatchableDerived = new Map(data.products.map(product => [product.id, data.lots
     .filter(lot => {
-      const held = lot.processingUnavailable?.[lotLocation]
-      const ledger = lot.processingByLocation?.[lotLocation]
-      return lot.productId === product.id && lot.processingCommercialBlocked === true && lot.processingDestinationKind === 'finished'
-        && Array.isArray(ledger?.segments) && ledger.segments.length > 0
-        && (lot.quantities[lotLocation] || 0) > 0 && !lot.quarantined && (!lot.expiresOn || lot.expiresOn >= todayBolivia)
-        && !Number(lot.pendingOrigins?.[lotLocation]?.reduce((sum, row) => sum + Number(row.quantity || 0), 0))
-        && !Number(held?.courtesy || 0) && !Number(held?.repackPending || 0) && !Number(held?.reviewHold || 0)
+      return lot.productId === product.id && lot.processingCommercialBlocked === true
+        && !processingDispatchIneligibility(lot, lotLocation, todayBolivia)
     })
+    .reduce((sum, lot) => sum + Number(lot.quantities[lotLocation] || 0), 0)]))
+  const pendingCommercialReleaseDerived = new Map(data.products.map(product => [product.id, data.lots
+    .filter(lot => lot.productId === product.id && lot.processingCommercialBlocked === true
+      && lot.processingDestinationKind === 'finished' && !processingCommerciallyAvailable(lot)
+      && Number(lot.quantities[lotLocation] || 0) > 0)
     .reduce((sum, lot) => sum + Number(lot.quantities[lotLocation] || 0), 0)]))
   const central = new Map(data.products.map(p => [p.id, (data.balances.find(b => b.id === warehouseBalanceId(effectiveWarehouse, p.id))?.availableQuantity || 0) + (dispatchableDerived.get(p.id) || 0)]))
   const [routeId, setRouteId] = useState('')
@@ -79,6 +80,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [isProductPickerOpen, setIsProductPickerOpen] = useState(false)
   const [isProductPickerExpanded, setIsProductPickerExpanded] = useState(false)
   const [highlightedDispatchIssue, setHighlightedDispatchIssue] = useState<string | null>(null)
+  const [showDispatchValidationDetails, setShowDispatchValidationDetails] = useState(false)
   const pendingProductPickerScrollRestore = useRef<number | null>(null)
   const [isProductOrderOpen, setIsProductOrderOpen] = useState(false)
   const [editingProductOrder, setEditingProductOrder] = useState<string[]>([])
@@ -488,6 +490,9 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     () => validateDispatchLotDrafts(draftLines, activeProducts, data.lots, lotLocation, todayBolivia),
     [draftLines, activeProducts, data.lots, lotLocation, todayBolivia],
   )
+  const draftValidationErrors = draftLotIssues.filter(issue => issue.severity === 'error')
+  const draftValidationIncomplete = draftLotIssues.filter(issue => issue.severity === 'incomplete')
+  const incompleteProductCount = new Set(draftValidationIncomplete.map(issue => issue.lineId)).size
 
   const filteredProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -591,16 +596,18 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
   const renderContinueFooter = (onContinue: () => void) => (
     <div className="grid w-full gap-2">
-      {draftLotIssues.length > 0 && <section aria-label="Errores pendientes" className="max-h-[26dvh] overflow-y-auto overscroll-contain rounded-xl border border-rose-300 bg-rose-50 p-3 text-left">
-        <h3 className="text-xs font-black text-rose-950">Errores pendientes ({draftLotIssues.length})</h3>
-        <ul className="mt-2 grid gap-2">
-          {draftLotIssues.map(issue => <li key={issue.key} className="flex min-w-0 items-start justify-between gap-2 border-t border-rose-200 pt-2 first:border-t-0 first:pt-0">
-            <span className="min-w-0 break-words text-[11px] font-semibold leading-snug text-rose-900">{issue.message}</span>
-            <button type="button" onClick={() => goToDispatchIssue(issue)} className="min-h-9 shrink-0 rounded-lg bg-white px-2 text-[10px] font-extrabold text-rose-800 ring-1 ring-rose-200">Ir al error</button>
-          </li>)}
-        </ul>
+      {draftLotIssues.length > 0 && <section aria-label="Validación del despacho" className={`rounded-xl border p-2 text-left ${draftValidationErrors.length ? 'border-rose-300 bg-rose-50' : 'border-amber-300 bg-amber-50'}`}>
+        <button type="button" aria-expanded={showDispatchValidationDetails} onClick={() => setShowDispatchValidationDetails(value => !value)} className={`flex min-h-10 w-full items-center justify-between gap-2 rounded-lg px-2 text-left text-xs font-extrabold ${draftValidationErrors.length ? 'text-rose-950' : 'text-amber-950'}`}>
+          <span className="min-w-0">{draftValidationErrors.length > 0 && <>{draftValidationErrors.length} {draftValidationErrors.length === 1 ? 'error que debes corregir' : 'errores que debes corregir'}</>}{draftValidationErrors.length > 0 && incompleteProductCount > 0 && ' · '}{incompleteProductCount > 0 && <>{incompleteProductCount} {incompleteProductCount === 1 ? 'producto pendiente' : 'productos pendientes'} de completar</>}</span>
+          <span className="shrink-0 underline">{showDispatchValidationDetails ? 'Ocultar detalles' : 'Ver detalles'}</span>
+        </button>
+        {showDispatchValidationDetails && <div className="mt-2 max-h-[26dvh] overflow-y-auto overscroll-contain rounded-lg bg-white/80 p-2">
+          {draftValidationErrors.length > 0 && <><h3 className="text-[11px] font-black text-rose-900">Errores que debes corregir</h3><ul className="mt-1 grid gap-2">{draftValidationErrors.map(issue => <li key={issue.key} className="flex min-w-0 items-start justify-between gap-2 border-t border-rose-100 pt-2 first:border-t-0 first:pt-0"><span className="min-w-0 break-words text-[11px] font-semibold leading-snug text-rose-900">{issue.message}</span><button type="button" onClick={() => goToDispatchIssue(issue)} className="min-h-9 shrink-0 rounded-lg bg-white px-2 text-[10px] font-extrabold text-rose-800 ring-1 ring-rose-200">Ir al campo</button></li>)}</ul></>}
+          {draftValidationIncomplete.length > 0 && <><h3 className={`${draftValidationErrors.length ? 'mt-3 border-t border-amber-200 pt-2' : ''} text-[11px] font-black text-amber-900`}>Pendientes de completar</h3><ul className="mt-1 grid gap-2">{draftValidationIncomplete.map(issue => <li key={issue.key} className="flex min-w-0 items-start justify-between gap-2 border-t border-amber-100 pt-2 first:border-t-0 first:pt-0"><span className="min-w-0 break-words text-[11px] font-semibold leading-snug text-amber-950">{issue.message}</span><button type="button" onClick={() => goToDispatchIssue(issue)} className="min-h-9 shrink-0 rounded-lg bg-white px-2 text-[10px] font-extrabold text-amber-900 ring-1 ring-amber-200">Ir al campo</button></li>)}</ul></>}
+        </div>}
       </section>}
       <PrimaryButton full disabled={isSubmitting || draftLotIssues.length > 0} onClick={onContinue}>{isSubmitting ? 'Revisando…' : 'Continuar'}</PrimaryButton>
+      {draftLotIssues.length > 0 && <p role="status" className={`text-center text-[11px] font-bold ${draftValidationErrors.length ? 'text-rose-800' : 'text-amber-900'}`}>{draftValidationErrors.length > 0 ? `Corrige ${draftValidationErrors.length} ${draftValidationErrors.length === 1 ? 'error' : 'errores'} antes de continuar.` : `Faltan completar ${incompleteProductCount} ${incompleteProductCount === 1 ? 'producto' : 'productos'}.`}{draftValidationErrors.length > 0 && incompleteProductCount > 0 ? ` También faltan completar ${incompleteProductCount} ${incompleteProductCount === 1 ? 'producto' : 'productos'}.` : ''}</p>}
     </div>
   )
 
@@ -813,7 +820,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           const total = round2(normal + merma)
           const complete = total > 0 && Math.abs(assigned - total) < 0.01
           return <div key={line.id} data-dispatch-line-id={line.id} data-dispatch-product-line={line.productId} className={`grid gap-3 rounded-2xl border bg-slate-50 p-3 transition-shadow ${draftLotIssues.some(issue => issue.lineId === line.id && issue.key === highlightedDispatchIssue) ? 'border-rose-500 ring-4 ring-rose-200' : 'border-slate-200'}`}>
-            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Apto para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p>{dispatchableDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-indigo-700">Incluye sachets terminados con trazabilidad. La venta comercial sigue bloqueada.</p> : null}</div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
+            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Apto para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p>{dispatchableDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-indigo-700">Sachet con trazabilidad · habilitado para despacho y venta</p> : null}{pendingCommercialReleaseDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-amber-700">{formatQty(pendingCommercialReleaseDerived.get(product.id) || 0, product.unitType)} pendientes de liberación por Administración; no disponibles para este despacho.</p> : null}</div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
             <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
             {product.unitType === 'kg' && (
               <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Se envía físicamente con la carga. No es pérdida del almacén ni se cobra por separado.">
@@ -883,7 +890,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         canDispatch || canManageProductOrder ? (
           <div className="flex flex-wrap justify-end gap-2">
             {canManageProductOrder && <SecondaryButton disabled={data.dispatchProductOrderLoading} onClick={openProductOrder}><GripVertical size={16} /> Organizar productos</SecondaryButton>}
-            {canDispatch && <PrimaryButton onClick={() => { resetDraft(); setIsNewOpen(true) }}><Truck size={16} /> Nuevo</PrimaryButton>}
+            {canDispatch && <PrimaryButton onClick={() => { resetDraft(); setShowDispatchValidationDetails(false); setIsNewOpen(true) }}><Truck size={16} /> Nuevo</PrimaryButton>}
           </div>
         ) : undefined
       }
@@ -1197,7 +1204,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
       <Modal
         isOpen={isNewOpen}
-        onClose={() => { setIsNewOpen(false); setConfirmingLoadType(null) }}
+        onClose={() => { setIsNewOpen(false); setConfirmingLoadType(null); setShowDispatchValidationDetails(false) }}
         title={confirmingLoadType === 'dispatch' ? 'Confirmar carga física' : 'Nuevo despacho'}
         subtitle="Descuenta almacen central y carga la ruta"
         size="lg"
