@@ -167,6 +167,19 @@ export async function loadProcessingReservationPage(
   return { rows: docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingReservation), cursor: docs.at(-1) || null, hasMore }
 }
 
+/** Consulta puntual para abrir desde un lote la reserva que lo mantiene inmovilizado. */
+export async function loadProcessingReservationsForLot(lotId: string): Promise<ProcessingReservation[]> {
+  const context = await getContext()
+  const snapshot = await getDocsFromServer(query(collectionRef(context, 'distStockReservations'), where('lotId', '==', lotId)))
+  return snapshot.docs.map(row => ({ id: row.id, ...row.data() }) as ProcessingReservation)
+}
+
+export async function loadProcessingReservation(reservationId: string): Promise<ProcessingReservation | null> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(doc(collectionRef(context, 'distStockReservations'), reservationId))
+  return snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as ProcessingReservation) : null
+}
+
 async function loadProcessingPage<T>(name: string, location: string | undefined, dateField: string, cursor: QueryDocumentSnapshot<DocumentData> | null, pageSize: number): Promise<{ rows: T[]; cursor: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
   const context = await getContext()
   const constraints: QueryConstraint[] = []
@@ -267,6 +280,11 @@ export async function rectifyProcessingCommercialUnit(input: RectifyProcessingCo
 
 export async function releaseProcessingLot(input: { lotId: string; reason: string; authorizationReference?: string }, operationId: string): Promise<unknown> {
   return submitOperation('releaseProcessingLot', input, operationId)
+}
+
+/** Libera únicamente la cantidad restante de una reserva de cortesía; el servidor valida rol, agregado y condición comercial. */
+export async function releaseProcessingReservation(input: { reservationId: string; expectedRemainingQuantity: number; reason: string; commercialQualityConfirmed: true }, operationId: string): Promise<unknown> {
+  return submitOperation('releaseProcessingReservation', input, operationId)
 }
 
 /** Registra una inspección de producto inmovilizado sin tocar inventario ni liberar la reserva. */

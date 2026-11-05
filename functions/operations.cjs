@@ -489,6 +489,27 @@ class Operation {
     quantity = this.amount(quantity, e.p, false, amountPrecision);
     const reservationRows = await this.processingReservationsForProduct(pid);
     for (const lot of e.lots.filter(l => !lotId || l.id === lotId)) this.assertReservationAggregate(lot, loc, reservationRows.filter(row => row.lotId === lot.id));
+    const unavailable = lot => {
+      const held = lot.processingUnavailable?.[loc] || {};
+      return roundAt((Number(held.courtesy) || 0) + (Number(held.repackPending) || 0) + (Number(held.reviewHold) || 0), precision);
+    };
+    const usable = lot => roundAt((lot.quantities?.[loc] || 0) - unavailable(lot) - (allowPendingOrigin ? 0 : origins.pending(lot, loc)), precision);
+    const lotShortageMessage = (lot, requested) => {
+      const active = reservationRows.filter(row => row.lotId === lot.id && row.location === loc && ['active','partially_consumed'].includes(row.status) && Number(row.remainingQuantity) > 0);
+      const heldByPurpose = [
+        ['courtesy', 'cortesía'], ['repack_pending', 'reenvasado'], ['review_hold', 'revisión'],
+      ].map(([purpose, label]) => ({ label, quantity: active.filter(row => row.purpose === purpose).reduce((sum, row) => sum + Number(row.remainingQuantity || 0), 0) })).filter(row => row.quantity > 0);
+      const quantityLabel = value => `${Number(value).toFixed(precision)} ${e.p.unitType === 'kg' ? 'kg' : e.p.unitType === 'package' ? 'paquetes' : 'unidades'}`;
+      const available = Math.max(0, usable(lot));
+      if (heldByPurpose.length) {
+        const reason = heldByPurpose.map(row => `${quantityLabel(row.quantity)} ${row.label}`).join(', ');
+        const totalHeld = heldByPurpose.reduce((sum, row) => sum + row.quantity, 0);
+        return `No puedes descontar ${quantityLabel(requested)} del lote ${lot.lotCode || lot.id}: ${quantityLabel(totalHeld)} ${heldByPurpose.length === 1 ? 'está reservado o inmovilizado' : 'están reservados o inmovilizados'} (${reason}). Disponible para ajuste: ${quantityLabel(available)}. Abre la reserva para ver el flujo correspondiente.`;
+      }
+      const originPending = origins.pending(lot, loc);
+      if (originPending > 0) return `No puedes descontar ${quantityLabel(requested)} del lote ${lot.lotCode || lot.id}: ${quantityLabel(originPending)} tienen origen pendiente de conciliación. Disponible para ajuste: ${quantityLabel(available)}.`;
+      return `El lote ${lot.lotCode || lot.id} no tiene suficiente existencia disponible para descontar ${quantityLabel(requested)}. Disponible para ajuste: ${quantityLabel(available)}.`;
+    };
     if (processingAdjustment && lotId) {
       const selectedLot = e.lots.find(lot => lot.id === lotId);
       if (selectedLot?.processingCommercialBlocked) {
@@ -496,15 +517,10 @@ class Operation {
         check(selectedLot.processingCommercialRelease?.status === 'released' && selectedLot.processingCommercialRelease.batchId === selectedLot.processingBatchId, `El lote ${selectedLot.lotCode || selectedLot.id} no tiene una liberación comercial válida y no puede ajustarse.`);
         check(!selectedLot.quarantined, `El lote ${selectedLot.lotCode || selectedLot.id} está en cuarentena y no puede ajustarse.`);
         const held = selectedLot.processingUnavailable?.[loc] || {};
-        check(Number(held.courtesy || 0) + Number(held.repackPending || 0) + Number(held.reviewHold || 0) === 0, `El lote ${selectedLot.lotCode || selectedLot.id} tiene unidades reservadas o retenidas y no puede ajustarse.`);
+        if (Number(held.courtesy || 0) + Number(held.repackPending || 0) + Number(held.reviewHold || 0) > 0) throw new BusinessError(lotShortageMessage(selectedLot, quantity));
         check(origins.pending(selectedLot, loc) === 0 && selectedLot.processingSourceAllocationBasis, `El lote ${selectedLot.lotCode || selectedLot.id} tiene origen pendiente de conciliación y no puede ajustarse.`);
       }
     }
-    const unavailable = lot => {
-      const held = lot.processingUnavailable?.[loc] || {};
-      return roundAt((Number(held.courtesy) || 0) + (Number(held.repackPending) || 0) + (Number(held.reviewHold) || 0), precision);
-    };
-    const usable = lot => roundAt((lot.quantities?.[loc] || 0) - unavailable(lot) - (allowPendingOrigin ? 0 : origins.pending(lot, loc)), precision);
     const processingCourtesyAllowed = lot => {
       if (!lot.processingCommercialBlocked) return true;
       const proof = processingCourtesyReservation;
@@ -523,7 +539,7 @@ class Operation {
         check(lot && lot.productId === pid, "El lote no pertenece al producto seleccionado.");
         check(processingCourtesyAllowed(lot), 'El lote derivado de elaboración sigue bloqueado para venta o despacho hasta integrar el seguimiento físico y de costo.');
         check(allowExpired || (!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= this.today)), "El lote está vencido o en cuarentena.");
-        check(usable(lot) >= requestedQuantity, `El lote ${lot.lotCode || lot.id} no tiene cantidad libre suficiente; revisa reservas, cuarentena y origen pendiente.`);
+        check(usable(lot) >= requestedQuantity, lotShortageMessage(lot, requestedQuantity));
         return { lot, quantity: requestedQuantity };
       });
       check(Math.abs(roundAt(requested.reduce((sum, part) => sum + part.quantity, 0), precision) - quantity) < 1 / (10 ** precision), "La distribución por lotes debe coincidir con la cantidad total.");
@@ -565,8 +581,12 @@ class Operation {
     check(
       roundAt(lots.reduce((s, l) => s + usable(l), 0), precision) >= quantity,
       processingAdjustment
-        ? `Stock libre insuficiente de ${e.p.name}. Revisa la cantidad, el lote seleccionado y sus bloqueos vigentes.`
-        : `Stock disponible insuficiente de ${e.p.name}. Revisa cantidades, vencimientos y reservas por origen pendiente; esas reservas no se pueden vender ni despachar.`,
+        ? lotId && e.lots.find(lot => lot.id === lotId)
+          ? lotShortageMessage(e.lots.find(lot => lot.id === lotId), quantity)
+          : `Stock libre insuficiente de ${e.p.name}. Revisa la cantidad, el lote seleccionado y sus bloqueos vigentes.`
+        : lotId && e.lots.find(lot => lot.id === lotId)
+          ? lotShortageMessage(e.lots.find(lot => lot.id === lotId), quantity)
+          : `Stock disponible insuficiente de ${e.p.name}. Revisa existencia, vencimiento, cuarentena y cantidades reservadas.`,
     );
     let remaining = quantity;
     const allocations = [];
@@ -5207,9 +5227,14 @@ handlers.confirmProcessingRepack = async (o, p) => {
 handlers.releaseProcessingReservation = async (o, p) => {
   o.admin();
   const id = safeId(p.reservationId), reservation = await o.read('distStockReservations', id);
-  check(reservation && ['active','partially_consumed'].includes(reservation.status), 'La reserva ya no tiene cantidad pendiente.');
-  check(reservation.purpose !== 'review_hold', 'La inmovilización de revisión requiere un flujo de aprobación sanitaria.');
-  check(reservation.purpose !== 'repack_pending', 'El producto pendiente de reenvasado solo puede liberarse mediante el procedimiento autorizado de reenvasado.');
+  check(reservation, 'No se encontró la reserva. Actualiza Inventario antes de continuar.');
+  check(Number.isFinite(p.expectedRemainingQuantity) && Number(p.expectedRemainingQuantity) === Number(reservation.remainingQuantity), 'La reserva cambió desde que la consultaste. Actualízala antes de liberar.');
+  check(['active','partially_consumed'].includes(reservation.status), 'La reserva ya no tiene cantidad pendiente.');
+  check(reservation.purpose === 'courtesy', reservation.purpose === 'review_hold'
+    ? 'La inmovilización de revisión requiere resolverse desde el flujo especializado de revisión.'
+    : reservation.purpose === 'repack_pending'
+      ? 'El producto pendiente de reenvasado solo puede liberarse mediante el procedimiento autorizado de reenvasado.'
+      : 'Solo se pueden liberar reservas de cortesía mediante esta operación.');
   check(String(p.reason || '').trim(), 'Indica el motivo de liberación.');
   check(p.commercialQualityConfirmed === true, 'Confirma que el producto mantiene calidad comercial para el nuevo destino.');
   const { product, loc, lot, rows } = await reservationContext(o, { productId: reservation.productId, lotId: reservation.lotId, location: reservation.location });

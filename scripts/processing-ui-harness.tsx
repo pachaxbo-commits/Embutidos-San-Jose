@@ -5,6 +5,8 @@ import { SacheteadoView } from '../src/modules/distribution/views/SacheteadoView
 import { DistributionApp } from '../src/modules/distribution/views/DistributionApp'
 import { SellView } from '../src/modules/distribution/views/SellView'
 import { ProcessingCommercialRelease } from '../src/modules/distribution/views/ProcessingCommercialRelease'
+import { InventoryView } from '../src/modules/distribution/views/InventoryView'
+import { ProcessingOperationsView } from '../src/modules/distribution/views/ProcessingOperationsView'
 import { useDistributionData } from '../src/modules/distribution/state/useDistributionStore'
 import { toDayKey } from '../src/modules/distribution/domain/engine'
 import type { DistributionSession } from '../src/modules/distribution/views/DistributionApp'
@@ -55,6 +57,7 @@ export function Harness() {
 
   if (params.get('sell') === '1') return <SellVoidHarness uid={uid} userName={qaUser.name} />
   if (params.get('release') === '1') return <main className="mx-auto max-w-xl p-4"><ProcessingCommercialRelease lot={releaseLot as unknown as DistLot} /></main>
+  if (params.get('inventory') === '1') return <InventoryReservationHarness uid={uid} userName={qaUser.name} />
 
   if (fullApp) return <DistributionApp
     restaurantId="sanjose"
@@ -90,6 +93,27 @@ export function Harness() {
   } as unknown as DistributionData
 
   return <SacheteadoView session={session} data={data} />
+}
+
+function InventoryReservationHarness({ uid, userName }: { uid: string; userName: string }) {
+  const [openedReservation, setOpenedReservation] = useState('')
+  const session: DistributionSession = {
+    restaurantId: 'sanjose', restaurantName: 'Embutidos San José', uid, userName, role: 'admin',
+    warehouseId: 'central', routeId: null, can: () => true, dayKeys: [toDayKey(new Date())], setDayKeys: () => {},
+  }
+  const data = {
+    products: [{ id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', category: 'Granel', unitType: 'kg', active: true }],
+    balances: [{ id: 'central__qa-source-product', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-source-product', unitType: 'kg', quantity: 4 }],
+    lots: [
+      { id: 'qa-source-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-ORIGEN-2KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 2 }, processingUnavailable: { central: { courtesy: 0, repackPending: 2, reviewHold: 0 } } },
+      { id: 'qa-other-lot', restaurantId: 'sanjose', productId: 'qa-source-product', productName: 'QA Producto a granel', unitType: 'kg', lotCode: 'QA-OTRO-1KG', manufacturedOn: '2026-10-20', expiresOn: '2999-12-31', productionCost: 5, quantities: { central: 1 }, processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 1 } } },
+    ],
+    warehouses: [], routes: [], movements: [], stockMovements: [], operations: [], adjustmentRequests: [], supportSettings: { expiryAlertDays: 7 },
+  } as unknown as DistributionData
+  const typedData = data as DistributionData
+  return openedReservation
+    ? <ProcessingOperationsView mode="reservations" session={session} products={typedData.products} lots={typedData.lots} locationOptions={[{ id: 'central', name: 'Almacén central' }]} initialReservationId={openedReservation} />
+    : <InventoryView session={session} data={typedData} onOpenReservation={setOpenedReservation} />
 }
 
 function SellVoidHarness({ uid, userName }: { uid: string; userName: string }) {
