@@ -6,7 +6,7 @@ import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../com
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2, toDayKey } from '../domain/engine'
-import { newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, warehouseBalanceId } from '../data/distributionRepository'
+import { loadProcessingReservationsForLot, newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, warehouseBalanceId } from '../data/distributionRepository'
 import { useRouteStock, useStockIndex } from '../state/useDistributionStore'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -42,7 +42,7 @@ const MOVEMENT_LABELS: Record<string, string> = {
  * El stock en ruta no es un numero suelto: es lo despachado menos lo vendido,
  * mantenido por el ledger de movimientos.
  */
-export function InventoryView({ session, data }: DistributionViewProps) {
+export function InventoryView({ session, data, onOpenReservation }: DistributionViewProps) {
   const [selectedWarehouse, setSelectedWarehouse] = useState('central')
   const warehouseId = session.role === 'admin' ? selectedWarehouse : session.warehouseId || 'central'
   const lotLocation = warehouseId === 'central' ? 'central' : `warehouse__${warehouseId}`
@@ -75,6 +75,9 @@ export function InventoryView({ session, data }: DistributionViewProps) {
   const [isIntakeHistoryOpen, setIsIntakeHistoryOpen] = useState(false)
   const intakeHistoryPreviousDays = useRef<string[]>(session.dayKeys)
   const [intakeHistoryExporting, setIntakeHistoryExporting] = useState(false)
+  const [reservationLookup, setReservationLookup] = useState('')
+  const [reservationLookupError, setReservationLookupError] = useState('')
+  const [reservationLookupErrorLotId, setReservationLookupErrorLotId] = useState('')
 
   const { route } = useStockIndex(data.balances, session.routeId)
   const central = new Map(data.products.map(p => [p.id, data.balances.find(b => b.id === warehouseBalanceId(warehouseId, p.id))?.quantity || 0]))
@@ -213,6 +216,19 @@ export function InventoryView({ session, data }: DistributionViewProps) {
     setIntakeQuantity('0')
     setIntakeNote('')
     setError(null)
+  }
+
+  const openLotReservation = async (lotId: string, purpose?: 'courtesy' | 'repack_pending' | 'review_hold') => {
+    if (reservationLookup) return
+    setReservationLookup(lotId); setReservationLookupError(''); setReservationLookupErrorLotId('')
+    try {
+      const rows = await loadProcessingReservationsForLot(lotId)
+      const row = rows.filter(item => item.location === lotLocation && ['active','partially_consumed'].includes(item.status) && item.remainingQuantity > 0 && (!purpose || item.purpose === purpose)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+      if (!row) throw new Error('No se encontró una reserva activa para este lote. Actualiza Inventario y vuelve a revisar el detalle.')
+      setLotsProduct(null)
+      onOpenReservation?.(row.id)
+    } catch (lookupError) { setReservationLookupError((lookupError as Error).message || 'No se pudo abrir la reserva.'); setReservationLookupErrorLotId(lotId) }
+    finally { setReservationLookup('') }
   }
 
   const submitIntake = async () => {
@@ -549,6 +565,19 @@ export function InventoryView({ session, data }: DistributionViewProps) {
                   <p>Elaboración: <strong>{lot.manufacturedOn || 'No registrada'}</strong></p>
                   {originPending > 0 && <p role="status" className="break-words font-semibold text-amber-800 sm:col-span-2">{formatQty(originPending, lotsProduct.unitType)} reservados por origen pendiente. Para esa cantidad, el código y las fechas son referencia contable, no procedencia física comprobada. El resto identificado sigue disponible.</p>}
                   <p>Vencimiento: <strong>{lot.expiresOn || 'No registrada'}</strong></p>
+                  {(() => {
+                    const held = lot.processingUnavailable?.[lotLocation]
+                    const reservationKinds = [
+                      ['courtesy', 'courtesy', 'Reservado para cortesía'],
+                      ['repackPending', 'repack_pending', 'Pendiente de reenvasado'],
+                      ['reviewHold', 'review_hold', 'Inmovilizado para revisión'],
+                    ] as const
+                    const activeKinds = reservationKinds.filter(([key]) => Number(held?.[key] || 0) > 0)
+                    return activeKinds.length > 0 ? <div className="sm:col-span-2 mt-1 grid gap-1.5 rounded-lg border border-amber-200 bg-amber-50 p-2">
+                      {activeKinds.map(([key, purpose, label]) => <div key={key} className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-950"><span><b>{label}:</b> {formatQty(Number(held?.[key] || 0), lotsProduct.unitType)}</span><button type="button" disabled={reservationLookup === lot.id} onClick={() => void openLotReservation(lot.id, purpose)} className="min-h-9 rounded-lg border border-amber-300 bg-white px-3 font-extrabold text-amber-950">{reservationLookup === lot.id ? 'Buscando…' : 'Ver reserva'}</button></div>)}
+                    </div> : null
+                  })()}
+                  {reservationLookupError && reservationLookupErrorLotId === lot.id && <p role="alert" className="sm:col-span-2 text-[11px] font-semibold text-rose-700">{reservationLookupError}</p>}
                 </div>
                 {hasFractionalCountQuantity && <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900">La cantidad registrada no es un número entero. Se muestra tal como está guardada; esta consulta no la corrige.</p>}
               </article>)}
@@ -619,7 +648,8 @@ export function InventoryView({ session, data }: DistributionViewProps) {
           <Field label="Observacion">
             <TextArea value={intakeNote} onChange={(event) => setIntakeNote(event.target.value)} placeholder="Motivo o referencia" />
           </Field>
-          {error && <p className="text-xs font-bold text-rose-600">{error}</p>}
+          {error && <p role="alert" className="text-xs font-bold text-rose-700">{error}</p>}
+          {error && intakeMode === 'adjustment' && adjustLotId && (() => { const lot = data.lots.find(item => item.id === adjustLotId); const held = lot?.processingUnavailable?.[lotLocation]; return lot && Number(held?.courtesy || 0) + Number(held?.repackPending || 0) + Number(held?.reviewHold || 0) > 0 ? <button type="button" disabled={reservationLookup === lot.id} onClick={() => void openLotReservation(lot.id)} className="min-h-11 rounded-xl border border-amber-300 bg-amber-50 px-3 text-xs font-extrabold text-amber-950">{reservationLookup === lot.id ? 'Buscando reserva…' : 'Ver reserva que bloquea el ajuste'}</button> : null })()}
         </div>
       </Modal>
       <ChoiceModal

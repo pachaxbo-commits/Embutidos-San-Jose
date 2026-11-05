@@ -97,7 +97,7 @@ try {
   lot = await read('distLots', fixture.lotId)
   pass(lot.quantities.central === 38 && movementsAfterRetry.size === 1, 'reprocesar la misma operación confirmada no vuelve a descontar ni duplica Kardex')
   const overstock = await command(ids.admin, 'adjustment', { warehouseId: 'central', line: { productId: fixture.productId, lotId: fixture.lotId, quantity: -39 }, note: 'Intento de exceder stock QA' }, `${prefix}-adjust-overstock`, 'rejected')
-  pass(overstock.error.includes('Stock libre insuficiente') && (await read('distLots', fixture.lotId)).quantities.central === 38, 'un ajuste superior al stock se rechaza sin saldo negativo ni escrituras parciales')
+  pass(overstock.error.includes('lote QA-RELEASED') && overstock.error.includes('Disponible para ajuste: 38.00 paquetes') && (await read('distLots', fixture.lotId)).quantities.central === 38, 'un ajuste superior al stock identifica lote y disponible, y se rechaza sin saldo negativo ni escrituras parciales')
 
   const warehouseDirectRef = doc(authDb(ids.warehouse), 'restaurants', 'sanjose', 'distOperations', `${prefix}-warehouse-direct-adjustment`)
   await assertFails(setDoc(warehouseDirectRef, { id: `${prefix}-warehouse-direct-adjustment`, restaurantId: 'sanjose', createdBy: ids.warehouse, createdAt: new Date().toISOString(), type: 'adjustment', payload: { warehouseId: 'central', line: { productId: fixture.productId, lotId: fixture.lotId, quantity: -1 }, note: 'No debe ajustar directamente' }, status: 'queued' }))
@@ -119,7 +119,8 @@ try {
   for (const [purpose, field] of [['courtesy', 'courtesy'], ['repack_pending', 'repackPending'], ['review_hold', 'reviewHold']]) {
     const held = await seedDerived(field, { reservation: { purpose, [field]: 39 } })
     const attempt = await command(ids.admin, 'adjustment', { warehouseId: 'central', line: { productId: held.productId, lotId: held.lotId, quantity: -1 }, note: `No reducir ${purpose} QA` }, `${prefix}-${field}-adjust`, 'rejected')
-    pass(attempt.error.includes('reservadas o retenidas') && (await read('distLots', held.lotId)).quantities.central === 39, `${purpose} conserva bloqueados los paquetes protegidos`)
+    const purposeLabel = { courtesy: 'cortesía', repack_pending: 'reenvasado', review_hold: 'revisión' }[purpose]
+    pass(attempt.error.includes(purposeLabel) && attempt.error.includes('Disponible para ajuste: 0.00 paquetes') && (await read('distLots', held.lotId)).quantities.central === 39, `${purpose} conserva bloqueados los paquetes protegidos y explica la causa`)
   }
   const repackOutput = await seedDerived('repack-output', { repack: true })
   const repackAttempt = await command(ids.admin, 'adjustment', { warehouseId: 'central', line: { productId: repackOutput.productId, lotId: repackOutput.lotId, quantity: -1 }, note: 'No ajustar reenvasado en esta ruta' }, `${prefix}-repack-adjust`, 'rejected')

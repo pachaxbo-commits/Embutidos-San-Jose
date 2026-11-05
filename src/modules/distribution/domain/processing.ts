@@ -401,6 +401,7 @@ export interface ProcessingReservation {
   remainingCostCents?: number | null
   status: ProcessingReservationStatus
   source: string
+  reason?: string
   batchId?: string
   createdAt: string
   createdBy: string

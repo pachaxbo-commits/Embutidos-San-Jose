@@ -79,6 +79,10 @@ try {
   await root.collection('distProducts').doc('qa-source-product').set({ id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', unitType: 'kg', active: true, productionCost: 5 })
   await root.collection('distProducts').doc('qa-sachet-product').set({ id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 1 kg', unitType: 'package', active: true, productionCost: 999 })
   await root.collection('distProducts').doc('qa-assessment-product').set({ id: 'qa-assessment-product', restaurantId: 'sanjose', name: 'QA Paquete para evaluación', unitType: 'package', active: true, productionCost: null })
+  await root.collection('distProducts').doc('qa-courtesy-product').set({ id: 'qa-courtesy-product', restaurantId: 'sanjose', name: 'QA Producto reservado para cortesía', unitType: 'kg', active: true, productionCost: 4 })
+  await root.collection('distLots').doc('qa-courtesy-lot').set({ id: 'qa-courtesy-lot', restaurantId: 'sanjose', productId: 'qa-courtesy-product', productName: 'QA Producto reservado para cortesía', unitType: 'kg', lotCode: 'QA-CORTESIA-LOTE', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 4, quantities: { central: 10 }, processingUnavailable: { central: { courtesy: 3, repackPending: 0, reviewHold: 0 } } })
+  await root.collection('distBalances').doc('central__qa-courtesy-product').set({ id: 'central__qa-courtesy-product', restaurantId: 'sanjose', locationKind: 'central', warehouseId: 'central', productId: 'qa-courtesy-product', unitType: 'kg', quantity: 10 })
+  await root.collection('distStockReservations').doc('qa-courtesy-reservation').set({ id: 'qa-courtesy-reservation', restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, productId: 'qa-courtesy-product', productName: 'QA Producto reservado para cortesía', lotId: 'qa-courtesy-lot', lotCode: 'QA-CORTESIA-LOTE', unitType: 'kg', location: 'central', purpose: 'courtesy', originalQuantity: 3, remainingQuantity: 3, consumedQuantity: 0, physicalWeightG: 3000, remainingWeightG: 3000, remainingCostCents: 1200, status: 'active', source: 'qa', createdAt: date, createdBy: uid, createdByName: 'Administración QA', history: [{ id: 'qa-courtesy-created', action: 'created', quantity: 3, at: date, by: uid, byName: 'Administración QA', reason: 'Reserva sintética para probar administración' }] })
   await root.collection('distProducts').doc('qa-quantity-source').set({ id: 'qa-quantity-source', restaurantId: 'sanjose', name: 'QA Mortadela a granel', category: 'Granel', unitType: 'kg', active: true, productionCost: 5 })
   await root.collection('distProducts').doc('qa-quantity-target').set({ id: 'qa-quantity-target', restaurantId: 'sanjose', name: 'QA Mortadela jamonada porcionada 1 kg', category: 'Otros', presentation: 'Bolsa 1 kg', unitType: 'package', documentedPackageWeightKg: 1, active: true, productionCost: 999 })
   await root.collection('distLots').doc('qa-quantity-source-lot').set({ id: 'qa-quantity-source-lot', restaurantId: 'sanjose', productId: 'qa-quantity-source', productName: 'QA Mortadela a granel', unitType: 'kg', lotCode: 'ORIGEN-QA-CANTIDAD', manufacturedOn: sourceManufacturedOn, expiresOn: safeExpiry, productionCost: 5, quantities: { central: 99 } })
@@ -223,6 +227,44 @@ try {
     await page.screenshot({ path: join(tmpdir(), `sanjose-processing-${width}.png`), fullPage: true })
   }
 
+  await page.getByRole('button', { name: 'Mercadería reservada', exact: true }).click()
+  const courtesyCard = page.locator('#reservation-qa-courtesy-reservation')
+  await courtesyCard.getByText('QA Producto reservado para cortesía').waitFor({ timeout: 15000 })
+  await courtesyCard.getByText('Cantidad original').waitFor()
+  await courtesyCard.getByText('Motivo original: Reserva sintética para probar administración').first().waitFor()
+  await courtesyCard.getByRole('button', { name: 'Liberar reserva', exact: true }).click()
+  const courtesyReleaseDialog = page.getByRole('dialog', { name: 'Liberar reserva de cortesía' })
+  await courtesyReleaseDialog.getByText(/Cantidad restante a liberar:/).waitFor()
+  assert.match(await courtesyReleaseDialog.innerText(), /3(?:[.,]000)? kg/, 'la confirmación identifica los 3 kg que se liberarán')
+  await courtesyReleaseDialog.getByLabel('Motivo de liberación').fill('La cortesía ya no corresponde')
+  await courtesyReleaseDialog.getByLabel(/Confirmo que el producto permanece físicamente/).check()
+  await courtesyReleaseDialog.getByRole('button', { name: 'Confirmar liberación', exact: true }).click()
+  await page.getByRole('status').filter({ hasText: 'Reserva de cortesía liberada por el servidor' }).waitFor({ timeout: 30000 })
+  const releasedCourtesy = (await root.collection('distStockReservations').doc('qa-courtesy-reservation').get()).data()
+  assert.equal(releasedCourtesy.status, 'released', 'la acción de UI completa la liberación aprobada en servidor')
+  assert.equal((await root.collection('distBalances').doc('central__qa-courtesy-product').get()).data().quantity, 10, 'la liberación desde UI no altera existencia física')
+  assert.equal((await root.collection('distLots').doc('qa-courtesy-lot').get()).data().processingUnavailable.central.courtesy, 0, 'la UI refresca el agregado de cortesía liberado')
+  console.log('PASS Reservas UI: detalle, confirmación explícita y liberación administrativa sin efecto físico')
+
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html?inventory=1')
+  await page.getByRole('heading', { name: 'Inventario' }).waitFor({ timeout: 30000 })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: 'Ver lotes de QA Producto a granel' }).click()
+  const inventoryLotsDialog = page.getByRole('dialog', { name: 'Lotes del producto' })
+  await inventoryLotsDialog.getByText('Pendiente de reenvasado: 2 kg').waitFor()
+  await inventoryLotsDialog.getByText('Inmovilizado para revisión: 1 kg').waitFor()
+  for (const width of [320, 360, 390, 414, 768, 1440]) {
+    await page.setViewportSize({ width, height: width < 500 ? 820 : 900 })
+    await page.waitForTimeout(100)
+    const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
+    assert.ok(sizes.document <= sizes.viewport + 1, `Inventario/reservas tiene overflow horizontal a ${width}px: ${JSON.stringify(sizes)}`)
+  }
+  const repackLotCard = inventoryLotsDialog.locator('article').filter({ hasText: 'QA-ORIGEN-2KG' })
+  await repackLotCard.getByRole('button', { name: 'Ver reserva', exact: true }).click()
+  await page.locator('#reservation-qa-source-reservation').getByRole('button', { name: 'Ir a reenvasado' }).waitFor()
+  assert.equal(await page.locator('#reservation-qa-source-reservation').getByRole('button', { name: 'Liberar reserva', exact: true }).count(), 0, 'reenvasado no ofrece liberación simple')
+  console.log('PASS Inventario responsive: detalle por finalidad y navegación desde lote a su reserva exacta')
+
   // Report fixture exceeds one server page; no business operations are seeded in production.
   const reportSeed = db.batch()
   for (let index = 0; index < 52; index++) {
@@ -255,6 +297,7 @@ try {
     classificationSource: 'admin_review', transactionKind: 'expense', concept, amount, paymentMethod: 'cash', cashPaidAmount: amount,
     routeId: 'administracion', routeName: 'Administración', registeredByUid: uid, registeredByName: 'Administración QA',
   })))
+  await navigateQA('http://127.0.0.1:5174/scripts/processing-ui-harness.html')
   await page.getByRole('button', { name: 'Historial', exact: true }).click()
   await page.getByRole('button', { name: 'Reportes', exact: true }).click()
   await page.getByText(/52 filtrados \/ 52 registros cargados/).waitFor({ timeout: 30000 })

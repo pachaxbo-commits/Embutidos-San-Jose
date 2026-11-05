@@ -221,6 +221,47 @@ try {
   pass(unsafeRelease.status === 'rejected' && currentLot.processingUnavailable.central.repackPending === 1 && (await balanceRef().get()).data().quantity === 13, 'repack_pending no se libera con motivo ni confirmación genérica; reserva y físico permanecen')
   await command(ids.admin, 'releaseProcessingReservation', { reservationId: releaseId, reason: 'Reintento' }, `${prefix}-release-again`, 'rejected')
 
+  const releaseProduct = `${prefix}-release-product`, releaseLot = `${prefix}-release-lot`, releaseReservationId = `${prefix}-release-courtesy__reservation`
+  await seedLot(releaseProduct, releaseLot, 10, { processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
+  await command(ids.admin, 'reserveProcessingStock', { reservationId: releaseReservationId, productId: releaseProduct, lotId: releaseLot, location: 'central', purpose: 'courtesy', quantity: 3, reason: 'Separado para cortesía QA' }, `${prefix}-release-courtesy-create`)
+  const blockedAdjustment = await command(ids.admin, 'adjustment', { warehouseId: 'central', line: { productId: releaseProduct, quantity: -8, lotId: releaseLot }, note: 'Conciliación QA' }, `${prefix}-release-courtesy-blocked-adjustment`, 'rejected')
+  pass(blockedAdjustment.error.includes('lote QA-') && blockedAdjustment.error.includes('3.000 kg') && blockedAdjustment.error.includes('cortesía') && blockedAdjustment.error.includes('Disponible para ajuste: 7.000 kg'), 'bloqueo de ajuste identifica lote, cantidad reservada, finalidad y disponibilidad')
+  const balanceBeforeRelease = (await root.collection('distBalances').doc(`central__${releaseProduct}`).get()).data().quantity
+  const courtesyRelease = await command(ids.admin, 'releaseProcessingReservation', { reservationId: releaseReservationId, expectedRemainingQuantity: 3, reason: 'La cortesía ya no corresponde', commercialQualityConfirmed: true }, `${prefix}-release-courtesy-op`)
+  const releasedReservation = (await root.collection('distStockReservations').doc(releaseReservationId).get()).data()
+  const releasedLot = (await root.collection('distLots').doc(releaseLot).get()).data()
+  const releaseMovement = (await root.collection('distStockMovements').where('reservationId', '==', releaseReservationId).where('type', '==', 'reservation_released').get()).docs[0]?.data()
+  pass(courtesyRelease.status === 'confirmed' && releasedReservation.status === 'released' && releasedReservation.remainingQuantity === 0 && releasedLot.processingUnavailable.central.courtesy === 0, 'Administración libera la reserva de cortesía y conserva su historial')
+  pass((await root.collection('distBalances').doc(`central__${releaseProduct}`).get()).data().quantity === balanceBeforeRelease && releasedLot.quantities.central === 10 && releaseMovement?.physicalEffect === false && releaseMovement.centralDelta === 0, 'liberar reserva no cambia existencia física ni genera efecto Kardex')
+  pass(releasedLot.productionCost === 4 && (await root.collection('distStockMovements').where('reservationId', '==', releaseReservationId).get()).size === 2, 'liberar reserva no cambia costo ni crea movimientos físicos o financieros adicionales')
+  await processCommand(db, root.collection('distOperations').doc(`${prefix}-release-courtesy-op`))
+  pass((await root.collection('distBalances').doc(`central__${releaseProduct}`).get()).data().quantity === 10 && (await root.collection('distStockMovements').where('reservationId', '==', releaseReservationId).where('type', '==', 'reservation_released').get()).size === 1, 'reintento idempotente de liberación no duplica cambios ni movimientos')
+  const adjustmentAfterRelease = await command(ids.admin, 'adjustment', { warehouseId: 'central', line: { productId: releaseProduct, quantity: -1, lotId: releaseLot }, note: 'Baja física QA' }, `${prefix}-release-after-adjust`)
+  pass(adjustmentAfterRelease.status === 'confirmed' && (await root.collection('distBalances').doc(`central__${releaseProduct}`).get()).data().quantity === 9, 'ajuste normal vuelve a estar permitido tras liberar cortesía')
+  await assertFails(setDoc(doc(queueDb(ids.warehouse), 'restaurants', 'sanjose', 'distOperations', `${prefix}-warehouse-courtesy-release`), { id: `${prefix}-warehouse-courtesy-release`, restaurantId: 'sanjose', createdBy: ids.warehouse, type: 'releaseProcessingReservation', payload: { reservationId: releaseReservationId }, status: 'queued' })); checks++
+  await assertFails(setDoc(doc(queueDb(ids.distributor), 'restaurants', 'sanjose', 'distOperations', `${prefix}-distributor-courtesy-release`), { id: `${prefix}-distributor-courtesy-release`, restaurantId: 'sanjose', createdBy: ids.distributor, type: 'releaseProcessingReservation', payload: { reservationId: releaseReservationId }, status: 'queued' })); checks++
+  pass(true, 'Rules bloquean a Almacén y Distribuidor al intentar solicitar liberación')
+
+  const partialReleaseProduct = `${prefix}-partial-release-product`, partialReleaseLot = `${prefix}-partial-release-lot`, partialReleaseId = `${prefix}-partial-release__reservation`
+  await seedLot(partialReleaseProduct, partialReleaseLot, 10)
+  await command(ids.admin, 'reserveProcessingStock', { reservationId: partialReleaseId, productId: partialReleaseProduct, lotId: partialReleaseLot, location: 'central', purpose: 'courtesy', quantity: 5, reason: 'Reserva parcial QA' }, `${prefix}-partial-release-create`)
+  await command(ids.admin, 'deliverReservedCourtesy', { reservationId: partialReleaseId, quantity: 3, deliveredWeightG: 3000, recipient: 'Destinatario QA', reason: 'Consumo previo de prueba' }, `${prefix}-partial-release-consume`)
+  const partialRelease = await command(ids.admin, 'releaseProcessingReservation', { reservationId: partialReleaseId, expectedRemainingQuantity: 2, reason: 'Liberar solo saldo restante', commercialQualityConfirmed: true }, `${prefix}-partial-release-op`)
+  const partialReservationAfter = (await root.collection('distStockReservations').doc(partialReleaseId).get()).data()
+  const partialLotAfter = (await root.collection('distLots').doc(partialReleaseLot).get()).data()
+  pass(partialRelease.result.releasedQuantity === 2 && partialReservationAfter.originalQuantity === 5 && partialReservationAfter.consumedQuantity === 3 && partialReservationAfter.remainingQuantity === 0 && partialReservationAfter.status === 'released', 'liberación parcial solo restaura los 2 kg pendientes; conserva 3 kg consumidos')
+  pass((await root.collection('distBalances').doc(`central__${partialReleaseProduct}`).get()).data().quantity === 7 && partialLotAfter.processingUnavailable.central.courtesy === 0, 'liberar saldo parcialmente consumido no repone físico ya entregado')
+
+  const adjustmentReservationProduct = `${prefix}-adjustment-res-product`, adjustmentReservationLot = `${prefix}-adjustment-res-lot`, adjustmentReservationId = `${prefix}-adjustment-res__reservation`
+  await seedLot(adjustmentReservationProduct, adjustmentReservationLot, 5, { processingUnavailable: { central: { courtesy: 0, repackPending: 0, reviewHold: 0 } } })
+  await command(ids.admin, 'reserveProcessingStock', { reservationId: adjustmentReservationId, productId: adjustmentReservationProduct, lotId: adjustmentReservationLot, location: 'central', purpose: 'courtesy', quantity: 1, reason: 'Concurrencia QA' }, `${prefix}-adjustment-res-create`)
+  const reservationBeforeRace = (await root.collection('distStockReservations').doc(adjustmentReservationId).get()).data()
+  await command(ids.admin, 'deliverReservedCourtesy', { reservationId: adjustmentReservationId, quantity: 1, deliveredWeightG: 1000, recipient: 'Consumo QA', reason: 'Se consume antes de liberar' }, `${prefix}-release-race-consume`)
+  const staleRelease = await command(ids.admin, 'releaseProcessingReservation', { reservationId: adjustmentReservationId, expectedRemainingQuantity: 1, reason: 'Liberar saldo observado', commercialQualityConfirmed: true }, `${prefix}-release-race-op`, 'rejected')
+  const reservationAfterRace = (await root.collection('distStockReservations').doc(adjustmentReservationId).get()).data()
+  pass(staleRelease.error.includes('cambió') && reservationAfterRace.remainingQuantity === 0 && reservationAfterRace.status === 'consumed', 'liberación con cantidad observada obsoleta se rechaza después de cambiar la reserva')
+  pass(reservationBeforeRace.remainingQuantity === 1 && (await root.collection('distBalances').doc(`central__${adjustmentReservationProduct}`).get()).data().quantity === 4, 'consumo concurrente afecta físico solo por entrega; liberación no repone producto')
+
   const events = await root.collection('distStockMovements').where('productId', '==', ids.product).get()
   const reservationEvents = events.docs.map(d => d.data()).filter(m => ['reservation_created','reservation_released'].includes(m.type))
   pass(reservationEvents.length === 3 && reservationEvents.every(m => m.centralDelta === 0 && m.routeDelta === 0), 'solo la reserva creada genera evento documental; Kardex mantiene delta físico cero')

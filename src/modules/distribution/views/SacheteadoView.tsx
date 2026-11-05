@@ -82,11 +82,11 @@ function suspiciousQuantityMessage(product: DistProduct, quantity: number, nomin
   return `Registraste ${quantity} ${label} de ${formatGrams(nominalWeightG)} g, pero el peso neto real total es ${formatGrams(netWeightG)} g. Revisa la cantidad comercial y la unidad del producto antes de confirmar. El sistema no infiere ni corrige la cantidad automáticamente.`
 }
 
-export function SacheteadoView({ session, data }: DistributionViewProps) {
+export function SacheteadoView({ session, data, reservationTarget = null, onReservationTargetHandled }: DistributionViewProps & { reservationTarget?: string | null; onReservationTargetHandled?: () => void }) {
   const today = todayKey()
   const fixedLocation = session.role === 'warehouse' ? (session.warehouseId || 'central') : 'central'
   const [draft, setDraft] = useState<Draft>(() => readDraft(session.uid, fixedLocation, today, session.role === 'admin'))
-  const [tab, setTab] = useState<Tab>('new')
+  const [tab, setTab] = useState<Tab>(reservationTarget ? 'reservations' : 'new')
   const [historyMode, setHistoryMode] = useState<HistoryMode>('batches')
   const [step, setStep] = useState(0)
   const [submitState, setSubmitState] = useState<SubmitState>(() => draft.operationPending ? 'unknown' : 'idle')
@@ -330,7 +330,7 @@ export function SacheteadoView({ session, data }: DistributionViewProps) {
     {tab === 'new' && <ProcessingGuide topic="new" onStart={() => setWalkthroughOpen(true)} />}
     {tab === 'history' && <ProcessingGuide topic="history" />}
 
-    {['reservations','review','repack'].includes(tab) && <ProcessingOperationsView mode={tab as 'reservations' | 'review' | 'repack'} session={session} products={data.products} lots={data.lots} locationOptions={[{id:'central',name:'Almacén central'}, ...data.warehouses.filter(item => item.active)]} />}
+    {['reservations','review','repack'].includes(tab) && <ProcessingOperationsView mode={tab as 'reservations' | 'review' | 'repack'} session={session} products={data.products} lots={data.lots} locationOptions={[{id:'central',name:'Almacén central'}, ...data.warehouses.filter(item => item.active)]} initialReservationId={reservationTarget || undefined} onInitialReservationHandled={onReservationTargetHandled} onNavigateMode={next => setTab(next)} />}
 
     {tab === 'history' && <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><button type="button" onClick={() => { setHistoryMode('batches'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'batches' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Elaboraciones</button><button type="button" onClick={() => { setHistoryMode('reviews'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reviews' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Revisiones</button><button type="button" onClick={() => { setHistoryMode('repackings'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'repackings' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reenvasados</button><button type="button" onClick={() => { setHistoryMode('reports'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reports' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reportes</button></div>
