@@ -151,6 +151,17 @@ service cloud.firestore {
         && request.resource.data.amount == saleCurrentQrAmount(sale);
     }
 
+    function validCollectionQrVerification(restaurantId) {
+      let path = /databases/$(database)/documents/restaurants/$(restaurantId)/distCollections/$(request.resource.data.sourceId);
+      let payment = get(path).data;
+      let qr = payment.get('qrAmount', payment.get('method', '') == 'qr' ? payment.amount : 0);
+      return exists(path) && qr is number && qr > 0
+        && !payment.keys().hasAny(['voidedAt'])
+        && payment.get('pendingConfirmation', false) != true
+        && request.resource.data.routeId == payment.routeId
+        && request.resource.data.amount == qr;
+    }
+
     // Catalogo y rutas: lectura para cualquier miembro activo, escritura solo
     // administracion (los precios son configuracion, no operacion diaria).
     match /restaurants/{restaurantId}/distProducts/{productId} {
@@ -199,8 +210,7 @@ service cloud.firestore {
           && validSaleQrVerification(restaurantId, verificationId))
         || (request.resource.data.sourceType == 'collection'
           && verificationId == 'collection_' + request.resource.data.sourceId
-          && get(/databases/$(database)/documents/restaurants/$(restaurantId)/distCollections/$(request.resource.data.sourceId)).data.method == 'qr'
-          && request.resource.data.amount == get(/databases/$(database)/documents/restaurants/$(restaurantId)/distCollections/$(request.resource.data.sourceId)).data.amount)
+          && validCollectionQrVerification(restaurantId))
         || (request.resource.data.sourceType == 'claim'
           && verificationId == 'claim_' + request.resource.data.sourceId
           && request.resource.data.amount == get(/databases/$(database)/documents/restaurants/$(restaurantId)/distClaims/$(request.resource.data.sourceId)).data.qrIn));
