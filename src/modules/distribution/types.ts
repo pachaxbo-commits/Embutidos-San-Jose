@@ -17,6 +17,7 @@ export type SourceLocation = 'route' | 'centralWarehouse'
 export type StockLocationKind = 'central' | 'route'
 
 export type StockMovementType =
+  | 'physical_origin_reconciled' // conciliación documental sin efecto físico
   | 'traceability_notice' // incidencia documental; efecto físico y económico cero
   | 'intake' // ingreso a almacen central
   | 'dispatch' // salida a ruta

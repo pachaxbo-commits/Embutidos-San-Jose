@@ -43,7 +43,10 @@ async function main() {
   )
   assert.equal(writes.length, 0, 'sin motivo, el backend no programa cambios de lote ni auditoría')
 
-  const updated = await handlers.updateLot(operation, { ...payload, reason: 'Corrección de fecha' })
+  await assert.rejects(handlers.updateLot(operation, { ...payload, reason: 'Corrección administrativa documentada' }), /registra la evidencia real/)
+  assert.equal(writes.length, 0, 'sin confirmación y evidencia no cambia identidad')
+
+  const updated = await handlers.updateLot(operation, { ...payload, reason: 'Corrección de fecha', explicitConfirmation: true, evidenceNote: 'Etiqueta física verificada y documentada' })
   assert.equal(updated.lotCode, '161026')
   assert.deepEqual(updated.quantities, { central: 4 }, 'editar metadata no altera stock')
   assert.deepEqual(writes.map(write => write.collection), ['distLots', 'distLotHistory'])
