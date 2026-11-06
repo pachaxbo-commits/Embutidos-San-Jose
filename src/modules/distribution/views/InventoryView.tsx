@@ -1,19 +1,19 @@
 import { LotsAndHistory } from './LotsAndHistory'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { FileSpreadsheet, FileText, History, Layers, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2, toDayKey } from '../domain/engine'
-import { loadProcessingReservationsForLot, newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, warehouseBalanceId } from '../data/distributionRepository'
+import { loadProcessingReportPage, loadProcessingReservationsForLot, newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, warehouseBalanceId, type ProcessingReportCursor } from '../data/distributionRepository'
 import { useRouteStock, useStockIndex } from '../state/useDistributionStore'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistProduct } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
-import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inventoryHistorySheet } from '../data/reportExports'
+import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inventoryHistorySheet, type ReportSheet } from '../data/reportExports'
 import { getTodayStockIntakes } from '../domain/todayIntakes'
 import { reportUnitLabel } from '../domain/reportLabels'
 import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
@@ -23,6 +23,9 @@ import { quarantineRows } from '../domain/quarantine'
 import { validateIntakeLotDates } from '../domain/inventoryIntakeValidation'
 import { operationFailureMessage } from '../domain/operationFailureMessage'
 import { QuarantineView } from './QuarantineView'
+import { buildProcessingMermaEntries, buildProcessingMermaReport, filterProcessingMermaEntries, type ProcessingMermaEntry } from '../domain/processingReports'
+import { collectProcessingReportPages } from '../domain/processingReportPagination'
+import { filterInventoryMermaMovements, summarizeInventoryMermaMovements } from '../domain/inventoryMerma'
 
 const MOVEMENT_LABELS: Record<string, string> = {
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
@@ -37,12 +40,41 @@ const MOVEMENT_LABELS: Record<string, string> = {
   processing_consumption: 'Consumo en elaboración', processing_output: 'Salida de elaboración', processing_commercial_rectification: 'Rectificación administrativa de cantidad (sin ingreso físico)', processing_discard: 'Descarte confirmado en elaboración',
 }
 
+function formatMermaWeight(grams: number) {
+  return `${(grams / 1000).toFixed(3)} kg · ${grams.toLocaleString('es-BO')} g`
+}
+
+function ProcessingMermaCard({ entry, onOpen }: { entry: ProcessingMermaEntry; onOpen?: (batchId: string) => void }) {
+  return <article className="min-w-0 rounded-2xl border-2 border-amber-200 bg-white p-3 shadow-sm">
+    <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+      <div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-950">{entry.sourceProductName}</p><p className="mt-0.5 text-[11px] text-slate-600">Sacheteado · {entry.date || 'Fecha no registrada'} · {entry.responsibleName}</p></div>
+      <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-black text-amber-950">{entry.status}</span>
+    </div>
+    <div className="mt-2 grid min-w-0 gap-1 text-[11px] text-slate-700 sm:grid-cols-2">
+      <p className="break-words">Lote(s) de origen: <strong>{entry.sourceLots.join(', ') || 'No registrado'}</strong></p>
+      <p className="break-words">Producto terminado: <strong>{entry.finishedProducts.join(', ') || 'No registrado'}</strong></p>
+      <p className="break-words">Lote(s) terminado: <strong>{entry.finishedLots.join(', ') || 'No registrado'}</strong></p>
+      <p>Entrada real: <strong>{formatMermaWeight(entry.inputWeightG)}</strong></p>
+      <p>Peso terminado: <strong>{formatMermaWeight(entry.finishedWeightG)}</strong></p>
+    </div>
+    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+      <div className="rounded-xl bg-violet-50 p-2 text-[11px] text-violet-950"><strong>{formatMermaWeight(entry.overweightMermaG)}</strong><p className="mt-0.5">Merma por sobrepeso incluida dentro de los paquetes</p></div>
+      <div className="rounded-xl bg-rose-50 p-2 text-[11px] text-rose-950"><strong>{formatMermaWeight(entry.physicalDiscardG)}</strong><p className="mt-0.5">Descarte físico real retirado</p></div>
+      <div className="rounded-xl bg-slate-100 p-2 text-[11px] text-slate-900"><strong>{formatMermaWeight(entry.informativeTotalG)}</strong><p className="mt-0.5">Merma total informativa; sin movimiento o descuento adicional</p></div>
+    </div>
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+      <p className="min-w-0 break-words text-[10px] text-slate-500">Elaboración {entry.batch.id} · {entry.batch.sourceLocation}</p>
+      <button type="button" disabled={!onOpen} onClick={() => onOpen?.(entry.batch.id)} className="min-h-10 rounded-xl border border-indigo-300 bg-indigo-50 px-3 text-xs font-extrabold text-indigo-950 disabled:opacity-50">Ver elaboración</button>
+    </div>
+  </article>
+}
+
 /**
  * Inventario en dos ubicaciones reales: almacen central y stock en ruta.
  * El stock en ruta no es un numero suelto: es lo despachado menos lo vendido,
  * mantenido por el ledger de movimientos.
  */
-export function InventoryView({ session, data, onOpenReservation }: DistributionViewProps) {
+export function InventoryView({ session, data, onOpenReservation, onOpenProcessingBatch }: DistributionViewProps) {
   const [selectedWarehouse, setSelectedWarehouse] = useState('central')
   const warehouseId = session.role === 'admin' ? selectedWarehouse : session.warehouseId || 'central'
   const lotLocation = warehouseId === 'central' ? 'central' : `warehouse__${warehouseId}`
@@ -72,6 +104,13 @@ export function InventoryView({ session, data, onOpenReservation }: Distribution
   const [isQuarantineOpen, setIsQuarantineOpen] = useState(false)
   const [historyDays, setHistoryDays] = useState<string[]>([toDayKey(new Date())])
   const [historyExporting, setHistoryExporting] = useState<'pdf' | 'excel' | null>(null)
+  const [generalHistoryMode, setGeneralHistoryMode] = useState<'movements' | 'mermas'>('movements')
+  const [mermaSource, setMermaSource] = useState<'all' | 'inventory' | 'processing'>('all')
+  const [mermaLotSearch, setMermaLotSearch] = useState('')
+  const [mermaResponsibleSearch, setMermaResponsibleSearch] = useState('')
+  const [processingMermaBatches, setProcessingMermaBatches] = useState<import('../domain/processing').ProcessingBatch[]>([])
+  const [processingMermaLoading, setProcessingMermaLoading] = useState(false)
+  const [processingMermaError, setProcessingMermaError] = useState('')
   const [isIntakeHistoryOpen, setIsIntakeHistoryOpen] = useState(false)
   const intakeHistoryPreviousDays = useRef<string[]>(session.dayKeys)
   const [intakeHistoryExporting, setIntakeHistoryExporting] = useState(false)
@@ -103,6 +142,57 @@ export function InventoryView({ session, data, onOpenReservation }: Distribution
     .filter(row => !generalHistorySearch.trim() || row.movement.productName.toLocaleLowerCase('es').includes(generalHistorySearch.trim().toLocaleLowerCase('es')))
     .sort((a, b) => b.movement.createdAt.localeCompare(a.movement.createdAt)), [data.movements, historyDays, warehouseLocation, generalHistorySearch])
 
+  useEffect(() => {
+    if (!isGeneralHistoryOpen || generalHistoryMode !== 'mermas' || mermaSource === 'inventory' || !historyDays.length) return
+    let active = true
+    queueMicrotask(() => {
+      if (!active) return
+      setProcessingMermaLoading(true)
+      setProcessingMermaError('')
+      setProcessingMermaBatches([])
+    })
+    const from = historyDays[0]
+    const to = historyDays[historyDays.length - 1]
+    void collectProcessingReportPages<import('../domain/processing').ProcessingBatch, ProcessingReportCursor>(
+      cursor => loadProcessingReportPage('batches', warehouseLocation, from, to, cursor).then(page => ({ ...page, rows: page.rows as import('../domain/processing').ProcessingBatch[] })),
+      () => active,
+    ).then(rows => {
+      if (!active || !rows) return
+      const selectedDays = new Set(historyDays)
+      setProcessingMermaBatches((rows as import('../domain/processing').ProcessingBatch[]).filter(batch => selectedDays.has(batch.processingDate || batch.dayKey || toDayKey(batch.createdAt))))
+    }).catch(reason => {
+      if (active) setProcessingMermaError((reason as Error).message || 'No se pudieron consultar las mermas de Sacheteado.')
+    }).finally(() => { if (active) setProcessingMermaLoading(false) })
+    return () => { active = false }
+  }, [isGeneralHistoryOpen, generalHistoryMode, mermaSource, historyDays, warehouseLocation])
+
+  const processingMermaEntries = useMemo(() => buildProcessingMermaEntries(processingMermaBatches, data.products), [processingMermaBatches, data.products])
+  const filteredProcessingMermaEntries = useMemo(() => filterProcessingMermaEntries(processingMermaEntries, {
+    from: historyDays[0], to: historyDays[historyDays.length - 1], product: generalHistorySearch, lot: mermaLotSearch, responsible: mermaResponsibleSearch,
+  }), [processingMermaEntries, historyDays, generalHistorySearch, mermaLotSearch, mermaResponsibleSearch])
+  const processingBatchIds = useMemo(() => new Set(processingMermaBatches.map(batch => batch.id)), [processingMermaBatches])
+  const inventoryMermaRows = useMemo(() => {
+    const eligible = filterInventoryMermaMovements(data.movements, mermaSource === 'all' ? processingBatchIds : new Set())
+    return eligible
+      .filter(movement => !(mermaSource === 'all' && processingMermaLoading && movement.type === 'processing_discard' && movement.batchId))
+      .filter(movement => historyDays.includes(movement.dayKey || toDayKey(movement.createdAt)))
+      .filter(movement => (movement.fromLocation === warehouseLocation || movement.toLocation === warehouseLocation)
+        || (warehouseLocation === 'central' && Math.abs(movement.centralDelta) > 0.0001))
+      .filter(movement => !generalHistorySearch.trim() || movement.productName.toLocaleLowerCase('es').includes(generalHistorySearch.trim().toLocaleLowerCase('es')))
+      .filter(movement => !mermaLotSearch.trim() || `${movement.lotCode || ''} ${movement.lotId || ''} ${movement.destinationLotId || ''} ${movement.allocations?.map(allocation => `${allocation.lotCode || ''} ${allocation.lotId || ''}`).join(' ') || ''}`.toLocaleLowerCase('es').includes(mermaLotSearch.trim().toLocaleLowerCase('es')))
+      .filter(movement => !mermaResponsibleSearch.trim() || (movement.responsibleName || movement.createdBy || '').toLocaleLowerCase('es').includes(mermaResponsibleSearch.trim().toLocaleLowerCase('es')))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(movement => ({ movement, delta: movement.toLocation === warehouseLocation ? movement.quantity : movement.fromLocation === warehouseLocation ? -movement.quantity : warehouseLocation === 'central' ? movement.centralDelta : 0 }))
+  }, [data.movements, historyDays, warehouseLocation, generalHistorySearch, mermaSource, processingBatchIds, processingMermaLoading, mermaLotSearch, mermaResponsibleSearch])
+  const visibleProcessingMermaEntries = useMemo(() => mermaSource === 'inventory' ? [] : filteredProcessingMermaEntries, [mermaSource, filteredProcessingMermaEntries])
+  const visibleInventoryMermaRows = useMemo(() => mermaSource === 'processing' ? [] : inventoryMermaRows, [mermaSource, inventoryMermaRows])
+  const processingMermaTotals = useMemo(() => visibleProcessingMermaEntries.reduce((totals, entry) => ({
+    overweight: totals.overweight + entry.overweightMermaG,
+    discard: totals.discard + entry.physicalDiscardG,
+    informative: totals.informative + entry.informativeTotalG,
+  }), { overweight: 0, discard: 0, informative: 0 }), [visibleProcessingMermaEntries])
+  const inventoryMermaTotals = useMemo(() => summarizeInventoryMermaMovements(visibleInventoryMermaRows.map(row => row.movement)), [visibleInventoryMermaRows])
+
   const generalHistorySheet = inventoryHistorySheet(data, historyDays, warehouseId)
   const productHistoryMovements = useMemo(
     () => historyProduct ? filterProductMovementHistory(data.movements, historyProduct.id, historyProductFilter) : [],
@@ -118,14 +208,35 @@ export function InventoryView({ session, data, onOpenReservation }: Distribution
     ? warehouseLotReconciliation(selectedProductLotRows, selectedProductBalance, lotsProduct.unitType)
     : null
 
+  const buildInventoryMermaSheet = (rows: Array<{ movement: import('../types').DistStockMovement }>): ReportSheet => ({
+    name: 'Mermas de inventario',
+    headers: ['Fecha y hora', 'Producto', 'Movimiento', 'Cantidad', 'Unidad', 'Lote', 'Responsable', 'Observación'],
+    rows: rows.map(({ movement }) => [
+      movement.createdAt ? new Date(movement.createdAt).toLocaleString('es-BO') : '',
+      movement.productName,
+      MOVEMENT_LABELS[movement.type] || 'Merma física registrada',
+      movement.quantity,
+      reportUnitLabel(movement.unitType),
+      movement.lotCode || movement.allocations?.map(allocation => allocation.lotCode).filter(Boolean).join(', ') || '',
+      visiblePersonName(movement.responsibleName || movement.createdBy),
+      movement.note || '',
+    ]),
+  })
   const downloadGeneralHistory = async (format: 'pdf' | 'excel') => {
     if (historyExporting) return
     setHistoryExporting(format)
     try {
       const description = `${warehouseName} · ${describeRange(historyDays)} · Emitido ${new Date().toLocaleString('es-BO')}`
       const searchedSheet = { ...generalHistorySheet, rows: generalHistorySheet.rows.filter(row => !generalHistorySearch.trim() || String(row[1] || '').toLocaleLowerCase('es').includes(generalHistorySearch.trim().toLocaleLowerCase('es'))) }
-      if (format === 'pdf') await exportPdf([searchedSheet], description, 'SanJose-historial-inventario.pdf')
-      else await exportExcel([searchedSheet], description, 'SanJose-historial-inventario.xlsx')
+      const mermaSheets = generalHistoryMode === 'mermas'
+        ? [
+            ...(mermaSource !== 'inventory' ? [buildProcessingMermaReport(visibleProcessingMermaEntries) as ReportSheet] : []),
+            ...(mermaSource !== 'processing' ? [buildInventoryMermaSheet(visibleInventoryMermaRows)] : []),
+          ]
+        : [searchedSheet]
+      if (!mermaSheets.some(sheet => sheet.rows.length)) throw new Error('No hay registros para exportar con los filtros seleccionados.')
+      if (format === 'pdf') await exportPdf(mermaSheets, description, generalHistoryMode === 'mermas' ? 'SanJose-mermas.pdf' : 'SanJose-historial-inventario.pdf')
+      else await exportExcel(mermaSheets, description, generalHistoryMode === 'mermas' ? 'SanJose-mermas.xlsx' : 'SanJose-historial-inventario.xlsx')
     } catch (downloadError) {
       setError((downloadError as Error).message || 'No se pudo generar el historial de inventario.')
     } finally {
@@ -489,55 +600,85 @@ export function InventoryView({ session, data, onOpenReservation }: Distribution
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="mb-1.5 flex items-center gap-2">
               <History size={18} className="text-slate-700" />
-              <h4 className="text-xs font-black uppercase tracking-wider text-slate-900">Historial de movimientos</h4>
+              <h4 className="text-xs font-black uppercase tracking-wider text-slate-900">Historial y mermas</h4>
             </div>
             <p className="mb-3 text-xs font-semibold text-slate-600">
-              Historial de ingresos, despachos, devoluciones, mermas, faltantes, sobrantes, transferencias y ajustes.
+              Consulta los movimientos del almacén o consolida las pérdidas físicas y las mermas informativas de Sacheteado.
             </p>
+            <div className="mb-3 grid grid-cols-2 gap-2" role="group" aria-label="Tipo de historial">
+              {([['movements', 'Movimientos'], ['mermas', 'Mermas']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={generalHistoryMode === value} onClick={() => setGeneralHistoryMode(value)} className={`min-h-10 rounded-xl border px-3 text-xs font-extrabold ${generalHistoryMode === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
+            </div>
             <TextInput value={generalHistorySearch} onChange={event => setGeneralHistorySearch(event.target.value)} placeholder="Buscar producto en el historial..." />
             <RangePicker dayKeys={historyDays} onChange={setHistoryDays} />
+            {generalHistoryMode === 'mermas' && <>
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3" role="group" aria-label="Origen de las mermas">
+                {([['all', 'Todas'], ['inventory', 'Inventario'], ['processing', 'Sacheteado']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={mermaSource === value} onClick={() => setMermaSource(value)} className={`min-h-10 rounded-xl border px-3 text-xs font-extrabold ${mermaSource === value ? 'border-amber-800 bg-amber-800 text-white' : 'border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
+              </div>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <TextInput value={mermaLotSearch} onChange={event => setMermaLotSearch(event.target.value)} placeholder="Filtrar por lote de origen o terminado..." />
+                <TextInput value={mermaResponsibleSearch} onChange={event => setMermaResponsibleSearch(event.target.value)} placeholder="Filtrar por responsable..." />
+              </div>
+            </>}
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
                 type="button"
-                disabled={generalMovements.length === 0 || Boolean(historyExporting)}
+                disabled={(generalHistoryMode === 'mermas' ? visibleProcessingMermaEntries.length + visibleInventoryMermaRows.length === 0 || processingMermaLoading : generalMovements.length === 0) || Boolean(historyExporting)}
                 onClick={() => void downloadGeneralHistory('pdf')}
                 className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] px-3 text-xs font-extrabold text-white shadow-sm hover:bg-slate-800 disabled:opacity-40"
               >
-                <Printer size={15} /> Imprimir movimientos (PDF)
+                <Printer size={15} /> {generalHistoryMode === 'mermas' ? 'Imprimir mermas (PDF)' : 'Imprimir movimientos (PDF)'}
               </button>
               <button
                 type="button"
-                disabled={generalMovements.length === 0 || Boolean(historyExporting)}
+                disabled={(generalHistoryMode === 'mermas' ? visibleProcessingMermaEntries.length + visibleInventoryMermaRows.length === 0 || processingMermaLoading : generalMovements.length === 0) || Boolean(historyExporting)}
                 onClick={() => void downloadGeneralHistory('excel')}
                 className="flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 text-xs font-extrabold text-slate-700 shadow-sm hover:bg-slate-100 disabled:opacity-40"
               >
-                <FileSpreadsheet size={15} /> Descargar Excel movimientos
+                <FileSpreadsheet size={15} /> {generalHistoryMode === 'mermas' ? 'Descargar mermas Excel' : 'Descargar Excel movimientos'}
               </button>
             </div>
           </div>
 
-          <p className="text-[11px] font-semibold text-slate-500">{describeRange(historyDays)} · {generalMovements.length} movimientos</p>
-          <div className="grid max-h-[360px] gap-2 overflow-y-auto pr-1 md:grid-cols-2">
-            {generalMovements.map(({ movement, delta }) => (
-              <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="break-words text-xs font-extrabold text-slate-900">{movement.productName}</p>
-                    <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p>
+          {generalHistoryMode === 'movements' ? <>
+            <p className="text-[11px] font-semibold text-slate-500">{describeRange(historyDays)} · {generalMovements.length} movimientos</p>
+            <div className="grid max-h-[360px] gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+              {generalMovements.map(({ movement, delta }) => (
+                <article key={movement.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0"><p className="break-words text-xs font-extrabold text-slate-900">{movement.productName}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')}</p></div>
+                    <strong className={`shrink-0 text-sm tabular-nums ${delta > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{delta > 0 ? '+' : ''}{formatQty(delta, movement.unitType)}</strong>
                   </div>
-                  <strong className={`shrink-0 text-sm tabular-nums ${delta > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    {delta > 0 ? '+' : ''}{formatQty(delta, movement.unitType)}
-                  </strong>
-                </div>
-                <p className="mt-2 text-[11px] font-bold text-slate-700">{MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'}</p>
-                {movement.reversedAt && <p className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Revertido por reapertura el {new Date(movement.reversedAt).toLocaleString('es-BO')}{movement.reversalReason ? ` · ${movement.reversalReason}` : ''}</p>}
-                <p className="mt-1 break-words text-[10px] text-slate-500">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}</p>
-                <p className="mt-1 break-words text-[10px] text-slate-500">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Usuario'} · {visiblePersonName(movement.responsibleName)}</p>
-                {movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}
-              </article>
-            ))}
-          </div>
-          {generalMovements.length === 0 && <EmptyBlock title="Sin movimientos en este periodo" description="Prueba otro rango de fechas." />}
+                  <p className="mt-2 text-[11px] font-bold text-slate-700">{MOVEMENT_LABELS[movement.type] || 'Movimiento de inventario'}</p>
+                  {movement.reversedAt && <p className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Revertido por reapertura el {new Date(movement.reversedAt).toLocaleString('es-BO')}{movement.reversalReason ? ` · ${movement.reversalReason}` : ''}</p>}
+                  <p className="mt-1 break-words text-[10px] text-slate-500">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}</p>
+                  <p className="mt-1 break-words text-[10px] text-slate-500">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Usuario'} · {visiblePersonName(movement.responsibleName)}</p>
+                  {movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}
+                </article>
+              ))}
+            </div>
+            {generalMovements.length === 0 && <EmptyBlock title="Sin movimientos en este periodo" description="Prueba otro rango de fechas." />}
+          </> : <>
+            <div className="grid grid-cols-2 gap-2 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs sm:grid-cols-4">
+              <p><strong className="text-amber-950">{(processingMermaTotals.overweight / 1000).toFixed(3)} kg</strong><br/>Sobrepeso no cobrado</p>
+              <p><strong className="text-amber-950">{(processingMermaTotals.discard / 1000).toFixed(3)} kg</strong><br/>Descarte físico de Sacheteado</p>
+              <p><strong className="text-amber-950">{inventoryMermaTotals.size ? [...inventoryMermaTotals.entries()].map(([unit, quantity]) => `${formatQty(quantity, unit as DistProduct['unitType'])}`).join(' · ') : '0'}</strong><br/>Otras mermas físicas</p>
+              <p><strong className="text-amber-950">{(processingMermaTotals.informative / 1000).toFixed(3)} kg</strong><br/>Merma total informativa de Sacheteado</p>
+            </div>
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] leading-relaxed text-indigo-950">
+              <p>El sobrepeso no cobrado permanece dentro de los sachets y su peso/costo; no es un segundo descuento de inventario. El descarte físico real sí es producto retirado durante la elaboración.</p>
+              <p className="mt-1">El descarte aparece en la ficha de elaboración; su movimiento de trazabilidad no se vuelve a sumar como otra merma.</p>
+            </div>
+            <p className="text-[11px] font-semibold text-slate-500">{describeRange(historyDays)} · {filteredProcessingMermaEntries.length} elaboraciones con merma · {inventoryMermaRows.length} movimientos físicos adicionales{processingMermaLoading ? ' · consultando…' : ''}</p>
+            {processingMermaError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">{processingMermaError} <button type="button" className="font-extrabold underline" onClick={() => setHistoryDays(days => [...days])}>Reintentar</button></p>}
+            {visibleProcessingMermaEntries.map(entry => <ProcessingMermaCard key={entry.batch.id} entry={entry} onOpen={onOpenProcessingBatch} />)}
+            {visibleInventoryMermaRows.map(({ movement }) => <article key={movement.id} className="min-w-0 rounded-2xl border border-rose-200 bg-white p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2"><div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-900">{movement.productName}</p><p className="text-[10px] text-slate-500">{new Date(movement.createdAt).toLocaleString('es-BO')} · {visiblePersonName(movement.responsibleName || movement.createdBy)}</p></div><strong className="shrink-0 text-sm font-black text-rose-800">{formatQty(movement.quantity, movement.unitType)}</strong></div>
+              <p className="mt-1 text-xs font-bold text-rose-800">{MOVEMENT_LABELS[movement.type] || 'Merma física registrada'}</p>
+              {(movement.lotCode || movement.lotId || movement.destinationLotId || movement.allocations?.length) && <p className="mt-1 break-words text-[11px] text-slate-600">Lote: {movement.lotCode || movement.allocations?.map(allocation => allocation.lotCode || allocation.lotId).filter(Boolean).join(', ') || movement.lotId || movement.destinationLotId}</p>}
+              {movement.note && <p className="mt-1 break-words text-[11px] text-slate-600">{movement.note}</p>}
+            </article>)}
+            {!processingMermaLoading && !processingMermaError && visibleInventoryMermaRows.length + visibleProcessingMermaEntries.length === 0 && <EmptyBlock title="Sin mermas con estos filtros" description="Prueba otro periodo, producto, lote o responsable." />}
+          </>}
         </div>
       </Modal>
       <QuarantineView session={session} data={data} isOpen={isQuarantineOpen} onClose={() => setIsQuarantineOpen(false)} defaultLocation={lotLocation} />

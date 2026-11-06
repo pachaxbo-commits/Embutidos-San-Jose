@@ -4,7 +4,7 @@ import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../c
 import { EmptyBlock, LoadingState, Screen } from '../../../components/ui/Screen'
 import { calculateNominalWeightSummary, isSuspiciousProcessingQuantity, processingOverweightMermaG, reconcileProcessingMass } from '../domain/processingDomain'
 import { decimalInputToScaledInteger, formatKgFromGrams, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity, normalizeProcessingUiType } from '../domain/processingUi'
-import { newOperationId, warehouseBalanceId, loadProcessingBatchPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
+import { newOperationId, warehouseBalanceId, loadProcessingBatch, loadProcessingBatchPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
 import { stockAvailability } from '../domain/stockAvailability'
 import type { ProcessingBatch, ProcessingDestinationKind, ProcessingWeightBasis, ConfirmProcessingBatchInput, ProcessingPackagingMaterial, ProcessingCostComponent } from '../domain/processing'
 import type { DistLot, DistProduct } from '../types'
@@ -82,11 +82,11 @@ function suspiciousQuantityMessage(product: DistProduct, quantity: number, nomin
   return `Registraste ${quantity} ${label} de ${formatGrams(nominalWeightG)} g, pero el peso neto real total es ${formatGrams(netWeightG)} g. Revisa la cantidad comercial y la unidad del producto antes de confirmar. El sistema no infiere ni corrige la cantidad automáticamente.`
 }
 
-export function SacheteadoView({ session, data, reservationTarget = null, onReservationTargetHandled }: DistributionViewProps & { reservationTarget?: string | null; onReservationTargetHandled?: () => void }) {
+export function SacheteadoView({ session, data, reservationTarget = null, onReservationTargetHandled, processingBatchTarget = null, onProcessingBatchTargetHandled }: DistributionViewProps & { reservationTarget?: string | null; onReservationTargetHandled?: () => void; processingBatchTarget?: string | null; onProcessingBatchTargetHandled?: () => void }) {
   const today = todayKey()
   const fixedLocation = session.role === 'warehouse' ? (session.warehouseId || 'central') : 'central'
   const [draft, setDraft] = useState<Draft>(() => readDraft(session.uid, fixedLocation, today, session.role === 'admin'))
-  const [tab, setTab] = useState<Tab>(reservationTarget ? 'reservations' : 'new')
+  const [tab, setTab] = useState<Tab>(processingBatchTarget ? 'history' : reservationTarget ? 'reservations' : 'new')
   const [historyMode, setHistoryMode] = useState<HistoryMode>('batches')
   const [step, setStep] = useState(0)
   const [submitState, setSubmitState] = useState<SubmitState>(() => draft.operationPending ? 'unknown' : 'idle')
@@ -158,6 +158,29 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       .finally(() => { if (active) setLoadingHistory(false) })
     return () => { active = false }
   }, [tab, historyMode, session.role, locationKey, historyWarehouse])
+
+  useEffect(() => {
+    if (!processingBatchTarget) return
+    let active = true
+    queueMicrotask(() => {
+      if (!active) return
+      setSelectedBatch(null)
+      setLoadingHistory(true)
+      setHistoryError('')
+    })
+    void loadProcessingBatch(processingBatchTarget).then(batch => {
+      if (!active) return
+      if (!batch) setHistoryError('No se encontró la elaboración solicitada o ya no está disponible para esta cuenta.')
+      else setSelectedBatch(batch)
+    }).catch(reason => {
+      if (active) setHistoryError((reason as Error).message || 'No se pudo abrir la elaboración solicitada.')
+    }).finally(() => {
+      if (!active) return
+      setLoadingHistory(false)
+      onProcessingBatchTargetHandled?.()
+    })
+    return () => { active = false }
+  }, [processingBatchTarget, onProcessingBatchTargetHandled])
 
 
   const editDraft = (update: (current: Draft) => Draft) => {

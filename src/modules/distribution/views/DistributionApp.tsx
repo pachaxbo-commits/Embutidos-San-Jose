@@ -3,7 +3,7 @@ import { acknowledgeOperation } from '../data/operationQueue'
 import { ClaimsView } from './ClaimsView'
 import { QrView } from './QrView'
 import { WarehousesView } from './WarehousesView'
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
 import {
   AlertTriangle,
@@ -88,6 +88,7 @@ export interface DistributionViewProps {
   session: DistributionSession
   data: DistributionData
   onOpenReservation?: (reservationId: string) => void
+  onOpenProcessingBatch?: (batchId: string) => void
 }
 
 const MODULE_ICONS: Partial<Record<ModuleId, BottomNavItem<ModuleId>['icon']>> = {
@@ -150,6 +151,7 @@ export function DistributionApp({
   const modules = useMemo(() => getVisibleModules(can, role), [can, role])
   const [currentModule, setCurrentModule] = useState<ModuleId>('dist.dashboard')
   const [reservationTarget, setReservationTarget] = useState<string | null>(null)
+  const [processingBatchTarget, setProcessingBatchTarget] = useState<string | null>(null)
   const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false)
   const [businessAlertsOpen, setBusinessAlertsOpen] = useState(false)
@@ -249,7 +251,13 @@ export function DistributionApp({
     setCurrentModule('dist.processing')
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
-  const viewProps: DistributionViewProps = { session, data, onOpenReservation: openReservation }
+  const openProcessingBatch = (batchId: string) => {
+    setProcessingBatchTarget(batchId)
+    setCurrentModule('dist.processing')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  const clearProcessingBatchTarget = useCallback(() => setProcessingBatchTarget(null), [])
+  const viewProps: DistributionViewProps = { session, data, onOpenReservation: openReservation, onOpenProcessingBatch: openProcessingBatch }
 
   const renderModule = () => {
     switch (activeModule) {
@@ -265,7 +273,7 @@ export function DistributionApp({
       case 'dist.inventory':
         return <InventoryView {...viewProps} />
       case 'dist.processing':
-        return <SacheteadoView {...viewProps} reservationTarget={reservationTarget} onReservationTargetHandled={() => setReservationTarget(null)} />
+        return <SacheteadoView {...viewProps} reservationTarget={reservationTarget} onReservationTargetHandled={() => setReservationTarget(null)} processingBatchTarget={processingBatchTarget} onProcessingBatchTargetHandled={clearProcessingBatchTarget} />
       case 'dist.dispatches':
         return <DispatchesView {...viewProps} />
       case 'dist.sales':

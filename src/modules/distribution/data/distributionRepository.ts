@@ -128,6 +128,13 @@ export interface ProcessingBatchPage {
   hasMore: boolean
 }
 
+/** Reads one known batch to open its detail directly from an Inventory report card. */
+export async function loadProcessingBatch(batchId: string): Promise<ProcessingBatch | null> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, 'distProcessingBatches', batchId))
+  return snapshot.exists() ? normalizeProcessingReportBatch({ ...snapshot.data(), id: snapshot.id } as ProcessingBatch) : null
+}
+
 /** Historial bajo demanda: acotado y filtrado por ubicación para cumplir Rules de almacén. */
 export async function loadProcessingBatchPage(
   location: string | undefined,
