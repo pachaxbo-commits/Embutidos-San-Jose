@@ -14,6 +14,22 @@ export interface ProcessingReportFilters {
   status?: string
 }
 
+export interface ProcessingMermaEntry {
+  batch: ProcessingBatch
+  date: string
+  sourceProductName: string
+  sourceLots: string[]
+  finishedProducts: string[]
+  finishedLots: string[]
+  inputWeightG: number
+  finishedWeightG: number
+  overweightMermaG: number
+  physicalDiscardG: number
+  informativeTotalG: number
+  responsibleName: string
+  status: string
+}
+
 const dateKey = (value?: string) => {
   if (!value) return ''
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
@@ -97,6 +113,55 @@ export function buildProcessingBatchReport(rows: ProcessingBatch[], products: Di
       const materials = batch.packagingMaterials.map(row => `${row.description || 'Material'}: ${(row.quantityMilli / 1000).toFixed(3)} usados; ${(row.damagedQuantityMilli / 1000).toFixed(3)} dañados; ${money(row.costCents)} informativo`).join(' | ')
       return [dateKey(batch.processingDate || batch.dayKey || batch.createdAt), processName[batch.processType], batch.sourceProductName || productName(batch.sourceProductId, products), source, kg(batch.inputWeightG), destinations, kg(outputWeight), `${batch.inputWeightG - outputWeight} g`, `${overweightMermaG} g · permanece dentro del peso/costo del terminado`, `${physicalDiscardG} g`, `${overweightMermaG + physicalDiscardG} g · informativa, no genera movimientos adicionales`, money(batch.sourceCostCents), materials || 'Sin materiales', batch.responsibleName, batch.sourceLocation, batchStatusName[batch.status]]
     }),
+  }
+}
+
+/** Shared, read-only summary for the Inventory merma view; it never creates movements or costs. */
+export function buildProcessingMermaEntries(rows: ProcessingBatch[], products: DistProduct[] = []): ProcessingMermaEntry[] {
+  return rows.map(normalizeProcessingReportBatch)
+    .filter(batch => batch.processType !== 'repackaging' && batch.status !== 'reversed')
+    .map(batch => {
+      const finished = batch.destinations.filter(destination => destination.kind === 'finished')
+      const overweightMermaG = processingOverweightMermaG(batch.destinations)
+      const physicalDiscardG = batch.destinations.reduce((sum, destination) =>
+        sum + (destination.kind === 'discard' && Number.isSafeInteger(destination.netWeightG) ? destination.netWeightG : 0), 0)
+      return {
+        batch,
+        date: dateKey(batch.processingDate || batch.dayKey || batch.createdAt),
+        sourceProductName: batch.sourceProductName || productName(batch.sourceProductId, products),
+        sourceLots: batch.sourceAllocations.map(source => source.lotCode || source.lotId),
+        finishedProducts: [...new Set(finished.map(destination => productName(destination.productId, products)))],
+        finishedLots: finished.map(destination => destination.lotCode || destination.lotId || 'Sin lote registrado'),
+        inputWeightG: Number.isSafeInteger(batch.inputWeightG) ? batch.inputWeightG : 0,
+        finishedWeightG: finished.reduce((sum, destination) => sum + (Number.isSafeInteger(destination.netWeightG) ? destination.netWeightG : 0), 0),
+        overweightMermaG,
+        physicalDiscardG,
+        informativeTotalG: overweightMermaG + physicalDiscardG,
+        responsibleName: batch.responsibleName || 'Usuario de registro anterior',
+        status: batchStatusName[batch.status],
+      }
+    })
+    .filter(entry => entry.informativeTotalG > 0)
+}
+
+export function filterProcessingMermaEntries(entries: ProcessingMermaEntry[], filters: {
+  from?: string; to?: string; product?: string; lot?: string; responsible?: string
+}): ProcessingMermaEntry[] {
+  const includes = (value: string, term?: string) => !term || value.toLocaleLowerCase('es').includes(term.trim().toLocaleLowerCase('es'))
+  return entries.filter(entry => {
+    if (filters.from && entry.date < filters.from || filters.to && entry.date > filters.to) return false
+    const batch = entry.batch
+    const productsText = `${entry.sourceProductName} ${entry.finishedProducts.join(' ')}`
+    const lotsText = `${entry.sourceLots.join(' ')} ${entry.finishedLots.join(' ')} ${batch.sourceAllocations.map(row => row.lotId).join(' ')} ${batch.destinations.map(row => row.lotId || '').join(' ')}`
+    return includes(productsText, filters.product) && includes(lotsText, filters.lot) && includes(entry.responsibleName, filters.responsible)
+  })
+}
+
+export function buildProcessingMermaReport(entries: ProcessingMermaEntry[]) {
+  return {
+    name: 'Mermas de Sacheteado',
+    headers: ['Fecha', 'Producto origen', 'Lote(s) origen', 'Producto terminado', 'Lote(s) terminado', 'Entrada (g)', 'Peso terminado (g)', 'Sobrepeso no cobrado (g)', 'Descarte físico (g)', 'Merma total informativa (g)', 'Responsable', 'Estado', 'Elaboración'],
+    rows: entries.map(entry => [entry.date, entry.sourceProductName, entry.sourceLots.join(', ') || 'No registrado', entry.finishedProducts.join(', ') || 'No registrado', entry.finishedLots.join(', ') || 'No registrado', entry.inputWeightG, entry.finishedWeightG, entry.overweightMermaG, entry.physicalDiscardG, entry.informativeTotalG, entry.responsibleName, entry.status, entry.batch.id]),
   }
 }
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { signInWithEmail } from '../src/lib/firebase'
 import { SacheteadoView } from '../src/modules/distribution/views/SacheteadoView'
@@ -57,7 +57,7 @@ export function Harness() {
 
   if (params.get('sell') === '1') return <SellVoidHarness uid={uid} userName={qaUser.name} />
   if (params.get('release') === '1') return <main className="mx-auto max-w-xl p-4"><ProcessingCommercialRelease lot={releaseLot as unknown as DistLot} /></main>
-  if (params.get('inventory') === '1') return <InventoryReservationHarness uid={uid} userName={qaUser.name} />
+  if (params.get('inventory') === '1') return params.get('mermas') === '1' ? <InventoryMermaHarness uid={uid} userName={qaUser.name} /> : <InventoryReservationHarness uid={uid} userName={qaUser.name} />
 
   if (fullApp) return <DistributionApp
     restaurantId="sanjose"
@@ -114,6 +114,22 @@ function InventoryReservationHarness({ uid, userName }: { uid: string; userName:
   return openedReservation
     ? <ProcessingOperationsView mode="reservations" session={session} products={typedData.products} lots={typedData.lots} locationOptions={[{ id: 'central', name: 'Almacén central' }]} initialReservationId={openedReservation} />
     : <InventoryView session={session} data={typedData} onOpenReservation={setOpenedReservation} />
+}
+
+function InventoryMermaHarness({ uid, userName }: { uid: string; userName: string }) {
+  const dayKeys = [toDayKey(new Date())]
+  const data = useDistributionData({ restaurantId: 'sanjose', routeId: null, dayKeys, enabled: true, canReadFinance: false })
+  const [target, setTarget] = useState<string | null>(null)
+  const [showProcessing, setShowProcessing] = useState(false)
+  const clearTarget = useCallback(() => setTarget(null), [])
+  const openProcessingBatch = useCallback((batchId: string) => { setTarget(batchId); setShowProcessing(true) }, [])
+  const session: DistributionSession = {
+    restaurantId: 'sanjose', restaurantName: 'Embutidos San José', uid, userName, role: 'admin',
+    warehouseId: 'central', routeId: null, can: () => true, dayKeys, setDayKeys: () => {},
+  }
+  return showProcessing
+    ? <SacheteadoView session={session} data={data} processingBatchTarget={target} onProcessingBatchTargetHandled={clearTarget} />
+    : <InventoryView session={session} data={data} onOpenProcessingBatch={openProcessingBatch} />
 }
 
 function SellVoidHarness({ uid, userName }: { uid: string; userName: string }) {

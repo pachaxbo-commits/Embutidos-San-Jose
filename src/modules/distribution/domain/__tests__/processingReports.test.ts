@@ -1,6 +1,7 @@
-import { buildProcessingBatchReport, buildProcessingLotTraceReport, buildProcessingQualityReport, filterProcessingBatches, filterProcessingRepackings, filterProcessingReviews, normalizeProcessingReportBatch } from '../processingReports.ts'
+import { buildProcessingBatchReport, buildProcessingLotTraceReport, buildProcessingMermaEntries, buildProcessingMermaReport, buildProcessingQualityReport, filterProcessingBatches, filterProcessingMermaEntries, filterProcessingRepackings, filterProcessingReviews, normalizeProcessingReportBatch } from '../processingReports.ts'
 import type { ProcessingBatch, ProcessingRepackRecord, ProcessingReviewRecord } from '../processing.ts'
 import { collectProcessingReportPages } from '../processingReportPagination.ts'
+import { filterInventoryMermaMovements } from '../inventoryMerma.ts'
 
 function assertEqual(actual: unknown, expected: unknown, message = 'valores distintos') { if (actual !== expected) throw new Error(`${message}: esperado ${String(expected)}, recibido ${String(actual)}`) }
 function assertMatch(actual: string, pattern: RegExp, message = 'texto no coincide') { if (!pattern.test(actual)) throw new Error(`${message}: ${actual}`) }
@@ -28,6 +29,37 @@ assertEqual(weightBusinessReport.rows[0][7], '0 g', 'balance físico concilia si
 assertEqual(weightBusinessReport.rows[0][8], '500 g · permanece dentro del peso/costo del terminado', 'reporta sobrepeso no cobrado sin deducción adicional')
 assertEqual(weightBusinessReport.rows[0][9], '550 g', 'reporta el descarte físico separadamente')
 assertMatch(String(weightBusinessReport.rows[0][10]), /^1050 g · informativa, no genera movimientos adicionales/, 'merma total se muestra solo informativa y no duplica movimientos')
+const mermaEntries = buildProcessingMermaEntries([weightBusinessCase], [
+  { id: 'bulk', name: 'Chorizo parrillero crudo granel' } as never,
+  { id: 'sachet', name: 'Sachet chorizo 1 kg' } as never,
+])
+assertEqual(mermaEntries[0].inputWeightG, 41050)
+assertEqual(mermaEntries[0].finishedWeightG, 40500, 'el terminado solo suma destinos finished')
+assertEqual(mermaEntries[0].overweightMermaG, 500)
+assertEqual(mermaEntries[0].physicalDiscardG, 550)
+assertEqual(mermaEntries[0].informativeTotalG, 1050)
+assertEqual(filterProcessingMermaEntries(mermaEntries, { product: 'Sachet chorizo', lot: 'ORI-1', responsible: 'QA' }).length, 1, 'la ficha filtra por producto, lote y responsable')
+const mermaExport = buildProcessingMermaReport(mermaEntries)
+assertEqual(mermaExport.rows[0][7], 500)
+assertEqual(mermaExport.rows[0][8], 550)
+const overfillOnly: ProcessingBatch = { ...batch, id: 'overfill-only', inputWeightG: 40500, destinations: [{ ...batch.destinations[0], commercialQuantity: 40, nominalWeightG: 1000, netWeightG: 40500 }] }
+const overfillEntry = buildProcessingMermaEntries([overfillOnly])[0]
+assertEqual(overfillEntry.overweightMermaG, 500, 'caso A: sobrepeso sin descarte')
+assertEqual(overfillEntry.physicalDiscardG, 0)
+assertEqual(overfillEntry.informativeTotalG, 500)
+const discardOnly: ProcessingBatch = { ...batch, id: 'discard-only', inputWeightG: 1200, destinations: [
+  { ...batch.destinations[0], commercialQuantity: 1, nominalWeightG: 1000, netWeightG: 1000 },
+  { ...batch.destinations[0], id: 'discard-only-dest', kind: 'discard', productId: undefined, commercialQuantity: 0, nominalWeightG: undefined, netWeightG: 200 },
+] }
+const discardOnlyEntry = buildProcessingMermaEntries([discardOnly])[0]
+assertEqual(discardOnlyEntry.overweightMermaG, 0, 'caso C: descarte sin sobrepeso')
+assertEqual(discardOnlyEntry.physicalDiscardG, 200)
+assertEqual(buildProcessingMermaEntries([batch]).length, 0, 'caso D: una elaboración sin mermas no crea tarjeta engañosa')
+const processingDiscardMovement = { id: 'discard-ledger', batchId: weightBusinessCase.id, type: 'processing_discard', quantity: 0.55, unitType: 'kg' } as never
+const independentLossMovement = { id: 'shortage', type: 'shortage', quantity: 0.2, unitType: 'kg' } as never
+const consolidatedInventoryLosses = filterInventoryMermaMovements([processingDiscardMovement, independentLossMovement], new Set([weightBusinessCase.id]))
+assertEqual(consolidatedInventoryLosses.length, 1, 'caso C: el ledger processing_discard se omite si ya está en la ficha de elaboración')
+assertEqual(consolidatedInventoryLosses[0].id, 'shortage')
 const trace = buildProcessingLotTraceReport([batch], { outputLot: 'DER-1' })
 assertMatch(String(trace.rows[0][8]), /asignación contable, no identificación física/)
 assertEqual(trace.rows[0][0], 'DER-1')

@@ -132,7 +132,8 @@
     "test:processing-commercial-rectification": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingCommercialRectification.test.mjs\"",
     "test:processing-repack": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/processingRepack.test.mjs\"",
     "test:processing-evidence": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth,storage \"node firebase/tests/processingEvidence.test.mjs\"",
-    "test:processing-quality-auth": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth,functions \"node firebase/tests/processingQualityAuthorization.test.mjs\""
+    "test:processing-quality-auth": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth,functions \"node firebase/tests/processingQualityAuthorization.test.mjs\"",
+    "test:inventory-merma-e2e": "node scripts/run-inventory-merma-e2e.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
