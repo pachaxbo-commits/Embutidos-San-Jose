@@ -1,10 +1,11 @@
+import { allocatePhysicalQuantity, roundQuantityForUnit } from '../domain/physicalQuantity'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { AlertTriangle, ArrowDown, ArrowDownRight, ArrowUp, ArrowUpRight, Check, Copy, Download, FileText, GripVertical, Mail, MessageCircle, Minus, PackagePlus, Pencil, Plus, Printer, RotateCcw, Save, Search, Send, Trash2, Truck, Undo2, X } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
-import { computeLoadedByProduct, round2, validateStockAvailability } from '../domain/engine'
+import { computeLoadedByProduct, validateStockAvailability } from '../domain/engine'
 import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, resetDispatchProductOrder, saveDispatchProductOrder, subscribeClosedDispatches, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
@@ -144,7 +145,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
   const getProductSalesInDispatch = (dispatchId: string, productId: string) => {
     const dispatchSales = data.sales.filter((sale) => sale.dispatchId === dispatchId && !sale.pendingConfirmation)
-    return round2(
+    return roundQuantityForUnit(
       dispatchSales.reduce((sum, sale) => {
         const snap = sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale
         const lineQty = (snap.lines || [])
@@ -187,7 +188,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const updateInitialDraft = (productId: string, val: number) => {
     setInitialDrafts((prev) => ({
       ...prev,
-      [productId]: Math.max(0, round2(val)),
+      [productId]: Math.max(0, roundQuantityForUnit(val)),
     }))
   }
 
@@ -196,7 +197,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       ...prev,
       [additionId]: {
         ...(prev[additionId] || {}),
-        [productId]: Math.max(0, round2(val)),
+        [productId]: Math.max(0, roundQuantityForUnit(val)),
       },
     }))
   }
@@ -238,7 +239,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       const newQty = initialDrafts[line.productId] ?? line.quantity
       const oldDispatchMerma = line.dispatchMerma || 0
       const newDispatchMerma = initialMermaDrafts[line.productId] ?? oldDispatchMerma
-      if (round2(newQty) !== round2(line.quantity) || round2(newDispatchMerma) !== round2(oldDispatchMerma)) {
+      if (roundQuantityForUnit(newQty) !== roundQuantityForUnit(line.quantity) || roundQuantityForUnit(newDispatchMerma) !== roundQuantityForUnit(oldDispatchMerma)) {
         const prod = data.products.find((p) => p.id === line.productId)
         initialDiffs.push({
           targetType: 'initial',
@@ -250,7 +251,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           newQuantity: newQty,
           oldDispatchMerma,
           newDispatchMerma,
-          delta: round2(newQty - line.quantity),
+          delta: roundQuantityForUnit(newQty - line.quantity),
           lotCode: line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode,
         })
       }
@@ -312,7 +313,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           const newQty = additionDrafts[add.id]?.[line.productId] ?? line.quantity
           const oldDispatchMerma = line.dispatchMerma || 0
           const newDispatchMerma = additionMermaDrafts[add.id]?.[line.productId] ?? oldDispatchMerma
-          if (round2(newQty) !== round2(line.quantity) || round2(newDispatchMerma) !== round2(oldDispatchMerma)) {
+          if (roundQuantityForUnit(newQty) !== roundQuantityForUnit(line.quantity) || roundQuantityForUnit(newDispatchMerma) !== roundQuantityForUnit(oldDispatchMerma)) {
             const prod = data.products.find((p) => p.id === line.productId)
             additionDiffs.push({
               targetType: 'addition',
@@ -326,7 +327,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               newQuantity: newQty,
               oldDispatchMerma,
               newDispatchMerma,
-              delta: round2(newQty - line.quantity),
+              delta: roundQuantityForUnit(newQty - line.quantity),
               lotCode: line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode,
             })
           }
@@ -351,14 +352,14 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     const netDeltaByProduct = new Map<string, number>()
 
     for (const d of initialDiffs) {
-      netDeltaByProduct.set(d.productId, round2((netDeltaByProduct.get(d.productId) || 0) + d.delta))
+      netDeltaByProduct.set(d.productId, roundQuantityForUnit((netDeltaByProduct.get(d.productId) || 0) + d.delta))
     }
     for (const d of additionDiffs) {
-      netDeltaByProduct.set(d.productId, round2((netDeltaByProduct.get(d.productId) || 0) + d.delta))
+      netDeltaByProduct.set(d.productId, roundQuantityForUnit((netDeltaByProduct.get(d.productId) || 0) + d.delta))
     }
     for (const va of voidedAdditionsList) {
       for (const l of va.lines) {
-        netDeltaByProduct.set(l.productId, round2((netDeltaByProduct.get(l.productId) || 0) - l.quantity))
+        netDeltaByProduct.set(l.productId, roundQuantityForUnit((netDeltaByProduct.get(l.productId) || 0) - l.quantity))
       }
     }
     for (const change of [...initialDiffs, ...additionDiffs]) {
@@ -370,7 +371,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
     for (const [pid, delta] of netDeltaByProduct.entries()) {
       const curLoaded = loadedMap.get(pid)?.totalLoaded || 0
-      const newLoaded = round2(curLoaded + delta)
+      const newLoaded = roundQuantityForUnit(curLoaded + delta)
       const totalSold = getProductSalesInDispatch(correctionTarget!.id, pid)
       const prod = data.products.find((p) => p.id === pid)
       const name = prod?.name || 'este producto'
@@ -414,8 +415,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
       changes.push({
         targetType: 'initial',
         productId: d.productId,
-        newQuantity: round2(d.newQuantity),
-        newDispatchMerma: round2(d.newDispatchMerma),
+        newQuantity: roundQuantityForUnit(d.newQuantity),
+        newDispatchMerma: roundQuantityForUnit(d.newDispatchMerma),
       })
     }
     for (const d of additionDiffs) {
@@ -423,8 +424,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         targetType: 'addition',
         additionId: d.additionId,
         productId: d.productId,
-        newQuantity: round2(d.newQuantity),
-        newDispatchMerma: round2(d.newDispatchMerma),
+        newQuantity: roundQuantityForUnit(d.newQuantity),
+        newDispatchMerma: roundQuantityForUnit(d.newDispatchMerma),
       })
     }
     for (const va of voidedAdditionsList) {
@@ -548,15 +549,12 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   ))
 
   const distributeFefo = (draft: DraftLine) => {
-    let remaining = round2(Number(draft.quantity) + (Number(draft.dispatchMerma) || 0))
-    if (!(remaining > 0)) { setError('Primero indica la cantidad normal y la merma adicional del producto.'); return }
-    const allocations: DraftLine['allocations'] = []
-    for (const lot of sortDispatchLotsFefo(eligibleLots(draft.productId))) {
-      if (remaining <= 0) break
-      const quantity = round2(Math.min(remaining, lot.quantities[lotLocation] || 0))
-      if (quantity > 0) allocations.push({ id: newOperationId('lot'), lotId: lot.id, quantity: String(quantity) })
-      remaining = round2(remaining - quantity)
-    }
+    const product = data.products.find(item => item.id === draft.productId)
+    if (!product) return
+    const target = roundQuantityForUnit(Number(draft.quantity) + (Number(draft.dispatchMerma) || 0), product.unitType)
+    if (!(target > 0)) { setError('Primero indica la cantidad normal y la merma adicional del producto.'); return }
+    const { allocations: parts, remaining } = allocatePhysicalQuantity(target, sortDispatchLotsFefo(eligibleLots(draft.productId)).map(lot => ({ id: lot.id, available: Number(lot.quantities[lotLocation]) || 0 })), product.unitType)
+    const allocations = parts.map(part => ({ ...part, id: newOperationId('lot'), quantity: String(part.quantity) }))
     if (remaining > 0) { setError(`Faltan ${remaining} para completar la cantidad con lotes aptos.`); return }
     setError(null)
     setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, allocations } : line))
@@ -680,20 +678,20 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const buildLines = (): DistDispatchLine[] => {
     const lines: DistDispatchLine[] = []
     for (const draft of orderedDraftLines) {
-      const quantity = round2(Number(draft.quantity))
+      const quantity = roundQuantityForUnit(Number(draft.quantity))
       if (!draft.productId || !(quantity > 0)) continue
       const product = activeProducts.find((item) => item.id === draft.productId)
       if (!product) continue
-      const dispatchMerma = product.unitType === 'kg' ? round2(Number(draft.dispatchMerma) || 0) : 0
+      const dispatchMerma = product.unitType === 'kg' ? roundQuantityForUnit(Number(draft.dispatchMerma) || 0) : 0
       lines.push({
         productId: product.id,
         productName: product.presentation ? `${product.name} - ${product.presentation}` : product.name,
         unitType: product.unitType,
         normalQuantity: quantity,
         dispatchMerma,
-        quantity: round2(quantity + dispatchMerma),
-        ...(Number(draft.warehouseLoss) > 0 ? { warehouseLoss: { quantity: round2(Number(draft.warehouseLoss)), reason: draft.warehouseLossReason?.trim() || '', confirmation: 'CONFIRMAR_PERDIDA_REAL' as const } } : {}),
-        allocationsRequested: draft.allocations.map(part => ({ lotId: part.lotId, quantity: round2(Number(part.quantity)) })),
+        quantity: roundQuantityForUnit(quantity + dispatchMerma),
+        ...(Number(draft.warehouseLoss) > 0 ? { warehouseLoss: { quantity: roundQuantityForUnit(Number(draft.warehouseLoss)), reason: draft.warehouseLossReason?.trim() || '', confirmation: 'CONFIRMAR_PERDIDA_REAL' as const } } : {}),
+        allocationsRequested: draft.allocations.map(part => ({ lotId: part.lotId, quantity: roundQuantityForUnit(Number(part.quantity)) })),
       })
     }
     return lines
@@ -814,21 +812,21 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           const product = activeProducts.find(item => item.id === line.productId)
           if (!product) return null
           const lots = eligibleLots(product.id)
-          const assigned = round2(line.allocations.reduce((sum, part) => sum + (Number(part.quantity) || 0), 0))
-          const normal = round2(Number(line.quantity) || 0)
-          const merma = product.unitType === 'kg' ? round2(Number(line.dispatchMerma) || 0) : 0
-          const total = round2(normal + merma)
-          const complete = total > 0 && Math.abs(assigned - total) < 0.01
+          const assigned = roundQuantityForUnit(line.allocations.reduce((sum, part) => sum + (Number(part.quantity) || 0), 0))
+          const normal = roundQuantityForUnit(Number(line.quantity) || 0)
+          const merma = product.unitType === 'kg' ? roundQuantityForUnit(Number(line.dispatchMerma) || 0) : 0
+          const total = roundQuantityForUnit(normal + merma)
+          const complete = total > 0 && assigned === total
           return <div key={line.id} data-dispatch-line-id={line.id} data-dispatch-product-line={line.productId} className={`grid gap-3 rounded-2xl border bg-slate-50 p-3 transition-shadow ${draftLotIssues.some(issue => issue.lineId === line.id && issue.key === highlightedDispatchIssue) ? 'border-rose-500 ring-4 ring-rose-200' : 'border-slate-200'}`}>
             <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Apto para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p>{dispatchableDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-indigo-700">Sachet con trazabilidad · habilitado para despacho y venta</p> : null}{pendingCommercialReleaseDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-amber-700">{formatQty(pendingCommercialReleaseDerived.get(product.id) || 0, product.unitType)} pendientes de liberación por Administración; no disponibles para este despacho.</p> : null}</div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
-            <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
+            <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.001 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
             {product.unitType === 'kg' && (
               <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Se envía físicamente con la carga. No es pérdida del almacén ni se cobra por separado.">
                 <NumberInput
                   aria-label={`Merma adicional de ${product.name}`}
                   value={line.dispatchMerma ?? ''}
                   min={0}
-                  step={0.01}
+                  step={0.001}
                   placeholder="0 kg"
                   onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, dispatchMerma: event.target.value } : item))}
                 />
@@ -839,7 +837,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
               <summary className="cursor-pointer text-xs font-bold text-rose-900">Registrar una pérdida real en Almacén (opcional)</summary>
               <div className="mt-3 grid min-w-0 gap-3">
                 <p className="text-xs text-rose-900">Solo producto realmente descartado. Esta cantidad sale de la existencia del almacén, no se carga a la ruta y su costo se registra como pérdida.</p>
-                <Field label="Pérdida real en Almacén (kg)"><NumberInput aria-label={`Pérdida real de ${product.name}`} value={line.warehouseLoss || ''} min={0} step={0.01} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLoss: event.target.value, warehouseLossConfirmed: false } : item))} /></Field>
+                <Field label="Pérdida real en Almacén (kg)"><NumberInput aria-label={`Pérdida real de ${product.name}`} value={line.warehouseLoss || ''} min={0} step={0.001} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLoss: event.target.value, warehouseLossConfirmed: false } : item))} /></Field>
                 <Field label="Motivo de la pérdida real"><TextArea value={line.warehouseLossReason || ''} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLossReason: event.target.value, warehouseLossConfirmed: false } : item))} /></Field>
                 {Number(line.warehouseLoss) > 0 && <label className="flex items-start gap-3 text-xs font-bold text-rose-900"><input type="checkbox" className="mt-1 h-5 w-5 shrink-0" checked={Boolean(line.warehouseLossConfirmed)} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, warehouseLossConfirmed: event.target.checked } : item))} /><span>Confirmo que {formatQty(Number(line.warehouseLoss), product.unitType)} se descartó realmente en Almacén. No corresponde a merma adicional enviada dentro de las bolsas.</span></label>}
               </div>
@@ -859,12 +857,12 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                     {selectedLot && <p className="break-words text-[10px] font-medium text-slate-500">Lote {selectedLot.lotCode || selectedLot.id} · disponible {formatQty(selectedLot.quantities[lotLocation] || 0, product.unitType)} · elaboración {selectedLot.manufacturedOn || 'sin fecha'} · ingreso {selectedLot.createdAt?.slice(0, 10) || 'sin fecha'} · vence {selectedLot.expiresOn || 'sin fecha'}</p>}
                     {issues.map(issue => <p key={issue.key} role="alert" className="flex min-w-0 items-start gap-1.5 break-words rounded-lg border border-rose-300 bg-rose-50 p-2 text-[11px] font-bold leading-snug text-rose-900"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{issue.message}</p>)}
                   </div>
-                  <NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.01 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} />
+                  <NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.001 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} />
                   <button type="button" aria-label="Quitar lote" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.filter(entry => entry.id !== part.id) } : item))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
                 </div>
               })}</div>
               <button type="button" className="mt-2 w-full rounded-xl border border-dashed border-[var(--primary)] px-3 py-2 text-xs font-extrabold text-[var(--primary)]" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: [...item.allocations, { id: newOperationId('lot'), lotId: '', quantity: '' }] } : item))}>+ Agregar otro lote</button>
-              <p className={`mt-2 text-xs font-extrabold ${complete && !draftLotIssues.some(issue => issue.lineId === line.id) ? 'text-emerald-700' : 'text-amber-700'}`}>Asignado: {assigned} / {total} {complete && !draftLotIssues.some(issue => issue.lineId === line.id) ? '✓' : total <= 0 ? '' : total > assigned ? `· Faltan ${round2(total - assigned)}` : `· Sobran ${round2(assigned - total)}`}</p>
+              <p className={`mt-2 text-xs font-extrabold ${complete && !draftLotIssues.some(issue => issue.lineId === line.id) ? 'text-emerald-700' : 'text-amber-700'}`}>Asignado: {assigned} / {total} {complete && !draftLotIssues.some(issue => issue.lineId === line.id) ? '✓' : total <= 0 ? '' : total > assigned ? `· Faltan ${roundQuantityForUnit(total - assigned)}` : `· Sobran ${roundQuantityForUnit(assigned - total)}`}</p>
               {draftLotIssues.filter(issue => issue.lineId === line.id && !issue.allocationId).map(issue => <p key={issue.key} role="alert" className="mt-2 flex items-start gap-1.5 rounded-lg border border-rose-300 bg-rose-50 p-2 text-[11px] font-bold text-rose-900"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{issue.message}</p>)}
             </div>
           </div>
@@ -1336,7 +1334,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                   </span>
                 </button>
                 <div className="min-h-[60px] border-t border-slate-200 p-2">
-                  {draft ? <NumberInput aria-label={'Cantidad normal de ' + product.name} value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.01 : 1} placeholder={'Cantidad normal (' + (product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u') + ')'} onChange={event => setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /> : <div aria-hidden="true" className="flex min-h-10 items-center justify-center rounded-xl bg-slate-50 px-2 text-center text-[10px] font-medium text-slate-400">Selecciona para ingresar cantidad</div>}
+                  {draft ? <NumberInput aria-label={'Cantidad normal de ' + product.name} value={draft.quantity} min={0} max={central.get(product.id) ?? undefined} step={product.unitType === 'kg' ? 0.001 : 1} placeholder={'Cantidad normal (' + (product.unitType === 'kg' ? 'kg' : product.unitType === 'package' ? 'paq' : 'u') + ')'} onChange={event => setDraftLines(current => current.map(line => line.id === draft.id ? { ...line, quantity: event.target.value } : line))} className="px-2 text-center text-xs" /> : <div aria-hidden="true" className="flex min-h-10 items-center justify-center rounded-xl bg-slate-50 px-2 text-center text-[10px] font-medium text-slate-400">Selecciona para ingresar cantidad</div>}
                 </div>
               </div>
             })}
@@ -1582,8 +1580,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                   const lotCode = line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode || 'Lote original'
                   const totalSold = getProductSalesInDispatch(correctionTarget.id, line.productId)
                   const curVal = initialDrafts[line.productId] ?? line.quantity
-                  const diff = round2(curVal - line.quantity)
-                  const step = line.unitType === 'kg' ? 0.01 : 1
+                  const diff = roundQuantityForUnit(curVal - line.quantity)
+                  const step = line.unitType === 'kg' ? 0.001 : 1
 
                   return (
                     <div key={line.productId} className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs">
@@ -1665,7 +1663,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                         </div>
                       </div>
 
-                      {line.unitType === 'kg' && <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Parte física de la carga; no es pérdida real del almacén."><NumberInput value={initialMermaDrafts[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.01} max={curVal} onChange={event => setInitialMermaDrafts(current => ({ ...current, [line.productId]: Math.max(0, round2(Number(event.target.value) || 0)) }))} /></Field>}
+                      {line.unitType === 'kg' && <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Parte física de la carga; no es pérdida real del almacén."><NumberInput value={initialMermaDrafts[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.001} max={curVal} onChange={event => setInitialMermaDrafts(current => ({ ...current, [line.productId]: Math.max(0, roundQuantityForUnit(Number(event.target.value) || 0)) }))} /></Field>}
                       {totalSold > 0 && curVal < totalSold && (
                         <p className="mt-1.5 flex items-center gap-1 text-[10px] font-extrabold text-rose-600">
                           <AlertTriangle size={12} /> No se puede reducir por debajo de lo vendido ({formatQty(totalSold, line.unitType)})
@@ -1742,8 +1740,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                                 const lotCode = line.allocations?.map((a) => a.lotCode).filter(Boolean).join(', ') || line.lotCode || 'Lote original'
                                 const totalSold = getProductSalesInDispatch(correctionTarget.id, line.productId)
                                 const curVal = additionDrafts[addition.id]?.[line.productId] ?? line.quantity
-                                const diff = round2(curVal - line.quantity)
-                                const step = line.unitType === 'kg' ? 0.01 : 1
+                                const diff = roundQuantityForUnit(curVal - line.quantity)
+                                const step = line.unitType === 'kg' ? 0.001 : 1
 
                                 return (
                                   <div key={line.productId} className="rounded-lg border border-slate-100 bg-slate-50/70 p-2.5">
@@ -1816,7 +1814,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                                         )}
                                       </div>
                                     </div>
-                                    {line.unitType === 'kg' && <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Parte física de la carga; no es pérdida real del almacén."><NumberInput value={additionMermaDrafts[addition.id]?.[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.01} max={curVal} onChange={event => setAdditionMermaDrafts(current => ({ ...current, [addition.id]: { ...(current[addition.id] || {}), [line.productId]: Math.max(0, round2(Number(event.target.value) || 0)) } }))} /></Field>}
+                                    {line.unitType === 'kg' && <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Parte física de la carga; no es pérdida real del almacén."><NumberInput value={additionMermaDrafts[addition.id]?.[line.productId] ?? line.dispatchMerma ?? 0} min={0} step={0.001} max={curVal} onChange={event => setAdditionMermaDrafts(current => ({ ...current, [addition.id]: { ...(current[addition.id] || {}), [line.productId]: Math.max(0, roundQuantityForUnit(Number(event.target.value) || 0)) } }))} /></Field>}
                                     {totalSold > 0 && curVal < totalSold && (
                                       <p className="mt-1 text-[10px] font-bold text-amber-700">
                                         Total vendido registrado en la ruta: {formatQty(totalSold, line.unitType)}

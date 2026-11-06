@@ -69,7 +69,7 @@ try {
   await command(admin, 'dispatch', { warehouseId: 'central', routeId: `${prefix}-bad-sum`, routeName: 'Bad', distributorUid: sellerBad, distributorName: 'Ruta Bad', warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 50, allocationsRequested: [{ lotId: lot('C'), quantity: 5 }] }] }, 'rejected')
   pass(true, 'rechaza asignaciones cuya suma no coincide')
   const insufficient = await command(admin, 'addition', { dispatch: { id: multi.id }, warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 15, allocationsRequested: [{ lotId: lot('C'), quantity: 15 }] }] }, 'rejected')
-  pass(insufficient.error.includes(products.main) && insufficient.error.includes('lote C') && insufficient.error.includes('disponibilidad'), 'rechazo de cantidad agotada identifica producto, lote y causa accionable')
+  pass(insufficient.error.includes(products.main) && insufficient.error.includes('lote C') && insufficient.error.includes('existencia disponible'), 'rechazo de cantidad agotada identifica producto, lote y causa accionable')
   await command(admin, 'addition', { dispatch: { id: multi.id }, warehouseResponsibleName: 'QA', lines: [{ productId: products.main, quantity: 2, allocationsRequested: [{ lotId: lot('C'), quantity: 1 }, { lotId: lot('C'), quantity: 1 }] }] }, 'rejected')
   pass(true, 'rechaza el mismo lote repetido')
 
@@ -102,6 +102,26 @@ try {
   const historicCorrected = await read('distDispatches', historicDispatch.id)
   pass(historicCorrected.lines.length === 1 && historicCorrected.lines[0].quantity === 3, 'histórico duplicado se normaliza sin duplicar stock')
   pass((await read('distBalances', `route__${prefix}-route-historic__${products.historic}`)).quantity === 3, 'histórico duplicado conserva saldo exacto en ruta')
+
+  const gramsProduct = `${prefix}-tocino-grams`
+  const gramsSeller = `${prefix}-grams-seller`
+  const gramsRoute = `${prefix}-grams-route`
+  await root.collection('members').doc(gramsSeller).set({ active: true, role: 'distributor', routeId: gramsRoute, displayName: 'Synthetic grams' })
+  await root.collection('distProducts').doc(gramsProduct).set({ id: gramsProduct, name: 'Tocino synthetic', unitType: 'kg', active: true, referencePrice: 10, productionCost: 4 })
+  await command(admin, 'intake', { lines: [{ productId: gramsProduct, quantity: 0.006, lotCode: '231026', manufacturedOn: today, expiresOn: '2099-01-01' }, { productId: gramsProduct, quantity: 1.340, lotCode: 'NEXT', manufacturedOn: today, expiresOn: '2099-02-01' }] })
+  const gramsLots = await root.collection('distLots').where('productId', '==', gramsProduct).get()
+  const gramsIds = new Map(gramsLots.docs.map(row => [row.data().lotCode, row.id]))
+  // Seed the exact legacy residual; intake currently quantizes its own input separately.
+  await root.collection('distLots').doc(gramsIds.get('231026')).update({ 'quantities.central': 0.006 })
+  await root.collection('distBalances').doc(`central__${gramsProduct}`).update({ quantity: 1.346 })
+  const gramsPayload = { warehouseId: 'central', routeId: gramsRoute, routeName: 'Synthetic grams', distributorUid: gramsSeller, distributorName: 'Synthetic grams', warehouseResponsibleName: 'QA', lines: [{ productId: gramsProduct, quantity: 0.010, allocationsRequested: [{ lotId: gramsIds.get('231026'), quantity: 0.010 }] }] }
+  await command(admin, 'dispatch', gramsPayload, 'rejected')
+  pass((await read('distLots', gramsIds.get('231026'))).quantities.central === 0.006, 'sobregiro de cuatro gramos rechazado sin consumir lote')
+  gramsPayload.lines[0].allocationsRequested = [{ lotId: gramsIds.get('231026'), quantity: 0.006 }, { lotId: gramsIds.get('NEXT'), quantity: 0.004 }]
+  await command(admin, 'dispatch', gramsPayload)
+  pass((await read('distLots', gramsIds.get('231026'))).quantities.central === 0, 'remanente de seis gramos consumido exactamente')
+  pass((await read('distLots', gramsIds.get('NEXT'))).quantities.central === 1.336, 'siguiente lote conserva 1.336 kg')
+  pass((await read('distBalances', `central__${gramsProduct}`)).quantity === 1.336, 'balance disminuye exactamente diez gramos')
 
   console.log(`${passed} comprobaciones multi-lote aprobadas`)
 } finally {
