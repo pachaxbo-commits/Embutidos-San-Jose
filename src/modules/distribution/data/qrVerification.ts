@@ -1,4 +1,4 @@
-import { doc, runTransaction, type Firestore } from 'firebase/firestore'
+import { doc, getDocFromServer, runTransaction, type Firestore } from 'firebase/firestore'
 import { saleQrPaymentState } from '../domain/qrPayment.ts'
 import type { DistSale } from '../types.ts'
 
@@ -18,7 +18,8 @@ export async function recordQrVerification(
   const normalizedReference = reference.trim()
   if (!normalizedReference) throw new Error('Ingresa la referencia bancaria de la verificación.')
 
-  return runTransaction(db, async transaction => {
+  try {
+    return await runTransaction(db, async transaction => {
     const sourceCollection = sourceType === 'sale' ? 'distSales' : sourceType === 'claim' ? 'distClaims' : 'distCollections'
     const sourceRef = doc(db, 'restaurants', restaurantId, sourceCollection, sourceId)
     const sourceSnapshot = await transaction.get(sourceRef)
@@ -45,6 +46,7 @@ export async function recordQrVerification(
       amount = current.amount
       sourceRevision = current.revision
     } else {
+      if (data.voidedAt || data.pendingConfirmation) throw new Error('El movimiento está anulado o pendiente de confirmación.')
       amount = sourceType === 'claim'
         ? Number(data.qrIn) || 0
         : Number(data.qrAmount ?? (data.method === 'qr' ? data.amount : 0)) || 0
@@ -72,5 +74,22 @@ export async function recordQrVerification(
       verifiedAt: new Date().toISOString(),
     })
     return { status: 'verified', amount }
-  })
+    })
+  } catch (error) {
+    // Read after an ambiguous acknowledgement; never repeat a financial write.
+    try {
+      const collection = sourceType === 'sale' ? 'distSales' : sourceType === 'claim' ? 'distClaims' : 'distCollections'
+      const source = (await getDocFromServer(doc(db, 'restaurants', restaurantId, collection, sourceId))).data()
+      if (source && !source.voidedAt && !source.pendingConfirmation) {
+        const state = sourceType === 'sale' ? saleQrPaymentState({ ...source, id: sourceId } as DistSale) : null
+        const amount = state?.amount ?? Number(sourceType === 'claim' ? source.qrIn : source.qrAmount ?? (source.method === 'qr' ? source.amount : 0))
+        const id = state?.verificationId ?? `${sourceType}_${sourceId}`
+        const prior = (await getDocFromServer(doc(db, 'restaurants', restaurantId, 'distQrVerifications', id))).data()
+        if (amount > 0 && prior && prior.sourceType === sourceType && prior.sourceId === sourceId && Number(prior.amount) === amount && (!state || Number(prior.sourceRevision ?? 0) === state.revision) && (expectedRevision === undefined || !state || state.revision === expectedRevision)) {
+          return { status: 'already-verified', amount }
+        }
+      }
+    } catch { /* Preserve the original error if reconciliation cannot be read. */ }
+    throw error
+  }
 }

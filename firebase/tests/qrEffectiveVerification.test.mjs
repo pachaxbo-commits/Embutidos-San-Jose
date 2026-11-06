@@ -74,6 +74,15 @@ try {
     await setDoc(doc(db, 'restaurants', 'sanjose', 'distProducts', product), { id: product, restaurantId: 'sanjose', name: 'Producto QR QA', unitType: 'unit', referencePrice: 270, productionCost: 10, active: true })
   })
 
+  for (const [suffix, values] of [['pure', { amount: 200, method: 'qr' }], ['mixed', { amount: 300, cashAmount: 100, qrAmount: 200, method: 'mixed' }]]) {
+    const id = `${prefix}-collection-${suffix}`
+    await root.collection('distCollections').doc(id).set({ id, routeId: route, ...values })
+    const result = await recordQrVerification(adminDbClient, 'sanjose', admin, 'collection', id, 'Synthetic reference')
+    assert.equal(result.amount, 200)
+    assert.equal((await recordQrVerification(admin2DbClient, 'sanjose', admin2, 'collection', id, 'Synthetic reference')).status, 'already-verified')
+    pass(`collection ${suffix}: componente QR 200 y sin duplicación`)
+  }
+
   const today = dayKey(new Date())
   await command(admin, 'intake', { note: 'Stock QA QR', lines: [{ productId: product, quantity: 100, lotCode: 'QR-QA-1', manufacturedOn: today, expiresOn: '2099-12-31', productionCost: 10 }] }, 'intake')
 
