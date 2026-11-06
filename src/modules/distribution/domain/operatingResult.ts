@@ -117,6 +117,7 @@ export function computeOperatingResult(
     tipo: claim.kind === 'return' ? 'Devolución' : 'Cambio', cliente: claim.customerName,
     origen: displayOrigin(claim.routeId, scopedSales.find((sale) => sale.id === claim.saleId)?.routeName), monto: claim.revenueDelta }))
   const movementTypeLabel: Record<DistStockMovement['type'], string> = {
+    physical_origin_reconciled: 'Origen físico conciliado (sin efecto económico)',
     traceability_notice: 'Origen físico pendiente (incidencia documental sin efecto económico)',
     reservation_created: 'Reserva de producto (sin movimiento físico)', reservation_released: 'Liberación de reserva (sin movimiento físico)',
     processing_consumption: 'Consumo de producto en elaboración', processing_output: 'Producto terminado de elaboración', processing_commercial_rectification: 'Rectificación de unidad comercial (sin efecto físico ni costo)', processing_discard: 'Descarte confirmado de elaboración',

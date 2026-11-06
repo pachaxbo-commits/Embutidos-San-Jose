@@ -1,3 +1,4 @@
+import { LotReconciliation } from './LotReconciliation'
 import { LotsAndHistory } from './LotsAndHistory'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FileSpreadsheet, FileText, History, Layers, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
@@ -28,6 +29,7 @@ import { collectProcessingReportPages } from '../domain/processingReportPaginati
 import { filterInventoryMermaMovements, summarizeInventoryMermaMovements } from '../domain/inventoryMerma'
 
 const MOVEMENT_LABELS: Record<string, string> = {
+  physical_origin_reconciled: 'Origen físico conciliado · sin movimiento físico',
   intake: 'Ingreso de stock', transfer: 'Transferencia', dispatch: 'Despacho a ruta',
   dispatch_addition: 'Aumento de despacho', dispatch_correction: 'Corrección de despacho', dispatch_merma_sale: 'Merma adicional enviada dentro de ventas',
   sale: 'Venta', adjustment: 'Disminución por ajuste', return: 'Devolución recibida',
@@ -704,6 +706,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
                 <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
                   <p>Disponible por lote: <strong className={available > 0 ? 'text-emerald-800' : 'text-slate-800'}>{formatQty(available, lotsProduct.unitType)}</strong></p>
                   <p>Elaboración: <strong>{lot.manufacturedOn || 'No registrada'}</strong></p>
+                  <LotReconciliation lot={lot} location={lotLocation} admin={session.role === 'admin'} />
                   {originPending > 0 && <p role="status" className="break-words font-semibold text-amber-800 sm:col-span-2">{formatQty(originPending, lotsProduct.unitType)} reservados por origen pendiente. Para esa cantidad, el código y las fechas son referencia contable, no procedencia física comprobada. El resto identificado sigue disponible.</p>}
                   <p>Vencimiento: <strong>{lot.expiresOn || 'No registrada'}</strong></p>
                   {(() => {

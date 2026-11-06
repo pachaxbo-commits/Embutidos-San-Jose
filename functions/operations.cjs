@@ -5601,6 +5601,49 @@ handlers.confirmProcessingBatch = async (o, p) => {
   o.put('distProcessingBatches', batchId, batch);
   return result;
 };
+handlers.confirmPhysicalOrigin = async (o, p) => {
+  o.admin();
+  check(p.explicitConfirmation === true && typeof p.reason === 'string' && p.reason.trim().length >= 12, 'Confirma la revisión física e indica un motivo de al menos 12 caracteres.');
+  check(['physical_check','label_check','document_check','supported_correction'].includes(p.confirmationType), 'Selecciona el tipo de comprobación.');
+  check(typeof p.evidenceNote === 'string' && p.evidenceNote.trim().length >= 12, 'Describe la evidencia física o documental revisada.');
+  const lot = await o.read('distLots', p.lotId);
+  check(lot && lot.productId === p.productId, 'No existe el lote del producto seleccionado.');
+  const location = p.location;
+  check(location === 'central' || /^warehouse__[^/]+$/.test(location), 'La conciliación debe realizarse en almacén.');
+  check(!lot.processingBatchId && !lot.processingByLocation, 'El lote derivado requiere conciliación especializada de sus segmentos.');
+  origins.validate(lot, location);
+  const before = origins.pending(lot, location);
+  check(Number.isFinite(p.expectedPendingQuantity) && before === p.expectedPendingQuantity, 'El saldo pendiente cambió desde que abriste esta pantalla. Actualiza antes de continuar.');
+  const product = await o.read('distProducts', p.productId);
+  check(product, 'No existe el producto.');
+  const scale = product.unitType === 'kg' ? 1000 : 1;
+  check(Number.isFinite(p.quantity) && p.quantity > 0 && p.quantity <= before && Math.abs(p.quantity * scale - Math.round(p.quantity * scale)) < 0.000001, 'Cantidad de conciliación inválida.');
+  const original = structuredClone(lot.pendingOrigins[location]);
+  const histories = [];
+  for (const ref of original) {
+    const history = await o.read('distLotHistory', ref.exceptionId);
+    check(history?.action === 'physical_origin_pending' && history.productId === product.id, 'No se verificó la excepción histórica; requiere revisión administrativa.');
+    check(Number.isFinite(ref.historicalUnitCost) && ref.historicalUnitCost === lot.productionCost, 'El costo de origen difiere del lote; requiere conciliación especializada sin alterar costos.');
+    histories.push({ exceptionId: ref.exceptionId, createdAt: history.createdAt, createdBy: history.createdBy, reason: history.reason, sourceMovementId: ref.sourceMovementId });
+  }
+  let remaining = p.quantity;
+  const confirmed = [];
+  lot.pendingOrigins[location] = original.map(ref => {
+    const taken = roundAt(Math.min(remaining, ref.quantity), 3);
+    remaining = roundAt(remaining - taken, 3);
+    if (taken > 0) confirmed.push({ ...ref, quantity: taken, physicalOriginConfirmed: true });
+    return { ...ref, quantity: roundAt(ref.quantity - taken, 3) };
+  }).filter(ref => ref.quantity > 0);
+  origins.validate(lot, location);
+  const after = origins.pending(lot, location);
+  check(roundAt(before - after, 3) === p.quantity && remaining === 0, 'La conciliación no conserva las cantidades.');
+  o.put('distLots', lot.id, lot);
+  const event = { id: o.id, ...o.base(), operationId: o.id, note: 'Confirmación documental de procedencia; sin entrada ni salida física. ' + p.reason.trim(), action: 'physical_origin_reconciled', type: 'physical_origin_reconciled', productId: product.id, productName: product.name, unitType: product.unitType, lotId: lot.id, lotCode: lot.lotCode, location, quantity: p.quantity, physicalEffect: false, centralDelta: 0, routeDelta: 0, previousPendingQuantity: before, remainingPendingQuantity: after, physicalQuantity: lot.quantities[location], productionCost: lot.productionCost, confirmedOrigins: confirmed, historicalExceptions: histories, responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, reason: p.reason.trim(), confirmationType: p.confirmationType, evidenceNote: p.evidenceNote.trim(), explicitConfirmation: true };
+  o.put('distLotHistory', o.id, event);
+  o.put('distStockMovements', o.id, event);
+  return { lotId: lot.id, previousPendingQuantity: before, remainingPendingQuantity: after, physicalEffect: false };
+};
+
 async function updateLot(o, p) {
   o.admin();
   const lot = await o.read("distLots", p.lotId);
@@ -5624,6 +5667,7 @@ async function updateLot(o, p) {
     "Costo inválido.",
   );
   check(p.reason?.trim(), "Indica el motivo de la actualización.");
+  check(p.explicitConfirmation === true && typeof p.evidenceNote === 'string' && p.evidenceNote.trim().length >= 12, 'Para corregir código o fechas, usa Rectificar datos del lote y registra la evidencia real.');
   const updated = {
     ...lot,
     lotCode: p.lotCode.trim(),
@@ -5765,6 +5809,22 @@ handlers.rectifyProcessingCommercialUnit = async (o, p) => {
 };
 
 handlers.updateLot = updateLot;
+handlers.rectifyLotIdentity = async (o, p) => {
+  o.admin();
+  check(p.explicitConfirmation === true && typeof p.evidenceNote === 'string' && p.evidenceNote.trim().length >= 12 && typeof p.reason === 'string' && p.reason.trim().length >= 12, 'Confirma que la identificación coincide con evidencia real e indica motivo y evidencia.');
+  const lot = await o.read('distLots', p.lotId);
+  check(lot && lot.productId === p.productId, 'No existe el lote del producto.');
+  check(p.expectedLotCode === lot.lotCode && p.expectedManufacturedOn === lot.manufacturedOn && p.expectedExpiresOn === lot.expiresOn, 'La identidad del lote cambió. Actualiza antes de continuar.');
+  const quantities = Object.entries(lot.quantities || {}).sort(([a],[b]) => a.localeCompare(b));
+  const expected = Object.entries(p.expectedQuantities || {}).sort(([a],[b]) => a.localeCompare(b));
+  check(JSON.stringify(quantities) === JSON.stringify(expected), 'La existencia del lote cambió. Actualiza antes de continuar.');
+  check(p.lotCode !== lot.lotCode || p.manufacturedOn !== lot.manufacturedOn || p.expiresOn !== lot.expiresOn, 'No hay cambios de identificación para registrar.');
+  const updated = await updateLot(o, { ...p, productionCost: lot.productionCost });
+  const audit = await o.read('distLotHistory', o.id);
+  o.put('distLotHistory', o.id, { ...audit, action: 'lot_identity_rectified', operationId: o.id, productId: lot.productId, physicalEffect: false, quantities: lot.quantities, evidenceNote: p.evidenceNote.trim(), explicitConfirmation: true, responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor });
+  return updated;
+};
+
 handlers.resolveQuarantine = async (o, p) => {
   o.admin();
   const lotId = safeId(p.lotId);

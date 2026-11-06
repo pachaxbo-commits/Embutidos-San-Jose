@@ -1779,3 +1779,12 @@ export function dismissSyncError() {
   syncState = { ...syncState, lastError: null, lastErrorDetails: null }
   emitSyncState()
 }
+
+export async function loadLotOriginHistory(exceptionIds: string[]) {
+  const context = await getContext()
+  return Promise.all([...new Set(exceptionIds)].map(async id => {
+    const snapshot = await getDocFromServer(docRef(context, 'distLotHistory', id))
+    const row = snapshot.data()
+    return { id, createdAt: String(row?.createdAt || ''), createdBy: String(row?.createdBy || ''), reason: String(row?.reason || ''), sourceMovementId: String(row?.sourceMovementId || '') }
+  }))
+}

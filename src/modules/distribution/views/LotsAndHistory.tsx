@@ -1,17 +1,16 @@
+import { LotReconciliation } from './LotReconciliation'
 import { useEffect, useState } from "react";
 import { AlertTriangle, ChevronRight, Download, History, Printer } from "lucide-react";
-import { Field, TextInput, NumberInput } from "../../../components/ui/Form";
+import { Field, TextInput } from "../../../components/ui/Form";
 import { Modal } from "../../../components/ui/Modal";
-import { PrimaryButton, SectionCard, formatQty } from "./shared";
-import { submitOperation } from "../data/operationQueue";
-import { loadProductLocationBalance, loadProductMovementPage, newOperationId, type ProductMovementCursor } from "../data/distributionRepository";
+import { SectionCard, formatQty } from "./shared";
+import { loadProductLocationBalance, loadProductMovementPage, type ProductMovementCursor } from "../data/distributionRepository";
 import { toDayKey } from "../domain/engine";
 import { exportExcel, exportPdf, exportTodayIntakesPdf, type ReportSheet } from "../data/reportExports";
 import { getTodayStockIntakes } from "../domain/todayIntakes";
 import type { DistributionViewProps } from "./DistributionApp";
 import type { DistLot } from "../types";
 import { visiblePersonName } from "./displayText";
-import { lotUpdateReasonError } from "../domain/rejectedOperations";
 import { filterProductMovementHistory, type ProductMovementFilter } from "../domain/productMovementHistory";
 import { calculateProductKardex } from "../domain/productKardex";
 import { movementOriginNote } from '../domain/originTraceability';
@@ -24,6 +23,7 @@ function shiftDayKey(dayKey: string, amount: number): string {
 }
 
 const MOVEMENT_LABELS: Record<string, string> = {
+  physical_origin_reconciled: 'Origen físico conciliado · sin movimiento físico',
   traceability_notice: 'Excepción documental de origen (sin movimiento físico)',
   intake: "Ingreso de stock",
   transfer: "Transferencia entre almacenes",
@@ -255,13 +255,6 @@ export function StockAlerts({ data }: Pick<DistributionViewProps, "data">) {
 export function LotsAndHistory({ data, session }: DistributionViewProps) {
   const [search, setSearch] = useState(""), [month, setMonth] = useState(toDayKey().slice(0, 7));
   const [editing, setEditing] = useState<DistLot | null>(null);
-  const [code, setCode] = useState(""),
-    [made, setMade] = useState(""),
-    [expiry, setExpiry] = useState(""),
-    [cost, setCost] = useState(""),
-    [reason, setReason] = useState(""),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
   const [exportingToday, setExportingToday] = useState(false);
   const [todayMsg, setTodayMsg] = useState<string | null>(null);
   const [kardexProductId, setKardexProductId] = useState("");
@@ -298,12 +291,6 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
   };
   const open = (l: DistLot) => {
     setEditing(l);
-    setCode(l.lotCode);
-    setMade(l.manufacturedOn);
-    setExpiry(l.expiresOn);
-    setCost(l.productionCost === null ? "" : String(l.productionCost));
-    setReason("");
-    setError("");
   };
   const term = search.toLowerCase();
   const lots = data.lots.filter((l) =>
@@ -545,83 +532,8 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
             ))}
         </div>
       </SectionCard>
-      <Modal
-        isOpen={!!editing}
-        onClose={() => setEditing(null)}
-        title="Datos del lote"
-        footer={
-          <PrimaryButton
-            disabled={busy}
-            onClick={async () => {
-              if (!editing) return;
-              const reasonError = lotUpdateReasonError(reason);
-              if (reasonError) {
-                setError(reasonError);
-                return;
-              }
-              setBusy(true);
-              try {
-                await submitOperation(
-                  "updateLot",
-                  {
-                    lotId: editing.id,
-                    lotCode: code,
-                    manufacturedOn: made,
-                    expiresOn: expiry,
-                    productionCost: cost === "" ? null : Number(cost),
-                    reason,
-                  },
-                  newOperationId("lot"),
-                );
-                setEditing(null);
-              } catch (e) {
-                setError((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Guardar datos
-          </PrimaryButton>
-        }
-      >
-        <div className="grid gap-3">
-          <Field label="Código">
-            <TextInput value={code} onChange={(e) => setCode(e.target.value)} />
-          </Field>
-          <Field label="Elaboración">
-            <TextInput
-              type="date"
-              value={made}
-              onChange={(e) => setMade(e.target.value)}
-            />
-          </Field>
-          <Field label="Vencimiento">
-            <TextInput
-              type="date"
-              value={expiry}
-              onChange={(e) => setExpiry(e.target.value)}
-            />
-          </Field>
-          <Field label="Costo por unidad de venta">
-            <NumberInput
-              min={0}
-              value={cost}
-              onChange={(e) => setCost(e.target.value)}
-            />
-          </Field>
-          <Field label="Motivo de la actualización" required>
-            <TextInput
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="Indica por qué estás modificando este lote"
-            />
-          </Field>
-          <p className="text-xs">
-            No modifica los costos de ventas que ya fueron registradas.
-          </p>
-          {error && <p role="alert">{error}</p>}
-        </div>
+      <Modal isOpen={!!editing} onClose={() => setEditing(null)} title="Conciliación y datos del lote">
+        {editing && <LotReconciliation lot={data.lots.find(lot => lot.id === editing.id) || editing} location={session.warehouseId && session.warehouseId !== 'central' ? `warehouse__${session.warehouseId}` : 'central'} admin={session.role === 'admin'} />}
       </Modal>
     </div>
   );
