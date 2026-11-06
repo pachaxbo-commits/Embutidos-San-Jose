@@ -1,3 +1,4 @@
+import { roundQuantityForUnit } from './physicalQuantity.ts'
 import type { DistLot, DistProduct } from '../types'
 import { processingDispatchIneligibility } from './processingCommercialAvailability.ts'
 
@@ -102,9 +103,6 @@ export interface DispatchLotIssue {
   message: string
 }
 
-function roundQuantity(value: number) {
-  return Math.round((value + Number.EPSILON) * 100) / 100
-}
 
 export function dispatchLotIneligibility(lot: DistLot, productId: string, location: string, today: string): string | null {
   if (lot.productId !== productId) return `pertenece a ${lot.productName || 'otro producto'}, no al producto elegido`
@@ -133,6 +131,7 @@ export function validateDispatchLotDrafts(
   for (const line of lines) {
     const product = products.find(item => item.id === line.productId)
     if (!product) continue
+    const roundQuantity = (value: number) => roundQuantityForUnit(value, product.unitType)
     const quantity = Number(line.quantity)
     const dispatchMerma = product.unitType === 'kg' ? Number(line.dispatchMerma || 0) : 0
     const target = roundQuantity((Number.isFinite(quantity) ? quantity : 0) + (Number.isFinite(dispatchMerma) ? dispatchMerma : 0))
@@ -144,6 +143,9 @@ export function validateDispatchLotDrafts(
       message,
     })
 
+    if (product.unitType !== 'kg' && (!Number.isInteger(quantity) || line.allocations.some(part => Number(part.quantity) > 0 && !Number.isInteger(Number(part.quantity))))) {
+      addIssue(undefined, `Producto ${product.name}: los paquetes y unidades deben ser cantidades enteras.`, 'error')
+    }
     if (!(quantity > 0)) {
       addIssue(undefined, `Producto ${product.name}: indica una cantidad normal mayor a cero.`)
       continue
@@ -199,7 +201,7 @@ export function validateDispatchLotDrafts(
     }
 
     const assigned = roundQuantity([...totalsByLot.values()].reduce((sum, value) => sum + value, 0))
-    if (Math.abs(assigned - target) >= 0.01) {
+    if (assigned !== target) {
       const difference = roundQuantity(Math.abs(target - assigned))
       addIssue(undefined, assigned < target
         ? `Producto ${product.name}: faltan distribuir ${difference} ${product.unitType}. Asignado ${assigned} de ${target}.`

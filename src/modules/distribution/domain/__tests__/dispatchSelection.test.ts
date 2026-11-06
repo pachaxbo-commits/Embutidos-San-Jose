@@ -1,3 +1,4 @@
+import { allocatePhysicalQuantity } from '../physicalQuantity.ts'
 import type { DistLot, DistProduct } from '../../types'
 import { dispatchLotIneligibility, dispatchLotFifoDate, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../dispatchSelection.ts'
 
@@ -97,3 +98,20 @@ const multipleErrors = validateDispatchLotDrafts([
 check(multipleErrors.length >= 3, 'todos los errores de varios productos y lotes se devuelven para mostrarlos juntos')
 
 console.log('21 comprobaciones de selección, orden de borrador y validación de lotes aprobadas')
+
+const residual = lot({ ...oldest, id: 'residual', lotCode: '231026', quantities: { central: 0.006 } })
+const nextResidual = lot({ ...newer, id: 'next', quantities: { central: 1.340 } })
+const allocation = allocatePhysicalQuantity(0.010, [{ id: residual.id, available: 0.006 }, { id: nextResidual.id, available: 1.340 }], 'kg')
+check(JSON.stringify(allocation.allocations.map(row => row.quantity)) === '[0.006,0.004]' && allocation.remaining === 0, 'FEFO conserva seis y cuatro gramos')
+const fractionalDraft = [{ id: 'grams', productId: pork.id, quantity: '0.010', allocations: allocation.allocations.map((row, i) => ({ ...row, id: String(i), quantity: String(row.quantity) })) }]
+check(validateDispatchLotDrafts(fractionalDraft, [pork], [residual, nextResidual], 'central', '2026-10-30').length === 0, 'asignación exacta de diez gramos es válida')
+check(validateDispatchLotDrafts([{ ...fractionalDraft[0], allocations: [{ id: 'bad', lotId: residual.id, quantity: '0.010' }] }], [pork], [residual], 'central', '2026-10-30').some(row => row.severity === 'error' && row.message.includes('0.004')), 'sobregiro de cuatro gramos se bloquea antes de enviar')
+check(allocatePhysicalQuantity(10, [{id:'a',available:0.006},{id:'b',available:2.994},{id:'c',available:7}], 'kg').remaining === 0, 'diez kg multilote exactos')
+check(allocatePhysicalQuantity(0.001, [{id:'a',available:0.001}], 'kg').allocations[0].quantity === 0.001, 'residuo de un gramo utilizable')
+console.log('PASS regresión de milésimas y FEFO')
+
+check(validateDispatchLotDrafts([{ ...fractionalDraft[0], allocations: [{ id: 'short', lotId: nextResidual.id, quantity: '0.009' }] }], [pork], [nextResidual], 'central', '2026-10-30').some(row => row.message.includes('0.001')), 'un gramo pendiente bloquea continuar')
+for (const unitType of ['package', 'unit'] as const) {
+  const integerProduct = { ...pork, unitType }
+  check(validateDispatchLotDrafts([{ id: 'fraction', productId: pork.id, quantity: '1.5', allocations: [{ id: 'fraction-lot', lotId: oldest.id, quantity: '1.5' }] }], [integerProduct], [oldest], 'central', '2026-10-30').some(row => row.severity === 'error' && row.message.includes('enteras')), `${unitType} rechaza fracciones`)
+}
