@@ -5622,7 +5622,7 @@ handlers.confirmPhysicalOrigin = async (o, p) => {
   const histories = [];
   for (const ref of original) {
     const history = await o.read('distLotHistory', ref.exceptionId);
-    check(history?.action === 'physical_origin_pending' && history.productId === product.id, 'No se verificó la excepción histórica; requiere revisión administrativa.');
+    check(history?.action === 'physical_origin_pending' && history.productId === product.id && history.sourceMovementId === ref.sourceMovementId, 'No se verificó la excepción histórica; requiere revisión administrativa.');
     check(Number.isFinite(ref.historicalUnitCost) && ref.historicalUnitCost === lot.productionCost, 'El costo de origen difiere del lote; requiere conciliación especializada sin alterar costos.');
     histories.push({ exceptionId: ref.exceptionId, createdAt: history.createdAt, createdBy: history.createdBy, reason: history.reason, sourceMovementId: ref.sourceMovementId });
   }

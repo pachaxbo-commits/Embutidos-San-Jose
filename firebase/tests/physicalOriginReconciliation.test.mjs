@@ -44,7 +44,7 @@ try {
   const initial = { id:lid, productId:pid, productName:'Synthetic origin', lotCode:'201026', manufacturedOn:'2026-10-20', expiresOn:'2026-10-30', productionCost:10, quantities:{central:1.740}, pendingOrigins:{central:[{ exceptionId, accountingLotId:lid, sourceMovementId:'synthetic-movement', physicalOriginConfirmed:false, basis:'original_accounting_debit_only', historicalUnitCost:10, quantity:1.740 }]} }
   await root.collection('distLots').doc(lid).set(initial)
   await root.collection('distBalances').doc(`central__${pid}`).set({ productId:pid, quantity:1.740 })
-  await root.collection('distLotHistory').doc(exceptionId).set({ id:exceptionId, action:'physical_origin_pending', productId:pid, createdAt:new Date().toISOString(), createdBy:admin, reason:'Synthetic accounting origin' })
+  await root.collection('distLotHistory').doc(exceptionId).set({ id:exceptionId, action:'physical_origin_pending', productId:pid, createdAt:new Date().toISOString(), createdBy:admin, reason:'Synthetic accounting origin', sourceMovementId:'synthetic-movement' })
   const payload = { productId:pid, lotId:lid, location:'central', quantity:1, expectedPendingQuantity:1.740, confirmationType:'physical_check', explicitConfirmation:true, reason:'Verified synthetic stock in warehouse', evidenceNote:'Synthetic label and physical weighing' }
   const part = await command(admin,'confirmPhysicalOrigin',payload)
   const after = await read('distLots',lid)
