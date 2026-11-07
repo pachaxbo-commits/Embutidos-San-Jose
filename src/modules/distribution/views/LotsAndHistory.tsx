@@ -533,7 +533,7 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
         </div>
       </SectionCard>
       <Modal isOpen={!!editing} onClose={() => setEditing(null)} title="Conciliación y datos del lote">
-        {editing && <LotReconciliation lot={data.lots.find(lot => lot.id === editing.id) || editing} location={session.warehouseId && session.warehouseId !== 'central' ? `warehouse__${session.warehouseId}` : 'central'} admin={session.role === 'admin'} />}
+        {editing && <LotReconciliation lots={data.lots} lot={data.lots.find(lot => lot.id === editing.id) || editing} location={session.warehouseId && session.warehouseId !== 'central' ? `warehouse__${session.warehouseId}` : 'central'} admin={session.role === 'admin'} />}
       </Modal>
     </div>
   );

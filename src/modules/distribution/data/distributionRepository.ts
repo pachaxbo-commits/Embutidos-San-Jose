@@ -290,8 +290,8 @@ export async function releaseProcessingLot(input: { lotId: string; reason: strin
 }
 
 /** Libera únicamente la cantidad restante de una reserva de cortesía; el servidor valida rol, agregado y condición comercial. */
-export async function releaseProcessingReservation(input: { reservationId: string; expectedRemainingQuantity: number; reason: string; commercialQualityConfirmed: true }, operationId: string): Promise<unknown> {
-  return submitOperation('releaseProcessingReservation', input, operationId)
+export async function releaseProcessingReservation(input: { reservationId: string; expectedRemainingQuantity: number; reason: string; commercialQualityConfirmed: true }, operationId: string, derived = false): Promise<unknown> {
+  return submitOperation(derived ? 'reclassifyProcessingCourtesyToFinished' : 'releaseProcessingReservation', input, operationId)
 }
 
 /** Registra una inspección de producto inmovilizado sin tocar inventario ni liberar la reserva. */
@@ -1788,4 +1788,18 @@ export async function loadLotOriginHistory(exceptionIds: string[]) {
     const row = snapshot.data()
     return { id, createdAt: String(row?.createdAt || ''), createdBy: String(row?.createdBy || ''), reason: String(row?.reason || ''), sourceMovementId: String(row?.sourceMovementId || '') }
   }))
+}
+
+export async function loadLotFromServer(lotId: string): Promise<DistLot> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, 'distLots', lotId))
+  if (!snapshot.exists()) throw new Error('El lote ya no está disponible.')
+  return { ...snapshot.data(), id: snapshot.id } as DistLot
+}
+
+export function deliverReservedCourtesy(input: {
+  reservationId: string; expectedRemainingQuantity: number; quantity: number; recipient: string
+  reason: string; explicitConfirmation: true; deliveredWeightG?: number
+}, operationId: string) {
+  return submitOperation('deliverReservedCourtesy', { ...input, deliveryId: operationId }, operationId)
 }

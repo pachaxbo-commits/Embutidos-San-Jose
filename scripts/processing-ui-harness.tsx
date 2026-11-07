@@ -119,6 +119,7 @@ function InventoryReservationHarness({ uid, userName }: { uid: string; userName:
 function InventoryMermaHarness({ uid, userName }: { uid: string; userName: string }) {
   const dayKeys = [toDayKey(new Date())]
   const data = useDistributionData({ restaurantId: 'sanjose', routeId: null, dayKeys, enabled: true, canReadFinance: false })
+  const [openedReservation, setOpenedReservation] = useState('')
   const [target, setTarget] = useState<string | null>(null)
   const [showProcessing, setShowProcessing] = useState(false)
   const clearTarget = useCallback(() => setTarget(null), [])
@@ -127,9 +128,10 @@ function InventoryMermaHarness({ uid, userName }: { uid: string; userName: strin
     restaurantId: 'sanjose', restaurantName: 'Embutidos San José', uid, userName, role: 'admin',
     warehouseId: 'central', routeId: null, can: () => true, dayKeys, setDayKeys: () => {},
   }
+  if (openedReservation) return <ProcessingOperationsView mode="reservations" session={session} products={data.products} lots={data.lots} locationOptions={[{ id: 'central', name: 'Almacén central' }]} initialReservationId={openedReservation} />
   return showProcessing
     ? <SacheteadoView session={session} data={data} processingBatchTarget={target} onProcessingBatchTargetHandled={clearTarget} />
-    : <InventoryView session={session} data={data} onOpenProcessingBatch={openProcessingBatch} />
+    : <InventoryView session={session} data={data} onOpenProcessingBatch={openProcessingBatch} onOpenReservation={setOpenedReservation} />
 }
 
 function SellVoidHarness({ uid, userName }: { uid: string; userName: string }) {

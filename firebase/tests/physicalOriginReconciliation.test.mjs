@@ -81,5 +81,24 @@ try {
   await Promise.all(concurrent.map(id=>processCommand(db,root.collection('distOperations').doc(id))))
   const statuses = await Promise.all(concurrent.map(async id=>(await read('distOperations',id)).status))
   pass(statuses.sort().join(',') === 'confirmed,rejected', 'concurrent administrators cannot confirm stale balance twice')
+  const targetId = `${prefix}-destination`
+  await root.collection('distLots').doc(targetId).set({ ...initial, id:targetId, lotCode:'QA-DESTINATION', quantities:{central:0}, pendingOrigins:{} })
+  const resolve = { productId:pid, sourceLotId:lid, location:'central', expectedSourceQuantity:1.740,
+    quantity:0.320, reason:'Synthetic reconciliation of quantity', evidenceNote:'Measured and documented for emulator', explicitConfirmation:true }
+  const moved = await command(admin,'resolveLotQuantity',{...resolve, action:'move',destinationLotId:targetId})
+  pass((await read('distLots',lid)).quantities.central === 1.420
+    && (await read('distLots',targetId)).quantities.central === 0.320
+    && (await read('distBalances',`central__${pid}`)).quantity === 1.740, 'partial reclassification conserves product stock')
+  await processCommand(db,root.collection('distOperations').doc(moved.id))
+  await command(admin,'resolveLotQuantity',{...resolve, action:'move',destinationLotId:targetId},'rejected')
+  const created = await command(admin,'resolveLotQuantity',{...resolve, action:'new_lot',expectedSourceQuantity:1.420,lotCode:'QA-CORRECT',manufacturedOn:'2026-10-20',expiresOn:'2027-10-30'})
+  const newLot = await read('distLots',created.result.destinationLotId)
+  pass(newLot.quantities.central === 0.320 && newLot.productionCost === 10 && newLot.sourceReclassificationLotId === lid, 'new lot preserves cost and genealogy')
+  const discard = await command(admin,'resolveLotQuantity',{...resolve,action:'discard',expectedSourceQuantity:1.100})
+  const loss = await read('distStockMovements',discard.result.movementId)
+  pass(loss.physicalEffect === true && loss.lossCost === 3.2 && loss.lotResolutionAction === 'discard', 'discard has physical effect and historical cost')
+  const shortage = await command(admin,'resolveLotQuantity',{...resolve,action:'shortage',expectedSourceQuantity:0.780,observedQuantity:0.460})
+  pass((await read('distStockMovements',shortage.result.movementId)).type === 'shortage'
+    && (await read('distBalances',`central__${pid}`)).quantity === 1.1, 'weighed shortage is separate from disposal')
   console.log(`${passed} physical origin checks passed`)
 } finally { await env.cleanup() }
