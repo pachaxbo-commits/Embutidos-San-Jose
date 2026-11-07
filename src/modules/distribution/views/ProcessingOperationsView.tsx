@@ -6,7 +6,7 @@ import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../c
 import { EmptyBlock, LoadingState } from '../../../components/ui/Screen'
 import type { ProcessingEvidenceRecord, ProcessingQualityAuthorization, ProcessingRepackRecord, ProcessingReservation, ProcessingReviewRecord, RepackOperationInput, RecordProcessingReviewInput } from '../domain/processing'
 import { validateRepackOperationContract } from '../domain/processing'
-import { confirmProcessingRepack, getProcessingOperationState, loadMyProcessingQualityAuthorization, loadProcessingEvidenceForReservation, loadProcessingQualityAuthorizationFor, loadProcessingRepackPage, loadProcessingReservation, loadProcessingReservationPage, loadProcessingReview, loadProcessingReviewPage, newOperationId, recordProcessingReview, releaseProcessingReservation, uploadProcessingEvidence, type ProcessingBatchPage } from '../data/distributionRepository'
+import { deliverReservedCourtesy, confirmProcessingRepack, getProcessingOperationState, loadMyProcessingQualityAuthorization, loadProcessingEvidenceForReservation, loadProcessingQualityAuthorizationFor, loadProcessingRepackPage, loadProcessingReservation, loadProcessingReservationPage, loadProcessingReview, loadProcessingReviewPage, newOperationId, recordProcessingReview, releaseProcessingReservation, uploadProcessingEvidence, type ProcessingBatchPage } from '../data/distributionRepository'
 import type { DistLot, DistProduct } from '../types'
 import type { DistributionSession } from './DistributionApp'
 import { PrimaryButton, SecondaryButton, SectionCard } from './shared'
@@ -65,6 +65,10 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
   const [selectedReservationId, setSelectedReservationId] = useState('')
   const [releaseReservationDraft, setReleaseReservationDraft] = useState<ProcessingReservation | null>(null)
   const [releaseReason, setReleaseReason] = useState('')
+  const [courtesyAction, setCourtesyAction] = useState<'cancel' | 'deliver'>('cancel')
+  const [courtesyQuantity, setCourtesyQuantity] = useState('')
+  const [courtesyRecipient, setCourtesyRecipient] = useState('')
+  const [courtesyGrams, setCourtesyGrams] = useState('')
   const [releaseQualityConfirmed, setReleaseQualityConfirmed] = useState(false)
   const [releaseBusy, setReleaseBusy] = useState(false)
   const [releaseMessage, setReleaseMessage] = useState('')
@@ -185,8 +189,12 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
     finally { setLoading(false) }
   }
 
-  const startReservationRelease = (reservation: ProcessingReservation) => {
+  const startReservationRelease = (reservation: ProcessingReservation, action: 'cancel' | 'deliver' = 'cancel') => {
     setReleaseReservationDraft(reservation)
+    setCourtesyAction(action)
+    setCourtesyQuantity(String(reservation.remainingQuantity))
+    setCourtesyRecipient('')
+    setCourtesyGrams('')
     setReleaseReason('')
     setReleaseQualityConfirmed(false)
     setReleaseMessage('')
@@ -199,8 +207,17 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
     if (!reservation || !canAdmin || reservation.purpose !== 'courtesy' || !['active','partially_consumed'].includes(reservation.status) || reservation.remainingQuantity <= 0 || reason.length < 5 || !releaseQualityConfirmed || releaseBusy) return
     setReleaseBusy(true); setReleaseMessage('Solicitando liberación al servidor…')
     try {
-      await releaseProcessingReservation({ reservationId: reservation.id, expectedRemainingQuantity: reservation.remainingQuantity, reason, commercialQualityConfirmed: true }, releaseOperationId.current)
-      setReleaseMessage('Reserva de cortesía liberada por el servidor. La existencia física, peso y costo no cambiaron.')
+      if (courtesyAction === 'deliver') {
+        await deliverReservedCourtesy({
+          reservationId: reservation.id, expectedRemainingQuantity: reservation.remainingQuantity,
+          quantity: Number(courtesyQuantity), recipient: courtesyRecipient.trim(), reason,
+          explicitConfirmation: true, ...(courtesyGrams ? { deliveredWeightG: Number(courtesyGrams) } : {}),
+        }, releaseOperationId.current)
+        setReleaseMessage('Entrega de cortesía confirmada por el servidor. Total Bs 0.')
+      } else {
+        await releaseProcessingReservation({ reservationId: reservation.id, expectedRemainingQuantity: reservation.remainingQuantity, reason, commercialQualityConfirmed: true }, releaseOperationId.current, Boolean(reservation.batchId))
+        setReleaseMessage('Cortesía cancelada y remanente devuelto al stock comercial.')
+      }
       setReleaseReservationDraft(null)
       await loadFirstPage()
     } catch (reasonError) {
@@ -449,7 +466,7 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
       <SectionCard title="Mercadería reservada" action={<SecondaryButton disabled={loading} onClick={() => void loadFirstPage()}><RefreshCw size={15} />Actualizar</SecondaryButton>}>
         <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Las cantidades reservadas están inmovilizadas. No son stock disponible para venta ni despacho.</p>
         {releaseMessage && !releaseReservationDraft && <p role="status" className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-xs font-semibold text-emerald-900">{releaseMessage}</p>}
-        {loading && reservations.length === 0 ? <LoadingState label="Consultando reservas del servidor…" /> : error ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : scopedReservations.length === 0 ? <EmptyBlock title="No hay reservas activas" description="Las reservas consumidas y liberadas pueden consultarse en las páginas históricas." /> : <div className="space-y-2">{scopedReservations.map(row => <ReservationCard key={row.id} row={row} lot={lots.find(lot => lot.id === row.lotId)} locationName={currentLocationName(row.location)} canRelease={canAdmin && row.purpose === 'courtesy'} onRelease={() => startReservationRelease(row)} onNavigate={onNavigateMode} />)}</div>}
+        {loading && reservations.length === 0 ? <LoadingState label="Consultando reservas del servidor…" /> : error ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : scopedReservations.length === 0 ? <EmptyBlock title="No hay reservas activas" description="Las reservas consumidas y liberadas pueden consultarse en las páginas históricas." /> : <div className="space-y-2">{scopedReservations.map(row => <ReservationCard key={row.id} row={row} lot={lots.find(lot => lot.id === row.lotId)} locationName={currentLocationName(row.location)} canRelease={canAdmin && row.purpose === 'courtesy'} onRelease={() => startReservationRelease(row)} onDeliver={() => startReservationRelease(row, 'deliver')} onNavigate={onNavigateMode} />)}</div>}
         {reservationHasMore && <SecondaryButton full disabled={loading} onClick={() => void loadMore()}>Cargar más reservas</SecondaryButton>}
       </SectionCard>
     </>}
@@ -521,26 +538,37 @@ export function ProcessingOperationsView({ mode, session, products, lots, locati
 
     {mode === 'history-reviews' && <SectionCard title="Historial de revisiones">{loading && reviewRows.length === 0 ? <LoadingState label="Consultando revisiones…" /> : error ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : reviewRows.length === 0 ? <EmptyBlock title="Sin revisiones registradas" description="Las observaciones y decisiones aparecerán aquí, separadas de los reenvasados confirmados." /> : <div className="space-y-2">{reviewRows.map(row => <ReviewSummary key={row.id} review={row} />)}</div>}{reviewHasMore && <SecondaryButton full disabled={loading} onClick={() => void loadMore()}>Cargar más revisiones</SecondaryButton>}</SectionCard>}
     {mode === 'history-repackings' && <SectionCard title="Historial de reenvasados">{loading && repackRows.length === 0 ? <LoadingState label="Consultando reenvasados confirmados…" /> : error ? <ErrorBox message={error} onRetry={() => void loadFirstPage()} /> : repackRows.length === 0 ? <EmptyBlock title="Sin reenvasados confirmados" description="Una revisión autorizada no aparece como reenvasado hasta que el servidor confirma su transacción." /> : <div className="space-y-2">{repackRows.map(row => <div key={row.id}><RepackSummary row={row} />{session.role === 'admin' && row.outputLots.map(output => { const lot = lots.find(item => item.id === output.lotId); return lot?.unitType === 'package' ? <ProcessingCommercialRelease key={lot.id} lot={lot} /> : null })}</div>)}</div>}{repackHasMore && <SecondaryButton full disabled={loading} onClick={() => void loadMore()}>Cargar más reenvasados</SecondaryButton>}</SectionCard>}
-    <Modal isOpen={Boolean(releaseReservationDraft)} onClose={() => { if (!releaseBusy) setReleaseReservationDraft(null) }} title="Liberar reserva de cortesía" subtitle={releaseReservationDraft?.productName}>
+    <Modal isOpen={Boolean(releaseReservationDraft)} onClose={() => { if (!releaseBusy) setReleaseReservationDraft(null) }} title="Resolver reserva de cortesía" subtitle={releaseReservationDraft?.productName}>
       {releaseReservationDraft && <div className="grid min-w-0 gap-3">
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
           <p><b>Producto:</b> {releaseReservationDraft.productName}</p>
           <p><b>Lote:</b> {releaseReservationDraft.lotCode}</p>
-          <p><b>Cantidad restante a liberar:</b> {formatQty(releaseReservationDraft.remainingQuantity, releaseReservationDraft.unitType)}</p>
+          <p><b>Cantidad restante:</b> {formatQty(releaseReservationDraft.remainingQuantity, releaseReservationDraft.unitType)}</p>
           <p><b>Ubicación:</b> {currentLocationName(releaseReservationDraft.location)}</p>
+          {releaseReservationDraft.remainingWeightG != null && <p><b>Peso restante:</b> {releaseReservationDraft.remainingWeightG} g</p>}
           <p><b>Motivo original:</b> {(releaseReservationDraft.history || []).find(event => event.action === 'created')?.reason || 'No registrado'}</p>
         </div>
-        <Field label="Motivo de liberación" required><TextArea maxLength={500} value={releaseReason} onChange={event => setReleaseReason(event.target.value)} placeholder="Explica por qué ya no corresponde reservar esta cortesía." /></Field>
-        <label className="flex min-h-12 items-start gap-2 rounded-xl border border-slate-200 p-3 text-xs font-semibold text-slate-800"><input type="checkbox" className="mt-0.5 h-4 w-4" checked={releaseQualityConfirmed} onChange={event => setReleaseQualityConfirmed(event.target.checked)} />Confirmo que el producto permanece físicamente en almacén y mantiene condición comercial.</label>
-        <p className="text-xs text-slate-600">La liberación solo cambia reservado → disponible. No aumenta existencia ni modifica peso, costo, ventas o finanzas.</p>
+        <Field label="Acción"><SelectInput value={courtesyAction} disabled={releaseBusy} onChange={event => {
+          setCourtesyAction(event.target.value as 'deliver' | 'cancel')
+          setReleaseQualityConfirmed(false)
+          releaseOperationId.current = newOperationId('courtesy-resolution')
+        }}><option value="cancel">Cancelar cortesía y devolver a stock</option><option value="deliver">Entregar cortesía</option></SelectInput></Field>
+        {courtesyAction === 'deliver' && <>
+          <Field label="Cantidad entregada" required><NumberInput min={releaseReservationDraft.unitType === 'kg' ? 0.001 : 1} step={releaseReservationDraft.unitType === 'kg' ? 0.001 : 1} value={courtesyQuantity} onChange={event => setCourtesyQuantity(event.target.value)} /></Field>
+          <Field label="Destinatario" required><TextInput value={courtesyRecipient} onChange={event => setCourtesyRecipient(event.target.value)} /></Field>
+          {releaseReservationDraft.remainingWeightG != null && Number(courtesyQuantity) < releaseReservationDraft.remainingQuantity && <Field label="Peso medido de la entrega (g)" required><NumberInput min={1} step={1} value={courtesyGrams} onChange={event => setCourtesyGrams(event.target.value)} /></Field>}
+        </>}
+        <Field label="Motivo" required><TextArea maxLength={500} value={releaseReason} onChange={event => setReleaseReason(event.target.value)} placeholder="Explica por qué ya no corresponde reservar esta cortesía." /></Field>
+        <label className="flex min-h-12 items-start gap-2 rounded-xl border border-slate-200 p-3 text-xs font-semibold text-slate-800"><input type="checkbox" className="mt-0.5 h-4 w-4" checked={releaseQualityConfirmed} onChange={event => setReleaseQualityConfirmed(event.target.checked)} />{courtesyAction === 'deliver' ? 'Confirmo la entrega física de esta cantidad como cortesía.' : 'Confirmo que el remanente permanece en almacén y es apto para venta.'}</label>
+        <p className="text-xs text-slate-600">{courtesyAction === 'deliver' ? 'La entrega descuenta físicamente la cantidad entregada y registra Bs 0.' : 'La cancelación conserva el peso, cantidad y costo físico del remanente y lo devuelve a disponibilidad comercial.'}</p>
         {releaseMessage && <p role="status" className="rounded-lg bg-amber-50 p-2 text-xs font-semibold text-amber-900">{releaseMessage}</p>}
-        <div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={releaseBusy} onClick={() => setReleaseReservationDraft(null)}>Cancelar</SecondaryButton><PrimaryButton disabled={releaseBusy || releaseReason.trim().length < 5 || !releaseQualityConfirmed} onClick={() => void confirmReservationRelease()}>{releaseBusy ? 'Enviando…' : 'Confirmar liberación'}</PrimaryButton></div>
+        <div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={releaseBusy} onClick={() => setReleaseReservationDraft(null)}>Cancelar</SecondaryButton><PrimaryButton disabled={releaseBusy || releaseReason.trim().length < 5 || !releaseQualityConfirmed || (courtesyAction === 'deliver' && (!courtesyRecipient.trim() || !(Number(courtesyQuantity) > 0) || Number(courtesyQuantity) > releaseReservationDraft.remainingQuantity))} onClick={() => void confirmReservationRelease()}>{releaseBusy ? 'Enviando…' : 'Confirmar acción'}</PrimaryButton></div>
       </div>}
     </Modal>
   </div>
 }
 
-function ReservationCard({ row, lot, locationName, canRelease = false, onRelease, onNavigate }: { row: ProcessingReservation; lot: DistLot | null | undefined; locationName: string; canRelease?: boolean; onRelease?: () => void; onNavigate?: (mode: 'reservations' | 'review' | 'repack') => void }) {
+function ReservationCard({ row, lot, locationName, canRelease = false, onRelease, onDeliver, onNavigate }: { row: ProcessingReservation; lot: DistLot | null | undefined; locationName: string; canRelease?: boolean; onRelease?: () => void; onDeliver?: () => void; onNavigate?: (mode: 'reservations' | 'review' | 'repack') => void }) {
   const unavailable = lot?.processingUnavailable?.[row.location]
   const [review, setReview] = useState<ProcessingReviewRecord | null>(null)
   const [reviewError, setReviewError] = useState('')
@@ -567,7 +595,10 @@ function ReservationCard({ row, lot, locationName, canRelease = false, onRelease
     <p className="mt-1 break-words text-xs text-slate-700"><b>Motivo original:</b> {(row.history || []).find(event => event.action === 'created')?.reason || 'No registrado'}</p>
     {row.purpose === 'review_hold' && <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs font-semibold text-sky-950"><p>Este producto está inmovilizado para revisión. Debe resolverse desde Revisión de producto.</p><button type="button" className="mt-2 min-h-10 rounded-lg border border-sky-300 bg-white px-3 font-extrabold" onClick={() => onNavigate?.('review')}>Ir a revisión</button></div>}
     {row.purpose === 'repack_pending' && <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs font-semibold text-amber-950"><p>Este producto está reservado para reenvasado y no puede liberarse como una reserva normal.</p><button type="button" className="mt-2 min-h-10 rounded-lg border border-amber-300 bg-white px-3 font-extrabold" onClick={() => onNavigate?.('repack')}>Ir a reenvasado</button></div>}
-    {canRelease && row.purpose === 'courtesy' && ['active','partially_consumed'].includes(row.status) && row.remainingQuantity > 0 && <button type="button" className="mt-2 min-h-11 w-full rounded-xl border border-emerald-300 bg-emerald-50 px-3 text-xs font-extrabold text-emerald-900 hover:bg-emerald-100 sm:w-auto" onClick={onRelease}>Liberar reserva</button>}
+    {canRelease && row.purpose === 'courtesy' && ['active','partially_consumed'].includes(row.status) && row.remainingQuantity > 0 && <div className="mt-2 grid gap-2 sm:grid-cols-2">
+      <button type="button" className="min-h-11 rounded-xl border border-indigo-300 bg-indigo-50 px-3 text-xs font-extrabold text-indigo-900" onClick={onDeliver}>Entregar cortesía</button>
+      <button type="button" className="min-h-11 rounded-xl border border-emerald-300 bg-emerald-50 px-3 text-xs font-extrabold text-emerald-900" onClick={onRelease}>Cancelar cortesía y devolver a stock</button>
+    </div>}
     {reviewId && <div className="mt-2"><SecondaryButton full disabled={reviewLoading} onClick={() => { if (showReview) setShowReview(false); else void loadLatestReview() }}>{showReview ? 'Ocultar última revisión' : 'Consultar última revisión'}</SecondaryButton>{showReview && (reviewLoading ? <p role="status" className="mt-2 text-xs text-slate-600">Consultando revisión del servidor…</p> : reviewError ? <ErrorBox message={reviewError} onRetry={() => void loadLatestReview()} /> : currentReview && <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs"><p><b>{dateTime(currentReview.reviewedAt)} · {currentReview.reviewedByName}</b></p><p className="mt-1">Peso históricamente asignado: {currentReview.historicalAssignedWeightG == null ? 'desconocido' : `${currentReview.historicalAssignedWeightG} g`} · Peso físico medido: {currentReview.physicalWeightG == null ? 'no se pesó' : `${currentReview.physicalWeightG} g`}</p><p className="mt-1">Diferencia observada: {currentReview.weightDifferenceG == null ? 'no calculable' : `${currentReview.weightDifferenceG} g · pendiente de clasificación`} · costo: {money(currentReview.costCents)}</p><p className="mt-1">Envase/alimento: {currentReview.packageCondition} / {currentReview.productObservation}</p><p className="mt-1 break-words">Motivo: {currentReview.reason}</p></div>)}</div>}
     {unavailable && <p className="mt-2 rounded-lg bg-slate-50 p-2 text-[10px] text-slate-600">Agregado inmovilizado en esta ubicación: reenvasado {formatQty(Number(unavailable.repackPending || 0), row.unitType)} · revisión {formatQty(Number(unavailable.reviewHold || 0), row.unitType)} · cortesía {formatQty(Number(unavailable.courtesy || 0), row.unitType)}</p>}
     <details className="mt-2 rounded-lg bg-slate-50 p-2"><summary className="cursor-pointer text-xs font-bold">Detalle e historial de reserva</summary><div className="mt-2 space-y-1 text-[11px] text-slate-600"><p className="break-all">ID de reserva: {row.id}</p>{(row.history || []).map(event => <p key={event.id}>{dateTime(event.at)} · {event.action} · {formatQty(event.quantity, row.unitType)} · {event.byName} · {event.reason || 'Sin motivo'}</p>)}</div></details>

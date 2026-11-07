@@ -262,6 +262,94 @@ try {
   pass(staleRelease.error.includes('cambió') && reservationAfterRace.remainingQuantity === 0 && reservationAfterRace.status === 'consumed', 'liberación con cantidad observada obsoleta se rechaza después de cambiar la reserva')
   pass(reservationBeforeRace.remainingQuantity === 1 && (await root.collection('distBalances').doc(`central__${adjustmentReservationProduct}`).get()).data().quantity === 4, 'consumo concurrente afecta físico solo por entrega; liberación no repone producto')
 
+  const courtesyProduct = `${prefix}-derived-courtesy-product`
+  const courtesyLot = `${prefix}-derived-courtesy-lot`
+  const courtesyBatch = `${prefix}-derived-courtesy-batch`
+  const courtesyReservation = `${prefix}-derived-courtesy-reservation`
+  await root.collection('distProducts').doc(courtesyProduct).set({ name:'QA Tocino', unitType:'package', active:true, referencePrice:20 })
+  await root.collection('distBalances').doc(`central__${courtesyProduct}`).set({ productId:courtesyProduct, quantity:2 })
+  await root.collection('distLots').doc(courtesyLot).set({ productId:courtesyProduct, unitType:'package', productName:'QA Tocino',
+    lotCode:'QA-C', manufacturedOn:'2026-10-01', expiresOn:'2027-10-01', quantities:{central:2}, productionCost:5,
+    processingBatchId:courtesyBatch, processingDestinationId:'qa-courtesy', processingDestinationKind:'courtesy',
+    processingCommercialBlocked:true, processingSourceAllocationBasis:'batch_blend_accounting_allocation',
+    processingPhysicalWeightGRemaining:420, processingCostCentsRemaining:1000,
+    processingPackageWeightLedger:{packageCount:2,measuredNetWeightG:420,consumedCount:0,consumedWeightG:0,nextPackageIndex:0,weightBasis:'measured_total'},
+    processingUnavailable:{central:{courtesy:2,repackPending:0,reviewHold:0}} })
+  await root.collection('distProcessingBatches').doc(courtesyBatch).set({ status:'confirmed',processType:'bagging',
+    sourceAllocations:[{lotId:'qa-source',quantity:0.420}],result:{derivedLots:[{lotId:courtesyLot,destinationId:'qa-courtesy',destinationKind:'courtesy'}]} })
+  await root.collection('distStockReservations').doc(courtesyReservation).set({ productId:courtesyProduct,productName:'QA Tocino',
+    lotId:courtesyLot, batchId:courtesyBatch, movementId:'qa-output', location:'central', purpose:'courtesy',
+    originalQuantity:2,remainingQuantity:2,consumedQuantity:0,remainingWeightG:420,remainingCostCents:1000,status:'active' })
+  const cancelCourtesy = { reservationId:courtesyReservation,expectedRemainingQuantity:2,reason:'QA aptitud comercial comprobada',commercialQualityConfirmed:true }
+  const legacyRelease = await command(ids.admin,'releaseProcessingReservation',cancelCourtesy,`${prefix}-old-release-derived`,'rejected')
+  pass(legacyRelease.error.includes('bloqueado'), 'reproduce el rechazo real de la liberación anterior')
+  await command(ids.admin,'deliverReservedCourtesy',{ reservationId:courtesyReservation,deliveryId:`${prefix}-gift-200g`,quantity:1,
+    recipient:'QA',reason:'Entrega medida de prueba',expectedRemainingQuantity:2,explicitConfirmation:true,deliveredWeightG:200 },`${prefix}-gift-200g-op`)
+  const beforeConversion = (await root.collection('distLots').doc(courtesyLot).get()).data()
+  pass(beforeConversion.processingPhysicalWeightGRemaining === 220 && beforeConversion.quantities.central === 1, 'entrega parcial conserva 220 g reservados')
+  await command(ids.admin,'reclassifyProcessingCourtesyToFinished',{ ...cancelCourtesy,expectedRemainingQuantity:1 },`${prefix}-convert-courtesy`)
+  const converted = (await root.collection('distLots').doc(courtesyLot).get()).data()
+  pass(converted.processingDestinationKind === 'finished' && converted.processingCommercialRelease.status === 'released'
+    && converted.processingUnavailable.central.courtesy === 0 && converted.quantities.central === 1
+    && converted.processingPhysicalWeightGRemaining === 220 && converted.processingCostCentsRemaining === beforeConversion.processingCostCentsRemaining,
+  'cancelación convierte el remanente con peso, cantidad y costo intactos')
+  const traditionalProduct = `${prefix}-traditional-420`
+  const traditionalLot = `${traditionalProduct}-lot`
+  const traditionalReservation = `${traditionalLot}-reservation`
+  await seedLot(traditionalProduct, traditionalLot, 1)
+  await command(ids.admin,'reserveProcessingStock',{productId:traditionalProduct,lotId:traditionalLot,location:'central',purpose:'courtesy',quantity:0.420,reservationId:traditionalReservation})
+  await command(ids.admin,'releaseProcessingReservation',{reservationId:traditionalReservation,expectedRemainingQuantity:0.420,reason:'QA cancelar cortesía',commercialQualityConfirmed:true})
+  pass((await root.collection('distLots').doc(traditionalLot).get()).data().quantities.central === 1
+    && (await root.collection('distLots').doc(traditionalLot).get()).data().processingUnavailable.central.courtesy === 0,
+  'cortesía tradicional de 0,420 kg vuelve a disponible sin aumentar físico')
+
+  async function seedSingleCourtesy(suffix, expiresOn = '2027-10-01') {
+    const productId = `${prefix}-courtesy-${suffix}`
+    const lotId = `${productId}-lot`, batchId = `${productId}-batch`, reservationId = `${productId}-reserve`
+    await seedLot(productId,lotId,1,{
+      expiresOn,processingCommercialBlocked:true,processingBatchId:batchId,processingDestinationId:'qa-courtesy',
+      processingDestinationKind:'courtesy',processingPhysicalWeightGRemaining:420,processingCostCentsRemaining:1000,
+      processingSourceAllocationBasis:'batch_blend_accounting_allocation',
+      processingPackageWeightLedger:{packageCount:1,measuredNetWeightG:420,consumedCount:0,consumedWeightG:0,nextPackageIndex:0,weightBasis:'measured_total'},
+      processingUnavailable:{central:{courtesy:1,repackPending:0,reviewHold:0}},
+    },'package')
+    await root.collection('distProcessingBatches').doc(batchId).set({status:'confirmed',processType:'bagging',sourceAllocations:[{lotId:'qa-bulk',quantity:0.420}],
+      result:{derivedLots:[{lotId,destinationId:'qa-courtesy',destinationKind:'courtesy'}]}})
+    await root.collection('distStockReservations').doc(reservationId).set({productId,lotId,batchId,location:'central',purpose:'courtesy',status:'active',
+      originalQuantity:1,remainingQuantity:1,consumedQuantity:0,remainingWeightG:420,remainingCostCents:1000,movementId:`${batchId}-movement`})
+    return { productId, lotId, reservationId }
+  }
+  const approvedCancel = reservationId => ({reservationId,expectedRemainingQuantity:1,reason:'QA aptitud comercial verificada',commercialQualityConfirmed:true})
+  const approvedDelivery = reservationId => ({reservationId,expectedRemainingQuantity:1,quantity:1,recipient:'QA',reason:'QA entrega medida',explicitConfirmation:true})
+  const whole = await seedSingleCourtesy('whole-cancel')
+  const wholeOp = `${prefix}-whole-cancel-op`
+  await command(ids.admin,'reclassifyProcessingCourtesyToFinished',approvedCancel(whole.reservationId),wholeOp)
+  await processCommand(db,root.collection('distOperations').doc(wholeOp))
+  const wholeLot = (await root.collection('distLots').doc(whole.lotId).get()).data()
+  pass(wholeLot.quantities.central === 1 && wholeLot.processingPhysicalWeightGRemaining === 420 && wholeLot.processingCostCentsRemaining === 1000
+    && wholeLot.processingCommercialRelease.status === 'released', '420 g convertidos una vez con cantidad y costo intactos')
+  await command(ids.admin,'sale',{sourceLocation:'centralWarehouse',lines:[{productId:whole.productId,quantity:1,actualUnitPrice:8}],cashAmount:8,qrAmount:0,creditAmount:0,paymentKind:'cash',allowProcessedSale:true})
+  pass((await root.collection('distLots').doc(whole.lotId).get()).data().quantities.central === 0,'lote convertido puede venderse por el flujo comercial')
+
+  const gift = await seedSingleCourtesy('whole-delivery')
+  const delivered = await command(ids.admin,'deliverReservedCourtesy',approvedDelivery(gift.reservationId))
+  const giftRow = (await root.collection('distSales').doc(delivered.result.saleId).get()).data()
+  pass(giftRow.total === 0 && giftRow.physicalWeightG === 420 && giftRow.courtesyCost === 10
+    && (await root.collection('distLots').doc(gift.lotId).get()).data().quantities.central === 0,'entrega total de 420 g consume reserva y registra Bs 0')
+
+  const expired = await seedSingleCourtesy('expired','2026-10-02')
+  await command(ids.admin,'deliverReservedCourtesy',approvedDelivery(expired.reservationId),`${prefix}-expired-gift`,'rejected')
+  await command(ids.admin,'reclassifyProcessingCourtesyToFinished',approvedCancel(expired.reservationId),`${prefix}-expired-cancel`,'rejected')
+  pass((await root.collection('distLots').doc(expired.lotId).get()).data().quantities.central === 1,'vencido sigue protegido contra entrega y conversión')
+
+  const race = await seedSingleCourtesy('race')
+  const second = `${prefix}-second-admin`
+  await root.collection('members').doc(second).set({role:'admin',active:true})
+  const raceResults = await Promise.all([
+    command(ids.admin,'deliverReservedCourtesy',approvedDelivery(race.reservationId),`${prefix}-race-deliver`,null),
+    command(second,'reclassifyProcessingCourtesyToFinished',approvedCancel(race.reservationId),`${prefix}-race-cancel`,null),
+  ])
+  pass(raceResults.map(row=>row.status).sort().join(',') === 'confirmed,rejected','dos administradores no pueden entregar y cancelar la misma reserva')
   const events = await root.collection('distStockMovements').where('productId', '==', ids.product).get()
   const reservationEvents = events.docs.map(d => d.data()).filter(m => ['reservation_created','reservation_released'].includes(m.type))
   pass(reservationEvents.length === 3 && reservationEvents.every(m => m.centralDelta === 0 && m.routeDelta === 0), 'solo la reserva creada genera evento documental; Kardex mantiene delta físico cero')

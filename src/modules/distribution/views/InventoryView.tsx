@@ -706,7 +706,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
                 <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
                   <p>Disponible por lote: <strong className={available > 0 ? 'text-emerald-800' : 'text-slate-800'}>{formatQty(available, lotsProduct.unitType)}</strong></p>
                   <p>Elaboración: <strong>{lot.manufacturedOn || 'No registrada'}</strong></p>
-                  <LotReconciliation lot={lot} location={lotLocation} admin={session.role === 'admin'} />
+                  <LotReconciliation lots={data.lots} lot={lot} location={lotLocation} admin={session.role === 'admin'} />
                   {originPending > 0 && <p role="status" className="break-words font-semibold text-amber-800 sm:col-span-2">{formatQty(originPending, lotsProduct.unitType)} reservados por origen pendiente. Para esa cantidad, el código y las fechas son referencia contable, no procedencia física comprobada. El resto identificado sigue disponible.</p>}
                   <p>Vencimiento: <strong>{lot.expiresOn || 'No registrada'}</strong></p>
                   {(() => {

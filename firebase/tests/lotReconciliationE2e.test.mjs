@@ -24,6 +24,7 @@ const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--mode',
   env: { ...process.env, VITE_USE_FIREBASE_EMULATOR: 'true', VITE_FIREBASE_API_KEY: 'fake-api-key', VITE_FIREBASE_AUTH_DOMAIN: 'demo-pachax-audit.firebaseapp.com', VITE_FIREBASE_PROJECT_ID: 'demo-pachax-audit', VITE_FIREBASE_STORAGE_BUCKET: 'demo-pachax-audit.appspot.com', VITE_FIREBASE_MESSAGING_SENDER_ID: '123456789', VITE_FIREBASE_APP_ID: '1:123456789:web:inventory-merma-qa' },
 })
 let browser
+let page
 let viteOutput = ''
 vite.stdout.on('data', chunk => { viteOutput += chunk.toString() })
 vite.stderr.on('data', chunk => { viteOutput += chunk.toString() })
@@ -46,12 +47,18 @@ try {
   await root.collection('distBalances').doc(`central__${pid}`).set({ id:`central__${pid}`, productId:pid, locationId:'central', quantity:1.740 })
   await root.collection('distLots').doc(lid).set({ id:lid, restaurantId:'sanjose', productId:pid, productName:'QA Origen conciliable', unitType:'kg', lotCode:'201026', manufacturedOn:'2026-10-20', expiresOn:'2026-10-30', productionCost:10, quantities:{central:1.740}, pendingOrigins:{central:[{exceptionId,accountingLotId:lid,sourceMovementId:'qa-source-movement',physicalOriginConfirmed:false,basis:'original_accounting_debit_only',historicalUnitCost:10,quantity:1.740}]} })
   await root.collection('distLotHistory').doc(exceptionId).set({ id:exceptionId, action:'physical_origin_pending', productId:pid, createdAt:date, createdBy:uid, reason:'Historical synthetic accounting origin', sourceMovementId:'qa-source-movement' })
+  const giftProduct = 'qa-mobile-courtesy-product', giftLot = 'qa-mobile-courtesy-lot'
+  const giftReservation = 'qa-mobile-courtesy-reservation'
+  await root.collection('distProducts').doc(giftProduct).set({id:giftProduct,name:'QA Cortesía móvil',unitType:'kg',active:true,category:'Granel',productionCost:10,referencePrice:20})
+  await root.collection('distBalances').doc(`central__${giftProduct}`).set({id:`central__${giftProduct}`,productId:giftProduct,quantity:0.420,unitType:'kg',warehouseId:'central',locationKind:'central'})
+  await root.collection('distLots').doc(giftLot).set({id:giftLot,productId:giftProduct,productName:'QA Cortesía móvil',unitType:'kg',lotCode:'QA-C-420',manufacturedOn:'2026-10-20',expiresOn:'2027-10-30',productionCost:10,quantities:{central:0.420},processingUnavailable:{central:{courtesy:0.420,repackPending:0,reviewHold:0}}})
+  await root.collection('distStockReservations').doc(giftReservation).set({id:giftReservation,productId:giftProduct,productName:'QA Cortesía móvil',unitType:'kg',lotId:giftLot,lotCode:'QA-C-420',location:'central',purpose:'courtesy',status:'active',originalQuantity:0.420,remainingQuantity:0.420,consumedQuantity:0,remainingWeightG:null,history:[],createdAt:date,createdBy:uid})
   const { processCommand } = req('./operations.cjs')
   const inFlight=new Set()
   stopOperations=root.collection('distOperations').where('status','==','queued').onSnapshot(snapshot=>{ for(const row of snapshot.docs) if(!inFlight.has(row.id)){inFlight.add(row.id);void processCommand(db,row.ref).finally(()=>inFlight.delete(row.id))} })
   await waitForVite()
   browser=await chromium.launch({headless:true})
-  const page=await browser.newPage({viewport:{width:390,height:844}})
+  page=await browser.newPage({viewport:{width:390,height:844}})
   await page.goto('http://127.0.0.1:5175/scripts/processing-ui-harness.html?inventory=1&mermas=1')
   await page.getByRole('button',{name:'Ver lotes de QA Origen conciliable',exact:true}).click({timeout:30000})
   const dialog=page.getByRole('dialog',{name:'Lotes del producto'})
@@ -66,7 +73,7 @@ try {
   await dialog.getByLabel('Evidencia revisada / nota documental (mínimo 12 caracteres)').fill('Etiqueta sintética y pesaje de QA revisados')
   await dialog.getByRole('checkbox').check()
   await confirm.click()
-  await dialog.getByText('Operación confirmada por el servidor.',{exact:false}).waitFor({timeout:60000})
+  await dialog.getByText('Conciliado: 1.740. Pendiente: 0.000.',{exact:false}).waitFor({timeout:60000})
   assert.equal((await root.collection('distLots').doc(lid).get()).data().pendingOrigins.central.length,0)
   assert.equal((await root.collection('distLots').doc(lid).get()).data().expiresOn,'2026-10-30')
   await dialog.getByRole('button',{name:'Rectificar datos del lote',exact:true}).click()
@@ -80,5 +87,44 @@ try {
   await page.reload()
   await page.getByRole('button',{name:'Ver lotes de QA Origen conciliable',exact:true}).click({timeout:30000})
   await page.getByText('Lote CORRECT-QA-LABEL',{exact:true}).waitFor()
+  await page.getByRole('button',{name:'Resolver cantidad del lote',exact:true}).click()
+  await page.getByLabel('Destino',{exact:true}).selectOption('new_lot')
+  for (const width of [320,360,375,390,414]) {
+    await page.setViewportSize({width,height:844})
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`responsive lot resolution ${width}`)
+  }
+  await page.getByLabel('Cantidad',{exact:true}).fill('0.320')
+  await page.getByLabel('Código real',{exact:true}).fill('QA-REMNANT')
+  await page.getByLabel('Elaboración real',{exact:true}).fill('2026-10-20')
+  await page.getByLabel('Vencimiento real',{exact:true}).fill('2027-10-20')
+  await page.getByLabel('Motivo',{exact:true}).fill('Identidad del remanente comprobada en QA')
+  await page.getByLabel('Evidencia revisada',{exact:true}).fill('Etiqueta física sintética revisada en QA')
+  await page.getByRole('checkbox').check()
+  await page.getByRole('button',{name:'Registrar destino',exact:true}).click()
+  await page.getByText('Destino confirmado por el servidor.',{exact:true}).waitFor({timeout:60000})
+  assert.equal((await root.collection('distLots').doc(lid).get()).data().quantities.central,1.420)
+  assert.equal((await root.collection('distBalances').doc(`central__${pid}`).get()).data().quantity,1.740)
+  console.log('PASS remnant new lot at mobile widths, physical quantity unchanged')
+  await page.getByRole('dialog',{name:'Lotes del producto'}).getByRole('button',{name:'Cerrar',exact:true}).last().click()
+  await page.getByRole('button',{name:'Ver lotes de QA Cortesía móvil',exact:true}).click()
+  await page.getByRole('button',{name:'Ver reserva',exact:true}).click()
+  await page.getByRole('button',{name:'Entregar cortesía',exact:true}).click({timeout:30000})
+  const courtesyDialog = page.getByRole('dialog',{name:'Resolver reserva de cortesía'})
+  await courtesyDialog.getByLabel(/^Acción/).selectOption('deliver')
+  for (const width of [320,360,375,390,414]) {
+    await page.setViewportSize({width,height:844})
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`responsive courtesy ${width}`)
+  }
+  await courtesyDialog.getByLabel('Cantidad entregada',{exact:false}).fill('0.200')
+  await courtesyDialog.getByLabel('Destinatario',{exact:false}).fill('Receptor sintético')
+  await courtesyDialog.getByLabel('Motivo',{exact:false}).fill('Entrega parcial comprobada en QA')
+  await courtesyDialog.getByRole('checkbox').check()
+  await courtesyDialog.getByRole('button',{name:'Confirmar acción',exact:true}).click()
+  await courtesyDialog.waitFor({state:'hidden',timeout:60000})
+  assert.equal((await root.collection('distStockReservations').doc(giftReservation).get()).data().remainingQuantity,0.220)
+  console.log('PASS mobile partial courtesy delivery, 220 g remain')
   console.log('PASS responsive origin → confirmed server operation → identity correction → reload; physical stock and cost unchanged')
+ } catch (error) {
+  if (page) console.error((await page.locator('body').innerText().catch(() => '')).slice(0, 2500))
+  throw error
 } finally { stopOperations?.(); await browser?.close();vite.kill();await Promise.race([new Promise(resolve=>vite.once('exit',resolve)),delay(3000)]);await db.terminate() }
