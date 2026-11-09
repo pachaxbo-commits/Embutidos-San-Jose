@@ -47,6 +47,16 @@ try {
   await root.collection('distBalances').doc(`central__${pid}`).set({ id:`central__${pid}`, productId:pid, locationId:'central', quantity:1.740 })
   await root.collection('distLots').doc(lid).set({ id:lid, restaurantId:'sanjose', productId:pid, productName:'QA Origen conciliable', unitType:'kg', lotCode:'201026', manufacturedOn:'2026-10-20', expiresOn:'2026-10-30', productionCost:10, quantities:{central:1.740}, pendingOrigins:{central:[{exceptionId,accountingLotId:lid,sourceMovementId:'qa-source-movement',physicalOriginConfirmed:false,basis:'original_accounting_debit_only',historicalUnitCost:10,quantity:1.740}]} })
   await root.collection('distLotHistory').doc(exceptionId).set({ id:exceptionId, action:'physical_origin_pending', productId:pid, createdAt:date, createdBy:uid, reason:'Historical synthetic accounting origin', sourceMovementId:'qa-source-movement' })
+  const heldProduct = 'qa-historical-holds'
+  await root.collection('distProducts').doc(heldProduct).set({id:heldProduct,name:'QA Retenciones',unitType:'kg',active:true,category:'Granel',productionCost:10,referencePrice:20})
+  await root.collection('distBalances').doc(`central__${heldProduct}`).set({productId:heldProduct,locationId:'central',quantity:8.08})
+  const heldBase = {productId:heldProduct,productName:'QA Retenciones',unitType:'kg',manufacturedOn:'2026-10-20',expiresOn:'2099-10-30',productionCost:10,createdAt:date,createdBy:uid}
+  for (const row of [
+    {id:'qa-hold-historical',lotCode:'QA-HISTÓRICO',quantities:{central:0},quarantined:true,quarantineResolution:'discarded',quarantineResolvedAt:date,quarantineResolvedQuantity:1},
+    {id:'qa-hold-pending',lotCode:'QA-PENDIENTE',quantities:{central:0.08},quarantined:true},
+    {id:'qa-hold-best',lotCode:'QA-MAYOR-COMPATIBLE',quantities:{central:3}},
+    {id:'qa-hold-wrong-cost',lotCode:'QA-OTRO-COSTO',quantities:{central:5},productionCost:11},
+  ]) await root.collection('distLots').doc(row.id).set({...heldBase,...row})
   const giftProduct = 'qa-mobile-courtesy-product', giftLot = 'qa-mobile-courtesy-lot'
   const giftReservation = 'qa-mobile-courtesy-reservation'
   await root.collection('distProducts').doc(giftProduct).set({id:giftProduct,name:'QA Cortesía móvil',unitType:'kg',active:true,category:'Granel',productionCost:10,referencePrice:20})
@@ -60,6 +70,20 @@ try {
   browser=await chromium.launch({headless:true})
   page=await browser.newPage({viewport:{width:390,height:844}})
   await page.goto('http://127.0.0.1:5175/scripts/processing-ui-harness.html?inventory=1&mermas=1')
+  const oldLots = page.getByText(/Historial de lotes sin saldo/)
+  await oldLots.click()
+  await page.getByText('QA Retenciones · QA-HISTÓRICO · Sin saldo · Retención resuelta',{exact:true}).waitFor()
+  await page.getByText('QA Retenciones · QA-PENDIENTE',{exact:true}).locator('..').getByRole('button',{name:'Resolver ahora'}).click()
+  const holdReview = page.getByRole('dialog',{name:'Revisar producto en cuarentena'})
+  assert.equal(await holdReview.getByRole('combobox').last().inputValue(),'qa-hold-best')
+  await holdReview.getByLabel('Motivo / evidencia de revisión').fill('Etiqueta sintética verificada antes de consolidar')
+  await holdReview.getByRole('button',{name:'Confirmar liberación',exact:true}).click()
+  await holdReview.waitFor({state:'hidden',timeout:60000})
+  assert.equal((await root.collection('distLots').doc('qa-hold-best').get()).data().quantities.central,3.08)
+  assert.equal((await root.collection('distBalances').doc(`central__${heldProduct}`).get()).data().quantity,8.08)
+  await page.getByText('QA Retenciones · QA-PENDIENTE · Sin saldo · Retención resuelta',{exact:true}).waitFor()
+  await page.getByRole('dialog',{name:'Productos en cuarentena'}).getByRole('button',{name:'Cerrar',exact:true}).last().click()
+  console.log('PASS historical retention is separate and active retention opens the largest compatible lot')
   await page.getByRole('button',{name:'Ver lotes de QA Origen conciliable',exact:true}).click({timeout:30000})
   const dialog=page.getByRole('dialog',{name:'Lotes del producto'})
   await dialog.getByRole('button',{name:'Conciliar origen',exact:true}).click()
@@ -70,13 +94,18 @@ try {
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`responsive origin ${width}`)
   }
   await dialog.getByLabel('Motivo (mínimo 12 caracteres)').fill('Producto verificado físicamente en QA')
-  await dialog.getByLabel('Evidencia revisada / nota documental (mínimo 12 caracteres)').fill('Etiqueta sintética y pesaje de QA revisados')
+  assert.equal(await dialog.getByLabel('Evidencia revisada / nota documental (mínimo 12 caracteres)').count(), 0)
   await dialog.getByRole('checkbox').check()
   await confirm.click()
   await dialog.getByText('Conciliado: 1.740. Pendiente: 0.000.',{exact:false}).waitFor({timeout:60000})
   assert.equal((await root.collection('distLots').doc(lid).get()).data().pendingOrigins.central.length,0)
   assert.equal((await root.collection('distLots').doc(lid).get()).data().expiresOn,'2026-10-30')
+  await dialog.getByText('Historial de conciliaciones de origen',{exact:true}).click()
+  await dialog.getByText(/Conciliado anteriormente: 1.740 kg/).waitFor()
+  await dialog.getByText('Saldo actual con origen pendiente: 0.000 kg',{exact:true}).waitFor()
+  await dialog.getByText('Historial de conciliaciones de origen',{exact:true}).click()
   await dialog.getByRole('button',{name:'Rectificar datos del lote',exact:true}).click()
+  await dialog.getByLabel('Evidencia revisada / nota documental (mínimo 12 caracteres)').fill('Etiqueta sintética y pesaje de QA revisados')
   await dialog.getByLabel('Código correcto').fill('CORRECT-QA-LABEL')
   await dialog.getByLabel('Vencimiento real').fill('2099-11-10')
   await dialog.getByRole('checkbox').check()

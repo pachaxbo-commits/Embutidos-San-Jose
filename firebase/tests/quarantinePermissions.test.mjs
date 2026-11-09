@@ -71,12 +71,12 @@ try {
     })
     await setDoc(doc(db, 'restaurants', 'sanjose', 'distLots', `${prefix}-quarantine-lot`), {
       id: `${prefix}-quarantine-lot`, restaurantId: 'sanjose', productId: `${prefix}-product`, productName: 'Viena QA', unitType: 'kg',
-      lotCode: 'SOBRANTE POR REVISAR', manufacturedOn: '', expiresOn: '', productionCost: null, quarantined: true,
+      lotCode: 'SOBRANTE POR REVISAR', manufacturedOn: '', expiresOn: '', productionCost: 8, quarantined: true,
       quantities: { central: 0.74 }, createdAt: new Date().toISOString(), createdBy: users.admin,
     })
     await setDoc(doc(db, 'restaurants', 'sanjose', 'distLots', `${prefix}-good-lot`), {
       id: `${prefix}-good-lot`, restaurantId: 'sanjose', productId: `${prefix}-product`, productName: 'Viena QA', unitType: 'kg',
-      lotCode: '171026', manufacturedOn: '2026-10-17', expiresOn: '2026-11-17', productionCost: 8,
+      lotCode: '171026', manufacturedOn: '2026-10-17', expiresOn: '2099-11-17', productionCost: 8,
       quantities: { central: 5 }, createdAt: new Date().toISOString(), createdBy: users.admin,
     })
   })

@@ -56,7 +56,7 @@ try {
   pass((await read('distLots',lid)).pendingOrigins.central[0].quantity === 0.740, 'same operationId is idempotent')
   await command(admin,'confirmPhysicalOrigin',payload,'rejected')
   pass(true,'stale pending amount rejected')
-  const identity = { productId:pid, lotId:lid, expectedLotCode:initial.lotCode, expectedManufacturedOn:initial.manufacturedOn, expectedExpiresOn:initial.expiresOn, expectedQuantities:initial.quantities, lotCode:'CORRECT-LABEL', manufacturedOn:'2026-10-25', expiresOn:'2026-11-10', explicitConfirmation:true, evidenceNote:'Synthetic documentary label correction', reason:'Synthetic correction verified by administrator' }
+  const identity = { productId:pid, lotId:lid, expectedLotCode:initial.lotCode, expectedManufacturedOn:initial.manufacturedOn, expectedExpiresOn:initial.expiresOn, expectedQuantities:initial.quantities, lotCode:'CORRECT-LABEL', manufacturedOn:'2026-10-25', expiresOn:'2099-11-10', explicitConfirmation:true, evidenceNote:'Synthetic documentary label correction', reason:'Synthetic correction verified by administrator' }
   await command(admin,'rectifyLotIdentity',identity,'rejected')
   pass(true,'identity blocked while partial pending remains')
   await command(admin,'confirmPhysicalOrigin',{...payload,quantity:0.740,expectedPendingQuantity:0.740})
@@ -85,6 +85,11 @@ try {
   await root.collection('distLots').doc(targetId).set({ ...initial, id:targetId, lotCode:'QA-DESTINATION', quantities:{central:0}, pendingOrigins:{} })
   const resolve = { productId:pid, sourceLotId:lid, location:'central', expectedSourceQuantity:1.740,
     quantity:0.320, reason:'Synthetic reconciliation of quantity', evidenceNote:'Measured and documented for emulator', explicitConfirmation:true }
+  await command(admin,'resolveLotQuantity',{...resolve, action:'move',destinationLotId:targetId},'rejected')
+  await command(admin,'rectifyLotIdentity',identity)
+  await root.collection('distLots').doc(targetId).update({ expiresOn:'2099-11-11' })
+  await command(admin,'resolveLotQuantity',{...resolve, action:'move',destinationLotId:targetId},'rejected')
+  await root.collection('distLots').doc(targetId).update({ expiresOn:'2099-11-10' })
   const moved = await command(admin,'resolveLotQuantity',{...resolve, action:'move',destinationLotId:targetId})
   pass((await read('distLots',lid)).quantities.central === 1.420
     && (await read('distLots',targetId)).quantities.central === 0.320
