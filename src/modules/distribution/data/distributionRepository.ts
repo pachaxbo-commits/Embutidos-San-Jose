@@ -1790,6 +1790,15 @@ export async function loadLotOriginHistory(exceptionIds: string[]) {
   }))
 }
 
+export async function loadLotOriginReconciliations(lotId: string, location: string) {
+  const context = await getContext()
+  const snapshot = await getDocsFromServer(query(collectionRef(context, 'distLotHistory'), where('lotId', '==', lotId)))
+  return snapshot.docs.map(doc => ({ id: doc.id, row: doc.data() }))
+    .filter(({ row }) => row.action === 'physical_origin_reconciled' && row.location === location)
+    .map(({ id, row }) => ({ id, quantity: Number(row.quantity), createdAt: String(row.createdAt || ''), responsible: String(row.responsibleName || ''), reason: String(row.reason || '') }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
 export async function loadLotFromServer(lotId: string): Promise<DistLot> {
   const context = await getContext()
   const snapshot = await getDocFromServer(docRef(context, 'distLots', lotId))

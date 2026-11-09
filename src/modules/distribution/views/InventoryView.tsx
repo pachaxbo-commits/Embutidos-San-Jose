@@ -104,6 +104,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   const [generalHistorySearch, setGeneralHistorySearch] = useState('')
   const [isGeneralHistoryOpen, setIsGeneralHistoryOpen] = useState(false)
   const [isQuarantineOpen, setIsQuarantineOpen] = useState(false)
+  const [quarantineLotId, setQuarantineLotId] = useState<string>()
   const [historyDays, setHistoryDays] = useState<string[]>([toDayKey(new Date())])
   const [historyExporting, setHistoryExporting] = useState<'pdf' | 'excel' | null>(null)
   const [generalHistoryMode, setGeneralHistoryMode] = useState<'movements' | 'mermas'>('movements')
@@ -537,7 +538,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
         )}
       </div>
 
-      <LotsAndHistory session={session} data={data} />
+      <LotsAndHistory session={session} data={data} onResolveQuarantine={lotId => { setQuarantineLotId(lotId); setIsQuarantineOpen(true) }} />
       <Modal isOpen={isIntakeHistoryOpen} onClose={closeIntakeHistory} title="Historial de ingresos" subtitle="Ingresos confirmados al almacén · sin pendientes ni movimientos revertidos" size="lg">
         <div className="grid min-w-0 gap-3">
           <RangePicker dayKeys={session.dayKeys} initialPreset="today" onChange={session.setDayKeys}/>
@@ -683,7 +684,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
           </>}
         </div>
       </Modal>
-      <QuarantineView session={session} data={data} isOpen={isQuarantineOpen} onClose={() => setIsQuarantineOpen(false)} defaultLocation={lotLocation} />
+      {isQuarantineOpen && <QuarantineView session={session} data={data} isOpen initialLotId={quarantineLotId} onClose={() => { setIsQuarantineOpen(false); setQuarantineLotId(undefined) }} defaultLocation={lotLocation} />}
       <Modal isOpen={Boolean(lotsProduct)} onClose={() => setLotsProduct(null)} title="Lotes del producto" subtitle={lotsProduct ? `${lotsProduct.name} · ${lotsProduct.presentation || lotsProduct.description || 'Presentación estándar'} · ${warehouseName}` : ''} size="lg">
         {lotsProduct && selectedProductLotTotals && <div className="grid min-w-0 gap-3">
           <div className="grid grid-cols-1 gap-2 rounded-2xl bg-slate-50 p-3 text-xs sm:grid-cols-3">

@@ -252,7 +252,7 @@ export function StockAlerts({ data }: Pick<DistributionViewProps, "data">) {
     </>
   );
 }
-export function LotsAndHistory({ data, session }: DistributionViewProps) {
+export function LotsAndHistory({ data, session, onResolveQuarantine }: DistributionViewProps & { onResolveQuarantine: (lotId: string) => void }) {
   const [search, setSearch] = useState(""), [month, setMonth] = useState(toDayKey().slice(0, 7));
   const [editing, setEditing] = useState<DistLot | null>(null);
   const [exportingToday, setExportingToday] = useState(false);
@@ -293,9 +293,11 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
     setEditing(l);
   };
   const term = search.toLowerCase();
-  const lots = data.lots.filter((l) =>
+  const matchingLots = data.lots.filter((l) =>
     [l.productName, l.lotCode].join(" ").toLowerCase().includes(term),
   );
+  const lots = matchingLots.filter(lot => Object.values(lot.quantities).some(quantity => quantity > 0));
+  const historicalLots = matchingLots.filter(lot => !Object.values(lot.quantities).some(quantity => quantity > 0));
   const kardexProduct = data.products.find((product) => product.id === openedKardexProductId) || null;
   const today = toDayKey();
   const weekStart = shiftDayKey(today, -((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7));
@@ -397,7 +399,7 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
                 Elaboración: {l.manufacturedOn || "Sin registrar"} · Vence:{" "}
                 {l.expiresOn || "Sin registrar"}
               </p>
-              {l.quarantined && (
+              {l.quarantined && !l.quarantineResolution && (
                 <p className="font-bold text-rose-700">
                   Separado: no disponible para venta
                 </p>
@@ -419,13 +421,22 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
               {session.role === "admin" && (
                 <button
                   className="mt-2 font-bold underline"
-                  onClick={() => open(l)}
+                  onClick={() => l.quarantined && !l.quarantineResolution ? onResolveQuarantine(l.id) : open(l)}
                 >
-                  Completar / corregir datos del lote
+                  Resolver ahora
                 </button>
               )}
             </div>
           ))}
+          {historicalLots.length > 0 && <details className="rounded-xl border p-3 text-xs">
+            <summary className="cursor-pointer font-bold">Historial de lotes sin saldo ({historicalLots.length})</summary>
+            <ul className="mt-2 space-y-2">
+              {historicalLots.map(lot => <li key={lot.id} className="break-words">
+                {lot.productName} · {lot.lotCode} · Sin saldo
+                {lot.quarantineResolvedAt && ' · Retención resuelta'}
+              </li>)}
+            </ul>
+          </details>}
           {!lots.length && (
             <p className="text-xs text-slate-500">
               El stock anterior se identificará como lote sin fechas al
@@ -533,7 +544,7 @@ export function LotsAndHistory({ data, session }: DistributionViewProps) {
         </div>
       </SectionCard>
       <Modal isOpen={!!editing} onClose={() => setEditing(null)} title="Conciliación y datos del lote">
-        {editing && <LotReconciliation lots={data.lots} lot={data.lots.find(lot => lot.id === editing.id) || editing} location={session.warehouseId && session.warehouseId !== 'central' ? `warehouse__${session.warehouseId}` : 'central'} admin={session.role === 'admin'} />}
+        {editing && <LotReconciliation openResolution lots={data.lots} lot={data.lots.find(lot => lot.id === editing.id) || editing} location={session.warehouseId && session.warehouseId !== 'central' ? `warehouse__${session.warehouseId}` : 'central'} admin={session.role === 'admin'} />}
       </Modal>
     </div>
   );

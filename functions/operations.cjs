@@ -5708,6 +5708,9 @@ handlers.resolveLotQuantity = async (o, p) => {
     check(destination && destination.id !== source.id && !destination.legacy && !destination.quarantined
       && !destination.processingBatchId && !destination.processingCommercialBlocked, 'Selecciona otro lote tradicional del mismo producto.');
     check(destination.productionCost === source.productionCost, 'El costo difiere. Crea un lote correcto separado para conservar el costo histórico.');
+    check(validDate(source.expiresOn) && validDate(destination.expiresOn)
+      && destination.expiresOn >= o.today && destination.expiresOn <= source.expiresOn,
+    'El lote destino debe estar vigente y no puede extender el vencimiento registrado. Si la etiqueta demuestra otra identidad, realiza una rectificación documentada.');
     const destinationReservations = await o.processingReservations(destination.id);
     o.assertReservationAggregate(destination, loc, destinationReservations);
     check(!Object.values(destination.processingUnavailable?.[loc] || {}).some(value => Number(value) > 0)
@@ -6003,6 +6006,14 @@ handlers.resolveQuarantine = async (o, p) => {
     destinationLot = e.lots.find((item) => item.id === targetId);
     check(destinationLot && destinationLot.id !== lot.id && destinationLot.productId === product.id, "El lote destino no corresponde al mismo producto.");
     check(!destinationLot.quarantined && (!destinationLot.expiresOn || destinationLot.expiresOn >= o.today) && destinationLot.lotCode?.trim() && validDate(destinationLot.manufacturedOn) && validDate(destinationLot.expiresOn) && Number.isFinite(destinationLot.productionCost) && destinationLot.productionCost >= 0, "El lote destino debe estar vigente y tener código, fechas y costo válidos.");
+    check(Number.isFinite(lot.productionCost) && destinationLot.productionCost === lot.productionCost,
+      'El costo histórico no coincide con el lote destino. Revisa la procedencia antes de consolidar.');
+    check(!destinationLot.legacy && !destinationLot.processingBatchId && !destinationLot.processingCommercialBlocked
+      && Number(destinationLot.quantities?.[loc] || 0) > 0
+      && (!lot.expiresOn || destinationLot.expiresOn <= lot.expiresOn)
+      && !Object.keys(destinationLot.pendingOrigins || {}).some(key => origins.pending(destinationLot, key) > 0),
+    'El lote destino no es compatible con la procedencia o el vencimiento del producto separado.');
+    await o.assertNoActiveReservation(destinationLot, loc, 'El lote destino tiene producto reservado.');
     destinationLot.quantities = { ...(destinationLot.quantities || {}), [loc]: roundAt(Number(destinationLot.quantities?.[loc] || 0) + quantity, quantityPrecision(product)) };
     updatedLot.quantities[loc] = 0;
     updatedLot.quarantineResolution = "released_existing_lot";

@@ -14,7 +14,7 @@ import type { DistClosure, DistLot } from '../types'
 import { RangePicker, describeRange } from './RangePicker'
 import { formatQty, PrimaryButton, SecondaryButton } from './shared'
 
-type Props = { session: DistributionSession; data: DistributionData; isOpen: boolean; onClose: () => void; defaultLocation?: string }
+type Props = { session: DistributionSession; data: DistributionData; isOpen: boolean; onClose: () => void; defaultLocation?: string; initialLotId?: string }
 type Resolution = 'released_existing_lot' | 'released_new_lot' | 'discarded'
 
 function displayDate(value?: string) {
@@ -35,24 +35,33 @@ function closureReference(closures: DistClosure[], dispatchId?: string) {
 function compatibleQuarantineLots(lots: DistLot[], row: QuarantineRow | null) {
   if (!row) return []
   const day = toDayKey(new Date())
-  return lots.filter(lot => lot.productId === row.lot.productId && lot.id !== row.lot.id && !lot.quarantined && lot.lotCode.trim() && /^\d{4}-\d{2}-\d{2}$/.test(lot.manufacturedOn) && /^\d{4}-\d{2}-\d{2}$/.test(lot.expiresOn) && lot.manufacturedOn <= day && lot.expiresOn >= day && Number.isFinite(lot.productionCost) && Number(lot.productionCost) >= 0)
+  return lots.filter(lot => lot.productId === row.lot.productId && lot.id !== row.lot.id && !lot.quarantined && lot.lotCode.trim() && /^\d{4}-\d{2}-\d{2}$/.test(lot.manufacturedOn) && /^\d{4}-\d{2}-\d{2}$/.test(lot.expiresOn) && lot.manufacturedOn <= day && lot.expiresOn >= day && Number.isFinite(lot.productionCost) && Number(lot.productionCost) >= 0
+    && !lot.legacy && !lot.processingBatchId && !lot.processingCommercialBlocked
+    && Number(lot.quantities[row.location]) > 0
+    && lot.productionCost === row.lot.productionCost
+    && (!row.lot.expiresOn || lot.expiresOn <= row.lot.expiresOn)
+    && !Object.values(lot.pendingOrigins || {}).some(refs => refs.some(ref => ref.quantity > 0))
+    && !Object.values(lot.processingUnavailable?.[row.location] || {}).some(quantity => Number(quantity) > 0))
+    .sort((a, b) => b.quantities[row.location] - a.quantities[row.location] || a.id.localeCompare(b.id))
 }
 
-export function QuarantineView({ session, data, isOpen, onClose, defaultLocation }: Props) {
+export function QuarantineView({ session, data, isOpen, onClose, defaultLocation, initialLotId }: Props) {
   const admin = session.role === 'admin'
   const fixedLocation = session.role === 'warehouse' && session.warehouseId && session.warehouseId !== 'central'
     ? `warehouse__${session.warehouseId}` : 'central'
   const allRows = useMemo(() => quarantineRows(data.lots, data.movements, data.warehouses), [data.lots, data.movements, data.warehouses])
+  const initialRow = admin && initialLotId ? allRows.find(row => row.status === 'pending' && row.lot.id === initialLotId) || null : null
+  const initialTarget = compatibleQuarantineLots(data.lots, initialRow)[0]
   const [status, setStatus] = useState<QuarantineStatusFilter>('pending')
-  const [location, setLocation] = useState(defaultLocation || fixedLocation)
+  const [location, setLocation] = useState(initialRow?.location || defaultLocation || fixedLocation)
   const [dayKeys, setDayKeys] = useState<string[]>(() => {
     const today = toDayKey(new Date())
     return [`${today.slice(0, 8)}01`, today]
   })
   const [exporting, setExporting] = useState(false)
-  const [reviewRow, setReviewRow] = useState<QuarantineRow | null>(null)
-  const [resolution, setResolution] = useState<Resolution>('released_existing_lot')
-  const [destinationLotId, setDestinationLotId] = useState('')
+  const [reviewRow, setReviewRow] = useState<QuarantineRow | null>(initialRow)
+  const [resolution, setResolution] = useState<Resolution>(initialRow && !initialTarget ? 'released_new_lot' : 'released_existing_lot')
+  const [destinationLotId, setDestinationLotId] = useState(initialTarget?.id || '')
   const [newLotCode, setNewLotCode] = useState('')
   const [manufacturedOn, setManufacturedOn] = useState('')
   const [expiresOn, setExpiresOn] = useState('')
@@ -71,9 +80,11 @@ export function QuarantineView({ session, data, isOpen, onClose, defaultLocation
     return compatibleQuarantineLots(data.lots, reviewRow)
   }, [data.lots, reviewRow])
 
+  const destination = targetLots.find(lot => lot.id === destinationLotId)
   const openReview = (row: QuarantineRow) => {
-    setReviewRow(row); setResolution(compatibleQuarantineLots(data.lots, row).length > 0 ? 'released_existing_lot' : 'released_new_lot')
-    setDestinationLotId(''); setNewLotCode(''); setManufacturedOn(''); setExpiresOn(''); setProductionCost(''); setReason(''); setError(''); operationId.current = null
+    const suggested = compatibleQuarantineLots(data.lots, row)[0]
+    setReviewRow(row); setResolution(suggested ? 'released_existing_lot' : 'released_new_lot')
+    setDestinationLotId(suggested?.id || ''); setNewLotCode(''); setManufacturedOn(''); setExpiresOn(''); setProductionCost(''); setReason(''); setError(''); operationId.current = null
   }
   const submitResolution = async () => {
     if (!reviewRow || submitLock.current) return
@@ -144,6 +155,9 @@ export function QuarantineView({ session, data, isOpen, onClose, defaultLocation
         <div className="grid grid-cols-2 gap-2"><button type="button" aria-pressed={resolution !== 'discarded'} onClick={() => setResolution('released_existing_lot')} className={`min-h-12 rounded-xl border px-3 text-xs font-extrabold ${resolution !== 'discarded' ? 'border-emerald-700 bg-emerald-50 text-emerald-900' : 'border-slate-200 bg-white text-slate-700'}`}>Aprobar para venta</button><button type="button" aria-pressed={resolution === 'discarded'} onClick={() => setResolution('discarded')} className={`min-h-12 rounded-xl border px-3 text-xs font-extrabold ${resolution === 'discarded' ? 'border-rose-700 bg-rose-50 text-rose-900' : 'border-slate-200 bg-white text-slate-700'}`}>No apto / descartar</button></div>
         {resolution !== 'discarded' && <Segmented value={resolution === 'released_new_lot' ? 'new' : 'existing'} onChange={value => setResolution(value === 'new' ? 'released_new_lot' : 'released_existing_lot')} options={[{value:'existing',label:'Vincular a lote existente'},{value:'new',label:'Identificar nuevo lote'}]}/>}
         {resolution === 'released_existing_lot' && <Field label="Lote destino" required><select className="min-h-12 w-full min-w-0 rounded-xl border-2 border-slate-200 bg-white px-3" value={destinationLotId} onChange={event => setDestinationLotId(event.target.value)}><option value="">Selecciona un lote compatible</option>{targetLots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · elab. {lot.manufacturedOn} · vence {lot.expiresOn} · costo Bs {Number(lot.productionCost).toFixed(2)} · actual {formatQty(Number(lot.quantities?.[reviewRow.location] || 0),lot.unitType)}</option>)}</select>{targetLots.length === 0 && <p className="mt-1 text-xs text-amber-800">No hay lotes compatibles. Identifica uno nuevo si verificaste físicamente su trazabilidad.</p>}</Field>}
+        {resolution === 'released_existing_lot' && destination && <p className="break-words rounded-xl bg-slate-50 p-3 text-xs">
+          {destination.lotCode} pasará de {formatQty(Number(destination.quantities[reviewRow.location] || 0), destination.unitType)} a {formatQty(Number(destination.quantities[reviewRow.location] || 0) + reviewRow.quantity, destination.unitType)}. El total físico y el costo histórico se conservan.
+        </p>}
         {resolution === 'released_new_lot' && <div className="grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Código de lote" required><TextInput className="w-full min-w-0" value={newLotCode} onChange={event => setNewLotCode(event.target.value)} maxLength={80}/></Field><Field label="Costo de producción por unidad" required><TextInput className="w-full min-w-0" inputMode="decimal" value={productionCost} onChange={event => setProductionCost(event.target.value.replace(',','.'))}/></Field><Field label="Fecha de elaboración" required><TextInput type="date" className="w-full min-w-0" value={manufacturedOn} onChange={event => setManufacturedOn(event.target.value)}/></Field><Field label="Fecha de vencimiento" required><TextInput type="date" className="w-full min-w-0" value={expiresOn} onChange={event => setExpiresOn(event.target.value)}/></Field></div>}
         <Field label={resolution === 'discarded' ? 'Motivo del descarte' : 'Motivo / evidencia de revisión'} required><TextInput className="w-full min-w-0" value={reason} onChange={event => setReason(event.target.value)} placeholder="Describe qué se verificó" maxLength={500}/></Field>
         <div className={`rounded-2xl p-3 text-sm ${resolution === 'discarded' ? 'border border-rose-200 bg-rose-50 text-rose-950' : 'border border-emerald-200 bg-emerald-50 text-emerald-950'}`}><div className="flex items-center gap-2 font-extrabold">{resolution === 'discarded' ? <AlertTriangle size={17}/> : <PackageCheck size={17}/>} {resolution === 'discarded' ? 'Se retirarán de la existencia física' : 'Estás liberando a venta'}</div><p className="mt-1">{formatQuarantineQty(reviewRow.quantity,reviewRow.lot.unitType)} · {reviewRow.lot.productName}</p>{resolution === 'discarded' ? <p className="mt-1 text-xs">No se modificará el costo histórico si no está disponible. El resultado económico no se recalcula automáticamente.</p> : <p className="mt-1 text-xs">La existencia física no cambia; la cantidad quedará disponible con trazabilidad de lote.</p>}</div>

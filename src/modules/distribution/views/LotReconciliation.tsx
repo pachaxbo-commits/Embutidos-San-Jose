@@ -2,12 +2,12 @@ import { processingCommerciallyAvailable } from '../domain/processingCommercialA
 import { useEffect, useState } from 'react'
 import { toDayKey } from '../domain/engine'
 import type { DistLot } from '../types'
-import { loadLotFromServer, loadLotOriginHistory, newOperationId } from '../data/distributionRepository'
+import { loadLotFromServer, loadLotOriginHistory, loadLotOriginReconciliations, newOperationId } from '../data/distributionRepository'
 import { submitOperation } from '../data/operationQueue'
 
-export function LotReconciliation({ lot: observedLot, location, admin, lots = [] }: { lot: DistLot; location: string; admin: boolean; lots?: DistLot[] }) {
+export function LotReconciliation({ lot: observedLot, location, admin, lots = [], openResolution = false }: { lot: DistLot; location: string; admin: boolean; lots?: DistLot[]; openResolution?: boolean }) {
   const [refresh, setRefresh] = useState<{ previous: DistLot; current: DistLot } | null>(null)
-  const [resolving, setResolving] = useState(false)
+  const [resolving, setResolving] = useState(openResolution)
   const lot = refresh?.previous === observedLot ? refresh.current : observedLot
   async function reloadLot() {
     setRefresh({ previous: observedLot, current: await loadLotFromServer(observedLot.id) })
@@ -34,6 +34,8 @@ export function LotReconciliation({ lot: observedLot, location, admin, lots = []
   const [manufactured, setManufactured] = useState(lot.manufacturedOn || '')
   const [expiry, setExpiry] = useState(lot.expiresOn || '')
   const [history, setHistory] = useState<Awaited<ReturnType<typeof loadLotOriginHistory>>>([])
+  const [reconciliations, setReconciliations] = useState<Awaited<ReturnType<typeof loadLotOriginReconciliations>> | null>(null)
+  const [reconciliationError, setReconciliationError] = useState(false)
   const [historyError, setHistoryError] = useState('')
   const exceptionIds = refs.map(ref => ref.exceptionId).sort().join('|')
   useEffect(() => {
@@ -43,14 +45,16 @@ export function LotReconciliation({ lot: observedLot, location, admin, lots = []
     return () => { active = false }
   }, [admin, exceptionIds])
   const blockedIdentity = Object.values(lot.pendingOrigins || {}).some(rows => rows.some(ref => ref.quantity > 0))
+  const singlePhysicalNote = mode === 'origin' && kind === 'physical_check'
+  const evidenceNote = singlePhysicalNote ? reason : evidence
   async function save() {
-    if (busy || !confirmed || reason.trim().length < 12 || evidence.trim().length < 12) return
+    if (busy || !confirmed || reason.trim().length < 12 || evidenceNote.trim().length < 12) return
     const expected = openedLot || lot
     const expectedPending = Math.round((expected.pendingOrigins?.[location] || []).reduce((sum, ref) => sum + ref.quantity, 0) * 1000) / 1000
     setBusy(true); setMessage('')
     try {
       const result = await submitOperation<{ previousPendingQuantity?: number; remainingPendingQuantity?: number }>(mode === 'origin' ? 'confirmPhysicalOrigin' : 'rectifyLotIdentity', mode === 'origin' ? {
-        productId: lot.productId, lotId: lot.id, location, quantity: Number(quantity), expectedPendingQuantity: expectedPending, confirmationType: kind, reason, evidenceNote: evidence, explicitConfirmation: true,
+        productId: lot.productId, lotId: lot.id, location, quantity: Number(quantity), expectedPendingQuantity: expectedPending, confirmationType: kind, reason, evidenceNote, explicitConfirmation: true,
       } : {
         productId: lot.productId, lotId: lot.id, lotCode: code, manufacturedOn: manufactured, expiresOn: expiry, expectedLotCode: expected.lotCode, expectedManufacturedOn: expected.manufacturedOn, expectedExpiresOn: expected.expiresOn, expectedQuantities: expected.quantities, reason, evidenceNote: evidence, explicitConfirmation: true,
       }, newOperationId('lot-reconciliation'))
@@ -61,6 +65,7 @@ export function LotReconciliation({ lot: observedLot, location, admin, lots = []
         : 'Operación confirmada por el servidor.'
       try {
         await reloadLot()
+        setReconciliations(null)
         setMessage(pendingMessage)
       } catch {
         setMessage(pendingMessage + ' Consulta Actualizar lote para cargar el estado confirmado.')
@@ -77,6 +82,20 @@ export function LotReconciliation({ lot: observedLot, location, admin, lots = []
     {Number(held?.reviewHold || 0) > 0 && <p>Revisión: {held?.reviewHold} {lot.unitType}</p>}
     {Number(held?.repackPending || 0) > 0 && <p>Reenvasado: {held?.repackPending} {lot.unitType}</p>}
     {expired && <p className="font-semibold text-rose-800">Vencido según sistema desde {lot.expiresOn}: {physical} {lot.unitType}. Conciliar origen no cambia el vencimiento.</p>}
+    <p>Saldo actual con origen pendiente: {pending.toFixed(3)} {lot.unitType}</p>
+    {admin && <details onToggle={event => {
+      if (!event.currentTarget.open) return
+      setReconciliationError(false)
+      void loadLotOriginReconciliations(lot.id, location).then(setReconciliations).catch(() => setReconciliationError(true))
+    }}>
+      <summary className="cursor-pointer font-semibold">Historial de conciliaciones de origen</summary>
+      {reconciliationError ? <p role="alert">No se pudo consultar el historial. Cierra y vuelve a abrir para reintentar.</p>
+        : reconciliations === null ? <p>Consultando historial…</p>
+        : reconciliations.length === 0 ? <p>Sin conciliaciones registradas.</p>
+        : <ul>{reconciliations.map(row => <li key={row.id} className="break-words">
+          Conciliado anteriormente: {row.quantity.toFixed(3)} {lot.unitType} · {row.createdAt} · {row.responsible}. {row.reason}
+        </li>)}</ul>}
+    </details>}
     {pending > 0 && <p>Origen físico pendiente: <strong>{pending.toFixed(3)}</strong>. Confirma la procedencia mediante revisión física o documental; no cambia código ni fechas.</p>}
     {history.map(row => <div key={row.id} className="break-words text-[11px]"><p>Excepción {row.id} · {row.createdAt} · {row.createdBy}</p><p>{row.reason}</p><p>Movimiento original: {row.sourceMovementId}</p></div>)}
     {historyError && <p role="alert">{historyError}</p>}
@@ -84,7 +103,7 @@ export function LotReconciliation({ lot: observedLot, location, admin, lots = []
     {admin && !mode && !lot.processingBatchId && !lot.legacy && !lot.quarantined && Number(lot.quantities[location]) > 0 && (
       <button type="button" className={field} onClick={() => setResolving(value => !value)}>Resolver cantidad del lote</button>
     )}
-    {resolving && <LotQuantityResolution lot={lot} lots={lots} location={location} onConfirmed={async () => {
+    {resolving && admin && !lot.processingBatchId && !lot.legacy && !lot.quarantined && physical > 0 && <LotQuantityResolution lot={lot} lots={lots} location={location} onConfirmed={async () => {
       setResolving(false)
       setMessage('Destino confirmado por el servidor.')
       try { await reloadLot() } catch { setMessage('Destino confirmado. Usa Actualizar lote para consultar el saldo.') }
@@ -95,9 +114,9 @@ export function LotReconciliation({ lot: observedLot, location, admin, lots = []
       <p className="break-words">Producto: {lot.productName} · Lote {lot.lotCode} · Existencia {lot.quantities[location]} · Elaboración {lot.manufacturedOn} · Vencimiento {lot.expiresOn} · Ubicación {location}</p>
       {mode === 'origin' ? <><label className="block">Cantidad que se está conciliando<input className={field} type="number" min="0.001" step={lot.unitType === 'kg' ? '0.001' : '1'} max={pending} value={quantity} onChange={e => setQuantity(e.target.value)} /></label><label className="block">Tipo de comprobación<select className={field} value={kind} onChange={e => setKind(e.target.value)}><option value="physical_check">Verificación física en almacén</option><option value="label_check">Revisión de etiqueta/lote</option><option value="document_check">Revisión documental</option><option value="supported_correction">Corrección administrativa respaldada</option></select></label></> : <><p>Antes: {lot.lotCode} · {lot.manufacturedOn} · {lot.expiresOn}. Después:</p><label className="block">Código correcto<input className={field} value={code} onChange={e => setCode(e.target.value)} /></label><label className="block">Elaboración real<input className={field} type="date" value={manufactured} onChange={e => setManufactured(e.target.value)} /></label><label className="block">Vencimiento real<input className={field} type="date" value={expiry} onChange={e => setExpiry(e.target.value)} /></label></>}
       <label className="block">Motivo (mínimo 12 caracteres)<textarea className={field} value={reason} onChange={e => setReason(e.target.value)} /></label>
-      <label className="block">Evidencia revisada / nota documental (mínimo 12 caracteres)<textarea className={field} value={evidence} onChange={e => setEvidence(e.target.value)} /></label>
+      {!singlePhysicalNote && <label className="block">Evidencia revisada / nota documental (mínimo 12 caracteres)<textarea className={field} value={evidence} onChange={e => setEvidence(e.target.value)} /></label>}
       <label className="flex min-h-11 items-start gap-2"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /><span>{mode === 'origin' ? 'Confirmo que el producto existe físicamente y que los datos coinciden con la revisión realizada.' : 'Confirmo que los nuevos datos corresponden a la identificación física/documental real y no a una renovación artificial del vencimiento.'}</span></label>
-      <button type="button" disabled={busy || !confirmed || reason.trim().length < 12 || evidence.trim().length < 12 || (mode === 'origin' && (historyError !== '' || history.length !== refs.length || !(Number(quantity) > 0) || Number(quantity) > pending))} className={field + ' disabled:opacity-50'} onClick={() => void save()}>{busy ? 'Esperando confirmación del servidor…' : 'Confirmar ' + (mode === 'origin' ? 'conciliación' : 'rectificación')}</button><button type="button" disabled={busy} onClick={() => setMode(null)}>Cancelar</button>
+      <button type="button" disabled={busy || !confirmed || reason.trim().length < 12 || evidenceNote.trim().length < 12 || (mode === 'origin' && (historyError !== '' || history.length !== refs.length || !(Number(quantity) > 0) || Number(quantity) > pending))} className={field + ' disabled:opacity-50'} onClick={() => void save()}>{busy ? 'Esperando confirmación del servidor…' : 'Confirmar ' + (mode === 'origin' ? 'conciliación' : 'rectificación')}</button><button type="button" disabled={busy} onClick={() => setMode(null)}>Cancelar</button>
     </div>}
     {message && <p role="status" className="break-words">{message}</p>}
     {admin && message && <button type="button" onClick={() => void reloadLot().catch(error => setMessage(error.message))}>Actualizar lote</button>}
@@ -126,7 +145,13 @@ function LotQuantityResolution({ lot, lots, location, onConfirmed }: {
   const moving = action === 'move' || action === 'new_lot'
   const amount = action === 'shortage' ? Math.round((expected - Number(observed)) * scale) / scale : Number(quantity)
   const candidates = lots.filter(row => row.id !== lot.id && row.productId === lot.productId
-    && !row.legacy && !row.quarantined && !row.processingBatchId && row.productionCost === lot.productionCost)
+    && !row.legacy && !row.quarantined && !row.processingBatchId && !row.processingCommercialBlocked
+    && row.productionCost === lot.productionCost && Number(row.quantities[location]) > 0
+    && row.expiresOn && lot.expiresOn && row.expiresOn >= toDayKey() && row.expiresOn <= lot.expiresOn
+    && !Object.values(row.processingUnavailable?.[location] || {}).some(value => Number(value) > 0)
+    && !Object.values(row.pendingOrigins || {}).some(rows => rows.some(ref => ref.quantity > 0)))
+    .sort((a, b) => b.quantities[location] - a.quantities[location] || a.id.localeCompare(b.id))
+  const destination = candidates.find(row => row.id === target)
   const control = 'min-h-11 w-full min-w-0 rounded-xl border border-slate-300 bg-white p-2 text-sm'
   async function save() {
     setBusy(true)
@@ -144,13 +169,15 @@ function LotQuantityResolution({ lot, lots, location, onConfirmed }: {
   }
   return <div className="grid min-w-0 gap-2 rounded-xl bg-slate-50 p-3">
     <p className="break-words">{lot.productName} · {lot.lotCode} · {location} · Existencia {expected} {lot.unitType} · Vence {lot.expiresOn || 'Sin fecha'} · Costo histórico {lot.productionCost ?? 'Sin registrar'}</p>
-    <label>Destino<select aria-label="Destino" className={control} value={action} onChange={e => { setAction(e.target.value); setChecked(false) }}><option value="keep">Mantener en este lote</option><option value="move">Mover a lote existente</option><option value="new_lot">Crear lote correcto y mover</option><option value="discard">Desechar físicamente</option><option value="shortage">Registrar faltante por pesaje</option></select></label>
+    <label>Destino<select aria-label="Destino" className={control} value={action} onChange={e => { setAction(e.target.value); setChecked(false); if (e.target.value === 'move') setTarget(candidates[0]?.id || '') }}><option value="keep">Mantener en este lote</option><option value="move">Mover a lote existente</option><option value="new_lot">Crear lote correcto y mover</option><option value="discard">Desechar físicamente</option><option value="shortage">Registrar faltante por pesaje</option></select></label>
     {moving && <p>Identificado para mover: {identified} {lot.unitType}. La cantidad con procedencia pendiente requiere conciliación previa. Corrige fechas solo con evidencia de la etiqueta real.</p>}
     {action === 'keep' ? <p>Para mantener el lote actual, cierra esta sección. Para corregir toda su identidad, usa Rectificar datos del lote.</p> : <>
       {action === 'shortage'
         ? <label>Existencia física pesada<input className={control} type="number" min="0" step={1 / scale} value={observed} onChange={e => setObserved(e.target.value)} />Faltante: {amount} {lot.unitType}</label>
         : <label>Cantidad<input className={control} type="number" min={1 / scale} step={1 / scale} value={quantity} onChange={e => setQuantity(e.target.value)} /></label>}
-      {action === 'move' && <label>Lote destino con el mismo costo<select className={control} value={target} onChange={e => setTarget(e.target.value)}><option value="">Selecciona lote</option>{candidates.map(row => <option key={row.id} value={row.id}>{row.lotCode} · {row.manufacturedOn} · vence {row.expiresOn}</option>)}</select></label>}
+      {action === 'move' && <label>Lote destino con el mismo costo<select className={control} value={target} onChange={e => setTarget(e.target.value)}><option value="">Selecciona lote</option>{candidates.map(row => <option key={row.id} value={row.id}>{row.lotCode} · {row.quantities[location]} {lot.unitType} · vence {row.expiresOn}</option>)}</select></label>}
+      {action === 'move' && !candidates.length && <p>No hay un destino vigente compatible. Si la etiqueta demuestra otra identidad, usa la rectificación documentada.</p>}
+      {action === 'move' && destination && amount > 0 && amount <= identified && <p>Vista previa: {lot.lotCode} quedará con {(expected - amount).toFixed(lot.unitType === 'kg' ? 3 : 0)} y {destination.lotCode} con {(destination.quantities[location] + amount).toFixed(lot.unitType === 'kg' ? 3 : 0)} {lot.unitType}. El total físico y el costo se conservan.</p>}
       {action === 'new_lot' && <>
         <label>Código real<input className={control} value={code} onChange={e => setCode(e.target.value)} /></label>
         <label>Elaboración real<input className={control} type="date" value={made} onChange={e => setMade(e.target.value)} /></label>
@@ -159,7 +186,7 @@ function LotQuantityResolution({ lot, lots, location, onConfirmed }: {
       <label>Motivo<textarea className={control} value={reason} onChange={e => setReason(e.target.value)} /></label>
       <label>Evidencia revisada<textarea className={control} value={evidence} onChange={e => setEvidence(e.target.value)} /></label>
       <label className="flex items-start gap-2"><input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)} />{action === 'discard' ? 'Confirmo que esta cantidad fue desechada físicamente.' : action === 'shortage' ? 'Confirmo el peso observado y que esta diferencia ya no existe físicamente.' : 'Confirmo que la cantidad corresponde al lote identificado por la evidencia física y que las fechas son reales.'}</label>
-      <button type="button" className={control + ' disabled:opacity-50'} disabled={busy || !checked || reason.trim().length < 12 || evidence.trim().length < 12 || !(amount > 0) || amount > expected || (moving && amount > identified) || (action === 'shortage' && observed === '') || (action === 'move' && !target) || (action === 'new_lot' && (!code.trim() || !made || !expiry))} onClick={() => void save()}>{busy ? 'Confirmando…' : 'Registrar destino'}</button>
+      <button type="button" className={control + ' disabled:opacity-50'} disabled={busy || !checked || reason.trim().length < 12 || evidence.trim().length < 12 || !(amount > 0) || amount > expected || (moving && amount > identified) || (action === 'shortage' && observed === '') || (action === 'move' && !destination) || (action === 'new_lot' && (!code.trim() || !made || !expiry))} onClick={() => void save()}>{busy ? 'Confirmando…' : 'Registrar destino'}</button>
     </>}
     {error && <p role="alert" className="break-words">{error}</p>}
   </div>
