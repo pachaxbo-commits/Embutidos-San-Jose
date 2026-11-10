@@ -30,6 +30,16 @@ async function login(page) {
   await page.locator('input[type=password]').fill('demo1234')
   await page.getByRole('button', { name: 'Iniciar Sesión', exact: true }).click()
   await page.locator('.distribution-header').waitFor()
+  const inventory = page.getByRole('button', { name: 'Inventario', exact: true }).filter({ visible: true })
+  if (await inventory.count()) await inventory.first().click()
+  else {
+    await page.getByRole('button', { name: 'Mas', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Inventario', exact: true }).click()
+  }
+  await page.getByRole('button', { name: 'Ver lotes de Orden A', exact: true }).click()
+  const inventoryLots = page.getByRole('dialog', { name: 'Lotes del producto' })
+  const availableText = await inventoryLots.getByText('Disponible para venta', { exact: true }).locator('..').locator('strong').innerText()
+  await inventoryLots.getByRole('button', { name: 'Cerrar', exact: true }).last().click()
   const dispatchButton = page.getByRole('button', { name: 'Despachos', exact: true }).filter({ visible: true })
   if (await dispatchButton.count()) await dispatchButton.first().click()
   else {
@@ -39,6 +49,11 @@ async function login(page) {
   await page.getByRole('button', { name: 'Nuevo', exact: true }).click()
   await page.getByRole('button', { name: 'Seleccionar productos', exact: true }).click()
   await page.getByRole('dialog', { name: 'Productos del despacho' }).waitFor()
+  const picker = page.getByRole('dialog', { name: 'Productos del despacho' })
+  const search = picker.getByRole('textbox', { name: 'Buscar productos del despacho' })
+  await search.fill('Orden A')
+  await picker.getByText('Disponible para despacho: ' + availableText, { exact: true }).waitFor()
+  await search.fill('')
 }
 
 async function verifyPicker(page, sizes, isMobile = false, label = '') {

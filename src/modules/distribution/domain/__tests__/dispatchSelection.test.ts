@@ -1,6 +1,6 @@
 import { allocatePhysicalQuantity } from '../physicalQuantity.ts'
-import type { DistLot, DistProduct } from '../../types'
-import { dispatchLotIneligibility, dispatchLotFifoDate, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../dispatchSelection.ts'
+import type { DistBalance, DistLot, DistProduct } from '../../types'
+import { dispatchStockAvailability, dispatchLotIneligibility, dispatchLotFifoDate, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../dispatchSelection.ts'
 
 const product = (id: string, name: string, category: string, sortOrder: number): DistProduct => ({
   id, name, category, unitType: 'kg', referencePrice: 10, active: true, sortOrder,
@@ -115,3 +115,20 @@ for (const unitType of ['package', 'unit'] as const) {
   const integerProduct = { ...pork, unitType }
   check(validateDispatchLotDrafts([{ id: 'fraction', productId: pork.id, quantity: '1.5', allocations: [{ id: 'fraction-lot', lotId: oldest.id, quantity: '1.5' }] }], [integerProduct], [oldest], 'central', '2026-10-30').some(row => row.severity === 'error' && row.message.includes('enteras')), `${unitType} rechaza fracciones`)
 }
+
+
+const available = (physical: number, lots: DistLot[], projected = physical) =>
+  dispatchStockAvailability({ productId: pork.id, unitType: 'kg', quantity: physical, availableQuantity: projected } as DistBalance, lots, 'central', '2026-11-10')
+const regular = { ...oldest, quantities: { central: 20 } }
+check(available(20, [regular]).available === 20, 'saldo tradicional disponible')
+check(available(40, [regular, { ...newer, expiresOn: '2026-11-09', quantities: { central: 20 } }]).available === 20, 'lote vencido excluido')
+check(available(20, [{ ...regular, processingUnavailable: { central: { courtesy: 3, reviewHold: 0, repackPending: 0 } } }]).available === 17, 'solo el saldo libre de cortesía se puede asignar')
+check(available(21, [regular]).available === 20, 'el balance sin respaldo en lotes no es despachable')
+check(available(20, [regular], 15).available === 15, 'el saldo proyectado limita las asignaciones')
+
+const derivedTen = { ...releasedDerived, quantities: { central: 10 }, processingByLocation: {
+  central: { ...releasedDerived.processingByLocation!.central, segments: releasedDerived.processingByLocation!.central.segments.map(segment => ({ ...segment, remainingQuantity: 10 })) },
+} }
+const regularTen = { ...regular, quantities: { central: 10 } }
+check(available(20, [regularTen, derivedTen]).available === 20, 'lote derivado liberado se cuenta una sola vez')
+check(available(20, [regularTen, { ...derivedTen, processingCommercialRelease: undefined }]).available === 10, 'lote derivado bloqueado se excluye')

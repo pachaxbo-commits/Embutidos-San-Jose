@@ -56,7 +56,6 @@ try {
       ])
     }))
     await Promise.all(products
-      .filter(product => product.id.startsWith('qa-dispatch-order-'))
       .map(product => setDoc(doc(db, 'restaurants/sanjose/distLots', `qa-lot-${product.id}`), {
         id: `qa-lot-${product.id}`,
         productId: product.id,
