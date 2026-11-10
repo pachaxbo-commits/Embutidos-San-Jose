@@ -24,8 +24,8 @@ import {
   getMailtoUrl,
 } from '../data/distributionDocumentPrintService'
 import { Capacitor } from '@capacitor/core'
-import { dispatchLotIneligibility, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../domain/dispatchSelection'
-import { processingCommerciallyAvailable, processingDispatchIneligibility } from '../domain/processingCommercialAvailability'
+import { dispatchLotFreeQuantity, dispatchStockAvailability, moveDispatchProduct, sortDispatchLotsFefo, sortDispatchLotsFifo, sortDispatchProducts, toggleDispatchDraftProduct, validateDispatchLotDrafts } from '../domain/dispatchSelection'
+import { processingCommerciallyAvailable } from '../domain/processingCommercialAvailability'
 
 interface DraftLine {
   id: string
@@ -57,18 +57,16 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const effectiveWarehouse = additionTarget?.warehouseId || warehouseId
   const lotLocation = effectiveWarehouse === 'central' ? 'central' : `warehouse__${effectiveWarehouse}`
   const todayBolivia = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz' }).format(new Date())
-  const dispatchableDerived = new Map(data.products.map(product => [product.id, data.lots
-    .filter(lot => {
-      return lot.productId === product.id && lot.processingCommercialBlocked === true
-        && !processingDispatchIneligibility(lot, lotLocation, todayBolivia)
-    })
-    .reduce((sum, lot) => sum + Number(lot.quantities[lotLocation] || 0), 0)]))
+  const availability = new Map(data.products.map(product => [product.id, dispatchStockAvailability(
+    data.balances.find(balance => balance.id === warehouseBalanceId(effectiveWarehouse, product.id)),
+    data.lots.filter(lot => lot.productId === product.id), lotLocation, todayBolivia,
+  )]))
   const pendingCommercialReleaseDerived = new Map(data.products.map(product => [product.id, data.lots
     .filter(lot => lot.productId === product.id && lot.processingCommercialBlocked === true
       && lot.processingDestinationKind === 'finished' && !processingCommerciallyAvailable(lot)
       && Number(lot.quantities[lotLocation] || 0) > 0)
     .reduce((sum, lot) => sum + Number(lot.quantities[lotLocation] || 0), 0)]))
-  const central = new Map(data.products.map(p => [p.id, (data.balances.find(b => b.id === warehouseBalanceId(effectiveWarehouse, p.id))?.availableQuantity || 0) + (dispatchableDerived.get(p.id) || 0)]))
+  const central = new Map([...availability].map(([id, stock]) => [id, stock.available]))
   const [routeId, setRouteId] = useState('')
   const [distributorUid, setDistributorUid] = useState('')
   const [observation, setObservation] = useState('')
@@ -487,10 +485,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     data.dispatchProductOrder?.enabled ? data.dispatchProductOrder.productIds : undefined,
   ), [data.products, data.dispatchProductOrder])
 
-  const draftLotIssues = useMemo(
-    () => validateDispatchLotDrafts(draftLines, activeProducts, data.lots, lotLocation, todayBolivia),
-    [draftLines, activeProducts, data.lots, lotLocation, todayBolivia],
-  )
+  const draftLotIssues = validateDispatchLotDrafts(draftLines, activeProducts, data.lots, lotLocation, todayBolivia)
   const draftValidationErrors = draftLotIssues.filter(issue => issue.severity === 'error')
   const draftValidationIncomplete = draftLotIssues.filter(issue => issue.severity === 'incomplete')
   const incompleteProductCount = new Set(draftValidationIncomplete.map(issue => issue.lineId)).size
@@ -544,16 +539,14 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     setConfirmingLoadType(null)
   }
 
-  const eligibleLots = (productId: string) => sortDispatchLotsFifo(data.lots.filter(lot =>
-    lot.productId === productId && !dispatchLotIneligibility(lot, productId, lotLocation, todayBolivia)
-  ))
+  const eligibleLots = (productId: string) => sortDispatchLotsFifo(availability.get(productId)?.eligibleLots || [])
 
   const distributeFefo = (draft: DraftLine) => {
     const product = data.products.find(item => item.id === draft.productId)
     if (!product) return
     const target = roundQuantityForUnit(Number(draft.quantity) + (Number(draft.dispatchMerma) || 0), product.unitType)
     if (!(target > 0)) { setError('Primero indica la cantidad normal y la merma adicional del producto.'); return }
-    const { allocations: parts, remaining } = allocatePhysicalQuantity(target, sortDispatchLotsFefo(eligibleLots(draft.productId)).map(lot => ({ id: lot.id, available: Number(lot.quantities[lotLocation]) || 0 })), product.unitType)
+    const { allocations: parts, remaining } = allocatePhysicalQuantity(target, sortDispatchLotsFefo(eligibleLots(draft.productId)).map(lot => ({ id: lot.id, available: dispatchLotFreeQuantity(lot, lotLocation) })), product.unitType)
     const allocations = parts.map(part => ({ ...part, id: newOperationId('lot'), quantity: String(part.quantity) }))
     if (remaining > 0) { setError(`Faltan ${remaining} para completar la cantidad con lotes aptos.`); return }
     setError(null)
@@ -818,8 +811,8 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           const total = roundQuantityForUnit(normal + merma)
           const complete = total > 0 && assigned === total
           return <div key={line.id} data-dispatch-line-id={line.id} data-dispatch-product-line={line.productId} className={`grid gap-3 rounded-2xl border bg-slate-50 p-3 transition-shadow ${draftLotIssues.some(issue => issue.lineId === line.id && issue.key === highlightedDispatchIssue) ? 'border-rose-500 ring-4 ring-rose-200' : 'border-slate-200'}`}>
-            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Apto para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p>{dispatchableDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-indigo-700">Sachet con trazabilidad · habilitado para despacho y venta</p> : null}{pendingCommercialReleaseDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-amber-700">{formatQty(pendingCommercialReleaseDerived.get(product.id) || 0, product.unitType)} pendientes de liberación por Administración; no disponibles para este despacho.</p> : null}</div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
-            <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} step={product.unitType === 'kg' ? 0.001 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
+            <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-sm font-extrabold leading-snug text-slate-900">{product.name}</p><p className="mt-0.5 text-[11px] font-semibold text-slate-500">Apto para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</p>{(availability.get(product.id)?.lotAvailable ?? 0) > (central.get(product.id) ?? 0) && <p className="text-[11px] text-amber-800">El saldo disponible del almacén limita el total asignable aunque los lotes sumen más.</p>}{lots.some(lot => lot.processingCommercialBlocked) ? <p className="mt-1 text-[10px] font-bold text-indigo-700">Sachet con trazabilidad · habilitado para despacho y venta</p> : null}{pendingCommercialReleaseDerived.get(product.id) ? <p className="mt-1 text-[10px] font-bold text-amber-700">{formatQty(pendingCommercialReleaseDerived.get(product.id) || 0, product.unitType)} pendientes de liberación por Administración; no disponibles para este despacho.</p> : null}</div><button type="button" aria-label={`Quitar ${product.name}`} onClick={() => setDraftLines(current => current.filter(item => item.id !== line.id))} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-white hover:text-rose-600"><Trash2 size={16} /></button></div>
+            <Field label="Cantidad normal a despachar" required><NumberInput aria-label={`Cantidad normal de ${product.name}`} value={line.quantity} min={0} max={central.get(product.id) ?? 0} step={product.unitType === 'kg' ? 0.001 : 1} placeholder={product.unitType === 'kg' ? 'kg' : 'Cantidad'} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, quantity: event.target.value } : item))} /></Field>
             {product.unitType === 'kg' && (
               <Field label="Merma adicional enviada dentro de las bolsas (kg)" hint="Se envía físicamente con la carga. No es pérdida del almacén ni se cobra por separado.">
                 <NumberInput
@@ -852,12 +845,12 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                     <SelectInput aria-label={`Lote de ${product.name}`} value={part.lotId} onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, lotId: event.target.value } : entry) } : item))}>
                       <option value="">Selecciona lote</option>
                       {part.lotId && !lots.some(lot => lot.id === part.lotId) && <option value={part.lotId}>Lote seleccionado no disponible · {selectedLot?.lotCode || part.lotId}</option>}
-                      {lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · disp. {formatQty(lot.quantities[lotLocation], product.unitType)} · elab. {lot.manufacturedOn || 's/f'} · vence {lot.expiresOn || 's/f'}</option>)}
+                      {lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotCode} · disp. {formatQty(dispatchLotFreeQuantity(lot, lotLocation), product.unitType)} · elab. {lot.manufacturedOn || 's/f'} · vence {lot.expiresOn || 's/f'}</option>)}
                     </SelectInput>
-                    {selectedLot && <p className="break-words text-[10px] font-medium text-slate-500">Lote {selectedLot.lotCode || selectedLot.id} · disponible {formatQty(selectedLot.quantities[lotLocation] || 0, product.unitType)} · elaboración {selectedLot.manufacturedOn || 'sin fecha'} · ingreso {selectedLot.createdAt?.slice(0, 10) || 'sin fecha'} · vence {selectedLot.expiresOn || 'sin fecha'}</p>}
+                    {selectedLot && <p className="break-words text-[10px] font-medium text-slate-500">Lote {selectedLot.lotCode || selectedLot.id} · disponible {formatQty(dispatchLotFreeQuantity(selectedLot, lotLocation), product.unitType)} · elaboración {selectedLot.manufacturedOn || 'sin fecha'} · ingreso {selectedLot.createdAt?.slice(0, 10) || 'sin fecha'} · vence {selectedLot.expiresOn || 'sin fecha'}</p>}
                     {issues.map(issue => <p key={issue.key} role="alert" className="flex min-w-0 items-start gap-1.5 break-words rounded-lg border border-rose-300 bg-rose-50 p-2 text-[11px] font-bold leading-snug text-rose-900"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{issue.message}</p>)}
                   </div>
-                  <NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} step={product.unitType === 'kg' ? 0.001 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} />
+                  <NumberInput aria-label={`Cantidad del lote para ${product.name}`} value={part.quantity} min={0} max={selectedLot ? dispatchLotFreeQuantity(selectedLot, lotLocation) : undefined} step={product.unitType === 'kg' ? 0.001 : 1} placeholder="Cantidad" onChange={event => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.map(entry => entry.id === part.id ? { ...entry, quantity: event.target.value } : entry) } : item))} />
                   <button type="button" aria-label="Quitar lote" onClick={() => setDraftLines(current => current.map(item => item.id === line.id ? { ...item, allocations: item.allocations.filter(entry => entry.id !== part.id) } : item))} className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
                 </div>
               })}</div>
@@ -1330,7 +1323,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
                   {product.photoDataUrl && <img src={product.photoDataUrl} alt="" aria-hidden="true" onError={event => { event.currentTarget.style.visibility = 'hidden' }} className="aspect-[16/8] w-full object-cover" />}
                   <span className="flex min-h-[88px] w-full flex-col items-start justify-between gap-2 p-3 text-left">
                     <span className="grid gap-1"><span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{product.category || 'Sin categoría'}</span><span className="text-xs font-extrabold leading-snug text-slate-900">{product.name}</span></span>
-                    <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>{formatQty(central.get(product.id) ?? 0, product.unitType)}</span><span aria-hidden="true" className={'flex h-5 w-5 shrink-0 items-center justify-center rounded-full ' + (draft ? 'bg-[var(--primary)] text-white' : 'text-transparent')}><Check size={13} /></span></span>
+                    <span className="flex w-full items-center justify-between gap-1 text-[10px] font-bold text-slate-500"><span>Disponible para despacho: {formatQty(central.get(product.id) ?? 0, product.unitType)}</span><span aria-hidden="true" className={'flex h-5 w-5 shrink-0 items-center justify-center rounded-full ' + (draft ? 'bg-[var(--primary)] text-white' : 'text-transparent')}><Check size={13} /></span></span>
                   </span>
                 </button>
                 <div className="min-h-[60px] border-t border-slate-200 p-2">

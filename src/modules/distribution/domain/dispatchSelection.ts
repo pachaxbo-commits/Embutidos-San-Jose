@@ -1,5 +1,7 @@
+import { stockAvailability, roundStockQuantity } from './stockAvailability.ts'
+import { originPendingQuantity } from './originTraceability.ts'
 import { roundQuantityForUnit } from './physicalQuantity.ts'
-import type { DistLot, DistProduct } from '../types'
+import type { DistBalance, DistLot, DistProduct } from '../types'
 import { processingDispatchIneligibility } from './processingCommercialAvailability.ts'
 
 const spanishSort = new Intl.Collator('es', { sensitivity: 'base', numeric: true })
@@ -110,12 +112,28 @@ export function dispatchLotIneligibility(lot: DistLot, productId: string, locati
   if (lot.quarantined) return 'está en cuarentena y no puede salir en un despacho'
   if (lot.expiresOn && lot.expiresOn < today) return `está vencido desde ${lot.expiresOn}`
 
-  const pendingOrigin = Number(lot.pendingOrigins?.[location]?.reduce((sum, row) => sum + Number(row.quantity || 0), 0) || 0)
-  if (pendingOrigin > 0) return 'tiene origen físico pendiente de revisión'
-
   const processingReason = processingDispatchIneligibility(lot, location, today)
   if (processingReason) return processingReason
+  if (dispatchLotFreeQuantity(lot, location) <= 0) {
+    return originPendingQuantity(lot, location) > 0
+      ? 'tiene origen físico pendiente de revisión'
+      : 'no tiene saldo libre de reservas en este almacén'
+  }
   return null
+}
+
+export function dispatchLotFreeQuantity(lot: DistLot, location: string): number {
+  const held = lot.processingUnavailable?.[location]
+  return Math.max(0, roundStockQuantity(Number(lot.quantities[location] || 0)
+    - originPendingQuantity(lot, location)
+    - Number(held?.courtesy || 0) - Number(held?.repackPending || 0) - Number(held?.reviewHold || 0), lot.unitType))
+}
+
+export function dispatchStockAvailability(balance: DistBalance | undefined, lots: DistLot[], location: string, today: string) {
+  const stock = stockAvailability(balance, lots, location, today)
+  const eligibleLots = lots.filter(lot => !dispatchLotIneligibility(lot, balance?.productId || '', location, today))
+  const lotAvailable = roundStockQuantity(eligibleLots.reduce((sum, lot) => sum + dispatchLotFreeQuantity(lot, location), 0), balance?.unitType ?? 'unit')
+  return { ...stock, eligibleLots, lotAvailable, available: Math.min(stock.available, lotAvailable) }
 }
 
 export function validateDispatchLotDrafts(
@@ -187,7 +205,7 @@ export function validateDispatchLotDrafts(
     for (const [lotId, entered] of totalsByLot) {
       const lot = lotById.get(lotId)
       if (!lot) continue
-      const available = roundQuantity(Number(lot.quantities[location]) || 0)
+      const available = roundQuantity(dispatchLotFreeQuantity(lot, location))
       if (entered > available) {
         const excess = roundQuantity(entered - available)
         addIssue(firstAllocationByLot.get(lotId), `Producto ${product.name} · lote ${lot.lotCode || lot.id}: ingresado ${entered} ${product.unitType}, disponible ${available} ${product.unitType}; exceso ${excess} ${product.unitType}. Reduce la cantidad o elige otro lote.`, 'error')
