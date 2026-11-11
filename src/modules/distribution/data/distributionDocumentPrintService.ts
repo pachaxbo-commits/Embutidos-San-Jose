@@ -209,18 +209,19 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
     }),
     theme: 'grid',
     headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
-    bodyStyles: { fontSize: 8, cellPadding: 2.5 },
+    bodyStyles: { fontSize: 8, cellPadding: 2 },
+    rowPageBreak: 'avoid',
     columnStyles: {
-      0: { cellWidth: 55, fontStyle: 'bold' },
-      1: { cellWidth: 45, textColor: [71, 85, 105] },
-      2: { cellWidth: 26 },
-      3: { cellWidth: 24 },
-      4: { cellWidth: 18, halign: 'right' },
-      5: { cellWidth: 19, halign: 'right' },
-      6: { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
-      7: { cellWidth: 16, halign: 'center' },
+      0: { cellWidth: 46, fontStyle: 'bold' },
+      1: { cellWidth: 35, textColor: [71, 85, 105] },
+      2: { cellWidth: 22 },
+      3: { cellWidth: 20 },
+      4: { cellWidth: 17, halign: 'right' },
+      5: { cellWidth: 17, halign: 'right' },
+      6: { cellWidth: 17, halign: 'right', fontStyle: 'bold' },
+      7: { cellWidth: 13.9, halign: 'center' },
     },
-    margin: { left: 14, right: 14 },
+    margin: { top: 14, bottom: 14, left: 14, right: 14 },
   })
 
   // SECCIÓN 2: AUMENTOS EN RUTA
@@ -228,12 +229,20 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
 
   const activeAdditions = (dispatch.additions || []).filter((a) => !a.voided)
   if (activeAdditions.length > 0) {
+    if (y > pageHeight - 35) {
+      doc.addPage()
+      y = 20
+    }
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(9.5)
     doc.setTextColor(180, 83, 9)
     doc.text('2. AUMENTOS DE CARGA REGISTRADOS DURANTE EL DÍA', 14, y)
 
     activeAdditions.forEach((add, i) => {
+      if (y > pageHeight - 30) {
+        doc.addPage()
+        y = 15
+      }
       y += 5
       doc.setFillColor(254, 243, 199)
       doc.rect(14, y, pageWidth - 28, 7.5, 'F')
@@ -266,17 +275,18 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
         theme: 'grid',
         headStyles: { fillColor: [217, 119, 6], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
         bodyStyles: { fontSize: 7.5, cellPadding: 2, fillColor: [255, 251, 235] },
+        rowPageBreak: 'avoid',
         columnStyles: {
-          0: { cellWidth: 55, fontStyle: 'bold' },
-          1: { cellWidth: 45 },
-          2: { cellWidth: 26 },
-          3: { cellWidth: 24 },
-          4: { cellWidth: 18, halign: 'right' },
-          5: { cellWidth: 19, halign: 'right' },
-          6: { cellWidth: 20, halign: 'right', fontStyle: 'bold', textColor: [180, 83, 9] },
-          7: { cellWidth: 16, halign: 'center', textColor: [180, 83, 9] },
+          0: { cellWidth: 46, fontStyle: 'bold' },
+          1: { cellWidth: 35 },
+          2: { cellWidth: 22 },
+          3: { cellWidth: 20 },
+          4: { cellWidth: 17, halign: 'right' },
+          5: { cellWidth: 17, halign: 'right' },
+          6: { cellWidth: 17, halign: 'right', fontStyle: 'bold', textColor: [180, 83, 9] },
+          7: { cellWidth: 13.9, halign: 'center', textColor: [180, 83, 9] },
         },
-        margin: { left: 14, right: 14 },
+        margin: { top: 14, bottom: 14, left: 14, right: 14 },
       })
       y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY
     })
@@ -284,6 +294,11 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
   }
 
   // SECCIÓN 3: CONSOLIDADO A RENDICIÓN
+  y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8
+  if (y > pageHeight - 35) {
+    doc.addPage()
+    y = 20
+  }
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(9.5)
   doc.setTextColor(30, 41, 59)
@@ -308,22 +323,27 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
     }),
     theme: 'grid',
     headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
-    bodyStyles: { fontSize: 8, cellPadding: 2.5 },
+    bodyStyles: { fontSize: 8, cellPadding: 2 },
+    rowPageBreak: 'avoid',
     columnStyles: {
-      0: { cellWidth: 55, fontStyle: 'bold' },
-      1: { cellWidth: 45 },
-      2: { cellWidth: 24, halign: 'right' },
-      3: { cellWidth: 22, halign: 'right', textColor: [180, 83, 9] },
-      4: { cellWidth: 23, halign: 'right', textColor: [180, 83, 9] },
-      5: { cellWidth: 26, halign: 'right', fontStyle: 'bold', textColor: [200, 16, 46] },
-      6: { cellWidth: 16, halign: 'center' },
+      0: { cellWidth: 48, fontStyle: 'bold' },
+      1: { cellWidth: 36 },
+      2: { cellWidth: 21, halign: 'right' },
+      3: { cellWidth: 19, halign: 'right', textColor: [180, 83, 9] },
+      4: { cellWidth: 20, halign: 'right', textColor: [180, 83, 9] },
+      5: { cellWidth: 29, halign: 'right', fontStyle: 'bold', textColor: [200, 16, 46] },
+      6: { cellWidth: 14.9, halign: 'center' },
     },
-    margin: { left: 14, right: 14 },
+    margin: { top: 14, bottom: 14, left: 14, right: 14 },
   })
 
   // SECCIÓN 4: CORRECCIONES AUDITADAS (si existen)
   if (dispatch.corrections && dispatch.corrections.length > 0) {
     y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8
+    if (y > pageHeight - 35) {
+      doc.addPage()
+      y = 20
+    }
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(9.5)
     doc.setTextColor(180, 83, 9)
@@ -350,22 +370,27 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
       theme: 'grid',
       headStyles: { fillColor: [180, 83, 9], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7 },
       bodyStyles: { fontSize: 7, cellPadding: 2, fillColor: [255, 251, 235] },
+      rowPageBreak: 'avoid',
       columnStyles: {
         0: { cellWidth: 16 },
-        1: { cellWidth: 22 },
-        2: { cellWidth: 40, fontStyle: 'bold' },
-        3: { cellWidth: 20, halign: 'right' },
-        4: { cellWidth: 20, halign: 'right' },
+        1: { cellWidth: 20 },
+        2: { cellWidth: 36, fontStyle: 'bold' },
+        3: { cellWidth: 19, halign: 'right' },
+        4: { cellWidth: 19, halign: 'right' },
         5: { cellWidth: 16, halign: 'right', fontStyle: 'bold' },
-        6: { cellWidth: 32 },
-        7: { cellWidth: 22 },
+        6: { cellWidth: 38 },
+        7: { cellWidth: 23.9 },
       },
-      margin: { left: 14, right: 14 },
+      margin: { top: 14, bottom: 14, left: 14, right: 14 },
     })
   }
 
   // Firmas
   y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 22
+  if (y > pageHeight - 25) {
+    doc.addPage()
+    y = 35
+  }
   doc.setDrawColor(71, 85, 105)
   doc.setLineWidth(0.5)
   doc.line(30, y, 90, y)
@@ -377,11 +402,18 @@ export async function generateDispatchPdf(dispatch: DistDispatch, products: Dist
   doc.text(`Entrega Almacén (${dispatch.warehouseResponsibleName || 'Almacén'})`, 32, y + 4)
   doc.text(`Recibe Conforme Distribuidor (${dispatch.distributorName})`, 127, y + 4)
 
-  // Pie de página con fecha y hora exacta
-  doc.setFontSize(7.5)
-  doc.setTextColor(148, 163, 184)
-  doc.text(`Generado el: ${new Date().toLocaleString('es-BO')} · Embutidos San José`, 14, pageHeight - 8)
-  doc.text(`Página 1 de 1`, pageWidth - 28, pageHeight - 8)
+  // Encabezado decorativo y pie de página en todas las páginas generadas
+  const pageCount = doc.getNumberOfPages()
+  for (let page = 1; page <= pageCount; page++) {
+    doc.setPage(page)
+    doc.setFillColor(200, 16, 46)
+    doc.rect(0, 0, pageWidth, 6, 'F')
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(7.5)
+    doc.setTextColor(148, 163, 184)
+    doc.text(`Generado el: ${new Date().toLocaleString('es-BO')} · Embutidos San José`, 14, pageHeight - 8)
+    doc.text(`Página ${page} de ${pageCount}`, pageWidth - 28, pageHeight - 8)
+  }
 
   return doc
 }
