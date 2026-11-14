@@ -296,8 +296,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     }, fail, ownerUid)
     const stop = [stopClosedDispatches]
     if (session.role !== 'warehouse') {
-      stop.push(subscribeCollections(days, dispatchRoute, rows => { setCollectionsSnapshot({ dispatchId: dispatchKey, rows: rows.filter(c => c.createdAt >= dispatchCreated) }); mark('collections') }, fail, ownerUid))
-      stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.createdAt >= dispatchCreated) }); mark('expenses') }, fail, ownerUid))
+      stop.push(subscribeCollections(days, dispatchRoute, rows => { setCollectionsSnapshot({ dispatchId: dispatchKey, rows: rows.filter(c => c.createdAt >= dispatchCreated || (c.dayKey || toDayKey(new Date(c.createdAt))) === dispatchDay) }); mark('collections') }, fail, ownerUid))
+      stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.createdAt >= dispatchCreated || (e.dayKey || toDayKey(new Date(e.createdAt))) === dispatchDay) }); mark('expenses') }, fail, ownerUid))
     }
     return () => { stopSales(); stop.forEach(fn => fn()) }
   }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid, dispatchCandidateKey, data.openDispatches, data.closures])
@@ -484,7 +484,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     setReceiptModalProductId(null)
   }
 
-  const routeCashClaims = data.claims.filter(c => cashMovementRouteId(c) === dispatchRoute && c.createdAt >= dispatchCreated)
+  const routeCashClaims = data.claims.filter(c => cashMovementRouteId(c) === dispatchRoute && (c.createdAt >= dispatchCreated || (c.dayKey || toDayKey(new Date(c.createdAt))) === dispatchDay))
   const moneySummary = computeMoneySummary(routeSales, routeCollections, routeExpenses, routeCashClaims)
   const calculatedMoney = moneySummary
   const preservingHistoricalMoney = Boolean(existingClosure?.preserveFinancialSnapshot && ['reopened', 'warehouse_done'].includes(existingClosure.status))
