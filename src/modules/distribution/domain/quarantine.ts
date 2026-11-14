@@ -19,6 +19,20 @@ export interface QuarantineRow {
 
 const positive = (value: unknown) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0
 
+/** Counts pending quarantine entries without requiring full movement history. */
+export function countPendingQuarantineLots(lots: DistLot[], location?: string): number {
+  let count = 0
+  for (const lot of lots) {
+    if (!lot.quarantined || (lot.quarantineResolution && lot.quarantineResolvedAt)) continue
+    for (const loc of Object.keys(lot.quantities || {})) {
+      if (loc !== 'central' && !loc.startsWith('warehouse__')) continue
+      if (location && loc !== location) continue
+      if (positive(lot.quantities?.[loc]) > 0) count += 1
+    }
+  }
+  return count
+}
+
 export function quarantineRows(
   lots: DistLot[],
   movements: DistStockMovement[],

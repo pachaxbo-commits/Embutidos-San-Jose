@@ -1,4 +1,5 @@
 import { normalizeProcessingReportBatch } from '../domain/processingReports'
+import { normalizeMovementDayKeyGroups } from '../state/distributionSubscriptionPolicy'
 import type { PendingOperation } from './operationQueue'
 import { submitOperation } from './operationQueue'
 import { createLiveEvidenceCache } from './liveEvidenceCache'
@@ -758,7 +759,9 @@ export function subscribeOpenDispatches(
   return subscribeQuery<DistDispatch>(
     (context) => {
       const base = collectionRef(context, DIST_COLLECTIONS.dispatches)
-      if (distributorUid) return query(base, where('distributorUid', '==', distributorUid))
+      if (distributorUid) {
+        return query(base, where('distributorUid', '==', distributorUid), where('status', '==', 'open'))
+      }
       return routeId
         ? query(base, where('status', '==', 'open'), where('routeId', '==', routeId))
         : query(base, where('status', '==', 'open'))
@@ -1749,7 +1752,100 @@ export async function setClosureVarianceReviewed(closureId: string, reviewed: bo
 
 export function subscribeLots(onData: (rows: DistLot[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistLot>(ctx => collectionRef(ctx, 'distLots'), onData, onError) }
 export function subscribeOperations(onData: (rows: PendingOperation[]) => void, onError?: (error: Error) => void) { return subscribeQuery<PendingOperation>(ctx => query(collectionRef(ctx, 'distOperations'), where('createdBy', '==', ctx.uid), where('status', 'in', ['queued', 'rejected'])), onData, onError) }
-export function subscribeMovements(onData: (rows: DistStockMovement[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistStockMovement>(ctx => collectionRef(ctx, 'distStockMovements'), onData, onError) }
+
+/**
+ * Suscripción a movimientos físicos acotada por jornadas operativas (`dayKey`).
+ * Mantiene hoy activo por defecto sin abrir ventanas históricas globales.
+ */
+export function subscribeMovementsByDayKeys(
+  dayKeys: readonly string[],
+  onData: (rows: DistStockMovement[]) => void,
+  onError?: (error: Error) => void,
+  options?: { includeToday?: boolean },
+): () => void {
+  const todayKey = options?.includeToday === false ? undefined : toDayKey(new Date())
+  const groups = normalizeMovementDayKeyGroups(dayKeys, todayKey)
+  if (groups.length === 0) {
+    onData([])
+    return () => {}
+  }
+  let disposed = false
+  const segmentRows: Array<DistStockMovement[] | null> = groups.map(() => null)
+  const unsubscribers = groups.map((group, index) => subscribeQuery<DistStockMovement>(
+    ctx => {
+      const ref = collectionRef(ctx, DIST_COLLECTIONS.movements)
+      if (group.length === 1) return query(ref, where('dayKey', '==', group[0]))
+      return query(ref, where('dayKey', '>=', group[0]), where('dayKey', '<=', group[group.length - 1]))
+    },
+    rows => {
+      if (disposed) return
+      segmentRows[index] = rows
+      if (segmentRows.some(entry => entry === null)) return
+      const combined = new Map<string, DistStockMovement>()
+      for (const batch of segmentRows) {
+        if (!batch) continue
+        for (const row of batch) combined.set(row.id, row)
+      }
+      onData([...combined.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+    },
+    onError,
+  ))
+  return () => {
+    disposed = true
+    unsubscribers.forEach(unsubscribe => unsubscribe())
+  }
+}
+
+/** @deprecated Usar `subscribeMovementsByDayKeys`; acotado a la jornada actual por seguridad. */
+export function subscribeMovements(onData: (rows: DistStockMovement[]) => void, onError?: (error: Error) => void) {
+  return subscribeMovementsByDayKeys([], onData, onError, { includeToday: true })
+}
+
+async function queryMovementsInChunks(
+  field: 'lotId' | 'dispatchId' | 'refId',
+  values: readonly string[],
+  predicate?: (row: DistStockMovement) => boolean,
+): Promise<DistStockMovement[]> {
+  const unique = [...new Set(values.map(v => v.trim()).filter(Boolean))]
+  if (unique.length === 0) return []
+  const context = await getContext()
+  const ref = collectionRef(context, DIST_COLLECTIONS.movements)
+  const chunks: string[][] = []
+  for (let i = 0; i < unique.length; i += 30) chunks.push(unique.slice(i, i + 30))
+  const snapshots = await Promise.all(chunks.map(chunk => getDocs(query(ref, where(field, 'in', chunk)))))
+  const byId = new Map<string, DistStockMovement>()
+  for (const snapshot of snapshots) {
+    for (const entry of snapshot.docs) {
+      const row = { id: entry.id, ...entry.data() } as DistStockMovement
+      if (!predicate || predicate(row)) byId.set(row.id, row)
+    }
+  }
+  return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+/** Movimientos origen (`overage` / `customer_return`) bajo demanda para lotes de cuarentena. */
+export async function loadQuarantineSourceMovements(lotIds: readonly string[]): Promise<DistStockMovement[]> {
+  return queryMovementsInChunks('lotId', lotIds, row => row.type === 'overage' || row.type === 'customer_return')
+}
+
+/** Avisos de trazabilidad contable bajo demanda para Kardex e inspecciones puntuales. */
+export async function loadTraceabilityNotices(): Promise<DistStockMovement[]> {
+  const context = await getContext()
+  const snapshot = await getDocs(query(collectionRef(context, DIST_COLLECTIONS.movements), where('type', '==', 'traceability_notice')))
+  return snapshot.docs
+    .map(entry => ({ id: entry.id, ...entry.data() }) as DistStockMovement)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+/** Movimientos por despacho para conciliar excepciones cross-day (p. ej. faltantes o retornos). */
+export async function loadMovementsByDispatchIds(dispatchIds: readonly string[]): Promise<DistStockMovement[]> {
+  return queryMovementsInChunks('dispatchId', dispatchIds)
+}
+
+/** Movimientos `sale_void` por IDs de venta para asegurar consistencia cross-day en mermas. */
+export async function loadSaleVoidMovementsBySaleIds(saleIds: readonly string[]): Promise<DistStockMovement[]> {
+  return queryMovementsInChunks('refId', saleIds, row => row.type === 'sale_void')
+}
 export function subscribeTransfers(onData: (rows: DistTransfer[]) => void, onError?: (error: Error) => void) { return subscribeQuery<DistTransfer>(ctx => collectionRef(ctx, 'distTransfers'), onData, onError) }
 export function subscribeClaims(routeId: string | null, onData: (rows: DistClaim[]) => void, onError?: (error: Error) => void) {
   const sellerBySale = new Map<string, { uid: string; name: string }>()

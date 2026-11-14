@@ -1,5 +1,5 @@
 import type { DistLot, DistStockMovement, DistWarehouse } from '../../types.ts'
-import { filterQuarantineRows, quarantineRows, summarizeQuarantine } from '../quarantine.ts'
+import { countPendingQuarantineLots, filterQuarantineRows, quarantineRows, summarizeQuarantine } from '../quarantine.ts'
 
 const base = (patch: Partial<DistLot> = {}): DistLot => ({
   id: 'q-lot', restaurantId: 'sanjose', productId: 'viena', productName: 'Viena económico', unitType: 'kg',
@@ -20,4 +20,8 @@ const totals = summarizeQuarantine([...rows, { ...rows[0], lot: { ...rows[0].lot
 if (totals.kg !== 0.02 || totals.package !== 2 || totals.unit !== 0) throw new Error('Los totales no deben sumar unidades incompatibles.')
 const resolved = quarantineRows([base({ quarantineResolution: 'discarded', quarantineResolvedAt: '2026-10-17T12:00:00.000Z', quarantineResolvedByName: 'Admin', quarantineResolvedQuantity: 0.02, quarantineResolvedLocation: 'central', quarantineResolutionReason: 'Producto no apto', quantities: { central: 0 } })], [movement()], warehouses)
 if (resolved.length !== 1 || resolved[0].status !== 'resolved' || resolved[0].resolutionLabel !== 'Descartado / no apto') throw new Error('Los registros resueltos deben permanecer en el historial.')
+const lotMix = [base(), base({ id: 'q-north', quantities: { warehouse__north: 1.5 } }), base({ id: 'q-resolved', quarantineResolution: 'discarded', quarantineResolvedAt: '2026-10-17T12:00:00.000Z', quantities: { central: 0 } })]
+if (countPendingQuarantineLots(lotMix, 'central') !== 1 || countPendingQuarantineLots(lotMix, 'warehouse__north') !== 1 || countPendingQuarantineLots(lotMix) !== 2) {
+  throw new Error('countPendingQuarantineLots debe contar exactamente las cuarentenas pendientes por almacén sin depender del historial de movimientos.')
+}
 console.log('PASS quarantine domain: origen, estados, filtros, unidades y conservación del historial')

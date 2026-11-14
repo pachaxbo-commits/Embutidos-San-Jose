@@ -152,6 +152,14 @@
       ]
     },
     {
+      "collectionGroup": "distDispatches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "distributorUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "distProcessingEvidence",
       "queryScope": "COLLECTION",
       "fields": [

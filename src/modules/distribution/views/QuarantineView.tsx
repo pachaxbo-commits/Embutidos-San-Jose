@@ -1,16 +1,16 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, FileSpreadsheet, PackageCheck, ShieldAlert } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, Segmented, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock } from '../../../components/ui/Screen'
 import { exportExcel, exportPdf, type ReportSheet } from '../data/reportExports'
-import { newOperationId, resolveQuarantine } from '../data/distributionRepository'
+import { loadQuarantineSourceMovements, newOperationId, resolveQuarantine } from '../data/distributionRepository'
 import { filterQuarantineRows, quarantineRows, summarizeQuarantine, type QuarantineRow, type QuarantineStatusFilter } from '../domain/quarantine'
 import { operationFailureMessage } from '../domain/operationFailureMessage'
 import { toDayKey } from '../domain/engine'
 import type { DistributionData } from '../state/useDistributionStore'
 import type { DistributionSession } from './DistributionApp'
-import type { DistClosure, DistLot } from '../types'
+import type { DistClosure, DistLot, DistStockMovement } from '../types'
 import { RangePicker, describeRange } from './RangePicker'
 import { formatQty, PrimaryButton, SecondaryButton } from './shared'
 
@@ -49,7 +49,41 @@ export function QuarantineView({ session, data, isOpen, onClose, defaultLocation
   const admin = session.role === 'admin'
   const fixedLocation = session.role === 'warehouse' && session.warehouseId && session.warehouseId !== 'central'
     ? `warehouse__${session.warehouseId}` : 'central'
-  const allRows = useMemo(() => quarantineRows(data.lots, data.movements, data.warehouses), [data.lots, data.movements, data.warehouses])
+  const [quarantineMovements, setQuarantineMovements] = useState<DistStockMovement[]>([])
+  const loadedSourceLotIdsRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (!isOpen) return
+    const knownLotIds = new Set(
+      [...data.movements, ...quarantineMovements]
+        .filter(m => !m.reversedAt && (m.type === 'overage' || m.type === 'customer_return') && m.lotId)
+        .map(m => m.lotId as string),
+    )
+    const missingLotIds = data.lots
+      .filter(lot => Boolean(lot.quarantined || (lot.quarantineResolution && lot.quarantineResolvedAt)))
+      .map(lot => lot.id)
+      .filter(lotId => !knownLotIds.has(lotId) && !loadedSourceLotIdsRef.current.has(lotId))
+    if (missingLotIds.length === 0) return
+    missingLotIds.forEach(id => loadedSourceLotIdsRef.current.add(id))
+    let cancelled = false
+    void loadQuarantineSourceMovements(missingLotIds)
+      .then(fetched => {
+        if (cancelled || fetched.length === 0) return
+        setQuarantineMovements(prev => {
+          const byId = new Map(prev.map(row => [row.id, row]))
+          for (const row of fetched) byId.set(row.id, row)
+          return [...byId.values()]
+        })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [isOpen, data.lots, data.movements, quarantineMovements])
+  const mergedMovements = useMemo(() => {
+    if (quarantineMovements.length === 0) return data.movements
+    const byId = new Map(data.movements.map(m => [m.id, m]))
+    for (const m of quarantineMovements) if (!byId.has(m.id)) byId.set(m.id, m)
+    return [...byId.values()]
+  }, [data.movements, quarantineMovements])
+  const allRows = useMemo(() => quarantineRows(data.lots, mergedMovements, data.warehouses), [data.lots, mergedMovements, data.warehouses])
   const initialRow = admin && initialLotId ? allRows.find(row => row.status === 'pending' && row.lot.id === initialLotId) || null : null
   const initialTarget = compatibleQuarantineLots(data.lots, initialRow)[0]
   const [status, setStatus] = useState<QuarantineStatusFilter>('pending')

@@ -7,11 +7,11 @@ import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../com
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2, toDayKey } from '../domain/engine'
-import { loadProcessingReportPage, loadProcessingReservationsForLot, newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, warehouseBalanceId, type ProcessingReportCursor } from '../data/distributionRepository'
+import { loadProcessingReportPage, loadProcessingReservationsForLot, loadProductLocationBalance, loadProductMovementPage, newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, subscribeMovementsByDayKeys, warehouseBalanceId, type ProcessingReportCursor, type ProductMovementCursor } from '../data/distributionRepository'
 import { useRouteStock, useStockIndex } from '../state/useDistributionStore'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
-import type { DistProduct } from '../types'
+import type { DistProduct, DistStockMovement } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
 import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inventoryHistorySheet, type ReportSheet } from '../data/reportExports'
@@ -20,7 +20,7 @@ import { reportUnitLabel } from '../domain/reportLabels'
 import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
 import { stockAvailability } from '../domain/stockAvailability'
 import { productWarehouseLotRows, warehouseLotReconciliation } from '../domain/productWarehouseLots'
-import { quarantineRows } from '../domain/quarantine'
+import { countPendingQuarantineLots } from '../domain/quarantine'
 import { validateIntakeLotDates } from '../domain/inventoryIntakeValidation'
 import { operationFailureMessage } from '../domain/operationFailureMessage'
 import { QuarantineView } from './QuarantineView'
@@ -101,8 +101,15 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   const [historyProduct, setHistoryProduct] = useState<DistProduct | null>(null)
   const [lotsProduct, setLotsProduct] = useState<DistProduct | null>(null)
   const [historyProductFilter, setHistoryProductFilter] = useState<ProductMovementFilter>('all')
+  const [productHistoryPages, setProductHistoryPages] = useState<DistStockMovement[]>([])
+  const [productHistoryCursor, setProductHistoryCursor] = useState<ProductMovementCursor | null>(null)
+  const [productHistoryHasMore, setProductHistoryHasMore] = useState(false)
+  const [productHistoryLoading, setProductHistoryLoading] = useState(false)
+  const [productHistoryError, setProductHistoryError] = useState('')
+  const [productHistoryBalance, setProductHistoryBalance] = useState<number | null>(null)
   const [generalHistorySearch, setGeneralHistorySearch] = useState('')
   const [isGeneralHistoryOpen, setIsGeneralHistoryOpen] = useState(false)
+  const [modalHistoryState, setModalHistoryState] = useState<{ signature: string; rows: DistStockMovement[] }>({ signature: '', rows: [] })
   const [isQuarantineOpen, setIsQuarantineOpen] = useState(false)
   const [quarantineLotId, setQuarantineLotId] = useState<string>()
   const [historyDays, setHistoryDays] = useState<string[]>([toDayKey(new Date())])
@@ -133,7 +140,33 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
     if (location.startsWith('route__')) return data.routes.find(item => item.id === location.slice(7))?.name || 'Ruta registrada'
     return 'Ubicación registrada'
   }
-  const generalMovements = useMemo(() => data.movements
+  const historyDaysSignature = historyDays.join(',')
+  const needsModalHistorySubscription = useMemo(() => {
+    if (!isGeneralHistoryOpen || isDistributor || historyDays.length === 0) return false
+    const loadedDays = new Set([toDayKey(new Date()), ...session.dayKeys])
+    return historyDays.some(day => !loadedDays.has(day))
+  }, [isGeneralHistoryOpen, isDistributor, historyDays, session.dayKeys])
+
+  useEffect(() => {
+    if (!needsModalHistorySubscription) return
+    return subscribeMovementsByDayKeys(
+      historyDays,
+      rows => setModalHistoryState({ signature: historyDaysSignature, rows }),
+      (subError) => setError(subError.message || 'No se pudo consultar el historial de inventario.'),
+      { includeToday: false },
+    )
+  }, [needsModalHistorySubscription, historyDays, historyDaysSignature])
+
+  const generalHistorySourceMovements = useMemo(() => {
+    if (!needsModalHistorySubscription || modalHistoryState.signature !== historyDaysSignature || modalHistoryState.rows.length === 0) {
+      return data.movements
+    }
+    const byId = new Map(data.movements.map(row => [row.id, row]))
+    for (const row of modalHistoryState.rows) byId.set(row.id, row)
+    return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [data.movements, needsModalHistorySubscription, modalHistoryState, historyDaysSignature])
+
+  const generalMovements = useMemo(() => generalHistorySourceMovements
     .filter(movement => historyDays.includes(movement.dayKey || toDayKey(movement.createdAt)))
     .map(movement => {
       const from = movement.fromLocation || ''
@@ -143,7 +176,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
     })
     .filter(row => Math.abs(row.delta) > 0.0001)
     .filter(row => !generalHistorySearch.trim() || row.movement.productName.toLocaleLowerCase('es').includes(generalHistorySearch.trim().toLocaleLowerCase('es')))
-    .sort((a, b) => b.movement.createdAt.localeCompare(a.movement.createdAt)), [data.movements, historyDays, warehouseLocation, generalHistorySearch])
+    .sort((a, b) => b.movement.createdAt.localeCompare(a.movement.createdAt)), [generalHistorySourceMovements, historyDays, warehouseLocation, generalHistorySearch])
 
   useEffect(() => {
     if (!isGeneralHistoryOpen || generalHistoryMode !== 'mermas' || mermaSource === 'inventory' || !historyDays.length) return
@@ -175,7 +208,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   }), [processingMermaEntries, historyDays, generalHistorySearch, mermaLotSearch, mermaResponsibleSearch])
   const processingBatchIds = useMemo(() => new Set(processingMermaBatches.map(batch => batch.id)), [processingMermaBatches])
   const inventoryMermaRows = useMemo(() => {
-    const eligible = filterInventoryMermaMovements(data.movements, mermaSource === 'all' ? processingBatchIds : new Set())
+    const eligible = filterInventoryMermaMovements(generalHistorySourceMovements, mermaSource === 'all' ? processingBatchIds : new Set())
     return eligible
       .filter(movement => !(mermaSource === 'all' && processingMermaLoading && movement.type === 'processing_discard' && movement.batchId))
       .filter(movement => historyDays.includes(movement.dayKey || toDayKey(movement.createdAt)))
@@ -186,7 +219,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
       .filter(movement => !mermaResponsibleSearch.trim() || (movement.responsibleName || movement.createdBy || '').toLocaleLowerCase('es').includes(mermaResponsibleSearch.trim().toLocaleLowerCase('es')))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map(movement => ({ movement, delta: movement.toLocation === warehouseLocation ? movement.quantity : movement.fromLocation === warehouseLocation ? -movement.quantity : warehouseLocation === 'central' ? movement.centralDelta : 0 }))
-  }, [data.movements, historyDays, warehouseLocation, generalHistorySearch, mermaSource, processingBatchIds, processingMermaLoading, mermaLotSearch, mermaResponsibleSearch])
+  }, [generalHistorySourceMovements, historyDays, warehouseLocation, generalHistorySearch, mermaSource, processingBatchIds, processingMermaLoading, mermaLotSearch, mermaResponsibleSearch])
   const visibleProcessingMermaEntries = useMemo(() => mermaSource === 'inventory' ? [] : filteredProcessingMermaEntries, [mermaSource, filteredProcessingMermaEntries])
   const visibleInventoryMermaRows = useMemo(() => mermaSource === 'processing' ? [] : inventoryMermaRows, [mermaSource, inventoryMermaRows])
   const processingMermaTotals = useMemo(() => visibleProcessingMermaEntries.reduce((totals, entry) => ({
@@ -196,10 +229,62 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   }), { overweight: 0, discard: 0, informative: 0 }), [visibleProcessingMermaEntries])
   const inventoryMermaTotals = useMemo(() => summarizeInventoryMermaMovements(visibleInventoryMermaRows.map(row => row.movement)), [visibleInventoryMermaRows])
 
-  const generalHistorySheet = inventoryHistorySheet(data, historyDays, warehouseId)
+  const generalHistoryData = useMemo(() => ({ ...data, movements: generalHistorySourceMovements }), [data, generalHistorySourceMovements])
+  const generalHistorySheet = inventoryHistorySheet(generalHistoryData, historyDays, warehouseId)
+
+  const historyProductId = historyProduct?.id || ''
+  useEffect(() => {
+    if (!historyProductId || isDistributor) return
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      setProductHistoryPages([])
+      setProductHistoryCursor(null)
+      setProductHistoryHasMore(false)
+      setProductHistoryError('')
+      setProductHistoryLoading(true)
+      setProductHistoryBalance(null)
+    })
+    void Promise.all([
+      loadProductMovementPage(historyProductId, null, 100),
+      loadProductLocationBalance(historyProductId, warehouseLocation),
+    ]).then(([page, balance]) => {
+      if (cancelled) return
+      setProductHistoryPages(page.movements)
+      setProductHistoryCursor(page.nextCursor)
+      setProductHistoryHasMore(page.hasMore)
+      setProductHistoryBalance(balance)
+    }).catch(loadError => {
+      if (!cancelled) setProductHistoryError((loadError as Error).message || 'No se pudo consultar el historial del producto.')
+    }).finally(() => {
+      if (!cancelled) setProductHistoryLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [historyProductId, warehouseLocation, isDistributor])
+
+  const loadMoreProductHistory = async () => {
+    if (!historyProductId || !productHistoryHasMore || productHistoryLoading) return
+    setProductHistoryLoading(true)
+    setProductHistoryError('')
+    try {
+      const page = await loadProductMovementPage(historyProductId, productHistoryCursor, 100)
+      setProductHistoryPages(current => {
+        const byId = new Map(current.map(row => [row.id, row]))
+        for (const row of page.movements) byId.set(row.id, row)
+        return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      })
+      setProductHistoryCursor(page.nextCursor)
+      setProductHistoryHasMore(page.hasMore)
+    } catch (loadError) {
+      setProductHistoryError((loadError as Error).message || 'No se pudieron cargar movimientos anteriores.')
+    } finally {
+      setProductHistoryLoading(false)
+    }
+  }
+
   const productHistoryMovements = useMemo(
-    () => historyProduct ? filterProductMovementHistory(data.movements, historyProduct.id, historyProductFilter) : [],
-    [data.movements, historyProduct, historyProductFilter],
+    () => historyProduct ? filterProductMovementHistory(productHistoryPages, historyProduct.id, historyProductFilter) : [],
+    [productHistoryPages, historyProduct, historyProductFilter],
   )
   const selectedProductBalance = lotsProduct
     ? data.balances.find((item) => item.id === warehouseBalanceId(warehouseId, lotsProduct.id))
@@ -293,8 +378,10 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
     setIsIntakeHistoryOpen(false)
     session.setDayKeys(intakeHistoryPreviousDays.current)
   }
-  const pendingQuarantineCount = useMemo(() => quarantineRows(data.lots, data.movements, data.warehouses)
-    .filter(row => row.status === 'pending' && row.location === lotLocation).length, [data.lots, data.movements, data.warehouses, lotLocation])
+  const pendingQuarantineCount = useMemo(
+    () => countPendingQuarantineLots(data.lots, lotLocation),
+    [data.lots, lotLocation],
+  )
   const [todayIntakesExporting, setTodayIntakesExporting] = useState(false)
   const [todayIntakesMessage, setTodayIntakesMessage] = useState<string | null>(null)
 
@@ -732,12 +819,22 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
       </Modal>
       <Modal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} title="Historial del producto" subtitle={historyProduct?.name} size="lg">
         <div className="grid min-w-0 gap-3">
+          {historyProduct && productHistoryBalance !== null && (
+            <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+              Saldo físico en {warehouseName}: <strong className="text-slate-900">{formatQty(productHistoryBalance, historyProduct.unitType)}</strong>
+            </div>
+          )}
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar historial del producto">
             {([
               ['all', 'Todos'], ['losses', 'Mermas'], ['differences', 'Faltantes / sobrantes'], ['dispatchReturns', 'Despachos / retornos'], ['intakesAdjustments', 'Ingresos / ajustes'],
             ] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={historyProductFilter === value} onClick={() => setHistoryProductFilter(value)} className={`min-h-[36px] rounded-xl border px-3 text-[11px] font-extrabold ${historyProductFilter === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
           </div>
-          <p className="text-[11px] font-semibold text-slate-500">{productHistoryMovements.length} movimientos · incluye correcciones y registros revertidos para conservar la trazabilidad.</p>
+          <p className="text-[11px] font-semibold text-slate-500">
+            {productHistoryLoading && productHistoryPages.length === 0
+              ? 'Consultando historial en el servidor…'
+              : `${productHistoryMovements.length} movimientos mostrados${productHistoryHasMore ? ' (paginado; existen registros anteriores)' : ' · incluye correcciones y registros revertidos para conservar la trazabilidad.'}`}
+          </p>
+          {productHistoryError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-800">{productHistoryError}</p>}
           <div className="grid max-h-[65vh] gap-2 overflow-y-auto pr-1">
             {productHistoryMovements.map(movement => {
               const hasDispatchMerma = isDispatchWithMerma(movement)
@@ -759,7 +856,12 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
               </article>
             })}
           </div>
-          {productHistoryMovements.length === 0 && <p className="rounded-2xl border border-dashed border-slate-200 p-4 text-center text-xs font-semibold text-slate-500">No hay movimientos de este tipo para el producto.</p>}
+          {productHistoryHasMore && (
+            <SecondaryButton disabled={productHistoryLoading} onClick={() => void loadMoreProductHistory()}>
+              {productHistoryLoading ? 'Cargando movimientos anteriores…' : 'Cargar movimientos anteriores'}
+            </SecondaryButton>
+          )}
+          {!productHistoryLoading && productHistoryMovements.length === 0 && <p className="rounded-2xl border border-dashed border-slate-200 p-4 text-center text-xs font-semibold text-slate-500">No hay movimientos de este tipo para el producto.</p>}
         </div>
       </Modal>
       <Modal

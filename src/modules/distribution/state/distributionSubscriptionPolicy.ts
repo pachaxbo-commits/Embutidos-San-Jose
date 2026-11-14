@@ -52,3 +52,34 @@ export function getDistributionSubscriptionCollections(
 
   return collections
 }
+
+function dayKeyIndex(dayKey: string): number {
+  const [y, m, d] = dayKey.split('-').map(Number)
+  return Math.floor(Date.UTC(y, m - 1, d) / 86_400_000)
+}
+
+/**
+ * Normalizes movement dayKeys into minimal contiguous sorted ranges so separated
+ * dates (e.g. a past closure date plus today) never create an unintended wide span
+ * or duplicate listeners on today.
+ */
+export function normalizeMovementDayKeyGroups(dayKeys: readonly string[], todayKey?: string): string[][] {
+  const unique = new Set<string>()
+  for (const key of dayKeys) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(key)) unique.add(key)
+  }
+  if (todayKey && /^\d{4}-\d{2}-\d{2}$/.test(todayKey)) unique.add(todayKey)
+  const sorted = [...unique].sort()
+  if (sorted.length === 0) return []
+
+  const groups: string[][] = [[sorted[0]]]
+  let prevIndex = dayKeyIndex(sorted[0])
+  for (let i = 1; i < sorted.length; i += 1) {
+    const current = sorted[i]
+    const index = dayKeyIndex(current)
+    if (index === prevIndex + 1) groups[groups.length - 1].push(current)
+    else groups.push([current])
+    prevIndex = index
+  }
+  return groups
+}
