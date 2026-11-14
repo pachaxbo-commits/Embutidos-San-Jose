@@ -2,7 +2,9 @@ import type { PendingOperation } from '../data/operationQueue'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   getSyncState,
-  subscribeLots, subscribeOperations, subscribeMovements, subscribeTransfers, subscribeClaims, subscribeCreditStatus, subscribeCreditOverrides,
+  loadMovementsByDispatchIds,
+  loadSaleVoidMovementsBySaleIds,
+  subscribeLots, subscribeOperations, subscribeMovementsByDayKeys, subscribeTransfers, subscribeClaims, subscribeCreditStatus, subscribeCreditOverrides,
   subscribeWarehouses,
   subscribeQrVerifications,
   subscribeBalances,
@@ -122,7 +124,10 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [supportSettings, setSupportSettings] = useState<SupportSettings>(DEFAULT_SUPPORT_SETTINGS)
   const [lots, setLots] = useState<DistLot[]>([])
   const [operations, setOperations] = useState<PendingOperation[]>([])
-  const [movements, setMovements] = useState<DistStockMovement[]>([])
+  const [scopedMovements, setScopedMovements] = useState<DistStockMovement[]>([])
+  const [supplementalMovements, setSupplementalMovements] = useState<DistStockMovement[]>([])
+  const fetchedDispatchIdsRef = useRef(new Set<string>())
+  const fetchedVoidSaleIdsRef = useRef(new Set<string>())
   const [transfers, setTransfers] = useState<DistTransfer[]>([])
   const [claims, setClaims] = useState<DistClaim[]>([])
   const [creditStatus, setCreditStatus] = useState<DistCreditStatus[]>([])
@@ -190,7 +195,12 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setReceivableAdjustments(rows)
         onLoaded('receivableAdjustments')
       }, onError)] : []),
-      ...(subscriptionCollections.has('distStockMovements') ? [subscribeMovements(setMovements, onError)] : []),
+      ...(!subscriptionCollections.has('distStockMovements') ? [((() => {
+        setScopedMovements([])
+        setSupplementalMovements([])
+        onLoaded('movements')
+        return () => {}
+      })())] : []),
       ...(subscriptionCollections.has('distTransfers') ? [subscribeTransfers(setTransfers, onError)] : []),
       ...(subscriptionCollections.has('distClaims') ? [subscribeClaims(routeId, setClaims, onError)] : []),
       subscribeWarehouses(setWarehouses, onError),
@@ -230,14 +240,18 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
   }, [enabled, scope.restaurantId, subscriptionCollections, routeId, onError, onLoaded])
 
-  // Los despachos son privados por distribuidor. La cartera es global para que
-  // cualquier vendedor detecte una deuda pendiente antes de vender.
+  // Los despachos son privados por distribuidor. La cartera y el historial de
+  // cierres no dependen del rango de fechas consultado.
   useEffect(() => {
     if (!enabled) return
     const unsubscribers = [
       subscribeOpenDispatches(routeId, (rows) => {
         setOpenDispatches(rows)
         onLoaded('dispatches')
+      }, onError, distributorUid),
+      subscribeClosures([], routeId, (rows) => {
+        setClosures(rows)
+        onLoaded('closures')
       }, onError, distributorUid),
       ...(subscriptionCollections.has('distReceivables')
         ? [
@@ -251,7 +265,7 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
   }, [enabled, routeId, distributorUid, subscriptionCollections, onError, onLoaded])
 
-  // Movimientos del rango consultado.
+  // Movimientos y operaciones del rango consultado.
   useEffect(() => {
     if (!enabled) return
     const dayKeys = dayKeysSignature.split(',').filter(Boolean)
@@ -274,13 +288,78 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setExpenses(rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
         onLoaded('expenses')
       }, onError, distributorUid),
-      subscribeClosures(dayKeys, routeId, (rows) => {
-        setClosures(rows)
-        onLoaded('closures')
-      }, onError, distributorUid),
+      ...(subscriptionCollections.has('distStockMovements')
+        ? [
+            subscribeMovementsByDayKeys(dayKeys, (rows) => {
+              setScopedMovements(rows)
+              onLoaded('movements')
+            }, onError, { includeToday: true }),
+          ]
+        : []),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
   }, [enabled, routeId, distributorUid, dayKeysSignature, subscriptionCollections, onError, onLoaded])
+
+  // Suplemento puntual bajo demanda para excepciones cross-day (faltantes o ventas
+  // anuladas de periodos mostrados cuya nota/movimiento ocurrió en otro dayKey).
+  useEffect(() => {
+    if (!enabled || !subscriptionCollections.has('distStockMovements')) return
+    const selectedDays = new Set(dayKeysSignature.split(',').filter(Boolean))
+    if (selectedDays.size === 0) return
+
+    const activeShortages = scopedMovements.filter(m => m.type === 'shortage' && !m.reversedAt)
+    const shortageIds = new Set(activeShortages.map(m => m.id))
+    const missingDispatchIds: string[] = []
+    for (const closure of closures) {
+      const closureDay = closure.dayKey || toDayKey(closure.warehouseClosedAt || closure.closedAt || closure.createdAt)
+      if (!selectedDays.has(closureDay) || !closure.dispatchId || fetchedDispatchIdsRef.current.has(closure.dispatchId)) continue
+      const needsShortage = closure.products.some(p => {
+        if ((Number(p.shortage) || 0) <= 0) return false
+        if (p.shortageMovementId && shortageIds.has(p.shortageMovementId)) return false
+        return !activeShortages.some(m => m.dispatchId === closure.dispatchId && m.routeId === closure.routeId && m.productId === p.productId)
+      })
+      if (needsShortage) missingDispatchIds.push(closure.dispatchId)
+    }
+
+    const salesById = new Set(sales.map(s => s.id))
+    const voidedIds = new Set(scopedMovements.filter(m => m.type === 'sale_void' && !m.reversedAt).map(m => m.refId).filter(Boolean))
+    const missingVoidCheckSaleIds: string[] = []
+    for (const m of scopedMovements) {
+      const mDay = m.dayKey || toDayKey(m.createdAt)
+      if (m.type !== 'sale' || m.reversedAt || !selectedDays.has(mDay)) continue
+      if (m.routeId !== 'admin' && m.routeId !== 'administracion') continue
+      if ((Number(m.excessWeightQuantity) || 0) <= 0 || !m.refId) continue
+      if (!salesById.has(m.refId) && !voidedIds.has(m.refId) && !fetchedVoidSaleIdsRef.current.has(m.refId)) {
+        missingVoidCheckSaleIds.push(m.refId)
+      }
+    }
+
+    if (missingDispatchIds.length === 0 && missingVoidCheckSaleIds.length === 0) return
+    let cancelled = false
+    missingDispatchIds.forEach(id => fetchedDispatchIdsRef.current.add(id))
+    missingVoidCheckSaleIds.forEach(id => fetchedVoidSaleIdsRef.current.add(id))
+    void Promise.all([
+      missingDispatchIds.length ? loadMovementsByDispatchIds(missingDispatchIds) : Promise.resolve([]),
+      missingVoidCheckSaleIds.length ? loadSaleVoidMovementsBySaleIds(missingVoidCheckSaleIds) : Promise.resolve([]),
+    ]).then(([byDispatch, bySale]) => {
+      if (cancelled || (byDispatch.length === 0 && bySale.length === 0)) return
+      setSupplementalMovements(prev => {
+        const merged = new Map(prev.map(row => [row.id, row]))
+        for (const row of byDispatch) merged.set(row.id, row)
+        for (const row of bySale) merged.set(row.id, row)
+        return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      })
+    }).catch(onError)
+    return () => { cancelled = true }
+  }, [enabled, subscriptionCollections, dayKeysSignature, closures, scopedMovements, sales, onError])
+
+  const movements = useMemo(() => {
+    if (supplementalMovements.length === 0) return scopedMovements
+    const merged = new Map<string, DistStockMovement>()
+    for (const row of supplementalMovements) merged.set(row.id, row)
+    for (const row of scopedMovements) merged.set(row.id, row)
+    return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [scopedMovements, supplementalMovements])
 
   const pendingSales = pendingSalesFromOperations(operations, sales)
   const pendingCollections = pendingCollectionsFromOperations(operations, collections)

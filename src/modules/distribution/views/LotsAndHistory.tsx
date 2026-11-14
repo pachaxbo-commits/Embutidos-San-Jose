@@ -4,7 +4,7 @@ import { AlertTriangle, ChevronRight, Download, History, Printer } from "lucide-
 import { Field, TextInput } from "../../../components/ui/Form";
 import { Modal } from "../../../components/ui/Modal";
 import { SectionCard, formatQty } from "./shared";
-import { loadProductLocationBalance, loadProductMovementPage, type ProductMovementCursor } from "../data/distributionRepository";
+import { loadProductLocationBalance, loadProductMovementPage, loadTraceabilityNotices, type ProductMovementCursor } from "../data/distributionRepository";
 import { toDayKey } from "../domain/engine";
 import { exportExcel, exportPdf, exportTodayIntakesPdf, type ReportSheet } from "../data/reportExports";
 import { getTodayStockIntakes } from "../domain/todayIntakes";
@@ -271,6 +271,7 @@ export function LotsAndHistory({ data, session, onResolveQuarantine }: Distribut
   const [kardexError, setKardexError] = useState('');
   const [kardexRawBalance, setKardexRawBalance] = useState<number | null>(null);
   const [kardexExporting, setKardexExporting] = useState(false);
+  const [traceabilityNotices, setTraceabilityNotices] = useState<DistStockMovement[] | null>(null);
 
   const handlePrintToday = async () => {
     if (exportingToday) return;
@@ -329,6 +330,17 @@ export function LotsAndHistory({ data, session, onResolveQuarantine }: Distribut
   }, [openedKardexProductId]);
 
   useEffect(() => {
+    if (!openedKardexProductId || traceabilityNotices !== null) return;
+    let cancelled = false;
+    void loadTraceabilityNotices().then((rows) => { if (!cancelled) setTraceabilityNotices(rows) }).catch(() => { if (!cancelled) setTraceabilityNotices([]) });
+    return () => { cancelled = true };
+  }, [openedKardexProductId, traceabilityNotices]);
+
+  const traceabilityContext = traceabilityNotices?.length
+    ? [...new Map([...data.movements, ...traceabilityNotices].map((item) => [item.id, item])).values()]
+    : data.movements;
+
+  useEffect(() => {
     if (!openedKardexProductId || kardexLocation === 'all') return;
     let cancelled = false;
     void loadProductLocationBalance(openedKardexProductId, kardexLocation).then((balance) => { if (!cancelled) setKardexRawBalance(balance) }).catch(() => { if (!cancelled) setKardexRawBalance(null) });
@@ -364,7 +376,7 @@ export function LotsAndHistory({ data, session, onResolveQuarantine }: Distribut
       const locationName = locationOptions.find((item) => item.id === kardexLocation)?.name || kardexLocation;
       const description = `${kardexProduct.name} · ${locationName} · ${kardexRange[0]} a ${kardexRange[1]}`;
       const detailHeaders = ['Fecha y hora', 'Jornada', 'Movimiento', 'Lote', 'Ubicación origen', 'Ubicación destino', 'Entrada', 'Salida', 'Saldo acumulado', 'Responsable', 'Referencia', 'Observación'];
-      const detailRows: ReportSheet['rows'] = filteredKardex.map(({ movement, entry, exit, runningBalance, excludedFromBalance }) => [new Date(movement.createdAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' }), movement.dayKey || 'No disponible', `${MOVEMENT_LABELS[movement.type] || movement.type}${excludedFromBalance ? ' · revertido/rectificado (excluido del saldo)' : ''}`, movement.lotCode || '', movement.fromLocation || '', movement.toLocation || '', entry, exit, runningBalance, visiblePersonName(movement.responsibleName || 'No disponible'), movement.refId || '', [movement.note, movementOriginNote(movement, data.movements), movement.rectificationReason, movement.reversalReason].filter(Boolean).join(' · ')]);
+      const detailRows: ReportSheet['rows'] = filteredKardex.map(({ movement, entry, exit, runningBalance, excludedFromBalance }) => [new Date(movement.createdAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' }), movement.dayKey || 'No disponible', `${MOVEMENT_LABELS[movement.type] || movement.type}${excludedFromBalance ? ' · revertido/rectificado (excluido del saldo)' : ''}`, movement.lotCode || '', movement.fromLocation || '', movement.toLocation || '', entry, exit, runningBalance, visiblePersonName(movement.responsibleName || 'No disponible'), movement.refId || '', [movement.note, movementOriginNote(movement, traceabilityContext), movement.rectificationReason, movement.reversalReason].filter(Boolean).join(' · ')]);
       const sheets: ReportSheet[] = [
         { name: 'Resumen de Kardex', headers: ['Concepto', 'Valor', 'Unidad', 'Nota'], rows: [
           ['Producto', kardexProduct.name, '', ''], ['Ubicación', locationName, '', ''], ['Periodo operativo', `${kardexRange[0]} a ${kardexRange[1]}`, '', 'Fecha dayKey del movimiento'],
@@ -489,7 +501,7 @@ export function LotsAndHistory({ data, session, onResolveQuarantine }: Distribut
                 {movement.type === "sale" && excess > 0 && <p className="mt-1 font-semibold text-slate-700">Cobrado {formatQty(charged, movement.unitType)} · entregado {formatQty(charged + excess, movement.unitType)} · excedente sin cobro {formatQty(excess, movement.unitType)}.</p>}
                 <p className="mt-1 break-words text-[11px] text-slate-600">Lote: {movement.lotCode || "No indicado"}{movement.routeId ? ` · ${data.routes.find((route) => route.id === movement.routeId)?.name || "Ruta"}` : ""}{movement.fromLocation ? ` · Desde ${movement.fromLocation}` : ""}{movement.toLocation ? ` · Hacia ${movement.toLocation}` : ""}</p>
                 <p className="mt-1 text-[11px] text-slate-600">Responsable: {visiblePersonName(movement.responsibleName || 'No disponible')} · Referencia: {movement.refType || 'Movimiento'} {movement.refId || 'No disponible'}</p>
-                {movementOriginNote(movement, data.movements) && <p className="mt-1 break-words text-xs font-bold text-amber-800">{movementOriginNote(movement, data.movements)}</p>}
+                {movementOriginNote(movement, traceabilityContext) && <p className="mt-1 break-words text-xs font-bold text-amber-800">{movementOriginNote(movement, traceabilityContext)}</p>}
                 {movement.note && <p className="mt-1 break-words text-[11px] text-slate-600">Observación: {movement.note}</p>}
                 {movement.reversedAt && <p className="mt-1 font-bold text-amber-800">Revertido el {new Date(movement.reversedAt).toLocaleString("es-BO", { timeZone: "America/La_Paz" })}{movement.reversalReason ? ` · ${movement.reversalReason}` : ""} · excluido del saldo vigente.</p>}
                 {movement.rectifiedAt && <p className="mt-1 font-bold text-amber-800">Rectificado el {new Date(movement.rectifiedAt).toLocaleString("es-BO", { timeZone: "America/La_Paz" })}{movement.rectificationReason ? ` · ${movement.rectificationReason}` : ""} · conserva el registro original, excluido del saldo.</p>}
