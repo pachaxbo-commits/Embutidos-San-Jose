@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { EmptyBlock, LoadingState, Screen } from '../../../components/ui/Screen'
+import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
+import { customerHistoryRange, type CustomerHistoryPreset } from '../domain/customerFullHistory'
 import { calculateNominalWeightSummary, isSuspiciousProcessingQuantity, processingOverweightMermaG, reconcileProcessingMass } from '../domain/processingDomain'
 import { decimalInputToScaledInteger, formatKgFromGrams, gramsInput, isEligibleProcessingLot, kgInputToGrams, lotAvailableQuantity, normalizeProcessingUiType } from '../domain/processingUi'
 import { newOperationId, warehouseBalanceId, loadProcessingBatch, loadProcessingBatchPage, getProcessingOperationState, confirmProcessingBatch, type ProcessingBatchPage } from '../data/distributionRepository'
@@ -32,6 +34,14 @@ type Draft = {
 type SubmitState = 'idle' | 'sending' | 'unknown' | 'rejected' | 'confirmed'
 type Tab = 'new' | 'reservations' | 'review' | 'repack' | 'history'
 type HistoryMode = 'batches' | 'reviews' | 'repackings' | 'reports'
+type BatchHistoryPreset = 'all' | 'today' | 'week' | 'month' | 'custom'
+const BATCH_DATE_PRESETS: Array<{ id: BatchHistoryPreset; label: string }> = [
+  { id: 'all', label: 'Todo' },
+  { id: 'today', label: 'Hoy' },
+  { id: 'week', label: 'Esta semana' },
+  { id: 'month', label: 'Este mes' },
+  { id: 'custom', label: 'Personalizado' },
+]
 const DRAFT_PREFIX = 'sanjose_processing_draft_v1'
 const randomId = (prefix: string) => newOperationId(prefix).replace(/[^A-Za-z0-9_-]/g, '_')
 const todayKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
@@ -90,6 +100,11 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
   const [historyMode, setHistoryMode] = useState<HistoryMode>('batches')
   const [step, setStep] = useState(0)
   const [submitState, setSubmitState] = useState<SubmitState>(() => draft.operationPending ? 'unknown' : 'idle')
+  const [confirmedBatch, setConfirmedBatch] = useState<{ batchId: string; operationId: string } | null>(null)
+  const [isSourceProductModalOpen, setIsSourceProductModalOpen] = useState(false)
+  const [destinationPickerIndex, setDestinationPickerIndex] = useState<number | null>(null)
+  const [historyPreset, setHistoryPreset] = useState<BatchHistoryPreset>('all')
+  const [customHistoryRange, setCustomHistoryRange] = useState({ from: '', to: '' })
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -143,6 +158,16 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
   const hasAdminOnlyDestinations = draft.destinations.some(destination => ['courtesy', 'discard'].includes(destination.kind))
   const warehouseNeedsAdmin = session.role === 'warehouse' && hasAdminOnlyDestinations
 
+  const historyDateRange = useMemo(() => {
+    if (historyPreset === 'all') return null
+    if (historyPreset === 'custom') {
+      if (!customHistoryRange.from || !customHistoryRange.to) return null
+      return { from: customHistoryRange.from, to: customHistoryRange.to }
+    }
+    const computed = customerHistoryRange(historyPreset as CustomerHistoryPreset, new Date())
+    return computed.from && computed.to ? { from: computed.from, to: computed.to } : null
+  }, [historyPreset, customHistoryRange])
+
   useEffect(() => {
     persistDraft(session.uid, draft)
   }, [draft, session.uid])
@@ -151,13 +176,13 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
     let active = true
     queueMicrotask(() => { if (active) { setLoadingHistory(true); setHistoryError(''); setHistory([]); setHistoryCursor(null); setHistoryHasMore(false) } })
     const sourceLocation = session.role === 'warehouse' ? locationKey : historyWarehouse === 'all' ? undefined : historyWarehouse === 'central' ? 'central' : `warehouse__${historyWarehouse}`
-    void loadProcessingBatchPage(sourceLocation).then(page => {
+    void loadProcessingBatchPage(sourceLocation, null, 20, historyDateRange).then(page => {
       if (!active) return
       setHistory(page.rows); setHistoryCursor(page.cursor); setHistoryHasMore(page.hasMore)
     }).catch(reason => { if (active) setHistoryError((reason as Error).message || 'No se pudo consultar el historial.') })
       .finally(() => { if (active) setLoadingHistory(false) })
     return () => { active = false }
-  }, [tab, historyMode, session.role, locationKey, historyWarehouse])
+  }, [tab, historyMode, session.role, locationKey, historyWarehouse, historyDateRange])
 
   useEffect(() => {
     if (!processingBatchTarget) return
@@ -190,9 +215,20 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       const next = update(current)
       return submitState === 'rejected' ? { ...next, operationId: randomId('processing_operation') } : next
     })
-    if (submitState === 'rejected') setSubmitState('idle')
+    if (submitState === 'rejected' || submitState === 'confirmed') setSubmitState('idle')
   }
-  const setSourceProduct = (productId: string) => editDraft(current => ({ ...current, sourceProductId: productId, sources: [] }))
+  const setSourceProduct = (productId: string) => {
+    editDraft(current => ({ ...current, sourceProductId: productId, sources: [] }))
+    setIsSourceProductModalOpen(false)
+  }
+  const startNewElaboration = () => {
+    setDraft(freshDraft(fixedLocation, today))
+    setSubmitState('idle')
+    setConfirmedBatch(null)
+    setMessage('')
+    setError('')
+    setStep(0)
+  }
   const addSource = (lot: DistLot) => editDraft(current => current.sources.some(source => source.lotId === lot.id) ? current : ({ ...current, sources: [...current.sources, { lotId: lot.id, quantityKg: '' }] }))
   const removeSource = (lotId: string) => editDraft(current => ({ ...current, sources: current.sources.filter(source => source.lotId !== lotId) }))
   const updateDestination = (destinationId: string, patch: Partial<DestinationDraft>) => editDraft(current => ({ ...current, destinations: current.destinations.map(item => item.id === destinationId ? { ...item, ...patch } : item) }))
@@ -291,9 +327,12 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
   }
 
   const finishConfirmed = () => {
-    localStorage.removeItem(draftKey(session.uid)); setSubmitState('confirmed'); setMessage(`Elaboración ${draft.batchId} confirmada por el servidor. El producto terminado continúa bloqueado para venta y despacho.`)
-    setError(''); setDraft(freshDraft(fixedLocation, today)); setStep(0)
-    void loadProcessingBatchPage(session.role === 'warehouse' ? locationKey : undefined).then(page => setHistory(page.rows)).catch(() => undefined)
+    localStorage.removeItem(draftKey(session.uid))
+    setConfirmedBatch({ batchId: draft.batchId, operationId: draft.operationId })
+    setSubmitState('confirmed')
+    setMessage(`Elaboración ${draft.batchId} confirmada por el servidor. El producto terminado continúa bloqueado para venta y despacho hasta su liberación comercial.`)
+    setError('')
+    void loadProcessingBatchPage(session.role === 'warehouse' ? locationKey : undefined, null, 20, historyDateRange).then(page => setHistory(page.rows)).catch(() => undefined)
   }
   const checkOperation = async () => {
     setError(''); setMessage('Consultando el estado definitivo en el servidor…')
@@ -336,7 +375,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
     setLoadingHistory(true); setHistoryError('')
     try {
       const sourceLocation = session.role === 'warehouse' ? locationKey : historyWarehouse === 'all' ? undefined : historyWarehouse === 'central' ? 'central' : `warehouse__${historyWarehouse}`
-      const page = await loadProcessingBatchPage(sourceLocation, more ? historyCursor : null)
+      const page = await loadProcessingBatchPage(sourceLocation, more ? historyCursor : null, 20, historyDateRange)
       setHistory(rows => more ? [...rows, ...page.rows] : page.rows); setHistoryCursor(page.cursor); setHistoryHasMore(page.hasMore)
     } catch (reason) { setHistoryError((reason as Error).message || 'No se pudo consultar el historial.') }
     finally { setLoadingHistory(false) }
@@ -345,9 +384,32 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
   const sourceProducts = data.products.filter(product => product.active && !product.deleted && product.unitType === 'kg' && data.lots.some(lot => isEligibleProcessingLot(lot, product.id, locationKey, today)))
   const destinationsProducts = data.products.filter(product => product.active && !product.deleted)
 
+  const sourceProductOptions = useMemo(() => {
+    return sourceProducts.map(product => {
+      const availableLots = data.lots.filter(lot => isEligibleProcessingLot(lot, product.id, locationKey, today))
+      const totalAvailableKg = availableLots.reduce((sum, lot) => sum + lotAvailableQuantity(lot, locationKey), 0)
+      return {
+        value: product.id,
+        label: product.name,
+        description: `Categoría: ${product.category || 'General'} · ${availableLots.length} ${availableLots.length === 1 ? 'lote elegible' : 'lotes elegibles'}`,
+        trailing: `${totalAvailableKg.toFixed(3)} kg`,
+      }
+    })
+  }, [sourceProducts, data.lots, locationKey, today])
+
+  const destinationProductOptions = useMemo(() => {
+    return destinationsProducts.map(product => ({
+      value: product.id,
+      label: product.name,
+      description: `Categoría: ${product.category || 'General'} · Unidad: ${product.unitType}`,
+      trailing: commercialUnitLabel(product.unitType, 1),
+      disabled: selectedProduct ? product.id === selectedProduct.id : false,
+    }))
+  }, [destinationsProducts, selectedProduct])
+
   return <Screen title="Sacheteado y Embolsado" subtitle="Registra el consumo real, los destinos físicos y el lote derivado. La confirmación y los cambios de stock ocurren únicamente en el servidor.">
     <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-      {([['new','Nueva elaboración'],['reservations','Mercadería reservada'],['review','Revisión de producto'],['repack','Reenvasado'],['history','Historial']] as const).map(([key,label]) => <button key={key} type="button" onClick={() => { setTab(key); setSelectedBatch(null) }} aria-current={tab === key ? 'page' : undefined} className={`min-h-11 rounded-xl px-2 text-xs font-extrabold sm:text-sm ${tab === key ? 'bg-[var(--primary)] text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
+      {([['new','Nueva elaboración'],['reservations','Mercadería reservada'],['review','Revisión de producto'],['repack','Reenvasado'],['history','Historial']] as const).map(([key,label]) => <button key={key} type="button" onClick={() => { setTab(key); setSelectedBatch(null); if (key === 'new' && submitState === 'confirmed') startNewElaboration() }} aria-current={tab === key ? 'page' : undefined} className={`min-h-11 rounded-xl px-2 text-xs font-extrabold sm:text-sm ${tab === key ? 'bg-[var(--primary)] text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
     </div>
 
     {tab === 'new' && <ProcessingGuide topic="new" onStart={() => setWalkthroughOpen(true)} />}
@@ -359,6 +421,52 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><button type="button" onClick={() => { setHistoryMode('batches'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'batches' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Elaboraciones</button><button type="button" onClick={() => { setHistoryMode('reviews'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reviews' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Revisiones</button><button type="button" onClick={() => { setHistoryMode('repackings'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'repackings' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reenvasados</button><button type="button" onClick={() => { setHistoryMode('reports'); setSelectedBatch(null) }} className={`min-h-10 rounded-xl px-2 text-xs font-extrabold ${historyMode === 'reports' ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white'}`}>Reportes</button></div>
       {historyMode === 'reports' && <ProcessingReportsView session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
       {session.role === 'admin' && <Field label="Filtrar por almacén"><SelectInput value={historyWarehouse} onChange={event => setHistoryWarehouse(event.target.value)}><option value="all">Todos los almacenes</option>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field>}
+      {historyMode === 'batches' && (
+        <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold uppercase text-slate-500">Filtrar por fecha</span>
+            {historyDateRange && (
+              <span className="text-xs font-extrabold text-slate-700">
+                {historyDateRange.from} al {historyDateRange.to}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {BATCH_DATE_PRESETS.map(p => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => { setHistoryPreset(p.id); setHistoryCursor(null) }}
+                className={`min-h-9 rounded-xl px-3 text-xs font-extrabold transition ${
+                  historyPreset === p.id
+                    ? 'bg-slate-900 text-white'
+                    : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          {historyPreset === 'custom' && (
+            <div className="grid grid-cols-2 gap-2 pt-1 sm:max-w-md">
+              <Field label="Desde">
+                <TextInput
+                  type="date"
+                  value={customHistoryRange.from}
+                  onChange={e => { setCustomHistoryRange(cur => ({ ...cur, from: e.target.value })); setHistoryCursor(null) }}
+                />
+              </Field>
+              <Field label="Hasta">
+                <TextInput
+                  type="date"
+                  value={customHistoryRange.to}
+                  onChange={e => { setCustomHistoryRange(cur => ({ ...cur, to: e.target.value })); setHistoryCursor(null) }}
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+      )}
       {historyMode === 'reviews' && <ProcessingOperationsView mode="history-reviews" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
       {historyMode === 'repackings' && <ProcessingOperationsView mode="history-repackings" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
       {historyMode === 'batches' && selectedBatch ? <SectionCard title="Detalle de elaboración" action={<SecondaryButton onClick={() => setSelectedBatch(null)}>Volver al historial</SecondaryButton>}>
@@ -377,26 +485,65 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       </> : null}
     </div>}
 
-    {tab === 'new' && <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-1 rounded-2xl bg-slate-100 p-1 sm:grid-cols-4">
-        {['Origen', 'Producción', 'Materiales', 'Confirmación'].map((label, index) => <button key={label} type="button" onClick={() => setStep(index)} aria-current={step === index ? 'step' : undefined} className={`min-h-10 rounded-xl px-1 text-[11px] font-extrabold ${step === index ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>{index + 1}. {label}</button>)}
-      </div>
+    {tab === 'new' && (
+      submitState === 'confirmed' ? (
+        <SectionCard title="Elaboración confirmada exitosamente">
+          <div className="space-y-4 py-4 text-center sm:py-8">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+              <CheckCircle2 size={36} />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-lg font-black text-slate-900">¡Elaboración confirmada en el servidor!</h3>
+              <p className="text-sm font-semibold text-slate-600">
+                Identificador: <span className="font-mono font-bold text-slate-900">{confirmedBatch?.batchId || draft.batchId}</span>
+              </p>
+              <p className="mx-auto max-w-md text-xs text-slate-500">
+                El producto terminado quedó registrado y bloqueado para venta y despacho hasta su revisión y liberación comercial por parte de Administración.
+              </p>
+            </div>
+            <div className="mx-auto flex max-w-sm flex-col gap-2 pt-2 sm:flex-row">
+              <PrimaryButton full onClick={startNewElaboration}>
+                <Plus size={16} /> Iniciar otra elaboración
+              </PrimaryButton>
+              <SecondaryButton full onClick={() => { setTab('history'); setHistoryMode('batches'); setSelectedBatch(null) }}>
+                Ver historial
+              </SecondaryButton>
+            </div>
+          </div>
+        </SectionCard>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-1 rounded-2xl bg-slate-100 p-1 sm:grid-cols-4">
+            {['Origen', 'Producción', 'Materiales', 'Confirmación'].map((label, index) => <button key={label} type="button" onClick={() => setStep(index)} aria-current={step === index ? 'step' : undefined} className={`min-h-10 rounded-xl px-1 text-[11px] font-extrabold ${step === index ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>{index + 1}. {label}</button>)}
+          </div>
 
-      {message && <div role="status" className={`rounded-2xl border p-3 text-sm ${submitState === 'confirmed' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-sky-200 bg-sky-50 text-sky-900'}`}>{message}{submitState === 'confirmed' && <button type="button" className="mt-2 block min-h-10 font-extrabold underline" onClick={() => { setDraft(freshDraft(fixedLocation, today)); setSubmitState('idle'); setMessage(''); setError(''); setStep(0) }}>Iniciar otra elaboración</button>}</div>}
-      {error && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900"><AlertTriangle className="mt-0.5 shrink-0" size={17} /><span className="min-w-0 flex-1">{error}</span>{getErrorAnchor(error) && <button type="button" className="min-h-10 rounded-lg border border-rose-300 bg-white px-3 text-xs font-extrabold" onClick={() => { const target = getErrorAnchor(error)!; setStep(target.formStep); requestAnimationFrame(() => { const element = document.querySelector<HTMLElement>(`[data-processing-anchor="${target.anchor}"]`); element?.scrollIntoView({ behavior: 'smooth', block: 'center' }); element?.classList.add('ring-4', 'ring-amber-400', 'ring-offset-2'); window.setTimeout(() => element?.classList.remove('ring-4', 'ring-amber-400', 'ring-offset-2'), 2400) }) }}>Ver campo</button>}</div>}
-      {submitState === 'unknown' && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Resultado pendiente de comprobación.</b> El borrador no se puede editar ni enviar con un ID distinto.<div className="mt-2"><PrimaryButton onClick={() => void checkOperation()}><RefreshCw size={16} />Comprobar estado</PrimaryButton></div></div>}
+          {message && <div role="status" className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">{message}</div>}
+          {error && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900"><AlertTriangle className="mt-0.5 shrink-0" size={17} /><span className="min-w-0 flex-1">{error}</span>{getErrorAnchor(error) && <button type="button" className="min-h-10 rounded-lg border border-rose-300 bg-white px-3 text-xs font-extrabold" onClick={() => { const target = getErrorAnchor(error)!; setStep(target.formStep); requestAnimationFrame(() => { const element = document.querySelector<HTMLElement>(`[data-processing-anchor="${target.anchor}"]`); element?.scrollIntoView({ behavior: 'smooth', block: 'center' }); element?.classList.add('ring-4', 'ring-amber-400', 'ring-offset-2'); window.setTimeout(() => element?.classList.remove('ring-4', 'ring-amber-400', 'ring-offset-2'), 2400) }) }}>Ver campo</button>}</div>}
+          {submitState === 'unknown' && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Resultado pendiente de comprobación.</b> El borrador no se puede editar ni enviar con un ID distinto.<div className="mt-2"><PrimaryButton onClick={() => void checkOperation()}><RefreshCw size={16} />Comprobar estado</PrimaryButton></div></div>}
 
       {step === 0 && <SectionCard title="Paso 1 · Producto de origen y lotes">
         <div className="space-y-3">
           {canAdmin ? <Field label="Almacén de origen" required><SelectInput value={draft.location} onChange={event => editDraft(current => ({ ...current, location: event.target.value, sourceProductId: '', sources: [] }))}>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field> : <div className="rounded-xl bg-slate-50 p-3 text-sm"><b>Almacén asignado:</b> {data.warehouses.find(item => item.id === fixedLocation)?.name || (fixedLocation === 'central' ? 'Almacén central' : fixedLocation)}</div>}
           <Field label="Tipo de elaboración"><SelectInput value={draft.processType} onChange={event => editDraft(current => ({ ...current, processType: event.target.value as Draft['processType'] }))}><option value="bagging">Sacheteado y embolsado</option><option value="portioning">Porcionado</option></SelectInput><p className="mt-1 text-xs text-slate-500">Este flujo transforma producto a granel. El reemplazo de bolsas de producto terminado y la liberación de pendientes requieren procedimientos separados.</p></Field>
-          <Field label="Producto a granel · unidad kg" required hint="Solo aparecen SKU con lotes elegibles. El servidor vuelve a comprobar stock, lote y vencimiento al confirmar."><SelectInput data-processing-anchor="source-product" value={draft.sourceProductId} onChange={event => setSourceProduct(event.target.value)}><option value="">Selecciona producto</option>{sourceProducts.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
+          <Field label="Producto a granel · unidad kg" required hint="Solo aparecen SKU con lotes elegibles. El servidor vuelve a comprobar stock, lote y vencimiento al confirmar.">
+            <ChoiceButton
+              dataProcessingAnchor="source-product"
+              label={selectedProduct?.name}
+              description={selectedProduct ? `Categoría: ${selectedProduct.category || 'General'} · Unidad: kg` : undefined}
+              placeholder="Seleccionar producto a granel…"
+              onClick={() => setIsSourceProductModalOpen(true)}
+            />
+          </Field>
           {selectedProduct && <div className="grid grid-cols-2 gap-2"><div className="rounded-xl border border-slate-200 p-3"><p className="text-[10px] font-black uppercase text-slate-500">Existencia física</p><p className="mt-1 font-black tabular-nums">{(stock?.physical || 0).toFixed(3)} kg</p></div><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><p className="text-[10px] font-black uppercase text-emerald-800">Disponible para procesar</p><p className="mt-1 font-black tabular-nums text-emerald-900">{(stock?.available || 0).toFixed(3)} kg</p></div></div>}
-          {selectedProduct && <div data-processing-anchor="source-lots" className="space-y-2"><p className="text-[11px] font-extrabold text-slate-600">Lotes elegibles (vence primero)</p>{eligibleLots.length === 0 ? <EmptyBlock title="Sin lotes elegibles" description="Se excluyen lotes vencidos, sintéticos, en cuarentena, bloqueados o con origen físico pendiente." /> : eligibleLots.map(lot => {
+          {selectedProduct && <div data-processing-anchor="source-lots" className="space-y-2"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Lotes elegibles (vence primero)</p>{eligibleLots.length === 0 ? <EmptyBlock title="Sin lotes elegibles" description="Se excluyen lotes vencidos, sintéticos, en cuarentena, bloqueados o con origen físico pendiente." /> : eligibleLots.map(lot => {
             const selected = selectedLotIds.has(lot.id); const row = draft.sources.find(source => source.lotId === lot.id)
-            return <div key={lot.id} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-[auto_minmax(0,1fr)_minmax(150px,190px)]">
-              <input type="checkbox" aria-label={`Seleccionar lote ${lot.lotCode}`} checked={selected} onChange={event => event.target.checked ? addSource(lot) : removeSource(lot.id)} className="mt-1 h-5 w-5 accent-[var(--primary)]" />
-              <div className="min-w-0"><p className="break-words text-sm font-extrabold">{lot.lotCode}</p><p className="text-[11px] text-slate-500">Elab. {lot.manufacturedOn} · Vence {lot.expiresOn} · {lot.productionCost == null ? 'Costo no disponible' : `Costo histórico Bs ${lot.productionCost.toFixed(2)}`}</p><p className="mt-1 text-xs font-bold">Físico {lotAvailableQuantity(lot, locationKey).toFixed(3)} kg disponible</p></div>
+            return <div key={lot.id} className={`grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-2xl border p-3.5 sm:grid-cols-[auto_minmax(0,1fr)_minmax(160px,210px)] transition ${selected ? 'border-emerald-300 bg-emerald-50/40 shadow-sm' : 'border-slate-200 bg-white'}`}>
+              <input type="checkbox" aria-label={`Seleccionar lote ${lot.lotCode}`} checked={selected} onChange={event => event.target.checked ? addSource(lot) : removeSource(lot.id)} className="mt-1 h-5 w-5 rounded accent-[var(--primary)]" />
+              <div className="min-w-0">
+                <p className="break-words text-sm sm:text-base font-extrabold text-slate-900 leading-snug">{lot.lotCode}</p>
+                <p className="mt-0.5 text-xs font-medium text-slate-600">Elab. {lot.manufacturedOn} · Vence {lot.expiresOn} · {lot.productionCost == null ? 'Costo no disponible' : `Costo histórico Bs ${lot.productionCost.toFixed(2)}`}</p>
+                <p className="mt-1.5 text-xs sm:text-sm font-black text-emerald-800">Físico {lotAvailableQuantity(lot, locationKey).toFixed(3)} kg disponible</p>
+              </div>
               {selected && <div data-processing-anchor="source-quantity"><Field label="Kg reales utilizados" required hint="Máximo 3 decimales"><NumberInput min="0.001" max={lotAvailableQuantity(lot, locationKey)} step="0.001" inputMode="decimal" value={row?.quantityKg || ''} onChange={event => editDraft(current => ({ ...current, sources: current.sources.map(source => source.lotId === lot.id ? { ...source, quantityKg: event.target.value } : source) }))} placeholder="0,000" /></Field><ProcessingContextHelp topic="sourceQuantity" /></div>}
             </div>
           })}</div>}
@@ -413,7 +560,17 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
             <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Destino {index + 1}</h3>{draft.destinations.length > 1 && <button type="button" aria-label="Quitar destino" onClick={() => editDraft(current => ({ ...current, destinations: current.destinations.filter(row => row.id !== destination.id) }))} className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-rose-700"><Trash2 size={16} /></button>}</div>
             <div className="grid min-w-0 gap-3 sm:grid-cols-2">
               <Field label="Destino físico" required><SelectInput data-processing-anchor="destination-kind" value={destination.kind} onChange={event => updateDestination(destination.id, { kind: event.target.value as ProcessingDestinationKind, productId: event.target.value === 'discard' ? '' : destination.productId })}>{Object.entries(labelKind).filter(([key]) => key !== 'other').map(([key, label]) => <option key={key} value={key}>{label}</option>)}</SelectInput></Field>
-              {destination.kind !== 'discard' && <Field label="SKU terminado existente" required hint="La categoría y la unidad son campos distintos. Revise la unidad del SKU; esa unidad es la que se registrará en Inventario."><SelectInput data-processing-anchor="finished-product" value={destination.productId} onChange={event => updateDestination(destination.id, { productId: event.target.value, commercialQuantity: '' })}><option value="">Selecciona SKU</option>{destinationsProducts.map(product => <option key={product.id} value={product.id}>{product.name} · {product.unitType}</option>)}</SelectInput></Field>}
+              {destination.kind !== 'discard' && (
+                <Field label="SKU terminado existente" required hint="La categoría y la unidad son campos distintos. Revise la unidad del SKU; esa unidad es la que se registrará en Inventario.">
+                  <ChoiceButton
+                    dataProcessingAnchor="finished-product"
+                    label={target ? `${target.name} (${commercialUnitLabel(target.unitType, 1)})` : undefined}
+                    description={target ? `Categoría: ${target.category || 'General'} · Unidad: ${target.unitType}` : undefined}
+                    placeholder="Seleccionar SKU de destino…"
+                    onClick={() => setDestinationPickerIndex(index)}
+                  />
+                </Field>
+              )}
               {destination.kind !== 'discard' && <div data-processing-anchor="commercial-quantity">
                 <Field label={`Cantidad comercial ${target ? `(${target.unitType})` : ''}`} required hint={target?.unitType === 'kg' ? 'Debe coincidir exactamente con los gramos netos.' : 'Número de paquetes/unidades que quedarán registrados en Inventario. Ejemplo: si obtiene 99 bolsas de 1 kg, escriba 99. El peso no infiere esta cantidad.'}><NumberInput min="0" step={target?.unitType === 'kg' ? '0.001' : '1'} value={destination.commercialQuantity} onChange={event => updateDestination(destination.id, { commercialQuantity: event.target.value })} placeholder={target?.unitType === 'kg' ? '0,000' : '0'} /></Field>
                 {target && target.unitType !== 'kg' && Number.isSafeInteger(Number(destination.commercialQuantity.replace(',', '.'))) && Number(destination.commercialQuantity.replace(',', '.')) > 0 && <p className="mt-1 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs font-extrabold text-sky-950" aria-live="polite">Inventario que se creará: {Number(destination.commercialQuantity.replace(',', '.'))} {commercialUnitLabel(target.unitType, Number(destination.commercialQuantity.replace(',', '.')))}</p>}
@@ -505,7 +662,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
            <div data-processing-anchor="save-draft" className="mt-2 flex flex-wrap gap-2"><SecondaryButton onClick={() => { if (persistDraft(session.uid, draft)) setMessage('Borrador guardado solo en este dispositivo. No reservó ni consumió stock.'); else setError('No se pudo guardar el borrador en este dispositivo.') }}><Save size={15} />Guardar borrador</SecondaryButton><span className="self-center text-[11px] font-semibold text-slate-500">El borrador no cambia inventario. Se vuelve a validar contra los lotes actuales al confirmar.</span></div>
         </SectionCard>
         {warehouseNeedsAdmin && <div role="status" className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Esta elaboración contiene una cortesía o descarte que debe confirmar Administración. El borrador permanece local; no hay solicitud de aprobación enviada.</div>}
-         <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><div data-processing-anchor="confirm"><PrimaryButton full disabled={Boolean(massError) || quantityWarnings.length > 0 || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown' || submitState === 'confirmed'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : submitState === 'confirmed' ? 'Confirmada' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton>{quantityWarnings.length > 0 && <p className="mt-2 text-xs font-extrabold text-rose-800">Corrige la cantidad comercial antes de confirmar.</p>}</div></div>
+         <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><div data-processing-anchor="confirm"><PrimaryButton full disabled={Boolean(massError) || quantityWarnings.length > 0 || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton>{quantityWarnings.length > 0 && <p className="mt-2 text-xs font-extrabold text-rose-800">Corrige la cantidad comercial antes de confirmar.</p>}</div></div>
       </div>}
 
       {step < 3 && <div className="grid grid-cols-2 gap-2"><SecondaryButton full disabled={step === 0} onClick={() => setStep(value => Math.max(0, value - 1))}><ChevronLeft size={16} />Anterior</SecondaryButton><PrimaryButton full onClick={() => setStep(value => Math.min(3, value + 1))}>Continuar<ChevronRight size={16} /></PrimaryButton></div>}
@@ -515,9 +672,39 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
         </div>
       </Modal>
       <p className="text-center text-[10px] font-semibold text-slate-400">Borrador local · ID estable {draft.batchId}</p>
-    </div>}
-     {tab === 'new' && walkthroughOpen && <ProcessingWalkthrough open onClose={() => setWalkthroughOpen(false)} onFormStepChange={setStep} />}
-   </Screen>
+    </div>
+      )
+    )}
+    {tab === 'new' && walkthroughOpen && <ProcessingWalkthrough open onClose={() => setWalkthroughOpen(false)} onFormStepChange={setStep} />}
+
+    <ChoiceModal
+      isOpen={isSourceProductModalOpen}
+      onClose={() => setIsSourceProductModalOpen(false)}
+      title="Seleccionar producto a granel"
+      subtitle="Materia prima a transformar en sachets o porcionado"
+      options={sourceProductOptions}
+      selectedValue={draft.sourceProductId}
+      onSelect={value => setSourceProduct(value)}
+      searchable
+      emptyLabel="No hay productos a granel con lotes elegibles en este almacén"
+    />
+
+    <ChoiceModal
+      isOpen={destinationPickerIndex !== null}
+      onClose={() => setDestinationPickerIndex(null)}
+      title="Seleccionar SKU de destino"
+      subtitle="Producto terminado a registrar en inventario"
+      options={destinationProductOptions}
+      selectedValue={destinationPickerIndex !== null ? draft.destinations[destinationPickerIndex]?.productId : undefined}
+      onSelect={value => {
+        if (destinationPickerIndex !== null && draft.destinations[destinationPickerIndex]) {
+          updateDestination(draft.destinations[destinationPickerIndex].id, { productId: value, commercialQuantity: '' })
+        }
+      }}
+      searchable
+      emptyLabel="No hay SKU activos disponibles"
+    />
+  </Screen>
 }
 
 function Metric({ label, value, tone = 'normal' }: { label: string; value: string; tone?: 'normal' | 'ok' | 'bad' }) {

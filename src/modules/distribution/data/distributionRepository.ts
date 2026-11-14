@@ -140,13 +140,25 @@ export async function loadProcessingBatchPage(
   location: string | undefined,
   cursor: QueryDocumentSnapshot<DocumentData> | null = null,
   pageSize = 20,
+  dateRange?: { from: string; to: string } | null,
 ): Promise<ProcessingBatchPage> {
   const context = await getContext()
   const ref = collectionRef(context, 'distProcessingBatches')
   const constraints: QueryConstraint[] = []
   if (location) constraints.push(where('sourceLocation', '==', location))
-  constraints.push(orderBy('createdAt', 'desc'), limit(Math.min(50, Math.max(1, pageSize + 1))))
-  if (cursor) constraints.splice(constraints.length - 1, 0, startAfter(cursor))
+  if (dateRange?.from && dateRange?.to) {
+    const from = dateRange.from <= dateRange.to ? dateRange.from : dateRange.to
+    const to = dateRange.from <= dateRange.to ? dateRange.to : dateRange.from
+    constraints.push(
+      where('processingDate', '>=', from),
+      where('processingDate', '<=', to),
+      orderBy('processingDate', 'desc'),
+    )
+  } else {
+    constraints.push(orderBy('createdAt', 'desc'))
+  }
+  if (cursor) constraints.push(startAfter(cursor))
+  constraints.push(limit(Math.min(50, Math.max(1, pageSize + 1))))
   const snapshot = await getDocsFromServer(query(ref, ...constraints))
   const hasMore = snapshot.docs.length > pageSize
   const docs = snapshot.docs.slice(0, pageSize)

@@ -410,7 +410,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     const claimsCashNet = money.claimCash
 
     const expectedCash = money.expectedCash
+    const closuresExpectedCash = round2(closures.reduce((sum, cl) => sum + (cl.expectedCash ?? 0), 0))
     const declaredCash = round2(closures.reduce((sum, cl) => sum + (cl.physicalCashDeclared ?? 0), 0))
+    const closuresCashDifference = round2(declaredCash - closuresExpectedCash)
+    const unclosedDelta = round2(expectedCash - closuresExpectedCash)
     const cashDifference = round2(declaredCash - expectedCash)
 
     return {
@@ -425,8 +428,12 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       voidedQrReceipts: money.voidedQrReceipts,
       claimQr: money.claimQr,
       expectedCash,
+      closuresExpectedCash,
+      closuresCashDifference,
+      unclosedDelta,
       declaredCash,
       cashDifference,
+      hasClosures: closures.length > 0,
     }
   }, [collections, expenses, closures, money.cashSales, money.claimCash, money.claimQr, money.creditGenerated, money.expectedCash, money.qrSales, money.salesTotal, money.voidedCashReceipts, money.voidedQrReceipts])
 
@@ -692,32 +699,68 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                     </div>
                     {(() => {
                       const sellerClosures = closures.filter((c) => c.distributorUid === seller.sellerUid)
-                      const declaredBySeller = sellerClosures.length > 0
+                      const hasClosures = sellerClosures.length > 0
+                      const closuresExpected = hasClosures
+                        ? round2(sellerClosures.reduce((sum, c) => sum + (c.expectedCash ?? 0), 0))
+                        : null
+                      const closuresDeclared = hasClosures
                         ? round2(sellerClosures.reduce((sum, c) => sum + (c.physicalCashDeclared ?? 0), 0))
                         : null
-                      const sellerDifference = declaredBySeller !== null ? round2(declaredBySeller - seller.expectedCash) : null
+                      const closureDifference = (closuresDeclared !== null && closuresExpected !== null)
+                        ? round2(closuresDeclared - closuresExpected)
+                        : null
+                      const unclosedDelta = hasClosures && closuresExpected !== null
+                        ? round2(seller.expectedCash - closuresExpected)
+                        : 0
 
                       return (
-                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2.5">
-                          <div>
-                            <span className="block text-[11px] font-extrabold uppercase text-slate-500">Efectivo esperado</span>
-                            <span className="text-base font-black tabular-nums text-slate-900">{formatBs(seller.expectedCash)}</span>
-                          </div>
-                          {declaredBySeller !== null ? (
-                            <div className="flex items-center gap-3">
-                              <div>
-                                <span className="block text-[11px] font-extrabold uppercase text-slate-500">Declarado en arqueo</span>
-                                <span className="text-base font-black tabular-nums text-slate-900">{formatBs(declaredBySeller)}</span>
+                        <div className="mt-2 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+                            <div>
+                              <span className="block text-[11px] font-extrabold uppercase text-slate-500">
+                                {hasClosures ? 'Efectivo esperado en arqueo' : 'Efectivo esperado'}
+                              </span>
+                              <span className="text-base font-black tabular-nums text-slate-900">
+                                {formatBs(hasClosures ? closuresExpected! : seller.expectedCash)}
+                              </span>
+                            </div>
+                            {hasClosures ? (
+                              <div className="flex items-center gap-3">
+                                <div>
+                                  <span className="block text-[11px] font-extrabold uppercase text-slate-500">Declarado en arqueo</span>
+                                  <span className="text-base font-black tabular-nums text-slate-900">{formatBs(closuresDeclared!)}</span>
+                                </div>
+                                <div>
+                                  <span className="block text-[11px] font-extrabold uppercase text-slate-500">Estado arqueo</span>
+                                  <VarianceBadge variance={closureDifference!} />
+                                </div>
                               </div>
-                              <div>
-                                <span className="block text-[11px] font-extrabold uppercase text-slate-500">Diferencia</span>
-                                <VarianceBadge variance={sellerDifference!} />
+                            ) : (
+                              <span className="rounded-full bg-slate-200 px-2.5 py-1 text-[10px] font-bold text-slate-600">
+                                Sin arqueo registrado
+                              </span>
+                            )}
+                          </div>
+
+                          {hasClosures && unclosedDelta !== 0 && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs text-sky-950">
+                              <div className="min-w-0">
+                                <span className="font-extrabold">Movimientos fuera del arqueo cerrado:</span>
+                                <span className="ml-1 text-slate-600">
+                                  {unclosedDelta > 0
+                                    ? 'Cobranzas o ingresos registrados fuera del despacho cerrado.'
+                                    : 'Gastos o egresos registrados tras el cierre de ruta.'}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold tabular-nums">
+                                  {unclosedDelta > 0 ? `+${formatBs(unclosedDelta)}` : formatBs(unclosedDelta)}
+                                </span>
+                                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-black text-sky-800">
+                                  Conciliar en caja central
+                                </span>
                               </div>
                             </div>
-                          ) : (
-                            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-600">
-                              Sin arqueo registrado
-                            </span>
                           )}
                         </div>
                       )
@@ -809,7 +852,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border-2 border-slate-900 bg-slate-900 p-3.5 text-white">
                       <div>
                         <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-300">
-                          = Efectivo Físico Esperado en Caja:
+                          = Efectivo Físico Teórico Total del Periodo:
                         </span>
                         <span className="text-[11px] text-slate-400">
                           Ventas Ef. + Cobros Ef. - Gastos Ef. ± Reclamos
@@ -818,9 +861,45 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                       <span className="text-lg font-black tabular-nums text-white">{formatBs(reconciliation.expectedCash)}</span>
                     </div>
 
+                    {reconciliation.hasClosures && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <span className="block text-xs font-bold text-slate-800">Arqueos de Ruta Cerrados (Snapshots):</span>
+                            <span className="text-[11px] text-slate-500">Esperado en cierres: {formatBs(reconciliation.closuresExpectedCash)} · Declarado y entregado: {formatBs(reconciliation.declaredCash)}</span>
+                          </div>
+                          <div className={`px-2.5 py-1 rounded-full text-xs font-black ${
+                            reconciliation.closuresCashDifference === 0
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : reconciliation.closuresCashDifference > 0
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-rose-100 text-rose-800'
+                          }`}>
+                            {reconciliation.closuresCashDifference === 0
+                              ? 'Arqueos cerrados cuadrados'
+                              : reconciliation.closuresCashDifference > 0
+                                ? `Sobrante en arqueos +${formatBs(reconciliation.closuresCashDifference)}`
+                                : `Faltante en arqueos ${formatBs(reconciliation.closuresCashDifference)}`}
+                          </div>
+                        </div>
+
+                        {reconciliation.unclosedDelta !== 0 && (
+                          <div className="rounded-xl border border-sky-200 bg-white p-2.5 text-xs text-slate-700 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <span className="font-extrabold text-sky-950">Movimientos fuera del snapshot de arqueos:</span>
+                              <p className="text-[11px] text-slate-500">Ingresos/egresos del período no integrados en la ventana horaria del despacho cerrado.</p>
+                            </div>
+                            <span className="font-mono font-bold text-sm text-sky-900">
+                              {reconciliation.unclosedDelta > 0 ? `+${formatBs(reconciliation.unclosedDelta)}` : formatBs(reconciliation.unclosedDelta)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3.5">
                       <div>
-                        <span className="block text-xs font-bold text-slate-800">Efectivo Físico Declarado en Arqueos:</span>
+                        <span className="block text-xs font-bold text-slate-800">Efectivo Físico Declarado Total en Arqueos:</span>
                         <span className="text-[11px] text-slate-500">Monto real contado y entregado por distribuidores</span>
                       </div>
                       <span className="text-base font-black tabular-nums text-slate-900">{formatBs(reconciliation.declaredCash)}</span>
@@ -835,10 +914,10 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                     }`}>
                       <span>
                         {reconciliation.cashDifference === 0
-                          ? 'Caja exacta sin diferencia (Cuadre perfecto)'
+                          ? 'Conciliación general exacta (Cuadre perfecto del periodo)'
                           : reconciliation.cashDifference > 0
-                            ? 'Sobrante en arqueo físico (+):'
-                            : 'Faltante en arqueo físico (-):'}
+                            ? 'Diferencia neta del periodo (Sobrante +):'
+                            : 'Diferencia neta del periodo (Pendiente de rendición / Faltante -):'}
                       </span>
                       <span className="text-sm font-black tabular-nums">{formatBs(reconciliation.cashDifference)}</span>
                     </div>
