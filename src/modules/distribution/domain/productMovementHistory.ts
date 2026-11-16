@@ -2,6 +2,7 @@ import type { DistStockMovement, StockMovementType } from '../types.ts'
 
 export type ProductMovementFilter =
   | 'all'
+  | 'sales'
   | 'losses'
   | 'shortages'
   | 'overages'
@@ -14,6 +15,7 @@ export type ProductMovementFilter =
   | 'intakesAdjustments'
 
 export const MOVEMENT_TYPES_BY_FILTER: Record<Exclude<ProductMovementFilter, 'all'>, StockMovementType[]> = {
+  sales: ['sale'],
   losses: [
     'return_waste',
     'return_waste_unassigned',

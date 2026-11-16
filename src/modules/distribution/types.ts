@@ -198,6 +198,9 @@ export interface DistStockMovement extends DistBaseDoc {
   originReferences?: OriginReference[]
   traceabilityStatus?: 'physical_origin_pending'
   documentedMovementIds?: string[]
+  customerId?: string
+  customerName?: string
+  saleId?: string
   responsibleName?: string
   responsibleRole?: 'admin' | 'warehouse' | 'distributor'
   lotCode?: string
