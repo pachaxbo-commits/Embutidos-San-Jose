@@ -101,6 +101,19 @@ export interface DistDispatchProductOrder {
   updatedByName?: string
 }
 
+/** Shared operational ordering for inventory product list display. */
+export interface DistInventoryProductOrder {
+  id: 'inventoryProductOrder'
+  restaurantId: string
+  schemaVersion: 1
+  enabled: boolean
+  productIds: string[]
+  revision: number
+  updatedAt: string
+  updatedBy: string
+  updatedByName?: string
+}
+
 export interface DistRoute {
   id: string
   name: string

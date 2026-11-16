@@ -455,11 +455,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // El orden de preparación de Despachos es una preferencia operativa
-    // compartida. El servidor valida y escribe cada revisión mediante una
+    // El orden de preparación de Despachos y de Inventario son preferencias operativas
+    // compartidas. El servidor valida y escribe cada revisión mediante una
     // operación limitada; los empleados solo consultan este documento.
     match /restaurants/{restaurantId}/distSettings/{settingId} {
-      allow get: if settingId == 'dispatchProductOrder' && distWorker(restaurantId);
+      allow get: if (settingId == 'dispatchProductOrder' || settingId == 'inventoryProductOrder') && distWorker(restaurantId);
       allow list: if false;
       allow create, update, delete: if false;
     }
