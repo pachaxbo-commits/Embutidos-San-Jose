@@ -17,6 +17,7 @@ import {
   subscribeOpenDispatches,
   subscribeProducts,
   subscribeDispatchProductOrder,
+  subscribeInventoryProductOrder,
   subscribeReceivables,
   subscribeReceivableAdjustments,
   subscribeRoutes,
@@ -37,6 +38,7 @@ import type {
   DistCustomer,
   DistDispatch,
   DistDispatchProductOrder,
+  DistInventoryProductOrder,
   DistExpense,
   DistExpenseCategory,
   DistExpenseGroup,
@@ -104,6 +106,8 @@ export interface DistributionData {
   products: DistProduct[]
   dispatchProductOrder: DistDispatchProductOrder | null
   dispatchProductOrderLoading: boolean
+  inventoryProductOrder: DistInventoryProductOrder | null
+  inventoryProductOrderLoading: boolean
   routes: DistRoute[]
   customers: DistCustomer[]
   balances: DistBalance[]
@@ -138,6 +142,8 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
   const [products, setProducts] = useState<DistProduct[]>([])
   const [dispatchProductOrder, setDispatchProductOrder] = useState<DistDispatchProductOrder | null>(null)
   const [dispatchProductOrderLoading, setDispatchProductOrderLoading] = useState(true)
+  const [inventoryProductOrder, setInventoryProductOrder] = useState<DistInventoryProductOrder | null>(null)
+  const [inventoryProductOrderLoading, setInventoryProductOrderLoading] = useState(true)
   const [routes, setRoutes] = useState<DistRoute[]>([])
   const [customers, setCustomers] = useState<DistCustomer[]>([])
   const [balances, setBalances] = useState<DistBalance[]>([])
@@ -216,6 +222,12 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
         setDispatchProductOrderLoading(false)
         onError(error)
       }, () => setDispatchProductOrderLoading(false)),
+      subscribeInventoryProductOrder(order => {
+        setInventoryProductOrder(order)
+      }, error => {
+        setInventoryProductOrderLoading(false)
+        onError(error)
+      }, () => setInventoryProductOrderLoading(false)),
       subscribeRoutes((rows) => {
         setRoutes(rows.sort((a, b) => a.name.localeCompare(b.name)))
         onLoaded('routes')
@@ -375,6 +387,8 @@ export function useDistributionData(scope: DistributionScope): DistributionData 
     products,
     dispatchProductOrder,
     dispatchProductOrderLoading,
+    inventoryProductOrder,
+    inventoryProductOrderLoading,
     routes,
     customers,
     balances: visibleBalances,

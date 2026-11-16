@@ -1,13 +1,13 @@
 import { LotReconciliation } from './LotReconciliation'
 import { LotsAndHistory } from './LotsAndHistory'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileSpreadsheet, FileText, History, Layers, ListTree, PackagePlus, Printer, ShieldAlert, SlidersHorizontal } from 'lucide-react'
+import { ArrowDown, ArrowUp, FileSpreadsheet, FileText, GripVertical, History, Layers, ListTree, MoreVertical, PackagePlus, Printer, RotateCcw, Save, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2, toDayKey } from '../domain/engine'
-import { loadProcessingReportPage, loadProcessingReservationsForLot, loadProductLocationBalance, loadProductMovementPage, newOperationId, registerAdjustment, registerIntake, requestAdjustment, reviewAdjustmentRequest, subscribeMovementsByDayKeys, warehouseBalanceId, type ProcessingReportCursor, type ProductMovementCursor } from '../data/distributionRepository'
+import { loadProcessingReportPage, loadProcessingReservationsForLot, loadProductLocationBalance, loadProductMovementPage, newOperationId, registerAdjustment, registerIntake, requestAdjustment, resetInventoryProductOrder, reviewAdjustmentRequest, saveInventoryProductOrder, subscribeMovementsByDayKeys, warehouseBalanceId, type ProcessingReportCursor, type ProductMovementCursor } from '../data/distributionRepository'
 import { useRouteStock, useStockIndex } from '../state/useDistributionStore'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -18,6 +18,7 @@ import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inve
 import { getTodayStockIntakes } from '../domain/todayIntakes'
 import { reportUnitLabel } from '../domain/reportLabels'
 import { filterProductMovementHistory, isDispatchWithMerma, type ProductMovementFilter } from '../domain/productMovementHistory'
+import { moveInventoryProduct, sortInventoryProducts } from '../domain/inventorySelection'
 import { stockAvailability } from '../domain/stockAvailability'
 import { productWarehouseLotRows, warehouseLotReconciliation } from '../domain/productWarehouseLots'
 import { countPendingQuarantineLots } from '../domain/quarantine'
@@ -101,12 +102,25 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   const [historyProduct, setHistoryProduct] = useState<DistProduct | null>(null)
   const [lotsProduct, setLotsProduct] = useState<DistProduct | null>(null)
   const [historyProductFilter, setHistoryProductFilter] = useState<ProductMovementFilter>('all')
+  const [historyDatePreset, setHistoryDatePreset] = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('all')
+  const [historyCustomStart, setHistoryCustomStart] = useState(toDayKey(new Date()))
+  const [historyCustomEnd, setHistoryCustomEnd] = useState(toDayKey(new Date()))
+  const [isProductExportMenuOpen, setIsProductExportMenuOpen] = useState(false)
+  const [productExporting, setProductExporting] = useState<'pdf' | 'excel' | null>(null)
   const [productHistoryPages, setProductHistoryPages] = useState<DistStockMovement[]>([])
   const [productHistoryCursor, setProductHistoryCursor] = useState<ProductMovementCursor | null>(null)
   const [productHistoryHasMore, setProductHistoryHasMore] = useState(false)
   const [productHistoryLoading, setProductHistoryLoading] = useState(false)
   const [productHistoryError, setProductHistoryError] = useState('')
   const [productHistoryBalance, setProductHistoryBalance] = useState<number | null>(null)
+  const [isProductOrderOpen, setIsProductOrderOpen] = useState(false)
+  const [editingProductOrder, setEditingProductOrder] = useState<string[]>([])
+  const [editingProductOrderRevision, setEditingProductOrderRevision] = useState(0)
+  const [isSavingProductOrder, setIsSavingProductOrder] = useState(false)
+  const [productOrderError, setProductOrderError] = useState<string | null>(null)
+  const [confirmProductOrderReset, setConfirmProductOrderReset] = useState(false)
+  const [draggingProductId, setDraggingProductId] = useState<string | null>(null)
+  const dragTargetProductId = useRef<string | null>(null)
   const [generalHistorySearch, setGeneralHistorySearch] = useState('')
   const [isGeneralHistoryOpen, setIsGeneralHistoryOpen] = useState(false)
   const [modalHistoryState, setModalHistoryState] = useState<{ signature: string; rows: DistStockMovement[] }>({ signature: '', rows: [] })
@@ -233,6 +247,29 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   const generalHistorySheet = inventoryHistorySheet(generalHistoryData, historyDays, warehouseId)
 
   const historyProductId = historyProduct?.id || ''
+
+  const computedProductHistoryDateRange = useMemo<{ startDay: string; endDay: string } | null>(() => {
+    if (historyDatePreset === 'all') return null
+    const today = toDayKey(new Date())
+    if (historyDatePreset === 'today') return { startDay: today, endDay: today }
+    if (historyDatePreset === 'week') {
+      const [y, m, d] = today.split('-').map(Number)
+      const dt = new Date(y, m - 1, d)
+      const dayOfWeek = (dt.getDay() + 6) % 7
+      const mon = new Date(dt)
+      mon.setDate(dt.getDate() - dayOfWeek)
+      return { startDay: toDayKey(mon), endDay: today }
+    }
+    if (historyDatePreset === 'month') {
+      const [y, m] = today.split('-').map(Number)
+      return { startDay: `${y}-${String(m).padStart(2, '0')}-01`, endDay: today }
+    }
+    return {
+      startDay: historyCustomStart || today,
+      endDay: historyCustomEnd || today,
+    }
+  }, [historyDatePreset, historyCustomStart, historyCustomEnd])
+
   useEffect(() => {
     if (!historyProductId || isDistributor) return
     let cancelled = false
@@ -245,8 +282,13 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
       setProductHistoryLoading(true)
       setProductHistoryBalance(null)
     })
+
     void Promise.all([
-      loadProductMovementPage(historyProductId, null, 100),
+      loadProductMovementPage(historyProductId, null, {
+        filter: historyProductFilter,
+        dateRange: computedProductHistoryDateRange,
+        pageSize: 50,
+      }),
       loadProductLocationBalance(historyProductId, warehouseLocation),
     ]).then(([page, balance]) => {
       if (cancelled) return
@@ -260,14 +302,18 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
       if (!cancelled) setProductHistoryLoading(false)
     })
     return () => { cancelled = true }
-  }, [historyProductId, warehouseLocation, isDistributor])
+  }, [historyProductId, historyProductFilter, computedProductHistoryDateRange, warehouseLocation, isDistributor])
 
   const loadMoreProductHistory = async () => {
     if (!historyProductId || !productHistoryHasMore || productHistoryLoading) return
     setProductHistoryLoading(true)
     setProductHistoryError('')
     try {
-      const page = await loadProductMovementPage(historyProductId, productHistoryCursor, 100)
+      const page = await loadProductMovementPage(historyProductId, productHistoryCursor, {
+        filter: historyProductFilter,
+        dateRange: computedProductHistoryDateRange,
+        pageSize: 50,
+      })
       setProductHistoryPages(current => {
         const byId = new Map(current.map(row => [row.id, row]))
         for (const row of page.movements) byId.set(row.id, row)
@@ -286,6 +332,57 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
     () => historyProduct ? filterProductMovementHistory(productHistoryPages, historyProduct.id, historyProductFilter) : [],
     [productHistoryPages, historyProduct, historyProductFilter],
   )
+
+  const exportProductHistory = async (format: 'pdf' | 'excel') => {
+    if (!historyProduct || productExporting || productHistoryMovements.length === 0) return
+    setProductExporting(format)
+    try {
+      const filterLabels: Record<string, string> = {
+        all: 'Todos los movimientos',
+        losses: 'Mermas',
+        shortages: 'Faltantes',
+        overages: 'Sobrantes',
+        dispatches: 'Despachos',
+        intakes: 'Ingresos',
+        adjustments: 'Ajustes',
+        returns: 'Devoluciones',
+      }
+      const dateDesc = historyDatePreset === 'all'
+        ? 'Todo el historial'
+        : historyDatePreset === 'today'
+        ? `Hoy (${toDayKey(new Date())})`
+        : historyDatePreset === 'week'
+        ? `Esta semana (${computedProductHistoryDateRange?.startDay} a ${computedProductHistoryDateRange?.endDay})`
+        : historyDatePreset === 'month'
+        ? `Este mes (${computedProductHistoryDateRange?.startDay} a ${computedProductHistoryDateRange?.endDay})`
+        : `${historyCustomStart} a ${historyCustomEnd}`
+      const sheet: ReportSheet = {
+        name: historyProduct.name.slice(0, 31),
+        headers: ['Fecha y hora', 'Tipo de movimiento', 'Origen → Destino', 'Cantidad', 'Unidad', 'Lote', 'Responsable', 'Observación'],
+        rows: productHistoryMovements.map(movement => [
+          movement.createdAt ? new Date(movement.createdAt).toLocaleString('es-BO') : '',
+          MOVEMENT_LABELS[movement.type] || movement.type,
+          `${locationName(movement.fromLocation)} → ${locationName(movement.toLocation)}${movement.routeId ? ` (${data.routes.find(r => r.id === movement.routeId)?.name || 'Ruta'})` : ''}`,
+          movement.quantity,
+          reportUnitLabel(movement.unitType),
+          movement.lotCode || movement.allocations?.map(allocation => allocation.lotCode).filter(Boolean).join(', ') || '',
+          visiblePersonName(movement.responsibleName || movement.createdBy),
+          movement.note || '',
+        ]),
+      }
+      const safeProductName = historyProduct.name.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const description = `${historyProduct.name} · ${warehouseName} · ${filterLabels[historyProductFilter] || historyProductFilter} · ${dateDesc} · Emitido ${new Date().toLocaleString('es-BO')}`
+      if (format === 'pdf') {
+        await exportPdf([sheet], description, `SanJose-${safeProductName}-historial.pdf`)
+      } else {
+        await exportExcel([sheet], description, `SanJose-${safeProductName}-historial.xlsx`)
+      }
+    } catch (exportErr) {
+      setProductHistoryError((exportErr as Error).message || 'No se pudo exportar el historial.')
+    } finally {
+      setProductExporting(null)
+    }
+  }
   const selectedProductBalance = lotsProduct
     ? data.balances.find((item) => item.id === warehouseBalanceId(warehouseId, lotsProduct.id))
     : undefined
@@ -402,12 +499,89 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
     }
   }
 
+  const canManageProductOrder = session.can('dist.inventory.order') || session.role === 'admin' || session.role === 'warehouse'
+
+  const activeProducts = useMemo(() => {
+    return data.products.filter(product => product.active !== false && !product.deleted)
+  }, [data.products])
+
+  const orderedProducts = useMemo(() => {
+    return sortInventoryProducts(
+      activeProducts,
+      data.inventoryProductOrder?.enabled ? data.inventoryProductOrder.productIds : undefined,
+    )
+  }, [activeProducts, data.inventoryProductOrder])
+
   const filteredProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return data.products
-      .filter((product) => product.active !== false)
+    return orderedProducts
       .filter((product) => !term || product.name.toLowerCase().includes(term) || product.category.toLowerCase().includes(term))
-  }, [data.products, search])
+  }, [orderedProducts, search])
+
+  const openProductOrder = () => {
+    setEditingProductOrder(orderedProducts.map(product => product.id))
+    setEditingProductOrderRevision(data.inventoryProductOrder?.revision || 0)
+    setProductOrderError(null)
+    setConfirmProductOrderReset(false)
+    setIsProductOrderOpen(true)
+  }
+  const moveProductOrderItem = (fromId: string, toId: string) => {
+    setEditingProductOrder(current => moveInventoryProduct(current.map(id => ({ id })), fromId, toId).map(product => product.id))
+  }
+  const startProductOrderDrag = (event: React.PointerEvent<HTMLButtonElement>, productId: string) => {
+    event.preventDefault()
+    setDraggingProductId(productId)
+    dragTargetProductId.current = productId
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const updateProductOrderDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const draggedId = draggingProductId
+    if (!draggedId) return
+    const targetId = document.elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>('[data-inventory-order-id]')?.dataset.inventoryOrderId
+    if (targetId) dragTargetProductId.current = targetId
+  }
+  const finishProductOrderDrag = (event: React.PointerEvent<HTMLButtonElement>, commit = true) => {
+    const draggedId = draggingProductId
+    const targetId = dragTargetProductId.current
+    setDraggingProductId(null)
+    dragTargetProductId.current = null
+    if (commit && draggedId && targetId) moveProductOrderItem(draggedId, targetId)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+  const closeProductOrder = () => {
+    if (isSavingProductOrder) return
+    setIsProductOrderOpen(false)
+    setProductOrderError(null)
+    setConfirmProductOrderReset(false)
+  }
+  const handleSaveProductOrder = async () => {
+    if (isSavingProductOrder || data.inventoryProductOrderLoading || editingProductOrder.length !== activeProducts.length) return
+    setIsSavingProductOrder(true)
+    setProductOrderError(null)
+    try {
+      await saveInventoryProductOrder(editingProductOrder, editingProductOrderRevision)
+      setIsProductOrderOpen(false)
+    } catch (caught) {
+      setProductOrderError((caught as Error).message || 'No se pudo guardar el orden. Revisa la conexión y vuelve a intentarlo.')
+    } finally {
+      setIsSavingProductOrder(false)
+    }
+  }
+  const handleResetProductOrder = async () => {
+    if (isSavingProductOrder || data.inventoryProductOrderLoading) return
+    setIsSavingProductOrder(true)
+    setProductOrderError(null)
+    try {
+      await resetInventoryProductOrder(editingProductOrderRevision)
+      setIsProductOrderOpen(false)
+      setConfirmProductOrderReset(false)
+    } catch (caught) {
+      setProductOrderError((caught as Error).message || 'No se pudo restablecer el orden. Revisa la conexión y vuelve a intentarlo.')
+    } finally {
+      setIsSavingProductOrder(false)
+    }
+  }
 
   const openIntake = (product: DistProduct, mode: 'intake' | 'adjustment') => {
     operation.current = null
@@ -532,6 +706,15 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
                 <span>{todayIntakesExporting ? 'Generando…' : 'Imprimir ingresos de hoy'}</span>
               </button>
               <button type="button" onClick={() => { intakeHistoryPreviousDays.current = session.dayKeys; session.setDayKeys([toDayKey(new Date())]); setIsIntakeHistoryOpen(true) }} className="flex min-h-[38px] shrink-0 items-center justify-center gap-2 rounded-xl border border-emerald-300 bg-white px-3.5 text-xs font-extrabold text-emerald-900 hover:bg-emerald-50"><History size={15}/> Historial de ingresos</button>
+              {canManageProductOrder && (
+                <button
+                  type="button"
+                  onClick={openProductOrder}
+                  className="flex min-h-[38px] shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3.5 text-xs font-extrabold text-slate-700 hover:bg-slate-50"
+                >
+                  <GripVertical size={15} /> Organizar productos
+                </button>
+              )}
             </div>
             <TextInput value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto..." />
             <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2">
@@ -568,7 +751,21 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
                           </button>}
                         </>
                       )}
-                      <button type="button" aria-label={`Ver historial de ${product.name}`} onClick={() => { setHistoryProduct(product); setHistoryProductFilter('all') }} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"><History size={16} /></button>
+                      <button
+                        type="button"
+                        aria-label={`Ver historial de ${product.name}`}
+                        onClick={() => {
+                          setHistoryProduct(product)
+                          setHistoryProductFilter('all')
+                          setHistoryDatePreset('all')
+                          setHistoryCustomStart(toDayKey(new Date()))
+                          setHistoryCustomEnd(toDayKey(new Date()))
+                          setIsProductExportMenuOpen(false)
+                        }}
+                        className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"
+                      >
+                        <History size={16} />
+                      </button>
                       <button type="button" aria-label={`Ver lotes de ${product.name}`} onClick={() => setLotsProduct(product)} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"><Layers size={16} /></button>
                     </div>
                   </div>
@@ -817,22 +1014,238 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
           {selectedProductLotRows.length > 0 && <p className="text-[11px] text-slate-500">Suma física por lotes: {formatQty(selectedProductLotTotals.lotPhysical, lotsProduct.unitType)} · disponible identificado por lote: {formatQty(selectedProductLotTotals.lotAvailable, lotsProduct.unitType)} · no disponible por lote: {formatQty(selectedProductLotTotals.lotUnavailable, lotsProduct.unitType)}. Los totales superiores provienen del saldo del almacén.</p>}
         </div>}
       </Modal>
-      <Modal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} title="Historial del producto" subtitle={historyProduct?.name} size="lg">
+      {/* Modal Organizar productos de inventario */}
+      <Modal
+        isOpen={isProductOrderOpen}
+        onClose={closeProductOrder}
+        title="Organizar productos"
+        subtitle="Este orden se comparte en la vista de Inventario. Arrastra las filas o usa las flechas."
+        size="xl"
+        footer={
+          <div className="grid gap-2 sm:grid-cols-3">
+            <SecondaryButton disabled={isSavingProductOrder || data.inventoryProductOrderLoading} onClick={() => setConfirmProductOrderReset(true)}>
+              <RotateCcw size={15} /> Restablecer orden predeterminado
+            </SecondaryButton>
+            <SecondaryButton disabled={isSavingProductOrder} onClick={closeProductOrder}>
+              <X size={15} /> Cancelar
+            </SecondaryButton>
+            <PrimaryButton
+              disabled={isSavingProductOrder || data.inventoryProductOrderLoading || editingProductOrder.length === 0 || editingProductOrder.length !== activeProducts.length}
+              onClick={() => void handleSaveProductOrder()}
+            >
+              <Save size={15} /> {isSavingProductOrder ? 'Guardando…' : 'Guardar orden'}
+            </PrimaryButton>
+          </div>
+        }
+      >
         <div className="grid min-w-0 gap-3">
-          {historyProduct && productHistoryBalance !== null && (
-            <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
-              Saldo físico en {warehouseName}: <strong className="text-slate-900">{formatQty(productHistoryBalance, historyProduct.unitType)}</strong>
+          <p id="inventory-order-drag-hint" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs font-semibold leading-relaxed text-blue-900">
+            El catálogo general, sus precios y existencias no cambian. Los productos nuevos se mostrarán al final hasta que vuelvas a guardar una organización.
+          </p>
+          {data.inventoryProductOrderLoading && <p role="status" className="rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-600">Cargando el orden compartido…</p>}
+          {productOrderError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-800">{productOrderError}</p>}
+          {editingProductOrder.length !== activeProducts.length && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">El catálogo cambió mientras organizabas. Cancela y vuelve a abrir para incluir los productos activos actuales.</p>}
+          {editingProductOrder.length === 0 && !data.inventoryProductOrderLoading && <p className="rounded-xl border border-dashed border-slate-300 p-5 text-center text-sm font-semibold text-slate-500">No hay productos activos para organizar.</p>}
+          <ol aria-label="Orden de productos en inventario" className="grid max-h-[55vh] min-w-0 gap-2 overflow-y-auto overscroll-contain pr-1">
+            {editingProductOrder.map((productId, index) => {
+              const product = activeProducts.find(item => item.id === productId)
+              if (!product) return null
+              return (
+                <li
+                  key={product.id}
+                  data-inventory-order-id={product.id}
+                  className={`grid min-w-0 gap-2 rounded-2xl border p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center ${draggingProductId === product.id ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-slate-200 bg-white'}`}
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-sm font-black tabular-nums text-slate-700" aria-label={`Posición ${index + 1}`}>{index + 1}</span>
+                    <span className="min-w-0">
+                      <strong className="block break-words text-sm text-slate-900">{product.name}</strong>
+                      <span className="mt-0.5 block break-words text-xs font-medium text-slate-500">{product.presentation || (product.unitType === 'kg' ? 'A granel · kg' : product.unitType === 'package' ? 'Paquete' : 'Unidad')}</span>
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-end gap-1">
+                    <button type="button" aria-label={`Subir ${product.name}`} title="Subir" disabled={index === 0 || isSavingProductOrder} onClick={() => moveProductOrderItem(product.id, editingProductOrder[index - 1])} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 disabled:opacity-40"><ArrowUp size={17} /></button>
+                    <button type="button" aria-label={`Bajar ${product.name}`} title="Bajar" disabled={index === editingProductOrder.length - 1 || isSavingProductOrder} onClick={() => moveProductOrderItem(product.id, editingProductOrder[index + 1])} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 disabled:opacity-40"><ArrowDown size={17} /></button>
+                    <button
+                      type="button"
+                      aria-label={`Arrastrar ${product.name}`}
+                      aria-describedby="inventory-order-drag-hint"
+                      onPointerDown={event => startProductOrderDrag(event, product.id)}
+                      onPointerMove={updateProductOrderDrag}
+                      onPointerUp={finishProductOrderDrag}
+                      onPointerCancel={event => finishProductOrderDrag(event, false)}
+                      onLostPointerCapture={finishProductOrderDrag}
+                      className="flex h-10 w-10 touch-none select-none items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-slate-600 active:cursor-grabbing"
+                      title="Arrastra para cambiar de posición"
+                    ><GripVertical size={18} /></button>
+                  </div>
+                </li>
+              )
+            })}
+          </ol>
+          {confirmProductOrderReset && (
+            <div role="alert" className="grid gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+              <strong>¿Restablecer el orden predeterminado?</strong>
+              <span>Se quitará el orden personalizado compartido y volverá el orden inicial por categoría y nombre.</span>
+              <div className="flex flex-wrap justify-end gap-2">
+                <SecondaryButton disabled={isSavingProductOrder} onClick={() => setConfirmProductOrderReset(false)}>Seguir organizando</SecondaryButton>
+                <PrimaryButton disabled={isSavingProductOrder || data.inventoryProductOrderLoading} onClick={() => void handleResetProductOrder()}>{isSavingProductOrder ? 'Restableciendo…' : 'Sí, restablecer orden'}</PrimaryButton>
+              </div>
             </div>
           )}
-          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar historial del producto">
-            {([
-              ['all', 'Todos'], ['losses', 'Mermas'], ['differences', 'Faltantes / sobrantes'], ['dispatchReturns', 'Despachos / retornos'], ['intakesAdjustments', 'Ingresos / ajustes'],
-            ] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={historyProductFilter === value} onClick={() => setHistoryProductFilter(value)} className={`min-h-[36px] rounded-xl border px-3 text-[11px] font-extrabold ${historyProductFilter === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700'}`}>{label}</button>)}
+        </div>
+      </Modal>
+
+      {/* Modal Historial del producto */}
+      <Modal
+        isOpen={!!historyProduct}
+        onClose={() => {
+          setHistoryProduct(null)
+          setIsProductExportMenuOpen(false)
+        }}
+        title="Historial del producto"
+        subtitle={historyProduct?.name}
+        size="lg"
+      >
+        <div className="grid min-w-0 gap-3">
+          {historyProduct && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 p-2.5">
+              <div className="text-xs font-semibold text-slate-700">
+                Saldo físico en {warehouseName}:{' '}
+                <strong className="text-slate-900">
+                  {productHistoryBalance !== null
+                    ? formatQty(productHistoryBalance, historyProduct.unitType)
+                    : 'Consultando…'}
+                </strong>
+              </div>
+              <div className="relative">
+                <button
+                  type="button"
+                  aria-label="Opciones de exportación"
+                  aria-haspopup="menu"
+                  aria-expanded={isProductExportMenuOpen}
+                  onClick={() => setIsProductExportMenuOpen(prev => !prev)}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm hover:bg-slate-100"
+                  title="Exportar historial"
+                >
+                  <MoreVertical size={16} />
+                </button>
+                {isProductExportMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full z-30 mt-1 min-w-[170px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={productExporting !== null || productHistoryMovements.length === 0}
+                      onClick={() => {
+                        setIsProductExportMenuOpen(false)
+                        void exportProductHistory('pdf')
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                    >
+                      <Printer size={14} /> {productExporting === 'pdf' ? 'Exportando PDF…' : 'Descargar PDF'}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={productExporting !== null || productHistoryMovements.length === 0}
+                      onClick={() => {
+                        setIsProductExportMenuOpen(false)
+                        void exportProductHistory('excel')
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                    >
+                      <FileSpreadsheet size={14} /> {productExporting === 'excel' ? 'Exportando Excel…' : 'Descargar Excel'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Rango de fechas */}
+          <div className="grid gap-1.5">
+            <span className="text-[11px] font-bold text-slate-600">Periodo</span>
+            <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Periodo del historial">
+              {([
+                ['all', 'Todo'],
+                ['today', 'Hoy'],
+                ['week', 'Esta semana'],
+                ['month', 'Este mes'],
+                ['custom', 'Personalizado'],
+              ] as const).map(([preset, label]) => (
+                <button
+                  key={preset}
+                  type="button"
+                  aria-pressed={historyDatePreset === preset}
+                  onClick={() => setHistoryDatePreset(preset)}
+                  className={`min-h-[30px] rounded-lg border px-2.5 text-[11px] font-bold ${
+                    historyDatePreset === preset
+                      ? 'border-blue-600 bg-blue-50 text-blue-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {historyDatePreset === 'custom' && (
+              <div className="mt-1 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs">
+                <span className="font-semibold text-slate-600">Desde:</span>
+                <input
+                  type="date"
+                  value={historyCustomStart}
+                  onChange={e => setHistoryCustomStart(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
+                />
+                <span className="font-semibold text-slate-600">Hasta:</span>
+                <input
+                  type="date"
+                  value={historyCustomEnd}
+                  onChange={e => setHistoryCustomEnd(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
+                />
+              </div>
+            )}
           </div>
+
+          {/* Filtros de movimiento */}
+          <div className="grid gap-1.5">
+            <span className="text-[11px] font-bold text-slate-600">Tipo de movimiento</span>
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar historial del producto">
+              {([
+                ['all', 'Todos'],
+                ['losses', 'Mermas'],
+                ['shortages', 'Faltantes'],
+                ['overages', 'Sobrantes'],
+                ['dispatches', 'Despachos'],
+                ['intakes', 'Ingresos'],
+                ['adjustments', 'Ajustes'],
+                ['returns', 'Devoluciones'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={historyProductFilter === value}
+                  onClick={() => setHistoryProductFilter(value)}
+                  className={`min-h-[34px] rounded-xl border px-3 text-[11px] font-extrabold ${
+                    historyProductFilter === value
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <p className="text-[11px] font-semibold text-slate-500">
             {productHistoryLoading && productHistoryPages.length === 0
               ? 'Consultando historial en el servidor…'
-              : `${productHistoryMovements.length} movimientos mostrados${productHistoryHasMore ? ' (paginado; existen registros anteriores)' : ' · incluye correcciones y registros revertidos para conservar la trazabilidad.'}`}
+              : `${productHistoryMovements.length} movimientos encontrados${productHistoryHasMore ? ' (paginado; existen registros anteriores)' : ' · incluye correcciones y registros revertidos para conservar la trazabilidad.'}`}
           </p>
           {productHistoryError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-800">{productHistoryError}</p>}
           <div className="grid max-h-[65vh] gap-2 overflow-y-auto pr-1">

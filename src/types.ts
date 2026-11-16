@@ -6,6 +6,7 @@ export type Permission =
   | 'dist.products.manage'
   | 'dist.inventory.view'
   | 'dist.inventory.adjust'
+  | 'dist.inventory.order'
   | 'dist.dispatch.create'
   | 'dist.dispatch.addLoad'
   | 'dist.dispatch.order'

@@ -47,7 +47,8 @@ export function CreditsView({ session, data }: DistributionViewProps) {
   const [openingDate, setOpeningDate] = useState(toDayKey(new Date()))
   const [openingNote, setOpeningNote] = useState('')
   const [overrideCustomer, setOverrideCustomer] = useState<CustomerCreditRouteView | null>(null)
-  const [overrideDays, setOverrideDays] = useState('1')
+  const [overrideMode, setOverrideMode] = useState<'1' | '2' | '3' | '7' | '10' | 'custom'>('1')
+  const [overrideCustomDays, setOverrideCustomDays] = useState('15')
   const [overrideReason, setOverrideReason] = useState('')
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<'cash' | 'qr' | 'mixed'>('cash')
@@ -845,8 +846,10 @@ export function CreditsView({ session, data }: DistributionViewProps) {
                   <SecondaryButton
                     onClick={() => {
                       setOverrideCustomer(selected)
-                      setOverrideDays('1')
+                      setOverrideMode('1')
+                      setOverrideCustomDays('15')
                       setOverrideReason('')
+                      setError(null)
                     }}
                   >
                     Autorizar temporalmente
@@ -1562,9 +1565,14 @@ export function CreditsView({ session, data }: DistributionViewProps) {
             full
             disabled={isSubmitting}
             onClick={async () => {
-              const days = Number(overrideDays)
-              if (!Number.isInteger(days) || days < 1 || days > 90 || !overrideReason.trim()) {
-                setError('Indica entre 1 y 90 días y un motivo claro de la autorización.')
+              const rawDays = overrideMode === 'custom' ? overrideCustomDays : overrideMode
+              const days = Number(rawDays)
+              if (!Number.isInteger(days) || days < 1 || days > 90) {
+                setError('Indica entre 1 y 90 días válidos.')
+                return
+              }
+              if (!overrideReason.trim()) {
+                setError('Indica el motivo de la autorización temporal.')
                 return
               }
               setIsSubmitting(true)
@@ -1590,20 +1598,28 @@ export function CreditsView({ session, data }: DistributionViewProps) {
         <div className="grid gap-3">
           <Field label="Duración">
             <Segmented
-              value={['1', '2', '3', '7'].includes(overrideDays) ? overrideDays : 'custom'}
-              onChange={(value) => setOverrideDays(value === 'custom' ? '' : value)}
+              value={overrideMode}
+              onChange={(value) => setOverrideMode(value as typeof overrideMode)}
               options={[
                 { value: '1', label: '1 día' },
                 { value: '2', label: '2 días' },
                 { value: '3', label: '3 días' },
                 { value: '7', label: '7 días' },
+                { value: '10', label: '10 días' },
                 { value: 'custom', label: 'Otro' },
               ]}
             />
           </Field>
-          {!['1', '2', '3', '7'].includes(overrideDays) && (
+          {overrideMode === 'custom' && (
             <Field label="Días personalizados" required>
-              <NumberInput min={1} max={90} value={overrideDays} onChange={(e) => setOverrideDays(e.target.value)} />
+              <NumberInput
+                min={1}
+                max={90}
+                step={1}
+                value={overrideCustomDays}
+                onChange={(e) => setOverrideCustomDays(e.target.value)}
+                placeholder="1 a 90 días"
+              />
             </Field>
           )}
           <Field label="Motivo de la autorización" required>

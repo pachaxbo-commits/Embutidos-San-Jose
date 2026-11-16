@@ -1,4 +1,5 @@
 import { normalizeProcessingReportBatch } from '../domain/processingReports'
+import { MOVEMENT_TYPES_BY_FILTER, type ProductMovementFilter } from '../domain/productMovementHistory'
 import { normalizeMovementDayKeyGroups } from '../state/distributionSubscriptionPolicy'
 import type { PendingOperation } from './operationQueue'
 import { submitOperation } from './operationQueue'
@@ -44,6 +45,7 @@ import type {
   DistCustomer,
   DistDispatch,
   DistDispatchProductOrder,
+  DistInventoryProductOrder,
   DistDispatchLine,
   DistExpense,
   DistExpenseCategory,
@@ -737,6 +739,48 @@ export function resetDispatchProductOrder(expectedRevision: number) {
   )
 }
 
+/** Shared inventory-only ordering; employees can read it, writes go through the server operation. */
+export function subscribeInventoryProductOrder(
+  onData: (order: DistInventoryProductOrder | null) => void,
+  onError?: (error: Error) => void,
+  onServerSnapshot?: () => void,
+) {
+  let cancelled = false
+  let unsubscribe: Unsubscribe | undefined
+  void getContext().then(context => {
+    if (cancelled) return
+    unsubscribe = onSnapshot(
+      docRef(context, 'distSettings', 'inventoryProductOrder'),
+      { includeMetadataChanges: true },
+      snapshot => {
+        onData(snapshot.exists() ? snapshot.data() as DistInventoryProductOrder : null)
+        if (!snapshot.metadata.fromCache) onServerSnapshot?.()
+      },
+      error => onError?.(error),
+    )
+  }).catch(error => { if (!cancelled) onError?.(error as Error) })
+  return () => {
+    cancelled = true
+    unsubscribe?.()
+  }
+}
+
+export function saveInventoryProductOrder(productIds: string[], expectedRevision: number) {
+  return submitOperation<{ revision: number; enabled: boolean }>(
+    'saveInventoryProductOrder',
+    { productIds, expectedRevision },
+    newOperationId('inventory-product-order'),
+  )
+}
+
+export function resetInventoryProductOrder(expectedRevision: number) {
+  return submitOperation<{ revision: number; enabled: boolean }>(
+    'saveInventoryProductOrder',
+    { reset: true, expectedRevision },
+    newOperationId('inventory-product-order'),
+  )
+}
+
 export function subscribeRoutes(onData: (rows: DistRoute[]) => void, onError?: (error: Error) => void) {
   return subscribeQuery<DistRoute>((context) => collectionRef(context, DIST_COLLECTIONS.routes), onData, onError)
 }
@@ -1198,24 +1242,79 @@ export async function loadCustomerFullHistory(customer: Pick<DistCustomer, 'id' 
   return { sales, saleCorrections, receivables, collections, receivableAdjustments, unlinkedNameMatches: nameMatches }
 }
 
-export interface ProductMovementCursor { createdAt: string; id: string }
+export interface ProductMovementCursor {
+  dayKey?: string
+  createdAt: string
+  id: string
+}
+
+export interface LoadProductMovementOptions {
+  filter?: ProductMovementFilter
+  dateRange?: { startDay: string; endDay: string } | null
+  pageSize?: number
+}
 
 /** Consulta del servidor paginada para el Kardex, independiente del rango que mantiene el store en vivo. */
-export async function loadProductMovementPage(productId: string, cursor: ProductMovementCursor | null, pageSize = 100): Promise<{
+export async function loadProductMovementPage(
+  productId: string,
+  cursor: ProductMovementCursor | null,
+  options: number | LoadProductMovementOptions = 100,
+): Promise<{
   movements: DistStockMovement[]
   nextCursor: ProductMovementCursor | null
   hasMore: boolean
 }> {
+  const pageSize = typeof options === 'number' ? options : (options.pageSize ?? 100)
+  const filter = typeof options === 'object' ? options.filter : undefined
+  const dateRange = typeof options === 'object' ? options.dateRange : undefined
+
   const context = await getContext()
-  const constraints: QueryConstraint[] = [where('productId', '==', productId), orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc')]
-  if (cursor) constraints.push(startAfter(cursor.createdAt, cursor.id))
+  const constraints: QueryConstraint[] = [where('productId', '==', productId)]
+
+  if (filter && filter !== 'all') {
+    const types = MOVEMENT_TYPES_BY_FILTER[filter]
+    if (types?.length === 1) {
+      constraints.push(where('type', '==', types[0]))
+    } else if (types && types.length > 1) {
+      constraints.push(where('type', 'in', types))
+    }
+  }
+
+  const hasDateRange = Boolean(dateRange?.startDay && dateRange?.endDay)
+  if (hasDateRange) {
+    constraints.push(
+      where('dayKey', '>=', dateRange!.startDay),
+      where('dayKey', '<=', dateRange!.endDay),
+      orderBy('dayKey', 'desc'),
+      orderBy('createdAt', 'desc'),
+      orderBy(documentId(), 'desc'),
+    )
+    if (cursor) {
+      constraints.push(startAfter(cursor.dayKey || '', cursor.createdAt, cursor.id))
+    }
+  } else {
+    constraints.push(
+      orderBy('createdAt', 'desc'),
+      orderBy(documentId(), 'desc'),
+    )
+    if (cursor) {
+      constraints.push(startAfter(cursor.createdAt, cursor.id))
+    }
+  }
+
   constraints.push(limit(pageSize + 1))
   const snapshot = await getDocsFromServer(query(collectionRef(context, DIST_COLLECTIONS.movements), ...constraints))
   const pageDocs = snapshot.docs.slice(0, pageSize)
   const last = pageDocs.at(-1)
   return {
     movements: pageDocs.map((entry) => ({ id: entry.id, ...entry.data() }) as DistStockMovement),
-    nextCursor: last ? { createdAt: String(last.data().createdAt || ''), id: last.id } : cursor,
+    nextCursor: last
+      ? {
+          dayKey: String(last.data().dayKey || ''),
+          createdAt: String(last.data().createdAt || ''),
+          id: last.id,
+        }
+      : cursor,
     hasMore: snapshot.docs.length > pageSize,
   }
 }
