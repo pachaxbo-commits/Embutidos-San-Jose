@@ -1,5 +1,6 @@
 import { normalizeProcessingReportBatch } from '../domain/processingReports'
 import { MOVEMENT_TYPES_BY_FILTER, type ProductMovementFilter } from '../domain/productMovementHistory'
+import { buildLotTraceability, isMovementRelatedToLot, type LotTraceabilityData } from '../domain/lotTraceability'
 import { normalizeMovementDayKeyGroups } from '../state/distributionSubscriptionPolicy'
 import type { PendingOperation } from './operationQueue'
 import { submitOperation } from './operationQueue'
@@ -2018,4 +2019,107 @@ export function deliverReservedCourtesy(input: {
   reason: string; explicitConfirmation: true; deliveredWeightG?: number
 }, operationId: string) {
   return submitOperation('deliverReservedCourtesy', { ...input, deliveryId: operationId }, operationId)
+}
+
+/**
+ * Búsqueda de lotes por código en distLots, incluso con existencia en cero (lotes agotados).
+ */
+export async function searchLotsByCode(lotCode: string, productId?: string): Promise<DistLot[]> {
+  const trimmed = lotCode.trim()
+  if (!trimmed) return []
+  const ctx = await getContext()
+  const ref = collectionRef(ctx, 'distLots')
+  const constraints: QueryConstraint[] = [where('lotCode', '==', trimmed)]
+  if (productId) {
+    constraints.push(where('productId', '==', productId))
+  }
+  const snap = await getDocs(query(ref, ...constraints))
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as DistLot)
+}
+
+/**
+ * Consulta de lotes por producto para histórico de existencias agotadas.
+ */
+export async function loadLotsByProduct(productId: string, limitCount = 50): Promise<DistLot[]> {
+  const ctx = await getContext()
+  const ref = collectionRef(ctx, 'distLots')
+  const snap = await getDocs(query(ref, where('productId', '==', productId), limit(limitCount)))
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as DistLot)
+}
+
+/**
+ * Consulta puntual de ventas por IDs para resolver detalles de cliente y vendedor.
+ */
+export async function loadSalesByIds(saleIds: readonly string[]): Promise<Record<string, DistSale>> {
+  const unique = [...new Set(saleIds.filter(Boolean))]
+  if (unique.length === 0) return {}
+  const ctx = await getContext()
+  const result: Record<string, DistSale> = {}
+  await Promise.all(
+    unique.map(async (id) => {
+      try {
+        const snap = await getDoc(docRef(ctx, DIST_COLLECTIONS.sales, id))
+        if (snap.exists()) {
+          result[id] = { id: snap.id, ...snap.data() } as DistSale
+        }
+      } catch {
+        // Ignora fallos de lectura individual
+      }
+    }),
+  )
+  return result
+}
+
+/**
+ * Movimientos físicos vinculados a un lote específico.
+ */
+export async function loadLotMovements(productId: string, lotId: string, lotCode?: string): Promise<DistStockMovement[]> {
+  const ctx = await getContext()
+  const ref = collectionRef(ctx, DIST_COLLECTIONS.movements)
+  const snap = await getDocs(query(ref, where('productId', '==', productId)))
+  const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as DistStockMovement)
+  return rows.filter((m) => isMovementRelatedToLot(m, lotId, lotCode))
+}
+
+/**
+ * Carga completa de trazabilidad de un lote: identificación, resumen, ventas con cliente y cronología.
+ */
+export async function loadFullLotTraceability(params: {
+  lotId: string
+  lotCode?: string
+  productId?: string
+  existingLot?: DistLot
+  routes?: DistRoute[]
+}): Promise<LotTraceabilityData> {
+  const lot = params.existingLot || (await loadLotFromServer(params.lotId))
+  const productId = params.productId || lot.productId
+  const lotCode = params.lotCode || lot.lotCode
+
+  const movements = await loadLotMovements(productId, lot.id, lotCode)
+
+  const saleIds = movements
+    .filter((m) => m.type === 'sale')
+    .map((m) => m.refId || m.saleId || m.id)
+    .filter(Boolean) as string[]
+
+  const salesById = await loadSalesByIds(saleIds)
+
+  let product: DistProduct | undefined
+  if (productId) {
+    try {
+      const ctx = await getContext()
+      const pSnap = await getDoc(docRef(ctx, DIST_COLLECTIONS.products, productId))
+      if (pSnap.exists()) product = { id: pSnap.id, ...pSnap.data() } as DistProduct
+    } catch {
+      // Ignora error de producto
+    }
+  }
+
+  return buildLotTraceability({
+    lot,
+    product,
+    movements,
+    salesById,
+    routes: params.routes,
+  })
 }

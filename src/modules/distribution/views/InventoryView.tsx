@@ -1,17 +1,17 @@
 import { LotReconciliation } from './LotReconciliation'
 import { LotsAndHistory } from './LotsAndHistory'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, FileSpreadsheet, FileText, GripVertical, History, Layers, ListTree, MoreVertical, PackagePlus, Printer, RotateCcw, Save, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Compass, FileSpreadsheet, FileText, GripVertical, History, Layers, ListTree, MoreVertical, PackagePlus, Printer, RotateCcw, Save, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { round2, toDayKey } from '../domain/engine'
-import { loadProcessingReportPage, loadProcessingReservationsForLot, loadProductLocationBalance, loadProductMovementPage, newOperationId, registerAdjustment, registerIntake, requestAdjustment, resetInventoryProductOrder, reviewAdjustmentRequest, saveInventoryProductOrder, subscribeMovementsByDayKeys, warehouseBalanceId, type ProcessingReportCursor, type ProductMovementCursor } from '../data/distributionRepository'
+import { loadLotsByProduct, loadProcessingReportPage, loadProcessingReservationsForLot, loadProductLocationBalance, loadProductMovementPage, newOperationId, registerAdjustment, registerIntake, requestAdjustment, resetInventoryProductOrder, reviewAdjustmentRequest, saveInventoryProductOrder, searchLotsByCode, subscribeMovementsByDayKeys, warehouseBalanceId, type ProcessingReportCursor, type ProductMovementCursor } from '../data/distributionRepository'
 import { useRouteStock, useStockIndex } from '../state/useDistributionStore'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
-import type { DistProduct, DistStockMovement } from '../types'
+import type { DistLot, DistProduct, DistStockMovement } from '../types'
 import { visiblePersonName, visibleRecordText } from './displayText'
 import { RangePicker, describeRange } from './RangePicker'
 import { currentStockSheets, exportExcel, exportPdf, exportTodayIntakesPdf, inventoryHistorySheet, type ReportSheet } from '../data/reportExports'
@@ -25,6 +25,7 @@ import { countPendingQuarantineLots } from '../domain/quarantine'
 import { validateIntakeLotDates } from '../domain/inventoryIntakeValidation'
 import { operationFailureMessage } from '../domain/operationFailureMessage'
 import { QuarantineView } from './QuarantineView'
+import { LotTraceabilityModal } from './LotTraceabilityModal'
 import { buildProcessingMermaEntries, buildProcessingMermaReport, filterProcessingMermaEntries, type ProcessingMermaEntry } from '../domain/processingReports'
 import { collectProcessingReportPages } from '../domain/processingReportPagination'
 import { filterInventoryMermaMovements, summarizeInventoryMermaMovements } from '../domain/inventoryMerma'
@@ -101,6 +102,17 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   const [choice, setChoice] = useState<'warehouse' | 'lot' | null>(null)
   const [historyProduct, setHistoryProduct] = useState<DistProduct | null>(null)
   const [lotsProduct, setLotsProduct] = useState<DistProduct | null>(null)
+  const [traceabilityLotId, setTraceabilityLotId] = useState<string | null>(null)
+  const [traceabilityLotCode, setTraceabilityLotCode] = useState<string | undefined>(undefined)
+  const [traceabilityProductId, setTraceabilityProductId] = useState<string | undefined>(undefined)
+  const [traceabilityInitialLot, setTraceabilityInitialLot] = useState<DistLot | undefined>(undefined)
+  const [traceabilityProduct, setTraceabilityProduct] = useState<DistProduct | undefined>(undefined)
+  const [isTraceModalOpen, setIsTraceModalOpen] = useState(false)
+
+  const [productLotFilterScope, setProductLotFilterScope] = useState<'with_stock' | 'all'>('with_stock')
+  const [productLotSearchTerm, setProductLotSearchTerm] = useState('')
+  const [productHistoricalLots, setProductHistoricalLots] = useState<DistLot[]>([])
+  const [loadedHistoricalSearch, setLoadedHistoricalSearch] = useState<string>('')
   const [historyProductFilter, setHistoryProductFilter] = useState<ProductMovementFilter>('all')
   const [historyDatePreset, setHistoryDatePreset] = useState<'all' | 'today' | 'week' | 'month' | 'custom'>('all')
   const [historyCustomStart, setHistoryCustomStart] = useState(toDayKey(new Date()))
@@ -339,6 +351,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
     try {
       const filterLabels: Record<string, string> = {
         all: 'Todos los movimientos',
+        sales: 'Ventas',
         losses: 'Mermas',
         shortages: 'Faltantes',
         overages: 'Sobrantes',
@@ -386,12 +399,100 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
   const selectedProductBalance = lotsProduct
     ? data.balances.find((item) => item.id === warehouseBalanceId(warehouseId, lotsProduct.id))
     : undefined
-  const selectedProductLotRows = lotsProduct
-    ? productWarehouseLotRows(lotsProduct.id, lotsProduct.unitType, data.lots, lotLocation, toDayKey())
-    : []
+  const selectedProductLotRows = useMemo(
+    () =>
+      lotsProduct
+        ? productWarehouseLotRows(lotsProduct.id, lotsProduct.unitType, data.lots, lotLocation, toDayKey())
+        : [],
+    [lotsProduct, data.lots, lotLocation],
+  )
   const selectedProductLotTotals = lotsProduct
     ? warehouseLotReconciliation(selectedProductLotRows, selectedProductBalance, lotsProduct.unitType)
     : null
+
+  const currentHistoricalSearchKey = lotsProduct
+    ? `${lotsProduct.id}:${productLotFilterScope}:${productLotSearchTerm.trim()}`
+    : ''
+  const productHistoricalLoading = Boolean(
+    lotsProduct &&
+      (productLotFilterScope === 'all' || Boolean(productLotSearchTerm.trim())) &&
+      loadedHistoricalSearch !== currentHistoricalSearchKey,
+  )
+
+  const closeProductLotsModal = () => {
+    setLotsProduct(null)
+    setProductHistoricalLots([])
+    setProductLotSearchTerm('')
+    setProductLotFilterScope('with_stock')
+    setLoadedHistoricalSearch('')
+  }
+
+  useEffect(() => {
+    if (!lotsProduct || (productLotFilterScope === 'with_stock' && !productLotSearchTerm.trim())) {
+      return
+    }
+
+    let active = true
+
+    const term = productLotSearchTerm.trim()
+    const targetKey = currentHistoricalSearchKey
+    const fetcher = term
+      ? searchLotsByCode(term, lotsProduct.id)
+      : loadLotsByProduct(lotsProduct.id, 50)
+
+    fetcher
+      .then((lots) => {
+        if (active) {
+          setProductHistoricalLots(lots)
+          setLoadedHistoricalSearch(targetKey)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setProductHistoricalLots([])
+          setLoadedHistoricalSearch(targetKey)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [lotsProduct, productLotFilterScope, productLotSearchTerm, currentHistoricalSearchKey])
+
+  const matchingActiveLotRows = useMemo(() => {
+    if (!productLotSearchTerm.trim()) return selectedProductLotRows
+    const term = productLotSearchTerm.trim().toLowerCase()
+    return selectedProductLotRows.filter((r) => (r.lot.lotCode || '').toLowerCase().includes(term))
+  }, [selectedProductLotRows, productLotSearchTerm])
+
+  const matchingExhaustedLots = useMemo(() => {
+    if (productLotFilterScope === 'with_stock' && !productLotSearchTerm.trim()) return []
+    const activeIds = new Set(selectedProductLotRows.map((r) => r.lot.id))
+    let list = productHistoricalLots.filter((l) => !activeIds.has(l.id))
+    if (productLotSearchTerm.trim()) {
+      const term = productLotSearchTerm.trim().toLowerCase()
+      list = list.filter((l) => (l.lotCode || '').toLowerCase().includes(term))
+    }
+    return list
+  }, [productLotFilterScope, productLotSearchTerm, selectedProductLotRows, productHistoricalLots])
+
+  const openLotTraceability = (lot: DistLot, product?: DistProduct | null) => {
+    setTraceabilityLotId(lot.id)
+    setTraceabilityLotCode(lot.lotCode)
+    setTraceabilityProductId(product?.id || lot.productId)
+    setTraceabilityInitialLot(lot)
+    setTraceabilityProduct(product || undefined)
+    setIsTraceModalOpen(true)
+  }
+
+  const openGlobalLotTraceability = () => {
+    setTraceabilityLotId(null)
+    setTraceabilityLotCode('')
+    setTraceabilityProductId(undefined)
+    setTraceabilityInitialLot(undefined)
+    setTraceabilityProduct(undefined)
+    setIsTraceModalOpen(true)
+  }
 
   const buildInventoryMermaSheet = (rows: Array<{ movement: import('../types').DistStockMovement }>): ReportSheet => ({
     name: 'Mermas de inventario',
@@ -600,7 +701,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
       const rows = await loadProcessingReservationsForLot(lotId)
       const row = rows.filter(item => item.location === lotLocation && ['active','partially_consumed'].includes(item.status) && item.remainingQuantity > 0 && (!purpose || item.purpose === purpose)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
       if (!row) throw new Error('No se encontró una reserva activa para este lote. Actualiza Inventario y vuelve a revisar el detalle.')
-      setLotsProduct(null)
+      closeProductLotsModal()
       onOpenReservation?.(row.id)
     } catch (lookupError) { setReservationLookupError((lookupError as Error).message || 'No se pudo abrir la reserva.'); setReservationLookupErrorLotId(lotId) }
     finally { setReservationLookup('') }
@@ -706,6 +807,13 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
                 <span>{todayIntakesExporting ? 'Generando…' : 'Imprimir ingresos de hoy'}</span>
               </button>
               <button type="button" onClick={() => { intakeHistoryPreviousDays.current = session.dayKeys; session.setDayKeys([toDayKey(new Date())]); setIsIntakeHistoryOpen(true) }} className="flex min-h-[38px] shrink-0 items-center justify-center gap-2 rounded-xl border border-emerald-300 bg-white px-3.5 text-xs font-extrabold text-emerald-900 hover:bg-emerald-50"><History size={15}/> Historial de ingresos</button>
+              <button
+                type="button"
+                onClick={openGlobalLotTraceability}
+                className="flex min-h-[38px] shrink-0 items-center justify-center gap-2 rounded-xl border border-indigo-300 bg-white px-3.5 text-xs font-extrabold text-indigo-950 hover:bg-indigo-50"
+              >
+                <Compass size={15} /> Rastrear lote
+              </button>
               {canManageProductOrder && (
                 <button
                   type="button"
@@ -969,7 +1077,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
         </div>
       </Modal>
       {isQuarantineOpen && <QuarantineView session={session} data={data} isOpen initialLotId={quarantineLotId} onClose={() => { setIsQuarantineOpen(false); setQuarantineLotId(undefined) }} defaultLocation={lotLocation} />}
-      <Modal isOpen={Boolean(lotsProduct)} onClose={() => setLotsProduct(null)} title="Lotes del producto" subtitle={lotsProduct ? `${lotsProduct.name} · ${lotsProduct.presentation || lotsProduct.description || 'Presentación estándar'} · ${warehouseName}` : ''} size="lg">
+      <Modal isOpen={Boolean(lotsProduct)} onClose={closeProductLotsModal} title="Lotes del producto" subtitle={lotsProduct ? `${lotsProduct.name} · ${lotsProduct.presentation || lotsProduct.description || 'Presentación estándar'} · ${warehouseName}` : ''} size="lg">
         {lotsProduct && selectedProductLotTotals && <div className="grid min-w-0 gap-3">
           <div className="grid grid-cols-1 gap-2 rounded-2xl bg-slate-50 p-3 text-xs sm:grid-cols-3">
             <p><span className="text-slate-500">Existencia física</span><br/><strong className="text-sm text-slate-900">{formatQty(selectedProductLotTotals.balancePhysical, lotsProduct.unitType)}</strong></p>
@@ -978,12 +1086,47 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
           </div>
           {selectedProductLotTotals.untracedPhysical > 0 && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Hay {formatQty(selectedProductLotTotals.untracedPhysical, lotsProduct.unitType)} en el saldo del almacén que no está asignado a lotes con existencia. No se atribuyó esa cantidad a ningún lote.</p>}
           {selectedProductLotRows.length > 0 && !selectedProductLotTotals.isBalanced && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">El saldo físico del almacén ({formatQty(selectedProductLotTotals.balancePhysical, lotsProduct.unitType)}) no coincide con la suma de lotes ({formatQty(selectedProductLotTotals.lotPhysical, lotsProduct.unitType)}). Esta consulta no ajusta ni corrige inventario.</p>}
-          {selectedProductLotRows.length === 0
-            ? selectedProductLotTotals.balancePhysical > 0
-              ? <EmptyBlock title="No hay lotes con saldo registrado" description={`El saldo físico del almacén es ${formatQty(selectedProductLotTotals.balancePhysical, lotsProduct.unitType)}. La trazabilidad por lote no está disponible; no se asignaron cantidades ficticias.`}/>
-              : <EmptyBlock title="Este producto no tiene lotes con existencia en este almacén" description="Los lotes con cantidad cero no se muestran en la consulta actual."/>
+          {/* Filtro y Búsqueda de lotes */}
+          <div className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex rounded-xl bg-slate-100 p-1 text-xs font-bold" role="group" aria-label="Alcance de lotes">
+                <button
+                  type="button"
+                  onClick={() => setProductLotFilterScope('with_stock')}
+                  className={`rounded-lg px-3 py-1.5 transition-colors ${
+                    productLotFilterScope === 'with_stock' ? 'bg-white font-extrabold text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Con existencia
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductLotFilterScope('all')}
+                  className={`rounded-lg px-3 py-1.5 transition-colors ${
+                    productLotFilterScope === 'all' ? 'bg-white font-extrabold text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Todos / Históricos
+                </button>
+              </div>
+              {productHistoricalLoading && (
+                <span className="text-[11px] font-semibold text-slate-500">Consultando historial en Firestore…</span>
+              )}
+            </div>
+            <TextInput
+              value={productLotSearchTerm}
+              onChange={(e) => setProductLotSearchTerm(e.target.value)}
+              placeholder="Buscar por código de lote (ej: 101126)…"
+            />
+          </div>
+          {matchingActiveLotRows.length === 0 && matchingExhaustedLots.length === 0
+            ? productLotSearchTerm.trim() || productLotFilterScope === 'all'
+              ? <EmptyBlock title="No se encontraron lotes" description={`No hay lotes que coincidan con la búsqueda "${productLotSearchTerm}" para este producto.`}/>
+              : selectedProductLotTotals.balancePhysical > 0
+                ? <EmptyBlock title="No hay lotes con saldo registrado" description={`El saldo físico del almacén es ${formatQty(selectedProductLotTotals.balancePhysical, lotsProduct.unitType)}. La trazabilidad por lote no está disponible; no se asignaron cantidades ficticias.`}/>
+                : <EmptyBlock title="Este producto no tiene lotes con existencia en este almacén" description="Los lotes con cantidad cero se pueden consultar en 'Todos / Históricos' o buscando por código de lote."/>
             : <div className="grid max-h-[58vh] min-w-0 gap-2 overflow-y-auto pr-1">
-              {selectedProductLotRows.map(({ lot, physical, available, originPending, status, hasFractionalCountQuantity }) => <article key={lot.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
+              {matchingActiveLotRows.map(({ lot, physical, available, originPending, status, hasFractionalCountQuantity }) => <article key={lot.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-900">Lote {lot.lotCode || 'sin código registrado'}</p><p className={`mt-1 inline-flex max-w-full rounded-full px-2 py-1 text-[10px] font-black ${status === 'Vencido' ? 'bg-rose-100 text-rose-900' : status === 'Disponible' || status.startsWith('Disponible · trazabilidad incompleta') ? 'bg-emerald-100 text-emerald-900' : 'bg-amber-100 text-amber-900'}`}>{status}</p></div>
                   <strong className="shrink-0 text-sm tabular-nums text-slate-900">{formatQty(physical, lotsProduct.unitType)}</strong>
@@ -1009,6 +1152,36 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
                   {reservationLookupError && reservationLookupErrorLotId === lot.id && <p role="alert" className="sm:col-span-2 text-[11px] font-semibold text-rose-700">{reservationLookupError}</p>}
                 </div>
                 {hasFractionalCountQuantity && <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900">La cantidad registrada no es un número entero. Se muestra tal como está guardada; esta consulta no la corrige.</p>}
+                <div className="mt-2.5 flex justify-end border-t border-slate-100 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => openLotTraceability(lot, lotsProduct)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-white px-2.5 py-1 text-xs font-black text-indigo-950 shadow-xs hover:bg-indigo-50"
+                  >
+                    <Compass size={14} className="text-indigo-700" /> Ver trazabilidad
+                  </button>
+                </div>
+              </article>)}
+              {matchingExhaustedLots.map((lot) => <article key={lot.id} className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-extrabold text-slate-800">Lote {lot.lotCode || 'sin código registrado'}</p>
+                    <span className="mt-1 inline-flex max-w-full rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-black text-slate-700">
+                      Lote agotado (0 existencias)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openLotTraceability(lot, lotsProduct)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-white px-3 py-1.5 text-xs font-black text-indigo-950 shadow-xs hover:bg-indigo-50"
+                  >
+                    <Compass size={14} className="text-indigo-700" /> Ver trazabilidad
+                  </button>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
+                  <p>Elaboración: <strong>{lot.manufacturedOn || 'No registrada'}</strong></p>
+                  <p>Vencimiento: <strong>{lot.expiresOn || 'No registrada'}</strong></p>
+                </div>
               </article>)}
             </div>}
           {selectedProductLotRows.length > 0 && <p className="text-[11px] text-slate-500">Suma física por lotes: {formatQty(selectedProductLotTotals.lotPhysical, lotsProduct.unitType)} · disponible identificado por lote: {formatQty(selectedProductLotTotals.lotAvailable, lotsProduct.unitType)} · no disponible por lote: {formatQty(selectedProductLotTotals.lotUnavailable, lotsProduct.unitType)}. Los totales superiores provienen del saldo del almacén.</p>}
@@ -1217,6 +1390,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
             <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar historial del producto">
               {([
                 ['all', 'Todos'],
+                ['sales', 'Ventas'],
                 ['losses', 'Mermas'],
                 ['shortages', 'Faltantes'],
                 ['overages', 'Sobrantes'],
@@ -1262,6 +1436,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
                 <p className="mt-2 break-words text-[10px] text-slate-600">{locationName(movement.fromLocation)} → {locationName(movement.toLocation)}{movement.routeId ? ` · ${data.routes.find(route => route.id === movement.routeId)?.name || 'Ruta registrada'}` : ''}</p>
                 <p className="mt-1 break-words text-[10px] text-slate-600">{movement.responsibleRole === 'admin' ? 'Administración' : movement.responsibleRole === 'warehouse' ? 'Almacén' : 'Distribuidor'} · {visiblePersonName(movement.responsibleName)}</p>
                 {movement.lotCode && <p className="mt-1 text-[10px] text-slate-500">Lote: {movement.lotCode}</p>}
+                {movement.customerName && <p className="mt-1 text-[10px] font-semibold text-slate-700">Cliente: {visiblePersonName(movement.customerName)}</p>}
                 {movement.processingAllocations?.length ? <div className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50 p-2 text-[10px] text-indigo-950"><b>Seguimiento de sachets (asignación promedio documentada; no es pesaje por paquete):</b><p className="mt-1">{movement.processingAllocations.reduce((sum, allocation) => sum + allocation.quantity, 0)} paquetes · {movement.physicalWeightG ?? 'Peso no disponible'} g netos</p><p>{movement.costCents == null ? 'Costo histórico no disponible' : `Costo histórico trasladado: Bs ${(movement.costCents / 100).toFixed(2)} (informativo, no es gasto ni venta)`} · Elaboración: {movement.processingBatchIds?.join(', ') || 'referencia no disponible'}</p></div> : null}
                 {loss && <p className="mt-1 text-[10px] font-semibold text-rose-700">Costo histórico de pérdida: {movement.lossCost == null ? 'No disponible' : `Bs ${Number(movement.lossCost).toFixed(2)}`}</p>}
                 {movement.note && <p className="mt-1 break-words text-[10px] text-slate-500">{movement.note}</p>}
@@ -1329,6 +1504,16 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
         options={[{ value: '', label: 'Vencimiento más próximo', description: 'El sistema aplicará el criterio PEPS' }, ...data.lots.filter(lot => lot.productId === intakeProduct?.id && lot.quantities[lotLocation] > 0).map(lot => ({ value: lot.id, label: lot.lotCode, description: `Vence ${lot.expiresOn || 'sin fecha'}`, trailing: formatQty(lot.quantities[lotLocation], intakeProduct?.unitType || 'unit') }))]}
         selectedValue={adjustLotId}
         onSelect={setAdjustLotId}
+      />
+      <LotTraceabilityModal
+        isOpen={isTraceModalOpen}
+        onClose={() => setIsTraceModalOpen(false)}
+        lotId={traceabilityLotId}
+        lotCode={traceabilityLotCode}
+        productId={traceabilityProductId}
+        initialLot={traceabilityInitialLot}
+        product={traceabilityProduct}
+        routes={data.routes}
       />
     </Screen>
   )

@@ -74,7 +74,16 @@ if (returns.length !== 3 || !returns.some(r => r.type === 'return') || !returns.
   throw new Error(`Filtro devoluciones debe contener return, return_merma y return_waste, got ${returns.length}`)
 }
 
-// 9. Legacy aliases
+// 9. Sales filter: MUST ONLY CONTAIN REAL SALES (not sale_correction)
+const sales = filterProductMovementHistory(rows, 'p1', 'sales')
+if (sales.length !== 1 || sales[0].type !== 'sale' || sales[0].quantity !== 5) {
+  throw new Error(`Filtro ventas debe contener únicamente ventas reales, got ${sales.length}`)
+}
+if (sales.some(r => r.type === 'sale_correction')) {
+  throw new Error('CRITICAL BUG: Filtro ventas NUNCA debe duplicar una venta contando sale_correction como venta ficticia.')
+}
+
+// 10. Legacy aliases
 if (filterProductMovementHistory(rows, 'p1', 'differences').length !== 2) throw new Error('Filtro diferencias incluye faltantes y sobrantes.')
 if (filterProductMovementHistory(rows, 'p1', 'intakesAdjustments').length !== 3) throw new Error('Filtro intakesAdjustments incluye intake, quarantine_release y adjustment (sin ventas).')
 
