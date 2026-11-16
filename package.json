@@ -102,6 +102,7 @@
     "test:dispatch-selection": "node --experimental-strip-types src/modules/distribution/domain/__tests__/dispatchSelection.test.ts",
     "test:dispatch-picker-ui": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node scripts/run-dispatch-picker-ui-qa.mjs\"",
     "test:dispatch-product-order": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/dispatchProductOrder.test.mjs\"",
+    "test:inventory-product-order": "firebase --config firebase.json emulators:exec --project demo-pachax-audit --only firestore,auth \"node firebase/tests/inventoryProductOrder.test.mjs\"",
     "test:multi-lot-dispatch": "node firebase/tests/multiLotDispatch.test.mjs",
     "test:collection-receipts": "node --experimental-strip-types src/modules/distribution/domain/__tests__/collectionReceipts.test.ts",
     "test:collection-provisional": "node --experimental-strip-types src/modules/distribution/domain/__tests__/collectionProvisional.test.ts",
