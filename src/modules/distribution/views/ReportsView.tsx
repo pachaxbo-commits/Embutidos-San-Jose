@@ -28,6 +28,7 @@ import {
   computeSoldByProduct,
   computeSoldKilograms,
   computeSoldPackages,
+  isCollectionInCustodyRoute,
   matchesRoute,
   round2,
   toDayKey,
@@ -221,7 +222,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     () =>
       data.collections
         .filter((row) => !row.pendingConfirmation)
-        .filter((row) => !routeFilter || matchesRoute(row.routeId, routeFilter))
+        .filter((row) => !routeFilter || isCollectionInCustodyRoute(row, routeFilter))
         .filter((row) => !sellerFilter || row.collectedByUid === sellerFilter),
     [data.collections, routeFilter, sellerFilter],
   )
@@ -480,6 +481,13 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       render: (row) => formatReportDateTime(row.createdAt),
     },
     { key: 'cobrador', header: 'Cobro', render: (row) => row.collectedByName },
+    {
+      key: 'custodia',
+      header: 'Caja real',
+      render: (row) => matchesRoute(row.routeId, 'administracion')
+        ? 'Administración'
+        : data.routes.find((route) => route.id === row.routeId)?.name || row.routeId || 'Ruta no disponible',
+    },
     {
       key: 'metodo',
       header: 'Método',

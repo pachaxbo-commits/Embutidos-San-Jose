@@ -251,6 +251,7 @@ service cloud.firestore {
           || (request.resource.data.type == 'resolveQuarantine' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyQuarantineInputError' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyClosureAttribution' && distAdmin(restaurantId))
+          || (request.resource.data.type == 'rectifyCollectionCustody' && distAdmin(restaurantId))
           || (request.resource.data.type == 'claim' && (distAdmin(restaurantId) || distributorCanClaimSale(restaurantId)))
           || (request.resource.data.type in ['quoteCreate','quoteUpdate','quoteCancel','quoteDelete'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type in ['editSale','voidSale'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
@@ -337,6 +338,10 @@ service cloud.firestore {
     match /restaurants/{restaurantId}/distClosureRectifications/{rectificationId} {
       allow read: if distAdmin(restaurantId) || distWarehouse(restaurantId)
         || (distDistributor(restaurantId) && resource.data.distributorUid == request.auth.uid);
+      allow write: if false;
+    }
+    match /restaurants/{restaurantId}/distCollectionCustodyRectifications/{rectificationId} {
+      allow read: if distAdmin(restaurantId);
       allow write: if false;
     }
     // Incident reports are submitted and changed only through callable

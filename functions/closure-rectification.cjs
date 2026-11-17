@@ -15,7 +15,7 @@ function planClosureRectification(original, dispatch, sources) {
   const effective = sources.sales.map(s => ({...s,...s.effectiveSnapshot}));
   requireValue(sources.sales.every(s => s.dispatchId === dispatch.id && !s.pendingConfirmation), 'Existen ventas fuera del despacho o pendientes.');
   const excluded = effective.filter(s => s.sourceLocation === 'centralWarehouse' || (s.routeId && s.routeId !== original.routeId));
-  requireValue(excluded.length > 0 && excluded.every(s => s.sourceLocation === 'centralWarehouse' && ['admin','administracion'].includes(s.routeId)), 'La atribución excluida no está comprobada como Administración central.');
+  requireValue(excluded.every(s => s.sourceLocation === 'centralWarehouse' && ['admin','administracion'].includes(s.routeId)), 'La atribución excluida no está comprobada como Administración central.');
   const included = effective.filter(s => !excluded.some(x => x.id === s.id));
   const sum = (rows,key) => round(rows.reduce((n,r)=>n+(Number(r[key])||0),0));
   const commercial = rows => rows.filter(s=>s.saleKind !== 'courtesy');
@@ -25,35 +25,54 @@ function planClosureRectification(original, dispatch, sources) {
   }
   requireValue(Array.isArray(original.products), 'Falta el detalle de productos original.');
   const changes = [];
-  const evidence = (field,rows=excluded) => ({field,sourceDocumentIds:rows.map(s=>`distSales/${s.id}`).sort()});
+  const evidence = (field,rows=excluded,collectionName='distSales') => ({field,sourceDocumentIds:rows.map(row=>`${collectionName}/${row.id}`).sort()});
   const products = original.products.map(row=>{
     requireValue(round(row.sold)===qty(effective,row.productId) && round(row.courtesy||0)===qty(effective,row.productId,true), `El detalle original de ${row.productName} no coincide con las ventas.`);
     const next={...row,sold:qty(included,row.productId),courtesy:qty(included,row.productId,true)};
     for(const key of ['sold','courtesy']) if(Number(row[key]||0)!==next[key]) changes.push({...evidence(`products.${row.productId}.${key}`,excluded.filter(s=>(s.lines||[]).some(l=>l.productId===row.productId))),before:Number(row[key]||0),after:next[key]});
     return next;
   });
-  const inPeriod = row => row.routeId === original.routeId && row.createdAt >= dispatch.createdAt && row.createdAt <= original.closedAt;
-  const collections=sources.collections.filter(inPeriod),expenses=sources.expenses.filter(x=>inPeriod(x)&&!x.voided),claims=sources.claims.filter(inPeriod);
-  const cashCollections=round(collections.reduce((n,c)=>n+(Number.isFinite(c.cashAmount)?c.cashAmount:c.method==='cash'?c.amount:0),0));
-  const qrCollections=round(collections.reduce((n,c)=>n+(Number.isFinite(c.qrAmount)?c.qrAmount:c.method==='qr'?c.amount:0),0));
+  const inPeriod = row => row.createdAt >= dispatch.createdAt && row.createdAt <= original.closedAt;
+  const adminCollectorUids = new Set(sources.adminCollectorUids || []);
+  const collections=sources.collections.filter(row => inPeriod(row) &&
+    (row.routeId === original.routeId || row.originRouteId === original.routeId));
+  const expenses=sources.expenses.filter(row => inPeriod(row));
+  const claims=sources.claims.filter(row => inPeriod(row));
+  const routeCollections=collections.filter(row => row.routeId === original.routeId &&
+    !adminCollectorUids.has(row.collectedByUid) && !['admin','administracion'].includes(row.routeId));
+  const amountFor = (rows, field, legacyMethod) => round(rows.reduce((n,row) => n +
+    (Number.isFinite(row[field]) ? row[field] : row.method === legacyMethod ? row.amount : 0), 0));
+  const originalCashCollections=amountFor(collections,'cashAmount','cash');
+  const originalQrCollections=amountFor(collections,'qrAmount','qr');
+  const cashCollections=amountFor(routeCollections,'cashAmount','cash');
+  const qrCollections=amountFor(routeCollections,'qrAmount','qr');
   const cashExpenses=sum(expenses.filter(x=>(x.paymentMethod||'cash')==='cash'),'amount');
   const claimCash=round(sum(claims,'cashIn')-sum(claims,'cashOut'));
-  for(const [key,value] of Object.entries({cashCollections,qrCollections,cashExpenses,claimCash})) requireValue(round(original[key]||0)===value, `Las fuentes históricas de ${key} han cambiado; revisión necesaria.`);
+  for(const [key,value] of Object.entries({cashCollections:originalCashCollections,qrCollections:originalQrCollections,cashExpenses,claimCash})) requireValue(round(original[key]||0)===value, `Las fuentes históricas de ${key} han cambiado; revisión necesaria.`);
   requireValue(Number.isFinite(original.physicalCashDeclared), 'Falta el efectivo declarado original.');
-  requireValue(round(original.expectedCash) === round(original.cashSales+cashCollections-cashExpenses+claimCash)
+  requireValue(round(original.expectedCash) === round(original.cashSales+originalCashCollections-cashExpenses+claimCash)
     && round(original.cashDifference) === round(original.physicalCashDeclared-original.expectedCash), 'La caja original contiene otra discrepancia no explicada por la atribución.');
-  const patch={products,cashSales:sum(commercial(included),'cashAmount'),qrSales:sum(commercial(included),'qrAmount'),creditGenerated:sum(commercial(included),'creditAmount')};
+  const patch={products,cashSales:sum(commercial(included),'cashAmount'),qrSales:sum(commercial(included),'qrAmount'),creditGenerated:sum(commercial(included),'creditAmount'),cashCollections,qrCollections};
   patch.expectedCash=round(patch.cashSales+cashCollections-cashExpenses+claimCash);
   patch.cashDifference=round(original.physicalCashDeclared-patch.expectedCash);
-  for(const key of ['cashSales','qrSales','creditGenerated','expectedCash','cashDifference']) if(original[key]!==patch[key]) {
-    const sourceKey=key==='qrSales'?'qrAmount':key==='creditGenerated'?'creditAmount':'cashAmount';
-    changes.push({...evidence(key,excluded.filter(s=>Number(s[sourceKey])!==0)),before:original[key],after:patch[key]});
+  for(const key of ['cashSales','qrSales','creditGenerated','cashCollections','qrCollections','expectedCash','cashDifference']) if(original[key]!==patch[key]) {
+    const sourceKey=key==='qrSales'||key==='qrCollections'?'qrAmount':key==='cashCollections'?'cashAmount':key==='creditGenerated'?'creditAmount':'cashAmount';
+    const sourceRows=key==='cashCollections'||key==='qrCollections'
+      ? collections.filter(row => !routeCollections.some(kept => kept.id===row.id) && Number(row[sourceKey]||0)!==0)
+      : excluded.filter(s=>Number(s[sourceKey])!==0);
+    const evidenceRows=key==='cashCollections'||key==='qrCollections'
+      ? evidence(key,sourceRows,'distCollections')
+      : key==='expectedCash'||key==='cashDifference'
+        ? {field:key,sourceDocumentIds:[...excluded.filter(s=>Number(s.cashAmount)!==0).map(s=>`distSales/${s.id}`),...collections.filter(row => !routeCollections.some(kept => kept.id===row.id) && Number(row.cashAmount||0)!==0).map(row=>`distCollections/${row.id}`)].sort()}
+        : evidence(key,sourceRows);
+    changes.push({...evidenceRows,before:original[key],after:patch[key]});
   }
   requireValue(changes.length>0,'No hay diferencias verificadas que rectificar.');
   const corrected={...original,...patch};
-  const sourceSnapshot={dispatch,sales:sorted(sources.sales),collections:sorted(collections),expenses:sorted(expenses),claims:sorted(claims)};
+  const sourceSnapshot={dispatch,sales:sorted(sources.sales),collections:sorted(collections),adminCollectorUids:[...adminCollectorUids].sort(),expenses:sorted(expenses),claims:sorted(claims)};
   return {originalHash:fingerprint(original),sourceHash:fingerprint(sourceSnapshot),original,corrected,changes,
     includedSaleIds:included.map(s=>s.id).sort(),excludedSaleIds:excluded.map(s=>s.id).sort(),
+    includedCollectionIds:routeCollections.map(c=>c.id).sort(),excludedCollectionIds:collections.filter(c=>!routeCollections.some(row=>row.id===c.id)).map(c=>c.id).sort(),
     sourceDocumentIds:[`distDispatches/${dispatch.id}`,...sources.sales.map(s=>`distSales/${s.id}`),...collections.map(c=>`distCollections/${c.id}`),...expenses.map(e=>`distExpenses/${e.id}`),...claims.map(c=>`distClaims/${c.id}`)].sort()};
 }
 module.exports={planClosureRectification,fingerprint};

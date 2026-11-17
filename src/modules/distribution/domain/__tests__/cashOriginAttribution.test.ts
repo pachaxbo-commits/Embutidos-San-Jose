@@ -1,4 +1,4 @@
-import { isSaleForDispatch, matchesRoute } from '../engine.ts'
+import { isCollectionInCustodyRoute, isSaleForDispatch, matchesRoute } from '../engine.ts'
 
 const assert = (condition: boolean, message: string) => {
   if (!condition) throw new Error(message)
@@ -27,5 +27,9 @@ const adminExpectedCash = adminSales.reduce((sum, sale) => sum + sale.cashAmount
   + adminCashCollections.filter((collection) => matchesRoute(collection.routeId, 'administracion')).reduce((sum, collection) => sum + collection.cashAmount, 0)
 assert(adminSales.reduce((sum, sale) => sum + sale.creditAmount, 0) === 1138, 'crédito de Domingos no entra en las ventas de Administración')
 assert(adminExpectedCash === 632, 'fixture de Administración concilia Bs 510 ventas + Bs 122 cobros')
+const legacyAdminReceipt = { routeId: 'administracion', originRouteId: 'route-sud', cashAmount: 174, qrAmount: 0 }
+assert(!isCollectionInCustodyRoute(legacyAdminReceipt, 'route-sud'), 'cobro de Administración se excluye de caja Ricardo aunque conserve origen comercial')
+assert(isCollectionInCustodyRoute(legacyAdminReceipt, 'administracion'), 'cobro de Administración se incluye en su caja por routeId de custodia')
+assert(matchesRoute(legacyAdminReceipt.originRouteId, 'route-sud'), 'origen comercial del cobro sigue disponible para cartera/reportes de ruta')
 
 console.log('OK: atribución frontend de ventas y cajas')

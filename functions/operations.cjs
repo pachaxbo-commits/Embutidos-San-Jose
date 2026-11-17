@@ -1881,8 +1881,10 @@ async function collection(o, p) {
     remaining = round(remaining - applied);
   }
   const firstDebt = debts[0];
+  // `routeId` is the cash custodian, never a client-selected attribution.
+  // Keep the debt's route separately below for commercial origin/audit.
   const collectionRouteId =
-    o.member.role === "distributor" ? o.member.routeId : p.routeId || firstDebt?.routeId;
+    o.member.role === "distributor" ? o.member.routeId : "administracion";
   check(collectionRouteId, "El cobrador no tiene una ruta asignada.");
   const c = {
     id: o.id,
@@ -6354,7 +6356,11 @@ handlers.rectifyClosureAttribution = async (o, p) => {
   const dispatch = await o.read('distDispatches', original.dispatchId);
   const sources = {
     sales: await o.query('distSales', 'dispatchId', original.dispatchId),
-    collections: await o.query('distCollections', 'routeId', original.routeId),
+    collections: [...new Map([
+      ...(await o.query('distCollections', 'routeId', original.routeId)),
+      ...(await o.query('distCollections', 'originRouteId', original.routeId)),
+    ].map(row => [row.id, row])).values()],
+    adminCollectorUids: (await o.query('members', 'role', 'admin')).filter(member => member.active !== false).map(member => member.id).sort(),
     expenses: await o.query('distExpenses', 'routeId', original.routeId),
     claims: await o.query('distClaims', 'routeId', original.routeId),
   };
@@ -6374,6 +6380,46 @@ handlers.rectifyClosureAttribution = async (o, p) => {
   o.put('distClosureRectifications', id, record);
   o.put('distClosures', original.id, {...original,rectificationId:id,rectification:record});
   return {id,closureId:original.id,version:1,originalHash:plan.originalHash,sourceHash:plan.sourceHash};
+};
+
+handlers.rectifyCollectionCustody = async (o, p) => {
+  o.admin();
+  check(typeof p.reason === 'string' && p.reason.trim().length >= 10, 'Escribe el motivo de la rectificación.');
+  check(Array.isArray(p.records) && p.records.length > 0 && p.records.length <= 100, 'La lista de cobros para rectificar no es válida.');
+  const ids = p.records.map(row => row?.id);
+  check(ids.every(id => typeof id === 'string' && id) && new Set(ids).size === ids.length, 'La lista contiene IDs inválidos o repetidos.');
+  const adminUids = new Set((await o.query('members', 'role', 'admin')).filter(member => member.active === true).map(member => member.id));
+  const rows = [];
+  for (const expected of p.records) {
+    const collection = await o.read('distCollections', expected.id);
+    check(collection && !isAdministrationRouteId(collection.routeId), `El cobro ${expected.id} no requiere corregir su routeId.`);
+    check(adminUids.has(collection.collectedByUid) && collection.collectedByUid === expected.collectedByUid, `El cobrador del cobro ${expected.id} no es Administración activa.`);
+    check(collection.routeId === expected.routeId && collection.originRouteId === expected.originRouteId && Boolean(collection.originRouteId), `El origen/custodia del cobro ${expected.id} cambió desde el dry-run.`);
+    rows.push(collection);
+  }
+  const baseline = rows.map(row => ({
+    id: row.id, routeId: row.routeId, originRouteId: row.originRouteId, collectedByUid: row.collectedByUid,
+    amount: row.amount, cashAmount: row.cashAmount, qrAmount: row.qrAmount, method: row.method,
+    receivableId: row.receivableId, allocations: row.allocations, createdAt: row.createdAt, dayKey: row.dayKey,
+  })).sort((a,b) => a.id.localeCompare(b.id));
+  check(sha256(baseline) === p.expectedSourceHash, 'Los cobros cambiaron desde el dry-run; no se aplicó ninguna corrección.');
+  const auditIds = [];
+  for (const collection of rows) {
+    const id = `${collection.id}__custody_rectification_v1`;
+    check(!await o.read('distCollectionCustodyRectifications', id), `El cobro ${collection.id} ya tiene una rectificación de custodia.`);
+    const corrected = { ...collection, routeId: 'administracion' };
+    o.put('distCollections', collection.id, corrected);
+    o.put('distCollectionCustodyRectifications', id, {
+      id, restaurantId: 'sanjose', version: 1, collectionId: collection.id,
+      operationId: o.id, createdAt: o.now, createdBy: o.actor,
+      createdByName: o.member.displayName || o.actor, reason: p.reason.trim(),
+      originalRouteId: collection.routeId, correctedRouteId: corrected.routeId,
+      originRouteId: collection.originRouteId, collectedByUid: collection.collectedByUid,
+      before: collection, after: corrected,
+    });
+    auditIds.push(id);
+  }
+  return { correctedCount: rows.length, collectionIds: rows.map(row => row.id), auditIds, sourceHash: p.expectedSourceHash };
 };
 
 handlers.reviewVariance = async (o, p) => {
