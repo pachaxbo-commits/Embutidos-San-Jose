@@ -17,6 +17,7 @@ import { Modal } from '../../../components/ui/Modal'
 import { TextInput } from '../../../components/ui/Form'
 import { loadFullLotTraceability, searchLotsByCode } from '../data/distributionRepository'
 import type { LotTraceabilityData } from '../domain/lotTraceability'
+import { resolveLotSearchResults } from '../domain/lotSearch'
 import type { DistLot, DistProduct, DistRoute } from '../types'
 import { visiblePersonName } from './displayText'
 import { formatQty, SecondaryButton } from './shared'
@@ -29,24 +30,26 @@ interface LotTraceabilityModalProps {
   productId?: string
   initialLot?: DistLot
   product?: DistProduct
+  products?: DistProduct[]
   routes?: DistRoute[]
 }
 
 export function LotTraceabilityModal(props: LotTraceabilityModalProps) {
-  const { isOpen, onClose, lotId, lotCode, productId, initialLot, product, routes = [] } = props
+  const { isOpen, onClose, lotId, lotCode, productId, initialLot, product, products = [], routes = [] } = props
   const [userSelectedLot, setUserSelectedLot] = useState<DistLot | null>(null)
 
   const activeLotId = userSelectedLot?.id || lotId || null
   const activeLotCode = userSelectedLot?.lotCode || lotCode
   const activeInitialLot = userSelectedLot || initialLot
-  const activeProduct = product
+  const activeProductId = userSelectedLot?.productId || initialLot?.productId || productId
+  const activeProduct = products.find((item) => item.id === activeProductId) || (product?.id === activeProductId ? product : undefined)
 
   const [loadedLotKey, setLoadedLotKey] = useState<string | null>(null)
   const [data, setData] = useState<LotTraceabilityData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showTimeline, setShowTimeline] = useState(false)
 
-  const currentLotKey = activeLotId ? `${activeLotId}:${activeLotCode || ''}` : null
+  const currentLotKey = activeLotId ? `${activeLotId}:${activeProductId || ''}:${activeLotCode || ''}` : null
   const loading = Boolean(isOpen && activeLotId && loadedLotKey !== currentLotKey)
 
   // Local lot search bar inside the modal
@@ -65,8 +68,10 @@ export function LotTraceabilityModal(props: LotTraceabilityModalProps) {
     loadFullLotTraceability({
       lotId: activeLotId,
       lotCode: activeLotCode,
-      productId: activeProduct?.id || productId,
+      productId: activeProduct?.id || activeProductId,
       existingLot: activeInitialLot,
+      existingProduct: activeProduct,
+      skipProductLookup: true,
       routes,
     })
       .then((result) => {
@@ -87,7 +92,7 @@ export function LotTraceabilityModal(props: LotTraceabilityModalProps) {
     return () => {
       isMounted = false
     }
-  }, [isOpen, activeLotId, activeLotCode, activeInitialLot, activeProduct, productId, routes, currentLotKey])
+  }, [isOpen, activeLotId, activeLotCode, activeInitialLot, activeProduct, activeProductId, routes, currentLotKey])
 
   const handleClose = () => {
     setUserSelectedLot(null)
@@ -111,9 +116,6 @@ export function LotTraceabilityModal(props: LotTraceabilityModalProps) {
       const results = await searchLotsByCode(code, productId)
       if (results.length === 0) {
         setSearchFeedback(`No se encontró ningún lote con el código "${code}".`)
-      } else if (results.length === 1) {
-        setUserSelectedLot(results[0])
-        setSearchResults([])
       } else {
         setSearchResults(results)
       }
@@ -177,29 +179,34 @@ export function LotTraceabilityModal(props: LotTraceabilityModalProps) {
             </p>
           )}
 
-          {searchResults.length > 1 && (
+          {searchResults.length > 0 && (
             <div className="mt-3 rounded-xl border border-slate-200 bg-white p-2.5">
               <p className="text-xs font-bold text-slate-800">
                 Se encontraron {searchResults.length} lotes con el código &quot;{searchTerm}&quot;. Selecciona uno:
               </p>
               <div className="mt-2 grid gap-1.5">
-                {searchResults.map((res) => (
+                {resolveLotSearchResults(searchResults, products).map(({ lot: res, productName, currentStock }) => (
                   <button
                     key={res.id}
                     type="button"
                     onClick={() => {
                       setUserSelectedLot(res)
                       setSearchResults([])
+                      setLoadedLotKey(null)
                     }}
-                    className="flex items-center justify-between rounded-lg border border-slate-200 p-2 text-left text-xs transition-colors hover:border-indigo-400 hover:bg-indigo-50/30"
+                    className="grid min-w-0 gap-2 rounded-lg border border-slate-200 p-3 text-left text-xs transition-colors hover:border-indigo-400 hover:bg-indigo-50/30 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
                   >
-                    <div>
-                      <span className="font-extrabold text-slate-900">Lote {res.lotCode}</span>
-                      <p className="text-[10px] text-slate-500">
+                    <div className="min-w-0">
+                      <span className="block break-words font-extrabold text-slate-900">Lote {res.lotCode}</span>
+                      <span className="block break-words font-bold text-slate-800">{productName}</span>
+                      <p className="mt-1 break-words text-[10px] text-slate-500">
+                        {currentStock > 0
+                          ? `${formatQty(currentStock, res.unitType)} disponibles`
+                          : '0 existencias · Lote agotado'} ·{' '}
                         Elaboración: {res.manufacturedOn || 'No registrada'} · Vence: {res.expiresOn || 'No registrada'}
                       </p>
                     </div>
-                    <span className="rounded bg-indigo-100 px-2 py-0.5 text-[10px] font-extrabold text-indigo-900">
+                    <span className="justify-self-start rounded bg-indigo-100 px-2 py-1 text-[10px] font-extrabold text-indigo-900 sm:justify-self-end">
                       Ver trazabilidad
                     </span>
                   </button>

@@ -25,7 +25,7 @@ async function fixture(suffix) {
   const dispatch={id:dispatchId,routeId,dayKey:closure.dayKey,status:'closed',createdAt:'2026-10-17T12:08:50.445Z',lines:[{productId:p,quantity:15}]}
   const collections=[{id:`${dispatchId}-collection`,routeId,createdAt:'2026-10-17T16:00:00.000Z',cashAmount:132.5,qrAmount:0}],expenses=[{id:`${dispatchId}-expense`,routeId,createdAt:'2026-10-17T16:00:00.000Z',amount:35,paymentMethod:'cash'}]
   for(const [col,rows] of Object.entries({distClosures:[closure,{...closure,id:`closure_${dispatchId}-untouched`,dispatchId:`${dispatchId}-untouched`}],distDispatches:[dispatch],distSales:sales,distCollections:collections,distExpenses:expenses,distBalances:[{id:`central__${p}`,productId:p,quantity:153}],distLots:[{id:`${dispatchId}-lot`,productId:p,quantities:{central:153,[`route__${routeId}`]:0}}],distStockMovements:[{id:`${dispatchId}-return`,productId:p,quantity:3,type:'return',dispatchId,centralDelta:3,routeDelta:-3}]}))for(const row of rows)await root.collection(col).doc(row.id).set(row)
-  const plan=planClosureRectification(closure,dispatch,{sales,collections,expenses,claims:[]})
+  const plan=planClosureRectification(closure,dispatch,{sales,collections,expenses,claims:[],adminCollectorUids:[users.admin]})
   return{closure,dispatch,p,plan,closureId,dispatchId}
 }
 const payload=f=>({closureId:f.closureId,expectedOriginalHash:f.plan.originalHash,expectedSourceHash:f.plan.sourceHash,reason:'Rectificación autorizada de atribución central administrativa QA'})
@@ -43,11 +43,18 @@ try {
   for(const [role,uid] of Object.entries(users))await root.collection('members').doc(uid).set({role:role==='inactive'?'admin':role,active:role!=='inactive',displayName:`QA ${role}`})
   const f=await fixture('valid')
   for(const role of ['warehouse','distributor','support','inactive'])await assertFails(setDoc(doc(env.authenticatedContext(users[role]).firestore(),'restaurants','sanjose','distOperations',`${prefix}-${role}`),command(`${prefix}-${role}`,users[role],payload(f))))
+  const custodyPayload={reason:'QA de regla de operación para caja custodio',expectedSourceHash:'dry-run-hash',records:[{id:'collection-qa',routeId:'route-sud',originRouteId:'route-sud',collectedByUid:users.admin}]}
+  const custodyAllowed=command(`${prefix}-custody-admin`,users.admin,custodyPayload);custodyAllowed.type='rectifyCollectionCustody'
+  await assertSucceeds(setDoc(doc(env.authenticatedContext(users.admin).firestore(),'restaurants','sanjose','distOperations',custodyAllowed.id),custodyAllowed))
+  for(const role of ['warehouse','distributor','support','inactive']){const denied=command(`${prefix}-custody-${role}`,users[role],custodyPayload);denied.type='rectifyCollectionCustody';await assertFails(setDoc(doc(env.authenticatedContext(users[role]).firestore(),'restaurants','sanjose','distOperations',denied.id),denied))}
+  pass('Rules: rectificación de custodia solo permite operaciones encoladas por Administración activa')
   await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(),'restaurants','sanjose','distOperations',`${prefix}-anon`),command(`${prefix}-anon`,users.admin,payload(f))))
   await assertFails(setDoc(doc(env.authenticatedContext(users.admin).firestore(),'restaurants','another-tenant','distOperations',`${prefix}-tenant`),command(`${prefix}-tenant`,users.admin,payload(f))))
   pass('Rules: almacén, distribuidor, support, admin inactivo, anónimo y otro tenant bloqueados')
   await assertFails(setDoc(doc(env.authenticatedContext(users.admin).firestore(),'restaurants','sanjose','distClosureRectifications',`${prefix}-direct`),{closureId:f.closureId}))
   pass('Rules: ni admin escribe directamente la auditoría')
+  await assertFails(setDoc(doc(env.authenticatedContext(users.admin).firestore(),'restaurants','sanjose','distCollectionCustodyRectifications',`${prefix}-direct`),{collectionId:'forged'}))
+  pass('Rules: auditorías de custodia solo se escriben por la Function')
   const before=await protectedState(),other=await read('distClosures',`closure_${f.dispatchId}-untouched`)
   const result=await submit(f,`${prefix}-valid-operation`)
   const raw=await read('distClosures',f.closureId),audit=await read('distClosureRectifications',result.result.id)
@@ -70,6 +77,19 @@ try {
   await submit(bad,`${prefix}-changed-source`,users.admin,payload(bad),'rejected')
   assert.deepEqual(await read('distClosures',bad.closureId),bad.closure)
   pass('Cambios de cierre/fuentes rechazan atómicamente; original intacto')
+  const routeId=`${prefix}-route-bs174`,dispatchId=`${prefix}-dispatch-bs174`,productId=`${prefix}-product-bs174`
+  const cashClosure={id:`closure_${dispatchId}`,restaurantId:'sanjose',dispatchId,routeId,routeName:'Ricardo QA',distributorUid:users.distributor,distributorName:'Ricardo QA',warehouseId:'central',status:'closed',dayKey:'2026-11-17',createdAt:'2026-11-17T18:00:00.000Z',closedAt:'2026-11-17T18:11:00.000Z',warehouseClosedBy:users.warehouse,warehouseClosedAt:'2026-11-17T18:00:00.000Z',cashSales:2626,qrSales:585,creditGenerated:0,cashCollections:694,qrCollections:0,cashExpenses:210,claimCash:0,expectedCash:3110,physicalCashDeclared:2936,cashDifference:-174,products:[{productId,productName:'QA',unitType:'package',sold:1,courtesy:0}]}
+  const cashDispatch={id:dispatchId,routeId,dayKey:cashClosure.dayKey,status:'closed',createdAt:'2026-11-17T11:50:00.000Z'}
+  const routeCollection={id:`${dispatchId}-ricardo-cash`,routeId,originRouteId:routeId,collectedByUid:users.distributor,createdAt:'2026-11-17T15:46:00.000Z',amount:520,cashAmount:520,qrAmount:0,method:'cash'}
+  const adminCollection={id:`${dispatchId}-admin-cash`,routeId,originRouteId:routeId,collectedByUid:users.admin,createdAt:'2026-11-17T15:49:00.000Z',amount:174,cashAmount:174,qrAmount:0,method:'cash'}
+  const cashPlan=planClosureRectification(cashClosure,cashDispatch,{sales:[{id:`${dispatchId}-sale`,dispatchId,routeId,sourceLocation:'route',saleKind:'sale',cashAmount:2626,qrAmount:585,creditAmount:0,lines:[{productId,quantity:1}]}],collections:[routeCollection,adminCollection],adminCollectorUids:[users.admin],expenses:[{id:`${dispatchId}-expense`,routeId,createdAt:'2026-11-17T16:00:00.000Z',amount:210,paymentMethod:'cash'}],claims:[]})
+  assert.equal(cashPlan.original.cashCollections,694);assert.equal(cashPlan.corrected.cashCollections,520);assert.equal(cashPlan.corrected.expectedCash,2936);assert.equal(cashPlan.corrected.physicalCashDeclared,2936);assert.equal(cashPlan.corrected.cashDifference,0)
+  assert.deepEqual(cashPlan.excludedCollectionIds,[adminCollection.id]);assert.deepEqual(cashPlan.includedCollectionIds,[routeCollection.id])
+  pass('Rectificación Bs 174 conserva declarado Bs 2.936, separa custodios y deja diferencia cero')
+  const qrAdmin={...adminCollection,id:`${dispatchId}-admin-mixed`,amount:40,cashAmount:10,qrAmount:30,method:'mixed'}
+  const qrPlan=planClosureRectification({...cashClosure,cashCollections:530,qrCollections:30,expectedCash:2946,cashDifference:-10},cashDispatch,{sales:[{id:`${dispatchId}-sale`,dispatchId,routeId,sourceLocation:'route',saleKind:'sale',cashAmount:2626,qrAmount:585,creditAmount:0,lines:[{productId,quantity:1}]}],collections:[{...routeCollection,amount:520,cashAmount:520},qrAdmin],adminCollectorUids:[users.admin],expenses:[{id:`${dispatchId}-expense`,routeId,createdAt:'2026-11-17T16:00:00.000Z',amount:210,paymentMethod:'cash'}],claims:[]})
+  assert.equal(qrPlan.corrected.cashCollections,520);assert.equal(qrPlan.corrected.qrCollections,0);assert.equal(qrPlan.corrected.expectedCash,2936)
+  pass('Cobro mixto excluido de Ricardo en efectivo y QR; QR nunca entra al efectivo esperado')
   const malicious=command(`${prefix}-bypass`,users.warehouse,payload(bad))
   await root.collection('distOperations').doc(malicious.id).set(malicious)
   await processCommand(db,root.collection('distOperations').doc(malicious.id))

@@ -7,6 +7,7 @@ import { exportExcel, exportPdf, type ReportSheet } from '../data/reportExports'
 import { loadAllExpenseReportRows, loadAllSupplierPayables, loadAllSupplierPayments } from '../data/distributionRepository'
 import { expenseCashPaidAmount, expenseMatchesPaymentFilter, expenseOtherPaidAmount, expenseTransferPaidAmount } from '../domain/expenseAccounting'
 import { round2 } from '../domain/engine'
+import { matchesSupplierFilter } from '../domain/supplierFilter'
 import { boliviaDayKey } from '../domain/inventoryIntakeValidation'
 import { describeRange } from './RangePicker'
 import { formatBs, KpiCard, SecondaryButton } from './shared'
@@ -126,14 +127,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
 
   const matchesSupplier = useCallback(
     (filterValue: string, supplierId?: string, supplierName?: string) => {
-      if (filterValue === 'all') return true
-      if (filterValue.startsWith('name:')) {
-        return (supplierName?.trim() || '') === filterValue.slice(5)
-      }
-      if (supplierId && supplierId === filterValue) return true
-      const selectedSupplierName = filteredSuppliers.find(([id]) => id === filterValue)?.[1]
-      if (selectedSupplierName && (supplierName?.trim() || '') === selectedSupplierName) return true
-      return false
+      return matchesSupplierFilter(filterValue, supplierId, supplierName, filteredSuppliers)
     },
     [filteredSuppliers],
   )

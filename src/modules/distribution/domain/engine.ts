@@ -55,6 +55,11 @@ export function matchesRoute(recordRouteId?: string | null, filterRouteId?: stri
   return cleanRecord === cleanFilter
 }
 
+/** Cash collection reports follow physical custody; originRouteId is commercial attribution only. */
+export function isCollectionInCustodyRoute(collection: { routeId?: string | null }, routeId?: string | null): boolean {
+  return matchesRoute(collection.routeId, routeId)
+}
+
 /** A central-warehouse sale never belongs to a dispatch cash close, even if
  * stale client state accidentally attached that dispatchId to the sale. */
 export function isSaleForDispatch(

@@ -1513,6 +1513,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
         productId={traceabilityProductId}
         initialLot={traceabilityInitialLot}
         product={traceabilityProduct}
+        products={data.products}
         routes={data.routes}
       />
     </Screen>

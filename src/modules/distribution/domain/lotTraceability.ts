@@ -68,22 +68,27 @@ export interface LotTraceabilityData {
   timeline: LotTimelineEvent[]
 }
 
-export function lotAllocatedQuantity(movement: DistStockMovement, lotId: string, lotCode?: string): number {
+export function lotAllocatedQuantity(movement: DistStockMovement, lotId: string, lotCode?: string, productId?: string): number {
+  if (productId && movement.productId !== productId) return 0
   if (Array.isArray(movement.allocations) && movement.allocations.length > 0) {
-    const alloc = movement.allocations.find((a) => a.lotId === lotId || (lotCode && a.lotCode === lotCode))
+    const alloc = movement.allocations.find((a) => a.lotId === lotId)
     if (alloc && Number(alloc.quantity) > 0) return Number(alloc.quantity)
+    return 0
   }
-  if (movement.lotId === lotId || (lotCode && movement.lotCode === lotCode)) {
+  if (movement.lotId) return movement.lotId === lotId ? Number(movement.quantity || 0) : 0
+  if (lotCode && movement.lotCode === lotCode) {
     return Number(movement.quantity || 0)
   }
   return 0
 }
 
-export function isMovementRelatedToLot(movement: DistStockMovement, lotId: string, lotCode?: string): boolean {
-  if (movement.lotId === lotId || (lotCode && movement.lotCode === lotCode)) return true
-  if (Array.isArray(movement.allocations) && movement.allocations.some((a) => a.lotId === lotId || (lotCode && a.lotCode === lotCode))) {
-    return true
+export function isMovementRelatedToLot(movement: DistStockMovement, lotId: string, lotCode?: string, productId?: string): boolean {
+  if (productId && movement.productId !== productId) return false
+  if (Array.isArray(movement.allocations) && movement.allocations.length > 0) {
+    return movement.allocations.some((a) => a.lotId === lotId)
   }
+  if (movement.lotId) return movement.lotId === lotId
+  if (lotCode && movement.lotCode === lotCode) return true
   return false
 }
 
@@ -100,7 +105,7 @@ export function buildLotTraceability(params: {
   const lotId = lot.id
 
   // 1. Filter movements directly related to this lot
-  const relatedMovements = movements.filter((m) => isMovementRelatedToLot(m, lotId, lotCode))
+  const relatedMovements = movements.filter((m) => isMovementRelatedToLot(m, lotId, lotCode, lot.productId))
 
   // 2. Sort chronologically (oldest to newest)
   const sortedMovements = [...relatedMovements].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
@@ -112,7 +117,7 @@ export function buildLotTraceability(params: {
   } else {
     const intakeMoves = sortedMovements.filter((m) => ['intake', 'processing_output', 'quarantine_release'].includes(m.type))
     if (intakeMoves.length > 0) {
-      initialIntakeQuantity = intakeMoves.reduce((sum, m) => sum + lotAllocatedQuantity(m, lotId, lotCode), 0)
+      initialIntakeQuantity = intakeMoves.reduce((sum, m) => sum + lotAllocatedQuantity(m, lotId, lotCode, lot.productId), 0)
     }
   }
 
@@ -144,7 +149,7 @@ export function buildLotTraceability(params: {
   const timeline: LotTimelineEvent[] = []
 
   for (const m of sortedMovements) {
-    const allocQty = lotAllocatedQuantity(m, lotId, lotCode)
+    const allocQty = lotAllocatedQuantity(m, lotId, lotCode, lot.productId)
     const qty = allocQty > 0 ? allocQty : Number(m.quantity || 0)
 
     let stepType: LotTimelineStepType = 'other'
@@ -231,7 +236,7 @@ export function buildLotTraceability(params: {
     product,
     identification: {
       productId: lot.productId,
-      productName: product?.name || lot.productName || 'Producto',
+      productName: product?.name || 'Producto histórico / no disponible en catálogo',
       lotCode,
       manufacturedOn: lot.manufacturedOn,
       expiresOn: lot.expiresOn,

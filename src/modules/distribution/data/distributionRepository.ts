@@ -2089,6 +2089,8 @@ export async function loadFullLotTraceability(params: {
   lotCode?: string
   productId?: string
   existingLot?: DistLot
+  existingProduct?: DistProduct
+  skipProductLookup?: boolean
   routes?: DistRoute[]
 }): Promise<LotTraceabilityData> {
   const lot = params.existingLot || (await loadLotFromServer(params.lotId))
@@ -2104,8 +2106,8 @@ export async function loadFullLotTraceability(params: {
 
   const salesById = await loadSalesByIds(saleIds)
 
-  let product: DistProduct | undefined
-  if (productId) {
+  let product: DistProduct | undefined = params.existingProduct
+  if (!product && productId && !params.skipProductLookup) {
     try {
       const ctx = await getContext()
       const pSnap = await getDoc(docRef(ctx, DIST_COLLECTIONS.products, productId))
