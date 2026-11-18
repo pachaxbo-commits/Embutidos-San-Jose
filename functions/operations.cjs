@@ -448,8 +448,20 @@ class Operation {
     check(Number.isSafeInteger(physicalWeightG) && physicalWeightG >= 0 && (costCents === null || Number.isSafeInteger(costCents) && costCents >= 0), 'El movimiento del lote derivado produjo una asignación de peso o costo inválida.');
     return allocations;
   }
-  restoreProcessingAllocation(lot, loc, allocation) {
+  effectiveProcessingAllocation(lot, allocation) {
     const part = allocation.processingAllocation;
+    if (!part?.saleMovementId || part.massRectificationId || !lot?.massRectificationSales) return allocation;
+    const corrected = lot.massRectificationSales.find(row => row.movementId === part.saleMovementId && row.segmentId === part.segmentId);
+    if (!corrected) return allocation;
+    check(corrected.quantity === allocation.quantity && corrected.quantity === part.quantity
+      && corrected.beforeWeightG === part.physicalWeightG && corrected.beforeCostCents === part.costCents,
+    'Resuelve la asignación rectificada completa antes de dividir los paquetes.');
+    return { ...allocation, processingAllocation: { ...part, physicalWeightG: corrected.afterWeightG,
+      costCents: corrected.afterCostCents, massRectificationId: lot.massRectificationId } };
+  }
+
+  restoreProcessingAllocation(lot, loc, allocation) {
+    const part = this.effectiveProcessingAllocation(lot, allocation).processingAllocation;
     if (!part) return;
     check(lot.processingCommercialBlocked && lot.processingDestinationKind === 'finished', 'No se puede restituir asignación de un destino de elaboración protegido.');
     check(Number.isSafeInteger(part.quantity) && part.quantity > 0 && Number.isSafeInteger(part.physicalWeightG) && part.physicalWeightG >= 0 && (part.costCents === null || Number.isSafeInteger(part.costCents) && part.costCents >= 0) && part.segmentId && part.batchId === lot.processingBatchId, 'La asignación restituida del lote derivado no es válida.');
@@ -698,15 +710,19 @@ class Operation {
     return parts;
   }
   async restore(pid, loc, allocations) {
-    const e = await this.loadStock(pid, loc);
-    const precision = quantityPrecision(e.p);
-    for (const part of allocations || []) {
-      const lot = e.lots.find(item => item.id === part.lotId);
-      check(lot, "No se encontró el lote original de la venta.");
-      origins.restore(lot, loc, part);
-      this.restoreProcessingAllocation(lot, loc, part);
-      this.move(e, loc, part.quantity, precision);
+    const entry = await this.loadStock(pid, loc);
+    const precision = quantityPrecision(entry.p);
+    const restored = [];
+    for (const allocation of allocations || []) {
+      const lot = entry.lots.find(item => item.id === allocation.lotId);
+      check(lot, 'No se encontró el lote original de la venta.');
+      const effective = this.effectiveProcessingAllocation(lot, allocation);
+      origins.restore(lot, loc, effective);
+      this.restoreProcessingAllocation(lot, loc, effective);
+      this.move(entry, loc, effective.quantity, precision);
+      restored.push(effective);
     }
+    return restored;
   }
   async withDocumentedOrigins(sale, previous) {
     const result = structuredClone(previous);
@@ -2250,10 +2266,10 @@ async function voidDerivedSale(o, p, sale) {
   }
   const returnedByProduct = new Map();
   for (const line of snapshot.lines) {
-    await o.restore(line.productId, loc, line.allocations);
+    const effectiveAllocations = await o.restore(line.productId, loc, line.allocations);
     const current = returnedByProduct.get(line.productId) || { quantity: 0, allocations: [] };
     current.quantity += line.allocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0);
-    current.allocations.push(...line.allocations);
+    current.allocations.push(...effectiveAllocations);
     returnedByProduct.set(line.productId, current);
   }
   for (const [productId, restored] of returnedByProduct) {
@@ -2435,7 +2451,9 @@ async function editSale(o, p) {
     if (previousLine) {
       let retained = physicalQuantity;
       const returned = [];
-      for (const allocation of previousLine.allocations) {
+      const stock = await o.loadStock(product.id, loc);
+      for (const saved of previousLine.allocations) {
+        const allocation = o.effectiveProcessingAllocation(stock.lots.find(lot => lot.id === saved.lotId), saved);
         const keptQuantity = roundAt(Math.min(retained, allocation.quantity), precision);
         if (keptQuantity > 0) allocations.push(origins.slice(allocation, 0, keptQuantity));
         const returnedQuantity = roundAt(allocation.quantity - keptQuantity, precision);
@@ -2536,10 +2554,10 @@ async function voidSale(o, p) {
   const loc = sale.sourceLocation === "route" ? location("route", sale.routeId) : "central";
   const returnedByProduct = new Map();
   for (const line of previous.lines) {
-    await o.restore(line.productId, loc, line.allocations);
+    const effectiveAllocations = await o.restore(line.productId, loc, line.allocations);
     const current = returnedByProduct.get(line.productId) || { quantity: 0, allocations: [] };
     current.quantity = round(current.quantity + line.allocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0));
-    current.allocations.push(...line.allocations);
+    current.allocations.push(...effectiveAllocations);
     returnedByProduct.set(line.productId, current);
   }
   const stockDeltas = [...returnedByProduct.entries()].map(([productId, returned]) => ({
@@ -4442,7 +4460,10 @@ async function claimDerivedSale(o, p, sale) {
     'El saldo de devoluciones cambió en otra sesión. Actualiza la venta y vuelve a revisar los paquetes recibidos.');
   const soldQuantity = lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
   check(returnedBefore + quantity <= soldQuantity, 'La cantidad supera los paquetes vendidos o ya devueltos.');
-  const sourceAllocations = processingClaimSlices(lines, returnedBefore, quantity);
+  const sourceEntry = await o.loadStock(product.id, sale.routeId ? location('route', sale.routeId) : 'central');
+  const effectiveLines = lines.map(line => ({ ...line, allocations: line.allocations.map(allocation =>
+    o.effectiveProcessingAllocation(sourceEntry.lots.find(lot => lot.id === allocation.lotId), allocation)) }));
+  const sourceAllocations = processingClaimSlices(effectiveLines, returnedBefore, quantity);
   const originalPrices = [...new Set(lines.map(line => Number(line.actualUnitPrice)))];
   check(originalPrices.length === 1 && Number.isFinite(originalPrices[0]), 'La venta tiene precios distintos para el mismo producto; requiere revisión administrativa.');
   const condition = String(p.derivedReturnCondition || 'aptitude_uncertain');
@@ -5495,6 +5516,10 @@ handlers.confirmProcessingBatch = async (o, p) => {
     check(Number.isFinite(commercialQuantity) && commercialQuantity > 0 && (target.unitType === 'kg' ? Number.isSafeInteger(netWeightG) && Math.abs(commercialQuantity * 1000 - netWeightG) < 0.000001 : Number.isSafeInteger(commercialQuantity)), `La cantidad comercial de ${target.name} no corresponde a su presentación.`);
     if (target.unitType === 'kg') check(Math.abs(commercialQuantity * 1000 - netWeightG) < 0.000001, `El peso neto y los kg comerciales de ${target.name} deben coincidir.`);
     else check(['measured_total', 'documented_average'].includes(raw.weightBasis), `Registra el peso neto total medido de ${target.name}; el peso aproximado del catálogo no sirve para conciliar.`);
+    const referenceWeightG = Math.round(Number(target.documentedPackageWeightKg || 0) * 1000) || Number(raw.nominalWeightG || 0);
+    if (target.unitType !== 'kg' && referenceWeightG > 0 && Math.abs(netWeightG - commercialQuantity * referenceWeightG) > commercialQuantity * referenceWeightG * 0.2) {
+      check(o.member.role === 'admin' && String(p.weightExceptionReason || '').trim().length >= 12, 'Desviación de peso superior al 20%: revisa cantidad/peso o registra una excepción administrativa documentada.');
+    }
     if (kind === 'courtesy') {
       check(o.member.role === 'admin' && raw.qualityConfirmed === true && String(raw.qualityReason || '').trim(), 'Producto para cortesía requiere confirmación explícita de aptitud por Administración.');
     } else if (kind === 'repack_pending' || kind === 'review_hold') {
@@ -5519,6 +5544,7 @@ handlers.confirmProcessingBatch = async (o, p) => {
   for (const material of packagingMaterials) {
     const id = safeId(material.id);
     check(!materialIds.has(id), 'No repitas materiales de empaque.'); materialIds.add(id);
+    check(typeof material.description === 'string' && material.description.trim(), 'Describe el material de empaque registrado.');
     const quantityMilli = Number(material.quantityMilli), damagedQuantityMilli = Number(material.damagedQuantityMilli || 0);
     check(Number.isSafeInteger(quantityMilli) && quantityMilli > 0 && Number.isSafeInteger(damagedQuantityMilli) && damagedQuantityMilli >= 0 && damagedQuantityMilli <= quantityMilli, 'La cantidad de material o bolsas dañadas no es válida.');
     const costCents = material.costCents == null ? null : Number(material.costCents);
@@ -5687,7 +5713,7 @@ handlers.confirmProcessingBatch = async (o, p) => {
   };
   o.put('distProcessingBatches', batchId, batch);
   const confirmedAuditId = `processing_audit_${sha256(`${batchId}:confirmed`).slice(0, 40)}`;
-  o.put('distProcessingBatchAudit', confirmedAuditId, { id: confirmedAuditId, ...o.base(), batchId, operationId: o.id, location: loc, sourceLocation: loc, event: 'confirmed', inputWeightG, outputWeightG, sourceCostCents, createdAt: o.now, createdBy: o.actor, movementIds });
+  o.put('distProcessingBatchAudit', confirmedAuditId, { id: confirmedAuditId, ...o.base(), batchId, operationId: o.id, location: loc, sourceLocation: loc, event: 'confirmed', weightExceptionReason: String(p.weightExceptionReason || '').trim(), inputWeightG, outputWeightG, sourceCostCents, createdAt: o.now, createdBy: o.actor, movementIds });
   batch.auditEventIds.push(confirmedAuditId);
   o.put('distProcessingBatches', batchId, batch);
   return result;
@@ -5993,6 +6019,104 @@ handlers.rectifyProcessingCommercialUnit = async (o, p) => {
 };
 
 handlers.updateLot = updateLot;
+
+handlers.rectifyProcessingMass = async (o, p) => {
+  o.admin();
+  const batch = await o.read('distProcessingBatches', safeId(p.batchId));
+  check(batch?.status === 'confirmed' && batch.processType === 'bagging' && !batch.massRectificationId, 'La elaboración no admite otra rectificación de masa.');
+  const finished = batch.destinations.filter(row => row.kind === 'finished');
+  check(finished.length === 1 && batch.destinations.every(row => ['finished', 'discard'].includes(row.kind)), 'Solo se admite un destino terminado y descarte.');
+  const output = finished[0];
+  const derived = batch.result.derivedLots.find(row => row.destinationId === output.id);
+  const lot = await o.read('distLots', derived.lotId);
+  check(lot?.processingBatchId === batch.id && lot.unitType === 'package' && !lot.derivedReturn, 'El lote terminado no coincide con la elaboración.');
+  check(!batch.reservationIds?.length && !Object.keys(lot.processingUnavailable || {}).length, 'La elaboración tiene reservas que requieren conciliación previa.');
+  const net = Number(p.netWeightG), discard = Number(p.discardWeightG);
+  check(Number.isSafeInteger(net) && net > 0 && Number.isSafeInteger(discard) && discard >= 0, 'Ingresa pesos físicos verificados en gramos enteros.');
+  const location = batch.sourceLocation;
+  const entry = await o.loadStock(batch.sourceProductId, location);
+  check(entry.p.unitType === 'kg' && Array.isArray(p.sources) && p.sources.length === batch.sourceAllocations.length, 'Indica el consumo verificado de cada lote fuente.');
+  const sources = batch.sourceAllocations.map(original => {
+    const source = entry.lots.find(row => row.id === original.sourceLotId);
+    const nextG = p.sources.find(row => row.id === original.sourceLotId)?.consumedG;
+    check(source && !source.processingBatchId && !source.quarantined && !source.legacy && !Object.keys(source.processingUnavailable || {}).length && !Object.keys(source.pendingOrigins || {}).length, 'Un lote fuente requiere conciliación previa.');
+    check(Number.isSafeInteger(nextG) && nextG >= 0 && Number.isSafeInteger(original.measuredNetWeightG) && Number.isFinite(original.productionCost) && original.productionCost >= 0 && Number.isSafeInteger(original.historicalCostCents) && original.historicalCostCents >= 0, 'Falta peso o costo histórico verificable del lote fuente.');
+    const deltaG = original.measuredNetWeightG - nextG;
+    const stockBeforeG = Math.round(Number(source.quantities[location] || 0) * 1000);
+    check(stockBeforeG + deltaG >= 0, 'El ajuste dejaría un lote fuente con saldo negativo.');
+    return { id: source.id, code: source.lotCode, beforeG: original.measuredNetWeightG, nextG, deltaG, stockBeforeG, stockAfterG: stockBeforeG + deltaG, beforeCostCents: original.historicalCostCents, afterCostCents: deltaG === 0 ? original.historicalCostCents : Math.round(nextG * original.productionCost / 10) };
+  });
+  check(sources.reduce((sum, row) => sum + row.nextG, 0) === net + discard, 'La suma de lotes fuente debe igualar peso terminado más descarte.');
+  const beforeDiscard = batch.destinations.filter(row => row.kind === 'discard').reduce((sum, row) => sum + row.netWeightG, 0);
+  check(output.netWeightG + beforeDiscard === batch.inputWeightG && sources.reduce((sum, row) => sum + row.beforeG, 0) === batch.inputWeightG, 'La masa registrada no concilia.');
+  const quantity = output.commercialQuantity;
+  const remaining = Object.values(lot.quantities).reduce((sum, value) => sum + Number(value), 0);
+  check(Object.entries(lot.quantities).every(([key, value]) => key === location || Number(value) === 0), 'Hay paquetes fuera del almacén fuente. Registra su retorno o cierra las rutas pendientes antes de rectificar. Las ventas realizadas no impiden la rectificación.');
+  const segments = Object.values(lot.processingByLocation || {}).flatMap(bucket => bucket.segments);
+  check(Number.isSafeInteger(quantity) && quantity > 0 && remaining <= quantity && remaining >= 0 && Number.isSafeInteger(remaining) && segments.every(row => row.batchId === batch.id && row.destinationId === output.id) && segments.reduce((sum, row) => sum + row.remainingQuantity, 0) === remaining, 'Las unidades y los segmentos vigentes no concilian.');
+  const totalCost = sources.reduce((sum, row) => sum + row.afterCostCents, 0);
+  const cost = net === output.netWeightG && net + discard === batch.inputWeightG && sources.every(row => !row.deltaG)
+    ? output.costCents : Math.round(totalCost * net / (net + discard));
+  const before = { net: output.netWeightG, discard: beforeDiscard, input: batch.inputWeightG, cost: output.costCents, totalCost: batch.sourceCostCents, remainingWeightG: lot.processingPhysicalWeightGRemaining, remainingCostCents: lot.processingCostCentsRemaining };
+  const unchanged = net === before.net && discard === before.discard && sources.every(row => !row.deltaG);
+  const after = { net, discard, input: net + discard, cost, totalCost, remainingWeightG: unchanged ? before.remainingWeightG : Math.round(net * remaining / quantity), remainingCostCents: unchanged ? before.remainingCostCents : Math.round(cost * remaining / quantity) };
+  // Historical sales retain their original commercial and accounting snapshots.
+  // The reconciliation records the physical and cost differences separately.
+  const departed = quantity - remaining;
+  const historical = {
+    quantity: departed,
+    beforeWeightG: before.net - before.remainingWeightG,
+    afterWeightG: after.net - after.remainingWeightG,
+    beforeCostCents: before.cost - before.remainingCostCents,
+    afterCostCents: after.cost - after.remainingCostCents,
+  };
+  const movements = (await o.query('distStockMovements', 'productId', lot.productId))
+    .filter(row => row.lotId === lot.id || row.allocations?.some(part => part.lotId === lot.id));
+  check(movements.every(row => ['processing_output', 'dispatch', 'dispatch_addition', 'return', 'sale'].includes(row.type) && !row.reversedAt && !row.voidedAt), 'Hay movimientos posteriores que requieren conciliación especializada.');
+  const sold = movements.filter(row => row.type === 'sale').flatMap(row => row.allocations
+    .filter(part => part.lotId === lot.id).map(part => ({ movementId: row.id, segmentId: part.processingAllocation?.segmentId, quantity: part.quantity, beforeWeightG: part.processingAllocation?.physicalWeightG, beforeCostCents: part.processingAllocation?.costCents })));
+  check(sold.every(row => Number.isSafeInteger(row.quantity) && row.quantity > 0 && Number.isSafeInteger(row.beforeWeightG) && Number.isSafeInteger(row.beforeCostCents))
+    && sold.reduce((sum, row) => sum + row.quantity, 0) === departed
+    && sold.reduce((sum, row) => sum + row.beforeWeightG, 0) === historical.beforeWeightG
+    && sold.reduce((sum, row) => sum + row.beforeCostCents, 0) === historical.beforeCostCents, 'Los pesos y costos de las ventas registradas no concilian con las existencias.');
+  check(sold.every(row => row.segmentId) && new Set(sold.map(row => JSON.stringify([row.movementId, row.segmentId]))).size === sold.length, 'Las asignaciones de venta no tienen una referencia única.');
+  let allocatedSold = 0;
+  const sales = sold.sort((left, right) => left.movementId.localeCompare(right.movementId)).map(row => {
+    const previous = allocatedSold;
+    allocatedSold += row.quantity;
+    return { ...row, afterWeightG: Math.round(historical.afterWeightG * allocatedSold / departed) - Math.round(historical.afterWeightG * previous / departed),
+      afterCostCents: Math.round(historical.afterCostCents * allocatedSold / departed) - Math.round(historical.afterCostCents * previous / departed) };
+  });
+  const impact = { before, after, sources, quantity, remaining, departed, historical, sales };
+  const revision = sha256({ impact, batch, lot, balance: entry.balances.get(location) });
+  if (p.preview === true) return { ...impact, revision };
+  check(!unchanged, 'La propuesta no cambia los pesos ni el consumo registrado.');
+  check(p.revision === revision && p.explicitConfirmation === true, 'El stock o la propuesta cambió. Recalcula el impacto y confirma otra vez.');
+  check(String(p.reason || '').trim().length >= 12 && String(p.evidenceNote || '').trim().length >= 12, 'Registra motivo y evidencia física verificable.');
+  const balance = entry.balances.get(location);
+  const delta = sources.reduce((sum, row) => sum + row.deltaG, 0);
+  check(Math.round(balance.quantity * 1000) + delta >= 0, 'El saldo del almacén quedaría negativo.');
+  const movementIds = [];
+  for (const row of sources) {
+    if (!row.deltaG) continue;
+    const source = entry.lots.find(item => item.id === row.id);
+    source.quantities[location] = row.stockAfterG / 1000;
+    movementIds.push(o.ledger(entry.p.id, Math.abs(row.deltaG) / 1000, row.deltaG < 0 ? location : null, row.deltaG > 0 ? location : null, 'processing_mass_rectification', { lotId: row.id, batchId: batch.id, physicalWeightG: Math.abs(row.deltaG), reason: p.reason.trim() }, 3));
+  }
+  balance.quantity = (Math.round(balance.quantity * 1000) + delta) / 1000;
+  let allocated = 0;
+  for (const segment of segments) {
+    const previous = allocated;
+    allocated += segment.remainingQuantity;
+    segment.remainingWeightG = Math.round(net * allocated / quantity) - Math.round(net * previous / quantity);
+    segment.remainingCostCents = Math.round(cost * allocated / quantity) - Math.round(cost * previous / quantity);
+  }
+  o.put('distLots', lot.id, { ...lot, processingPhysicalWeightGRemaining: after.remainingWeightG, processingCostCentsRemaining: after.remainingCostCents, processingCostTotalCents: cost, productionCost: roundAt(cost / 100 / quantity, 6), massRectificationId: o.id, massRectificationSales: sales });
+  o.put('distProcessingBatchAudit', o.id, { id: o.id, ...o.base(), batchId: batch.id, lotId: lot.id, event: 'mass_rectification', operationId: o.id, reason: p.reason.trim(), evidenceNote: p.evidenceNote.trim(), movementIds, ...impact });
+  o.put('distProcessingBatches', batch.id, { ...batch, massRectificationId: o.id, massRectification: impact });
+  return { ...impact, revision, rectificationId: o.id };
+};
+
 handlers.rectifyLotIdentity = async (o, p) => {
   o.admin();
   check(p.explicitConfirmation === true && typeof p.evidenceNote === 'string' && p.evidenceNote.trim().length >= 12 && typeof p.reason === 'string' && p.reason.trim().length >= 12, 'Confirma que la identificación coincide con evidencia real e indica motivo y evidencia.');
@@ -6003,6 +6127,17 @@ handlers.rectifyLotIdentity = async (o, p) => {
   const expected = Object.entries(p.expectedQuantities || {}).sort(([a],[b]) => a.localeCompare(b));
   check(JSON.stringify(quantities) === JSON.stringify(expected), 'La existencia del lote cambió. Actualiza antes de continuar.');
   check(p.lotCode !== lot.lotCode || p.manufacturedOn !== lot.manufacturedOn || p.expiresOn !== lot.expiresOn, 'No hay cambios de identificación para registrar.');
+  if (lot.processingBatchId) {
+    check(!lot.derivedReturn && !lot.processingRepackId, 'Este lote requiere revisión especializada de devoluciones o reenvasado.');
+    check(p.lotCode?.trim() && validDate(p.manufacturedOn) && validDate(p.expiresOn) && p.manufacturedOn <= p.expiresOn && p.manufacturedOn <= o.today, 'Revisa fechas y código del lote.');
+    const batch = await o.read('distProcessingBatches', lot.processingBatchId);
+    check(batch?.status === 'confirmed' && batch.destinations?.some(row => row.id === lot.processingDestinationId), 'No se pudo verificar la trazabilidad de elaboración.');
+    check(!lot.packagedOn || (p.manufacturedOn <= lot.packagedOn && p.expiresOn >= lot.packagedOn), 'El envasado debe quedar entre fabricación y vencimiento.');
+    const corrected = { ...lot, lotCode: p.lotCode.trim(), manufacturedOn: p.manufacturedOn, expiresOn: p.expiresOn, updatedAt: o.now, updatedBy: o.actor };
+    o.put('distLots', lot.id, corrected);
+    o.put('distLotHistory', o.id, { id: o.id, ...o.base(), lotId: lot.id, productId: lot.productId, batchId: lot.processingBatchId, action: 'derived_lot_metadata_rectified', previous: lot, next: corrected, physicalEffect: false, reason: p.reason.trim(), evidenceNote: p.evidenceNote.trim(), explicitConfirmation: true, responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor });
+    return { id: lot.id };
+  }
   const updated = await updateLot(o, { ...p, productionCost: lot.productionCost });
   const audit = await o.read('distLotHistory', o.id);
   o.put('distLotHistory', o.id, { ...audit, action: 'lot_identity_rectified', operationId: o.id, productId: lot.productId, physicalEffect: false, quantities: lot.quantities, evidenceNote: p.evidenceNote.trim(), explicitConfirmation: true, responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor });

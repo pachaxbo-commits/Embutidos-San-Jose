@@ -44,6 +44,7 @@ export type StockMovementType =
   | 'reservation_released' // liberación de reserva: sin cambio físico
   | 'processing_consumption' // consumo físico del producto de origen en elaboración
   | 'processing_output' // entrada de una presentación derivada (bloqueada si falta trazabilidad posterior)
+  | 'processing_mass_rectification' // conciliación física de un lote fuente
   | 'processing_commercial_rectification' // corrige cantidad/unidad comercial sin nueva entrada física
   | 'processing_discard' // clasificación de gramos descartados dentro del consumo del batch; sin segundo delta físico
 

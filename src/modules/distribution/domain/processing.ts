@@ -256,6 +256,7 @@ export interface ProcessingDestination {
 }
 
 export interface ConfirmProcessingBatchInput {
+  weightExceptionReason?: string
   batchId: string
   processType: ProcessingBatch['processType']
   sourceProductId: string

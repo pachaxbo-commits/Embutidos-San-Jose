@@ -120,7 +120,7 @@ export function computeOperatingResult(
     physical_origin_reconciled: 'Origen físico conciliado (sin efecto económico)',
     traceability_notice: 'Origen físico pendiente (incidencia documental sin efecto económico)',
     reservation_created: 'Reserva de producto (sin movimiento físico)', reservation_released: 'Liberación de reserva (sin movimiento físico)',
-    processing_consumption: 'Consumo de producto en elaboración', processing_output: 'Producto terminado de elaboración', processing_commercial_rectification: 'Rectificación de unidad comercial (sin efecto físico ni costo)', processing_discard: 'Descarte confirmado de elaboración',
+    processing_consumption: 'Consumo de producto en elaboración', processing_output: 'Producto terminado de elaboración', processing_mass_rectification: 'Rectificación de peso de elaboración', processing_commercial_rectification: 'Rectificación de unidad comercial (sin efecto físico ni costo)', processing_discard: 'Descarte confirmado de elaboración',
     intake: 'Ingreso de inventario', dispatch: 'Despacho', dispatch_addition: 'Aumento de despacho', sale: 'Venta',
     sale_correction: 'Corrección de venta', return: 'Retorno', adjustment: 'Ajuste de inventario',
     dispatch_correction: 'Corrección de despacho', dispatch_waste: 'Merma al despachar', dispatch_merma_sale: 'Merma adicional dentro de ventas', return_waste: 'Merma al retorno',

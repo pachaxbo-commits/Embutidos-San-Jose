@@ -52,7 +52,8 @@ export function isSuspiciousProcessingQuantity(unitType: UnitType, commercialQua
       || !Number.isSafeInteger(netWeightG) || netWeightG <= 0) return false
   const nominalTotalWeightG = commercialQuantity * nominalWeightG
   if (!Number.isSafeInteger(nominalTotalWeightG)) return false
-  return netWeightG > nominalTotalWeightG * 2
+  // A 20% deviation is an administrative review threshold, not a legal fill tolerance.
+  return Math.abs(netWeightG - nominalTotalWeightG) > nominalTotalWeightG * 0.2
 }
 
 /** Derive informative overweight merma from already-recorded batch facts. Never a physical destination or stock movement. */

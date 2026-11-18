@@ -199,7 +199,7 @@ export function buildLotTraceability(params: {
       stepType = 'waste'
       stepLabel = m.type === 'dispatch_waste' ? 'Merma confirmada al despachar' : m.type === 'shortage' ? 'Faltante de inventario' : 'Pérdida / descarte físico confirmado'
       wasteQuantity = round2(wasteQuantity + qty)
-    } else if (['adjustment', 'transfer', 'processing_commercial_rectification', 'overage'].includes(m.type)) {
+    } else if (['adjustment', 'transfer', 'processing_commercial_rectification', 'processing_mass_rectification', 'overage'].includes(m.type)) {
       stepType = 'adjustment'
       stepLabel = m.type === 'transfer' ? 'Transferencia interna' : m.type === 'overage' ? 'Sobrante en cierre' : 'Ajuste manual de inventario'
       adjustmentsQuantity = round2(adjustmentsQuantity + qty)

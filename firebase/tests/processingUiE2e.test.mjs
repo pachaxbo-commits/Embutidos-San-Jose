@@ -156,7 +156,7 @@ try {
     await nativePage.getByRole('heading', { name: 'Sacheteado y Embolsado' }).waitFor({ timeout: 60000 })
     const nativeSize = await nativePage.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
     assert.ok(nativeSize.scroll <= nativeSize.width + 1)
-    await nativePage.getByRole('button', { name: 'Tutorial', exact: true }).click()
+    await nativePage.getByRole('button', { name: 'Tutorial · Nueva elaboración', exact: true }).click()
     const nativeWalkthrough = nativePage.getByRole('dialog', { name: /Tutorial de sacheteado/ })
     await nativeWalkthrough.waitFor()
     assert.match(await nativeWalkthrough.innerText(), /Paso 1 de 20/i)
@@ -211,7 +211,7 @@ try {
     const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
     assert.ok(sizes.document <= sizes.viewport + 1, `overflow horizontal a ${width}px: ${JSON.stringify(sizes)}`)
   }
-  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1440, 900]]) {
+  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1280, 900], [1440, 900]]) {
     for (const tab of ['Nueva elaboración', 'Mercadería reservada', 'Revisión de producto', 'Reenvasado', 'Historial']) {
       await page.getByRole('button', { name: tab, exact: true }).click()
       await assertNoHorizontalOverflow(width, height)
@@ -232,14 +232,14 @@ try {
   await courtesyCard.getByText('QA Producto reservado para cortesía').waitFor({ timeout: 15000 })
   await courtesyCard.getByText('Cantidad original').waitFor()
   await courtesyCard.getByText('Motivo original: Reserva sintética para probar administración').first().waitFor()
-  await courtesyCard.getByRole('button', { name: 'Liberar reserva', exact: true }).click()
-  const courtesyReleaseDialog = page.getByRole('dialog', { name: 'Liberar reserva de cortesía' })
-  await courtesyReleaseDialog.getByText(/Cantidad restante a liberar:/).waitFor()
+  await courtesyCard.getByRole('button', { name: 'Cancelar cortesía y devolver a stock', exact: true }).click()
+  const courtesyReleaseDialog = page.getByRole('dialog', { name: 'Resolver reserva de cortesía' })
+  await courtesyReleaseDialog.getByText(/Cantidad restante:/).waitFor()
   assert.match(await courtesyReleaseDialog.innerText(), /3(?:[.,]000)? kg/, 'la confirmación identifica los 3 kg que se liberarán')
-  await courtesyReleaseDialog.getByLabel('Motivo de liberación').fill('La cortesía ya no corresponde')
-  await courtesyReleaseDialog.getByLabel(/Confirmo que el producto permanece físicamente/).check()
-  await courtesyReleaseDialog.getByRole('button', { name: 'Confirmar liberación', exact: true }).click()
-  await page.getByRole('status').filter({ hasText: 'Reserva de cortesía liberada por el servidor' }).waitFor({ timeout: 30000 })
+  await courtesyReleaseDialog.getByPlaceholder('Explica por qué ya no corresponde reservar esta cortesía.').fill('La cortesía ya no corresponde')
+  await courtesyReleaseDialog.getByLabel(/Confirmo que el remanente permanece en almacén/).check()
+  await courtesyReleaseDialog.getByRole('button', { name: 'Confirmar acción', exact: true }).click()
+  await page.getByRole('status').filter({ hasText: 'Cortesía cancelada y remanente devuelto al stock comercial.' }).waitFor({ timeout: 30000 })
   const releasedCourtesy = (await root.collection('distStockReservations').doc('qa-courtesy-reservation').get()).data()
   assert.equal(releasedCourtesy.status, 'released', 'la acción de UI completa la liberación aprobada en servidor')
   assert.equal((await root.collection('distBalances').doc('central__qa-courtesy-product').get()).data().quantity, 10, 'la liberación desde UI no altera existencia física')
@@ -253,7 +253,7 @@ try {
   const inventoryLotsDialog = page.getByRole('dialog', { name: 'Lotes del producto' })
   await inventoryLotsDialog.getByText('Pendiente de reenvasado: 2 kg').waitFor()
   await inventoryLotsDialog.getByText('Inmovilizado para revisión: 1 kg').waitFor()
-  for (const width of [320, 360, 390, 414, 768, 1440]) {
+  for (const width of [320, 360, 390, 414, 768, 1280, 1440]) {
     await page.setViewportSize({ width, height: width < 500 ? 820 : 900 })
     await page.waitForTimeout(100)
     const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
@@ -377,11 +377,13 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole('button', { name: 'Nueva elaboración', exact: true }).click()
-  await page.locator('[data-processing-anchor="source-product"]').selectOption('qa-quantity-source')
+  await page.locator('[data-processing-anchor="source-product"]').click()
+  await page.getByRole('dialog', { name: 'Seleccionar producto a granel' }).getByText("QA Mortadela a granel", { exact: true }).click()
   await page.getByRole('checkbox', { name: 'Seleccionar lote ORIGEN-QA-CANTIDAD' }).check()
   await page.getByLabel('Kg reales utilizados').fill('99')
   await page.getByRole('button', { name: 'Continuar', exact: true }).click()
-  await page.getByLabel('SKU terminado existente').selectOption('qa-quantity-target')
+  await page.locator('[data-processing-anchor="finished-product"]').first().click()
+  await page.getByRole('dialog', { name: 'Seleccionar SKU de destino' }).getByText("QA Mortadela jamonada porcionada 1 kg", { exact: true }).click()
   await page.getByLabel(/Cantidad comercial/).fill('1')
   await page.getByLabel('Peso neto real medido (g)').first().fill('99000')
   await page.getByLabel('Peso nominal (g, informativo)').fill('1000')
@@ -407,10 +409,10 @@ try {
   await resultingInventory.getByText('Peso nominal: 1.000 g por paquete', { exact: true }).waitFor()
   assert.equal(await page.getByRole('button', { name: 'Confirmar elaboración', exact: true }).isEnabled(), true)
   await page.getByRole('button', { name: 'Confirmar elaboración', exact: true }).click()
-  const quantityConfirmation = page.getByRole('status').filter({ hasText: /Elaboración .* confirmada por el servidor/ })
+  const quantityConfirmation = page.getByText(/^Identificador:/)
   try { await quantityConfirmation.waitFor({ timeout: 30000 }) }
   catch (error) { throw new Error(`La elaboración de cantidad QA no se confirmó. alertas=${JSON.stringify(await page.getByRole('alert').allTextContents())}; status=${JSON.stringify(await page.getByRole('status').allTextContents())}; pantalla=${(await page.locator('#root').innerText()).slice(-2500)}`, { cause: error }) }
-  const confirmedBatchId = (await quantityConfirmation.innerText()).match(/Elaboración (.+) confirmada por el servidor/)?.[1]
+  const confirmedBatchId = (await quantityConfirmation.innerText()).match(/Identificador:\s*(\S+)/)?.[1]
   assert.ok(confirmedBatchId, 'el estado identifica la elaboración confirmada por el servidor')
   const quantityBatch = (await root.collection('distProcessingBatches').doc(confirmedBatchId).get()).data()
   assert.ok(quantityBatch, 'elaboración sintética confirmada por el servidor')
@@ -431,14 +433,14 @@ try {
   const walkthroughDraftKey = `sanjose_processing_draft_v1:${uid}`
   const walkthroughDraftBefore = await page.evaluate(key => localStorage.getItem(key), walkthroughDraftKey)
   const operationsBeforeWalkthrough = (await root.collection('distOperations').get()).size
-  await page.getByRole('button', { name: 'Tutorial', exact: true }).click()
+  await page.getByRole('button', { name: 'Tutorial · Nueva elaboración', exact: true }).click()
   const walkthrough = page.getByRole('dialog', { name: /Tutorial de sacheteado/ })
   await walkthrough.waitFor()
   assert.match(await walkthrough.innerText(), /Paso 1 de 20/i)
   await page.getByRole('button', { name: 'Siguiente', exact: true }).click()
   await walkthrough.getByRole('button', { name: 'Anterior', exact: true }).click()
   assert.match(await walkthrough.innerText(), /Paso 1 de 20/i, 'Anterior vuelve al paso previo')
-  for (const [width, height] of [[320, 740], [360, 800], [390, 844], [414, 896], [768, 1024], [1440, 900]]) {
+  for (const [width, height] of [[320, 740], [360, 800], [390, 844], [414, 896], [768, 1024], [1280, 900], [1440, 900]]) {
     await page.setViewportSize({ width, height })
     await page.waitForTimeout(500)
     const bounds = await walkthrough.boundingBox()
@@ -468,7 +470,7 @@ try {
   }
   await page.getByRole('button', { name: 'Cerrar tutorial' }).click()
   assert.equal(await walkthrough.count(), 0, 'Cerrar elimina el walkthrough')
-  await page.getByRole('button', { name: 'Tutorial', exact: true }).click()
+  await page.getByRole('button', { name: 'Tutorial · Nueva elaboración', exact: true }).click()
   assert.match(await page.getByRole('dialog', { name: /Tutorial de sacheteado/ }).innerText(), /Paso 1 de 20/i, 'el tutorial se puede reabrir desde el inicio')
   await page.locator('[data-processing-anchor="source-product"]').waitFor()
   await page.getByRole('button', { name: 'Cerrar tutorial' }).click()
@@ -476,11 +478,16 @@ try {
   assert.equal((await root.collection('distOperations').get()).size, operationsBeforeWalkthrough, 'el tutorial no crea operaciones ni confirma movimientos')
   console.log('PASS: walkthrough interactivo de 20 pasos; navegación, anchors, flecha, scroll y tooltips dentro de 320/360/390/414/768/1440 px; no cambia borrador ni crea operaciones')
 
-  await page.locator('[data-processing-anchor="source-product"]').selectOption('qa-source-product')
+  await page.locator('[data-processing-anchor="source-product"]').click()
+  await page.getByRole('dialog', { name: 'Seleccionar producto a granel' }).getByText("QA Producto a granel", { exact: true }).click()
   await page.getByRole('checkbox', { name: 'Seleccionar lote QA-LIBRE-1KG' }).check()
   await page.getByLabel('Kg reales utilizados').fill('41.05')
   await page.getByRole('button', { name: 'Continuar', exact: true }).click()
-  await page.getByLabel('SKU terminado existente').selectOption('qa-sachet-product')
+  await page.locator('[data-processing-anchor="finished-product"]').first().click()
+  const weightDestination = page.getByRole('dialog', { name: 'Seleccionar SKU de destino' })
+  await weightDestination.getByPlaceholder('Buscar...').fill('QA Sachet')
+  try { await weightDestination.getByRole('button', { name: /QA Sachet 1 kg/i }).click({ timeout: 8000 }) }
+  catch (error) { throw new Error('Opciones de SKU: ' + (await weightDestination.innerText()), { cause: error }) }
   await page.getByLabel(/Cantidad comercial/).fill('40')
   await page.getByLabel('Peso neto real medido (g)').first().fill('40500')
   await page.getByLabel('Peso nominal (g, informativo)').fill('1000')
@@ -508,7 +515,8 @@ try {
   console.log('PASS: Playwright UI 41.050/40.500/550 g; sobrepeso 500 g y merma informativa 1.050 g se separan de la masa y no crean operaciones')
   await page.getByRole('button', { name: '1. Origen', exact: true }).click()
   if (process.env.SANJOSE_WALKTHROUGH_ONLY !== 'true') {
-  await page.locator('[data-processing-anchor="source-product"]').selectOption('qa-source-product')
+  await page.locator('[data-processing-anchor="source-product"]').click()
+  await page.getByRole('dialog', { name: 'Seleccionar producto a granel' }).getByText("QA Producto a granel", { exact: true }).click()
   await page.getByRole('checkbox', { name: 'Seleccionar lote QA-LIBRE-1KG' }).check()
   const mobileKgInput = page.getByLabel('Kg reales utilizados')
   assert.equal(await mobileKgInput.getAttribute('inputmode'), 'decimal', 'el campo de kilogramos solicita teclado decimal en Android')
@@ -809,7 +817,7 @@ try {
     const sizes = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
     assert.ok(sizes.document <= sizes.viewport + 1, `overflow horizontal en modal de anulación a ${width}px: ${JSON.stringify(sizes)}`)
   }
-  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1440, 900]]) {
+  for (const [width, height] of [[320, 740], [360, 800], [375, 812], [390, 844], [414, 896], [768, 1024], [1280, 900], [1440, 900]]) {
     await assertVoidNoHorizontalOverflow(width, height)
     await page.getByLabel('Qué ocurrió con esta venta').selectOption('recorded_in_error_never_delivered')
     await page.getByPlaceholder('Ej.: venta registrada por error; la mercadería no fue entregada').fill('Venta de QA registrada por error; paquete quedó bajo custodia')

@@ -505,6 +505,42 @@ try {
   await command(ids.admin, 'sale', salePayload({ role: 'admin', lines: [{ productId: kgProduct, quantity: 0.5, actualUnitPrice: 10 }], cashAmount: 5 }), kgSaleId)
   pass((await read('distSales', kgSaleId)).lines[0].costTotal === 2.5 && (await read('distLots', kgLot)).quantities.central === 1.5, 'regresión: venta histórica normal por kg conserva su costo y descuento previos')
   console.log(`processing derived sale emulator: ${checks} checks PASS`)
+
+  {
+  const massProduct = `${prefix}-mass-package`, massSource = `${prefix}-mass-source`, massBatch = `${prefix}-mass-batch`, sourceLot = `${prefix}-mass-bulk-lot`
+  await seedProduct(massProduct, 'package', 10)
+  await seedProduct(massSource, 'kg', 50)
+  await root.collection('distLots').doc(sourceLot).set({ id: sourceLot, productId: massSource, unitType: 'kg', lotCode: 'MASS-QA', manufacturedOn: '2026-10-10', expiresOn: '2027-01-10', quantities: { central: 17 }, productionCost: 50, quarantined: false, legacy: false })
+  await root.collection('distBalances').doc('central__' + massSource).set({ id: 'central__' + massSource, productId: massSource, quantity: 17 })
+  const made = await command(ids.admin, 'confirmProcessingBatch', { batchId: massBatch, processType: 'bagging', sourceProductId: massSource, location: 'central', processingDate: '2026-10-28', inputWeightG: 16000, sourceAllocations: [{ lotId: sourceLot, quantity: 16, measuredNetWeightG: 16000 }], destinations: [{ id: 'finished', kind: 'finished', productId: massProduct, commercialQuantity: 100, netWeightG: 16000, nominalWeightG: 160, weightBasis: 'measured_total', lotCode: 'MASS-FINISHED-QA', manufacturedOn: '2026-10-10', packagedOn: '2026-10-28', expiresOn: '2027-01-10' }], packagingMaterials: [] }, prefix + '-mass-make')
+  const massLot = made.result.derivedLots[0].lotId
+  await command(ids.admin, 'releaseProcessingLot', { lotId: massLot, reason: 'Producto verificado y apto para venta' }, prefix + '-mass-release')
+  const massSell = (id, quantity) => command(ids.admin, 'sale', salePayload({ role: 'admin', cashAmount: quantity * 10, lines: [{ productId: massProduct, quantity, actualUnitPrice: 10 }] }), id)
+  const earlier = `${prefix}-mass-earlier`, toVoid = `${prefix}-mass-void`
+  await massSell(earlier, 10)
+  await massSell(toVoid, 5)
+  const original = (await read('distSales', earlier)).lines[0].allocations
+  const correction = { batchId: massBatch, netWeightG: 14000, discardWeightG: 0, sources: [{ id: sourceLot, consumedG: 14000 }] }
+  const estimate = await command(ids.admin, 'rectifyProcessingMass', { ...correction, preview: true }, `${prefix}-mass-preview`)
+  await command(ids.admin, 'rectifyProcessingMass', { ...correction, revision: estimate.result.revision, reason: 'Corrección verificada por QA', evidenceNote: 'Planilla de pesaje de prueba', explicitConfirmation: true }, `${prefix}-mass-apply`)
+  await command(ids.admin, 'claim', { saleId: earlier, productId: massProduct, kind: 'return', quantity: 3, reason: 'Devolución parcial posterior a la rectificación', method: 'cash', physicalReceiptConfirmed: true, derivedReturnCondition: 'sealed_intact', expectedReturnedQuantity: 0 }, `${prefix}-mass-return`)
+  const returned = await read('distClaims', `${prefix}-mass-return`)
+  const afterClaim = returned.returnedProcessingAllocations[0]
+  assert.equal(afterClaim.assignedWeightG, 420)
+  assert.equal(afterClaim.costCents, 2100)
+  await command(ids.admin, 'voidSale', { saleId: toVoid, reason: 'Venta no entregada, corrección verificada', voidScenario: 'recorded_in_error_never_delivered', physicalCustodyConfirmed: true, custodyLocation: 'central', physicalCustodyNote: 'Cinco paquetes sellados en central', cashRefundAmount: 50 }, `${prefix}-mass-cancel`)
+  await massSell(`${prefix}-mass-new-sale`, 2)
+  const finalLot = await read('distLots', massLot)
+  const newPart = (await read('distSales', `${prefix}-mass-new-sale`)).lines[0].allocations[0].processingAllocation
+  assert.equal(newPart.physicalWeightG, 280)
+  assert.equal(newPart.costCents, 1400)
+  assert.equal(finalLot.quantities.central + 7 + 3 + 2, 100)
+  assert.equal(finalLot.processingPhysicalWeightGRemaining + 980 + 420 + 280, 14000)
+  assert.equal(finalLot.processingCostCentsRemaining + 4900 + 2100 + 1400, 70000)
+  assert.deepEqual((await read('distSales', earlier)).lines[0].allocations, original)
+  assert.equal((await read('distLots', sourceLot)).quantities.central, 3)
+  pass(true, 'Rectificación, devolución parcial, anulación y nueva venta conservan unidades, gramos y centavos')
+  }
 } finally {
   delete process.env.FUNCTIONS_EMULATOR
   delete process.env.SANJOSE_DERIVED_SALES_EMULATOR_TEST

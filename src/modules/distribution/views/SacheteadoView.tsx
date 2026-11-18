@@ -1,3 +1,4 @@
+import { ProcessingMassRectification } from './ProcessingMassRectification'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react'
 import { Field, NumberInput, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
@@ -26,10 +27,14 @@ type DestinationDraft = {
   qualityConfirmed: boolean; qualityReason: string
 }
 type MaterialDraft = { id: string; description: string; quantity: string; damaged: string; costBs: string; expenseId: string }
+function activeMaterials(rows: MaterialDraft[] = []): MaterialDraft[] {
+  return rows.filter(row => Boolean(row.description?.trim() || row.quantity?.trim() || row.costBs?.trim() || row.expenseId?.trim() || (row.damaged?.trim() && Number(row.damaged.replace(',', '.')) !== 0))).map(row => ({ ...row, damaged: row.damaged?.trim() || '0' }))
+}
+
 type CostDraft = { id: string; kind: ProcessingCostComponent['kind']; amountBs: string; expenseId: string; sourceReference: string }
 type Draft = {
   batchId: string; operationId: string; processType: ConfirmProcessingBatchInput['processType']; location: string; sourceProductId: string;
-  processingDate: string; sources: SourceRow[]; destinations: DestinationDraft[]; materials: MaterialDraft[]; costs: CostDraft[]; notes: string; operationPending?: boolean
+  processingDate: string; sources: SourceRow[]; destinations: DestinationDraft[]; materials: MaterialDraft[]; costs: CostDraft[]; notes: string; weightExceptionReason?: string; operationPending?: boolean
 }
 type SubmitState = 'idle' | 'sending' | 'unknown' | 'rejected' | 'confirmed'
 type Tab = 'new' | 'reservations' | 'review' | 'repack' | 'history'
@@ -54,7 +59,7 @@ function readDraft(uid: string, location: string, today: string, preserveSavedLo
     if (!raw) return freshDraft(location, today)
     const parsed = JSON.parse(raw) as Draft
     if (!parsed.batchId || !parsed.operationId || !Array.isArray(parsed.sources) || !Array.isArray(parsed.destinations)) return freshDraft(location, today)
-    return { ...freshDraft(location, today), ...parsed, processType: normalizeProcessingUiType(parsed.processType), location: preserveSavedLocation && typeof parsed.location === 'string' ? parsed.location : location }
+    return { ...freshDraft(location, today), ...parsed, materials: activeMaterials(parsed.materials), processType: normalizeProcessingUiType(parsed.processType), location: preserveSavedLocation && typeof parsed.location === 'string' ? parsed.location : location }
   } catch { return freshDraft(location, today) }
 }
 function persistDraft(uid: string, draft: Draft): boolean {
@@ -87,9 +92,10 @@ function commercialUnitLabel(unitType: DistProduct['unitType'], quantity: number
 }
 
 function suspiciousQuantityMessage(product: DistProduct, quantity: number, nominalWeightG: number, netWeightG: number) {
+  nominalWeightG = Math.round(Number(product.documentedPackageWeightKg || 0) * 1000) || nominalWeightG
   if (!isSuspiciousProcessingQuantity(product.unitType, quantity, nominalWeightG, netWeightG)) return ''
   const label = commercialUnitLabel(product.unitType, quantity)
-  return `Registraste ${quantity} ${label} de ${formatGrams(nominalWeightG)} g, pero el peso neto real total es ${formatGrams(netWeightG)} g. Revisa la cantidad comercial y la unidad del producto antes de confirmar. El sistema no infiere ni corrige la cantidad automáticamente.`
+  return `Con los datos ingresados, cada sachet pesaría aproximadamente ${(netWeightG / quantity).toLocaleString('es-BO', { maximumFractionDigits: 1 })} g, mientras la presentación registrada es de ${nominalWeightG} g. Verifique cantidad y peso antes de confirmar. Registraste ${quantity} ${label} de ${formatGrams(nominalWeightG)} g, pero el peso neto real total es ${formatGrams(netWeightG)} g. Diferencia total: ${formatGrams(Math.abs(netWeightG - quantity * nominalWeightG))} g. Revisa la cantidad comercial y la unidad del producto antes de confirmar. El sistema no infiere ni corrige la cantidad automáticamente.`
 }
 
 export function SacheteadoView({ session, data, reservationTarget = null, onReservationTargetHandled, processingBatchTarget = null, onProcessingBatchTargetHandled }: DistributionViewProps & { reservationTarget?: string | null; onReservationTargetHandled?: () => void; processingBatchTarget?: string | null; onProcessingBatchTargetHandled?: () => void }) {
@@ -273,11 +279,11 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       if ((destination.kind === 'repack_pending' || destination.kind === 'review_hold') && destination.reason.trim().length < 3) throw new Error(`Indica por qué ${target.name} queda inmovilizado.`)
     }
     if (draft.materials.length > 100 || draft.costs.length > 50) throw new Error('Reduce la cantidad de materiales o componentes de costo del proceso.')
-    for (const material of draft.materials) {
+    for (const material of activeMaterials(draft.materials)) {
       const quantityMilli = decimalInputToScaledInteger(material.quantity, 1000)
       const damagedMilli = material.damaged.trim() ? decimalInputToScaledInteger(material.damaged, 1000) : 0
       const costCents = material.costBs.trim() ? decimalInputToScaledInteger(material.costBs, 100) : null
-      if (!material.description.trim() || !quantityMilli || damagedMilli === null || damagedMilli < 0 || damagedMilli > quantityMilli) throw new Error('Revisa descripción, cantidad y envases dañados del material. No se contabiliza el alimento como envase roto.')
+      if (!material.description.trim() || !quantityMilli || damagedMilli === null || damagedMilli < 0 || damagedMilli > quantityMilli) { setStep(2); throw new Error(`Material adicional: completa descripción y cantidad válida; dañados es opcional (0) y no puede superar la cantidad usada. Fila: ${material.description || 'sin descripción'}.`) }
       if (costCents === null && material.costBs.trim()) throw new Error('El costo del material debe tener máximo dos decimales; si es desconocido deja el campo vacío.')
     }
     for (const cost of draft.costs) {
@@ -286,6 +292,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
     }
     reconcileProcessingMass(allocationTotalG, draft.destinations.map(destination => ({ id: destination.id, netWeightG: gramsInput(destination.netWeightG) || 0 })))
     const payload: ConfirmProcessingBatchInput = {
+      weightExceptionReason: draft.weightExceptionReason || undefined,
       batchId: draft.batchId,
       processType: draft.processType,
       sourceProductId: selectedProduct.id,
@@ -311,7 +318,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
           ...(destination.kind === 'courtesy' ? { qualityConfirmed: destination.qualityConfirmed, qualityReason: destination.qualityReason.trim() } : {}),
         }
       }),
-      packagingMaterials: draft.materials.map(material => ({
+      packagingMaterials: activeMaterials(draft.materials).map(material => ({
         id: material.id, description: material.description.trim(), quantityMilli: decimalInputToScaledInteger(material.quantity, 1000)!,
         damagedQuantityMilli: material.damaged.trim() ? decimalInputToScaledInteger(material.damaged, 1000)! : 0,
         costCents: material.costBs.trim() ? decimalInputToScaledInteger(material.costBs, 100)! : null,
@@ -349,7 +356,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
     setError(''); setMessage('')
     let payload: ConfirmProcessingBatchInput
     try { payload = validateAndBuildPayload() } catch (reason) { setError((reason as Error).message); return }
-    if (quantityWarnings.length) { setStep(1); setError(quantityWarnings[0]); return }
+    if (quantityWarnings.length && !(session.role === 'admin' && (draft.weightExceptionReason || '').trim().length >= 12)) { setStep(1); setError(quantityWarnings[0]); return }
     if (warehouseNeedsAdmin) { setError('Este borrador incluye cortesía o descarte, que requieren confirmación de Administración. Se guardó solo en este dispositivo; no se envió al servidor ni reservó stock.'); return }
     const pendingDraft = { ...draft, operationPending: true }
     if (!persistDraft(session.uid, pendingDraft)) { setError('No se pudo guardar el identificador seguro en este dispositivo. No se envió la elaboración; libera espacio o habilita almacenamiento e inténtalo nuevamente.'); return }
@@ -471,6 +478,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       {historyMode === 'repackings' && <ProcessingOperationsView mode="history-repackings" session={session} products={data.products} lots={data.lots} locationOptions={locationOptions} />}
       {historyMode === 'batches' && selectedBatch ? <SectionCard title="Detalle de elaboración" action={<SecondaryButton onClick={() => setSelectedBatch(null)}>Volver al historial</SecondaryButton>}>
         <BatchDetail batch={selectedBatch} products={data.products} locations={locationOptions} />
+        {session.role === "admin" && selectedBatch.status === "confirmed" && selectedBatch.processType === "bagging" && <ProcessingMassRectification key={selectedBatch.id} batch={selectedBatch} />}
         {session.role === 'admin' && data.lots.filter(lot => lot.processingBatchId === selectedBatch.id && lot.processingDestinationKind === 'finished').map(lot => <ProcessingCommercialRelease key={lot.id} lot={lot} />)}
       </SectionCard> : historyMode === 'batches' ? <>
         {loadingHistory && history.length === 0 ? <LoadingState label="Consultando últimas elaboraciones…" /> : historyError ? <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{historyError}<button type="button" className="ml-2 font-bold underline" onClick={() => void refreshHistory()}>Reintentar</button></div> : history.length === 0 ? <EmptyBlock title="Todavía no hay elaboraciones" description="Las elaboraciones confirmadas aparecerán aquí. Los borradores locales no se mezclan con el historial del servidor." /> : <div className="space-y-2">
@@ -606,7 +614,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
           <ProcessingGuide topic="materials" />
           <details className="rounded-xl border border-slate-200 p-3">
            <summary data-processing-anchor="materials" className="min-h-10 cursor-pointer text-sm font-extrabold text-slate-800">Materiales adicionales (opcional)</summary>
-          <div className="mb-3 mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-600">Bolsas dañadas y pérdida de alimento son registros distintos.</p><SecondaryButton onClick={() => editDraft(current => ({ ...current, materials: [...current.materials, { id: randomId('material'), description: '', quantity: '', damaged: '0', costBs: '', expenseId: '' }] }))}><Plus size={15} />Añadir material</SecondaryButton></div>
+          <div className="mb-3 mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-600">No necesitas completar esta sección si no deseas registrar bolsas, etiquetas u otros materiales. Bolsas dañadas y descarte de alimento son registros distintos.</p><SecondaryButton onClick={() => editDraft(current => ({ ...current, materials: [...current.materials, { id: randomId('material'), description: '', quantity: '', damaged: '0', costBs: '', expenseId: '' }] }))}><Plus size={15} />Añadir material</SecondaryButton></div>
           {draft.materials.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">No se agregaron materiales. La elaboración puede continuar sin llenar esta sección.</p> : <div className="space-y-3">{draft.materials.map(material => <article key={material.id} className="grid min-w-0 gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-2">
             <Field label="Material"><TextInput value={material.description} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, description: event.target.value } : row) }))} placeholder="Bolsa, etiqueta…" /></Field>
             <div className="grid grid-cols-2 gap-2"><Field label="Usado"><NumberInput step="0.001" min="0.001" value={material.quantity} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, quantity: event.target.value } : row) }))} /></Field><Field label="Dañado"><NumberInput step="0.001" min="0" value={material.damaged} onChange={event => editDraft(current => ({ ...current, materials: current.materials.map(row => row.id === material.id ? { ...row, damaged: event.target.value } : row) }))} /></Field></div>
@@ -657,12 +665,13 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
           <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-950">Los lotes derivados permanecen pendientes de liberación comercial; Administración los revisa y usa «Liberar para despacho y venta» desde el historial. Materiales y costos auxiliares son informativos; no se capitalizan ni alteran Egresos o Resultado.</p>
           <Field label="Notas del proceso"><TextArea value={draft.notes} onChange={event => editDraft(current => ({ ...current, notes: event.target.value }))} /></Field>
         </SectionCard>
+        {quantityWarnings.length > 0 && session.role === 'admin' && <Field label="Excepción administrativa de peso: motivo documentado (mínimo 12 caracteres)"><TextArea value={draft.weightExceptionReason || ''} onChange={event => editDraft(current => ({ ...current, weightExceptionReason: event.target.value }))} /></Field>}
         <SectionCard title="Identificadores y borrador local">
           <p className="break-all text-[11px] text-slate-500">Elaboración: {draft.batchId}<br />Operación: {draft.operationId}</p>
            <div data-processing-anchor="save-draft" className="mt-2 flex flex-wrap gap-2"><SecondaryButton onClick={() => { if (persistDraft(session.uid, draft)) setMessage('Borrador guardado solo en este dispositivo. No reservó ni consumió stock.'); else setError('No se pudo guardar el borrador en este dispositivo.') }}><Save size={15} />Guardar borrador</SecondaryButton><span className="self-center text-[11px] font-semibold text-slate-500">El borrador no cambia inventario. Se vuelve a validar contra los lotes actuales al confirmar.</span></div>
         </SectionCard>
         {warehouseNeedsAdmin && <div role="status" className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Esta elaboración contiene una cortesía o descarte que debe confirmar Administración. El borrador permanece local; no hay solicitud de aprobación enviada.</div>}
-         <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><div data-processing-anchor="confirm"><PrimaryButton full disabled={Boolean(massError) || quantityWarnings.length > 0 || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton>{quantityWarnings.length > 0 && <p className="mt-2 text-xs font-extrabold text-rose-800">Corrige la cantidad comercial antes de confirmar.</p>}</div></div>
+         <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setStep(2)}><ChevronLeft size={16} />Volver</SecondaryButton><div data-processing-anchor="confirm"><PrimaryButton full disabled={Boolean(massError) || (quantityWarnings.length > 0 && !(session.role === 'admin' && (draft.weightExceptionReason || '').trim().length >= 12)) || warehouseNeedsAdmin || submitState === 'sending' || submitState === 'unknown'} onClick={() => void submit()}>{submitState === 'sending' ? 'Esperando servidor…' : <><ShieldCheck size={16} />Confirmar elaboración</>}</PrimaryButton>{quantityWarnings.length > 0 && <p className="mt-2 text-xs font-extrabold text-rose-800">Corrige la cantidad comercial antes de confirmar.</p>}</div></div>
       </div>}
 
       {step < 3 && <div className="grid grid-cols-2 gap-2"><SecondaryButton full disabled={step === 0} onClick={() => setStep(value => Math.max(0, value - 1))}><ChevronLeft size={16} />Anterior</SecondaryButton><PrimaryButton full onClick={() => setStep(value => Math.min(3, value + 1))}>Continuar<ChevronRight size={16} /></PrimaryButton></div>}
