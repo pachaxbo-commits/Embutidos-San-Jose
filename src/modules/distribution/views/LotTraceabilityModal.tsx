@@ -199,6 +199,7 @@ export function LotTraceabilityModal(props: LotTraceabilityModalProps) {
                     <div className="min-w-0">
                       <span className="block break-words font-extrabold text-slate-900">Lote {res.lotCode}</span>
                       <span className="block break-words font-bold text-slate-800">{productName}</span>
+                      {res.processingBatchId && <span className="block break-words text-xs text-slate-600">Envasado {res.packagedOn || res.createdAt?.slice(0, 10)} · Elaboración {res.processingBatchId.slice(-8)}</span>}
                       <p className="mt-1 break-words text-[10px] text-slate-500">
                         {currentStock > 0
                           ? `${formatQty(currentStock, res.unitType)} disponibles`

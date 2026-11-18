@@ -230,7 +230,7 @@ try {
   await rejectSourceCase('expired', { expiresOn: '2026-10-27' }, 'vencido')
   await rejectSourceCase('quarantined', { quarantined: true }, 'vencido, en cuarentena')
   await rejectSourceCase('pending-origin', { pendingOrigins: { central: [{ exceptionId: `${prefix}-pending-origin`, accountingLotId: `${prefix}-pending-origin-lot`, sourceMovementId: 'accounting-only-reference', physicalOriginConfirmed: false, quantity: 1 }] } }, 'origen físico pendiente')
-  await rejectSourceCase('insufficient', {}, 'no tiene cantidad libre suficiente', 11)
+  await rejectSourceCase('insufficient', {}, 'no tiene suficiente existencia disponible', 11)
 
   const wrongSkuProduct = `${prefix}-wrong-sku`
   await fixtureProduct(wrongSkuProduct, 'kg', 3); await fixtureLot(wrongSkuProduct, `${prefix}-wrong-sku-lot`, 'central', 10, 3)
@@ -313,6 +313,72 @@ try {
   const sameBatchMovements = await root.collection('distStockMovements').where('batchId', '==', retryBatchId).get()
   pass(sameBatchRace.every(op => op.status === 'confirmed') && sameBatchRace.filter(op => op.result?.duplicate).length === 1 && (await read('distBalances', `central__${retryProduct}`)).quantity === 0 && sameBatchMovements.docs.filter(s => s.data().type === 'processing_consumption').length === 1, 'dos operationId concurrentes con batchId y huella iguales confirman una sola elaboración y un solo consumo')
   console.log(`processing batches emulator: ${checks} checks PASS`)
+
+  const continuationSource = prefix + '-continuation-source'
+  const continuationProduct = prefix + '-continuation-product'
+  const continuationLot = prefix + '-continuation-source-lot'
+  await fixtureProduct(continuationSource, 'kg', 5)
+  await fixtureProduct(continuationProduct, 'package', 999, 1)
+  await fixtureLot(continuationSource, continuationLot, 'central', 30, 5)
+  const continuationPayload = (batchId, grams, count, continuePhysicalLot = false) => ({
+    batchId, processType: 'bagging', sourceProductId: continuationSource, location: 'central',
+    processingDate: '2026-11-17', inputWeightG: grams,
+    sourceAllocations: [{ lotId: continuationLot, quantity: grams / 1000, measuredNetWeightG: grams }],
+    destinations: [{ id: 'finished', kind: 'finished', productId: continuationProduct, commercialQuantity: count, netWeightG: grams, nominalWeightG: 1000, weightBasis: 'measured_total', lotCode: '171126', manufacturedOn: '2026-11-16', packagedOn: '2026-11-17', expiresOn: '2026-12-17', ...(continuePhysicalLot ? { continuePhysicalLot: true } : {}) }],
+  })
+  const first = await run(ids.admin, 'confirmProcessingBatch', continuationPayload(prefix + '-continuation-first', 10100, 10))
+  const second = continuationPayload(prefix + '-continuation-second', 7080, 7, true)
+  const missingConfirmation = continuationPayload(prefix + '-continuation-unconfirmed', 7080, 7)
+  const blocked = await run(ids.admin, 'confirmProcessingBatch', missingConfirmation, undefined, 'rejected')
+  assert.match(blocked.error, /Confirma.*mismo lote físico/)
+  const incompatible = continuationPayload(prefix + '-continuation-incompatible', 7080, 7, true)
+  incompatible.destinations[0].expiresOn = '2026-12-18'
+  const conflict = await run(ids.admin, 'confirmProcessingBatch', incompatible, undefined, 'rejected')
+  assert.match(conflict.error, /vencimiento no coincide/)
+  const next = await run(ids.admin, 'confirmProcessingBatch', second)
+  assert.notEqual(first.result.derivedLots[0].lotId, next.result.derivedLots[0].lotId)
+  const attemptAgain = await run(ids.admin, 'confirmProcessingBatch', second)
+  assert.equal(attemptAgain.result.duplicate, true)
+  const [firstLot, secondLot] = await Promise.all([first, next].map(async op => (await root.collection('distLots').doc(op.result.derivedLots[0].lotId).get()).data()))
+  assert.equal(firstLot.lotCode, secondLot.lotCode)
+  assert.notEqual(firstLot.processingBatchId, secondLot.processingBatchId)
+  assert.deepEqual([firstLot.processingPhysicalWeightGRemaining, secondLot.processingPhysicalWeightGRemaining], [10100, 7080])
+  assert.deepEqual([firstLot.processingCostTotalCents, secondLot.processingCostTotalCents], [5050, 3540])
+  assert.equal((await root.collection('distBalances').doc('central__' + continuationProduct).get()).data().quantity, 17)
+  assert.equal((await root.collection('distLots').doc(continuationLot).get()).data().quantities.central, 12.82)
+  assert.ok(!(await root.collection('distProcessingBatches').doc(incompatible.batchId).get()).exists)
+  for (const lot of [firstLot, secondLot]) await run(ids.admin, 'releaseProcessingLot', { lotId: lot.id, reason: 'Producto apto verificado por QA' })
+  const corrected = { batchId: second.batchId, netWeightG: 7000, discardWeightG: 0, sources: [{ id: continuationLot, consumedG: 7000 }] }
+  const preview = await run(ids.admin, 'rectifyProcessingMass', { ...corrected, preview: true })
+  await run(ids.admin, 'rectifyProcessingMass', { ...corrected, revision: preview.result.revision, explicitConfirmation: true, reason: 'Peso físico corregido en QA', evidenceNote: 'Planilla de pesaje y lote fuente verificados' })
+  assert.equal((await read('distLots', firstLot.id)).processingPhysicalWeightGRemaining, 10100)
+  assert.equal((await read('distLots', secondLot.id)).processingPhysicalWeightGRemaining, 7000)
+  const matchingLots = await getDocs(query(collection(authDb(ids.admin), 'restaurants', 'sanjose', 'distLots'), where('lotCode', '==', '171126'), where('productId', '==', continuationProduct)))
+  assert.deepEqual(new Set(matchingLots.docs.map(doc => doc.id)), new Set([firstLot.id, secondLot.id]))
+  const continuationRoute = prefix + '-continuation-route'
+  const continuationSeller = prefix + '-continuation-seller'
+  await root.collection('distRoutes').doc(continuationRoute).set({ id: continuationRoute, name: 'Continuación QA', active: true })
+  await root.collection('members').doc(continuationSeller).set({ role: 'distributor', routeId: continuationRoute, active: true, displayName: 'Distribuidor QA' })
+  const dispatchId = prefix + '-continuation-dispatch'
+  await run(ids.admin, 'dispatch', { warehouseId: 'central', routeId: continuationRoute, routeName: 'Continuación QA', distributorUid: continuationSeller, distributorName: 'Distribuidor QA',
+    lines: [{ productId: continuationProduct, productName: 'Sachet QA', unitType: 'package', quantity: 2, normalQuantity: 2, dispatchMerma: 0, allocationsRequested: [firstLot, secondLot].map(lot => ({ lotId: lot.id, quantity: 1 })) }],
+  }, dispatchId)
+  const dispatched = (await read('distDispatches', dispatchId)).lines[0].allocations
+  assert.deepEqual(new Set(dispatched.map(row => row.lotId)), new Set([firstLot.id, secondLot.id]))
+  assert.equal((await read('distBalances', 'route__' + continuationRoute + '__' + continuationProduct)).quantity, 2)
+  const saleId = prefix + '-continuation-sale'
+  await run(ids.admin, 'sale', { sourceLocation: 'centralWarehouse', routeId: 'administracion', routeName: 'Administración', lines: [{ productId: continuationProduct, quantity: 12, actualUnitPrice: 10 }], cashAmount: 120, qrAmount: 0, creditAmount: 0, paymentKind: 'cash' }, saleId)
+  const sold = (await read('distSales', saleId)).lines[0].allocations
+  assert.deepEqual(new Set(sold.map(row => row.lotId)), new Set([firstLot.id, secondLot.id]))
+  assert.deepEqual(new Set(sold.map(row => row.processingAllocation.batchId)), new Set([firstLot.processingBatchId, secondLot.processingBatchId]))
+  assert.equal(sold.reduce((sum, row) => sum + row.quantity, 0), 12)
+  const claimId = prefix + '-continuation-return'
+  await run(ids.admin, 'claim', { saleId, productId: continuationProduct, kind: 'return', quantity: 12, reason: 'Devolución verificada de ambos batches', method: 'cash', physicalReceiptConfirmed: true, derivedReturnCondition: 'sealed_intact', expectedReturnedQuantity: 0 }, claimId)
+  const returned = (await read('distClaims', claimId)).returnedProcessingAllocations
+  assert.equal(returned.length, 2)
+  assert.equal(returned.reduce((sum, row) => sum + row.assignedWeightG, 0), sold.reduce((sum, row) => sum + row.processingAllocation.physicalWeightG, 0))
+  assert.equal(returned.reduce((sum, row) => sum + row.costCents, 0), sold.reduce((sum, row) => sum + row.processingAllocation.costCents, 0))
+  console.log('PASS continuación de lote: 17 paquetes, lotes internos independientes, 17180 g, 8590 centavos, conflicto y reintento seguros')
 } finally {
   await env.cleanup()
   await adminApp.delete()

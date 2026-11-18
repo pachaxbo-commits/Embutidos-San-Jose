@@ -5530,7 +5530,7 @@ handlers.confirmProcessingBatch = async (o, p) => {
     check(validDate(raw.expiresOn) && raw.expiresOn >= raw.packagedOn, `El vencimiento de ${target.name} debe ser válido y no anterior a la fecha de embolsado.`);
     const lotCode = String(raw.lotCode || '').trim();
     check(lotCode.length > 0 && lotCode.length <= 80, `Indica el código de lote derivado para ${target.name}.`);
-    const destination = { id, kind, productId, commercialUnit: target.unitType, commercialQuantity: roundAt(commercialQuantity, quantityPrecision(target)), netWeightG, ...(raw.nominalWeightG === undefined ? {} : { nominalWeightG: Number(raw.nominalWeightG) }), weightBasis: raw.weightBasis || (target.unitType === 'kg' ? 'measured_total' : 'documented_average'), lotCode, manufacturedOn: raw.manufacturedOn, packagedOn: raw.packagedOn, expiresOn: raw.expiresOn, ...(raw.reason ? { reason: String(raw.reason).trim() } : {}), ...(kind === 'courtesy' ? { qualityConfirmedBy: o.actor, qualityConfirmedAt: o.now, qualityReason: String(raw.qualityReason).trim() } : {}), approvalStatus: kind === 'finished' ? 'not_required' : kind === 'courtesy' ? 'approved' : 'pending' };
+    const destination = { id, kind, productId, commercialUnit: target.unitType, commercialQuantity: roundAt(commercialQuantity, quantityPrecision(target)), netWeightG, ...(raw.nominalWeightG === undefined ? {} : { nominalWeightG: Number(raw.nominalWeightG) }), weightBasis: raw.weightBasis || (target.unitType === 'kg' ? 'measured_total' : 'documented_average'), lotCode, ...(raw.continuePhysicalLot === true ? { continuePhysicalLot: true } : {}), manufacturedOn: raw.manufacturedOn, packagedOn: raw.packagedOn, expiresOn: raw.expiresOn, ...(raw.reason ? { reason: String(raw.reason).trim() } : {}), ...(kind === 'courtesy' ? { qualityConfirmedBy: o.actor, qualityConfirmedAt: o.now, qualityReason: String(raw.qualityReason).trim() } : {}), approvalStatus: kind === 'finished' ? 'not_required' : kind === 'courtesy' ? 'approved' : 'pending' };
     destinations.push(destination);
     targetProducts.set(productId, target);
   }
@@ -5634,7 +5634,25 @@ handlers.confirmProcessingBatch = async (o, p) => {
     const targetEntry = await o.loadStock(target.id, loc);
     check(!targetEntry.lots.some(lot => lot.legacy || lot.synthetic || /^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`)), `El SKU ${target.name} tiene saldo histórico sin lotes conciliados; no se creó inventario derivado.`);
     const lotId = `processing_${sha256(`${batchId}:${destination.id}`).slice(0, 40)}`;
-    check(!targetEntry.lots.some(lot => lot.lotCode === destination.lotCode && lot.manufacturedOn === destination.manufacturedOn), `Ya existe el lote ${destination.lotCode} para ${target.name}.`);
+    const sameCode = targetEntry.lots.filter(lot => String(lot.lotCode || '').trim().toUpperCase() === destination.lotCode.toUpperCase());
+    if (p.processType !== 'bagging' || destination.kind !== 'finished') {
+      check(!sameCode.some(lot => lot.manufacturedOn === destination.manufacturedOn), `Ya existe el lote ${destination.lotCode} para ${target.name}.`);
+    } else if (sameCode.length || destination.continuePhysicalLot) {
+      check(sameCode.length > 0, 'El lote que intentas continuar ya no existe. Revisa el código.');
+      const originIds = [...new Set(destinationSourceAllocations[index].map(row => row.sourceLotId))].sort();
+      for (const previous of sameCode) {
+        check(previous.processingBatchId && previous.processingBatchId !== batchId && previous.processingDestinationKind === 'finished'
+          && !previous.derivedReturn && !previous.processingRepackId && !previous.legacy && !previous.quarantined
+          && previous.unitType === target.unitType, 'El código pertenece a un lote que no es compatible con una continuación de sacheteado.');
+        check(previous.lotCode === sameCode[0].lotCode, 'El código tiene variantes históricas. Revisa la identificación antes de continuar.');
+        check(previous.manufacturedOn === destination.manufacturedOn, 'La fecha de elaboración no coincide con el lote físico existente.');
+        check(previous.expiresOn === destination.expiresOn, 'El vencimiento no coincide con el lote físico existente.');
+        const previousOriginIds = [...new Set(previous.processingSourceLotIds || [])].sort();
+        check(originIds.length > 0 && JSON.stringify(previousOriginIds) === JSON.stringify(originIds), 'Los lotes fuente no coinciden con el origen del lote físico existente.');
+      }
+      check(destination.continuePhysicalLot, 'El código ya existe. Confirma que esta producción continúa el mismo lote físico.');
+      destination.lotCode = sameCode[0].lotCode;
+    }
     check(!await o.read('distLots', lotId), `El identificador de lote derivado ${lotId} ya existe.`);
     const unitCost = costCents === null ? null : roundAt((costCents / 100) / destination.commercialQuantity, 6);
     const heldKey = destination.kind === 'courtesy' ? 'courtesy' : destination.kind === 'repack_pending' ? 'repackPending' : destination.kind === 'review_hold' ? 'reviewHold' : null;

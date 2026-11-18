@@ -22,6 +22,7 @@ import { Modal } from '../../../components/ui/Modal'
 
 type SourceRow = { lotId: string; quantityKg: string }
 type DestinationDraft = {
+  continuePhysicalLot?: boolean
   id: string; kind: ProcessingDestinationKind; productId: string; commercialQuantity: string; netWeightG: string; nominalWeightG: string;
   lotCode: string; manufacturedOn: string; packagedOn: string; expiresOn: string; weightBasis: ProcessingWeightBasis; reason: string;
   qualityConfirmed: boolean; qualityReason: string
@@ -237,7 +238,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
   }
   const addSource = (lot: DistLot) => editDraft(current => current.sources.some(source => source.lotId === lot.id) ? current : ({ ...current, sources: [...current.sources, { lotId: lot.id, quantityKg: '' }] }))
   const removeSource = (lotId: string) => editDraft(current => ({ ...current, sources: current.sources.filter(source => source.lotId !== lotId) }))
-  const updateDestination = (destinationId: string, patch: Partial<DestinationDraft>) => editDraft(current => ({ ...current, destinations: current.destinations.map(item => item.id === destinationId ? { ...item, ...patch } : item) }))
+  const updateDestination = (destinationId: string, patch: Partial<DestinationDraft>) => editDraft(current => ({ ...current, destinations: current.destinations.map(item => item.id === destinationId ? { ...item, continuePhysicalLot: false, ...patch } : item) }))
   const assignMassDifference = (kind: ProcessingDestinationKind) => {
     if (!(massDifferenceG > 0)) return
     const destination = { ...freshDestination(today), kind, netWeightG: String(massDifferenceG), productId: '', commercialQuantity: '', reason: '' }
@@ -312,7 +313,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
           id: destination.id, kind: destination.kind, productId: target.id, commercialUnit: target.unitType,
           commercialQuantity: Number(destination.commercialQuantity.replace(',', '.')), netWeightG,
           ...(destination.nominalWeightG && gramsInput(destination.nominalWeightG) ? { nominalWeightG: gramsInput(destination.nominalWeightG)! } : {}),
-          lotCode: destination.lotCode.trim(), manufacturedOn: destination.manufacturedOn, packagedOn: destination.packagedOn, expiresOn: destination.expiresOn,
+          lotCode: destination.lotCode.trim(), ...(destination.continuePhysicalLot ? { continuePhysicalLot: true } : {}), manufacturedOn: destination.manufacturedOn, packagedOn: destination.packagedOn, expiresOn: destination.expiresOn,
           weightBasis: target.unitType === 'kg' ? 'measured_total' : destination.weightBasis,
           ...(destination.reason.trim() ? { reason: destination.reason.trim() } : {}),
           ...(destination.kind === 'courtesy' ? { qualityConfirmed: destination.qualityConfirmed, qualityReason: destination.qualityReason.trim() } : {}),
@@ -586,7 +587,8 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
               </div>}
               <div data-processing-anchor={destination.kind === 'discard' ? 'discard' : 'net-weight'}><Field label="Peso neto real medido (g)" required><NumberInput min="1" step="1" value={destination.netWeightG} onChange={event => updateDestination(destination.id, { netWeightG: event.target.value })} placeholder="Ej. 9000" /></Field><ProcessingContextHelp topic={destination.kind === 'discard' ? 'discard' : 'netWeight'} /></div>
               {destination.kind !== 'discard' && <div data-processing-anchor="nominal-weight"><Field label="Peso nominal (g, informativo)"><NumberInput min="1" step="1" value={destination.nominalWeightG} onChange={event => updateDestination(destination.id, { nominalWeightG: event.target.value })} placeholder="Ej. 250" /></Field><ProcessingContextHelp topic="nominalWeight" /></div>}
-              {destination.kind !== 'discard' && <Field label="Lote nuevo" required><TextInput data-processing-anchor="lot-code" maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value })} placeholder="Código de lote" /></Field>}
+              {destination.kind !== 'discard' && <Field label="Código de lote físico" required><TextInput data-processing-anchor="lot-code" maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value })} placeholder="Código de lote" /></Field>}
+              {draft.processType === 'bagging' && destination.kind === 'finished' && data.lots.some(lot => lot.productId === destination.productId && lot.lotCode?.trim().toUpperCase() === destination.lotCode.trim().toUpperCase()) && <label className="flex min-w-0 items-start gap-2 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs"><input type="checkbox" checked={Boolean(destination.continuePhysicalLot)} onChange={event => updateDestination(destination.id, { continuePhysicalLot: event.target.checked })} /><span>Este código ya existe. Confirma que esta elaboración continúa el mismo lote físico. Se conservarán peso, costo y trazabilidad por elaboración.</span></label>}
               {destination.kind !== 'discard' && <Field label="Fecha de elaboración" required><TextInput data-processing-anchor="manufactured-date" type="date" max={today} value={destination.manufacturedOn} onChange={event => updateDestination(destination.id, { manufacturedOn: event.target.value })} /></Field>}
               {destination.kind !== 'discard' && <Field label="Fecha de embolsado" required><TextInput data-processing-anchor="packaged-date" type="date" max={today} value={destination.packagedOn} onChange={event => updateDestination(destination.id, { packagedOn: event.target.value })} /></Field>}
               {destination.kind !== 'discard' && <div data-processing-anchor="expiry-date"><Field label="Vencimiento" required hint="San José define el vencimiento de la presentación terminada; puede ser posterior al lote de granel, pero no anterior al embolsado."><TextInput type="date" value={destination.expiresOn} onChange={event => updateDestination(destination.id, { expiresOn: event.target.value })} /></Field><ProcessingContextHelp topic="expiry" /></div>}
