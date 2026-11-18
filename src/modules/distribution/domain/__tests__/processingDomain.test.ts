@@ -58,3 +58,6 @@ assert.equal(canReverseProcessingBatch({status:'confirmed',reversal:{status:'cle
 assert.equal(canReverseProcessingBatch({status:'confirmed',reversal:{status:'clear',dependencyIds:['sale-1']}}).allowed,false)
 
 console.log('processingDomain: conservación física, gramos, paquetes, costos, reservas, trazabilidad y reversión PASS')
+
+assert.equal(isSuspiciousProcessingQuantity('package', 92, 140, 16120), true)
+assert.equal(isSuspiciousProcessingQuantity('package', 15, 1000, 15083), false)

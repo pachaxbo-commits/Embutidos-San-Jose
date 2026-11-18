@@ -51,6 +51,18 @@ async function main() {
   assert.deepEqual(updated.quantities, { central: 4 }, 'editar metadata no altera stock')
   assert.deepEqual(writes.map(write => write.collection), ['distLots', 'distLotHistory'])
   assert.equal(writes[1].value.reason, 'Corrección de fecha')
+  const derived = { ...originalLot, productId: 'jamon', expiresOn: '2026-11-16', processingBatchId: 'batch', processingDestinationId: 'finished', packagedOn: '2026-10-17', processingCostCentsRemaining: 3766, processingSourceLotIds: ['source'] };
+  const context = { ...operation, read: async col => col === 'distLots' ? derived : { status: 'confirmed', destinations: [{ id: 'finished' }] } };
+  const request = { ...payload, productId: derived.productId, expectedLotCode: derived.lotCode, expectedManufacturedOn: derived.manufacturedOn, expectedExpiresOn: derived.expiresOn, expectedQuantities: derived.quantities, lotCode: derived.lotCode, expiresOn: '2026-12-15', reason: 'Fecha verificada en etiqueta', evidenceNote: 'Foto de etiqueta física y hoja de lote', explicitConfirmation: true };
+  await assert.rejects(handlers.rectifyLotIdentity({ ...context, admin() { throw Error('Sin permiso'); } }, request), /Sin permiso/);
+  await handlers.rectifyLotIdentity(context, request);
+  const [, , lotWrite, audit] = writes;
+  assert.deepEqual(lotWrite.value.quantities, derived.quantities);
+  assert.equal(lotWrite.value.processingCostCentsRemaining, derived.processingCostCentsRemaining);
+  assert.equal(lotWrite.value.processingBatchId, derived.processingBatchId);
+  assert.deepEqual(lotWrite.value.processingSourceLotIds, derived.processingSourceLotIds);
+  assert.equal(audit.value.previous.expiresOn, '2026-11-16');
+  assert.equal(audit.value.next.expiresOn, '2026-12-15');
   console.log('PASS backend rechaza updateLot sin motivo antes de escribir y conserva auditoría/stock')
 }
 

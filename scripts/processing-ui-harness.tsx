@@ -79,7 +79,7 @@ export function Harness() {
   const data = {
     products: [
       { id: 'qa-source-product', restaurantId: 'sanjose', name: 'QA Producto a granel', unitType: 'kg', active: true, productionCost: 5 },
-      { id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 250 g', unitType: 'package', active: true, productionCost: 999 },
+      { id: 'qa-sachet-product', restaurantId: 'sanjose', name: 'QA Sachet 1 kg', unitType: 'package', active: true, productionCost: 999 },
       { id: 'qa-assessment-product', restaurantId: 'sanjose', name: 'QA Paquete para evaluación', unitType: 'package', active: true, productionCost: null },
       { id: 'qa-quantity-source', restaurantId: 'sanjose', name: 'QA Mortadela a granel', category: 'Granel', unitType: 'kg', active: true, productionCost: 5 },
       { id: 'qa-quantity-target', restaurantId: 'sanjose', name: 'QA Mortadela jamonada porcionada 1 kg', category: 'Otros', presentation: 'Bolsa 1 kg', unitType: 'package', documentedPackageWeightKg: 1, active: true, productionCost: 999 },
