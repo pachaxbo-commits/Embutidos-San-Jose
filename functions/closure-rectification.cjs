@@ -105,6 +105,6 @@ function planPreDispatchCollections(original, dispatch, sources, ids) {
   requireValue(changes.length > 0, 'Los cobros revisados no cambian el cierre.');
   return { original, corrected, changes, originalHash: fingerprint(original),
     sourceHash: fingerprint({ dispatch, peers: sorted(peers), assigned: sorted(assigned) }),
-    includedCollectionIds: assigned.map(row => row.id).sort(), addedCollectionIds: [...ids].sort(), sourceDocumentIds };
+    excludedSaleIds: [], includedCollectionIds: assigned.map(row => row.id).sort(), addedCollectionIds: [...ids].sort(), sourceDocumentIds };
 }
 module.exports.planPreDispatchCollections = planPreDispatchCollections;
