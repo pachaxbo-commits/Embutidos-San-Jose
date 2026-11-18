@@ -75,8 +75,17 @@ try {
   await rootDoc.collection('members').doc(sellerUid).set({ role: 'distributor', active: true, routeId, displayName: 'Hugo QA' })
   await rootDoc.collection('distProducts').doc(productId).set({ id: productId, restaurantId: 'sanjose', name: 'Viena QA', unitType: 'kg', active: true, referencePrice: 40, productionCost: 10 })
   const intake = await command(adminUid, 'intake', { lines: [{ productId, quantity: 10, lotCode: 'LOTE-QA', manufacturedOn: dayKey(new Date()), expiresOn: '2027-12-31', productionCost: 10 }], note: 'Ciclo de cierre QA' })
+  const customerId = prefix + '-pre-dispatch-customer'
+  await rootDoc.collection('distReceivables').doc(prefix + '-pre-dispatch-debt').set({
+    customerId, customerName: 'Cliente QA', routeId, sourceType: 'opening_balance', originalAmount: 270,
+    balance: 270, paidAmount: 0, status: 'OPEN', createdAt: now(),
+  })
+  const earlyReceipt = await command(sellerUid, 'collection', { customerId, amount: 252, method: 'cash', cashAmount: 252, qrAmount: 0 })
+  assert.equal((await read('distCollections', earlyReceipt.id)).dispatchId, undefined)
   const dispatched = await command(warehouseUid, 'dispatch', { warehouseId: 'central', routeId, routeName: 'Zona Norte QA', distributorUid: sellerUid, distributorName: 'Hugo QA', lines: [{ productId, quantity: 6, allocationsRequested: [{ lotId: `${intake.id}__0`, quantity: 6 }] }] })
   const dispatchId = dispatched.id, closureId = `closure_${dispatchId}`
+  const activeReceipt = await command(sellerUid, 'collection', { customerId, amount: 18, method: 'qr', cashAmount: 0, qrAmount: 18 })
+  assert.equal((await read('distCollections', activeReceipt.id)).dispatchId, dispatchId)
   await render('distributor', [dispatchId], null)
 
   // La declaración real escribe un documento parcial y NO mueve inventario.
@@ -117,6 +126,8 @@ try {
 
   await command(adminUid, 'closure', { mode: 'money', closure: { dispatchId, status: 'closed', physicalCashDeclared: 0 } })
   assert.equal((await read('distClosures', closureId)).status, 'closed')
+  assert.equal((await read('distClosures', closureId)).cashCollections, 252)
+  assert.equal((await read('distClosures', closureId)).qrCollections, 18)
   assert.equal((await read('distDispatches', dispatchId)).status, 'closed')
   await render('admin', [dispatchId], closureId)
   await command(adminUid, 'closure', { mode: 'money', closure: { dispatchId, status: 'closed', physicalCashDeclared: 0 } }, 'rejected')

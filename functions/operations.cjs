@@ -1,3 +1,4 @@
+const { routeCollectionsForDispatch } = require('./route-collections.cjs');
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { createHash } = require('node:crypto');
 const expensePresetRegistry = require("./expense-presets.json");
@@ -1902,6 +1903,12 @@ async function collection(o, p) {
   const collectionRouteId =
     o.member.role === "distributor" ? o.member.routeId : "administracion";
   check(collectionRouteId, "El cobrador no tiene una ruta asignada.");
+  const activeDispatches = o.member.role === 'distributor'
+    ? (await o.query('distDispatches', 'routeId', collectionRouteId)).filter(d =>
+      d.distributorUid === o.actor && d.dayKey === o.today && d.status === 'open')
+    : [];
+  check(activeDispatches.length <= 1, 'Hay más de un despacho activo para esta jornada. Revisa cuál corresponde antes de registrar el cobro.');
+
   const c = {
     id: o.id,
     ...o.base(),
@@ -1917,6 +1924,7 @@ async function collection(o, p) {
     // El efectivo pertenece a la ruta del usuario que lo recibe. Se conserva
     // aparte la ruta donde nació la deuda para auditoría de la venta original.
     routeId: collectionRouteId,
+    ...(activeDispatches.length ? { dispatchId: activeDispatches[0].id } : {}),
     originRouteId: firstDebt.routeId,
     collectedByUid: o.actor,
     collectedByName: o.member.displayName || o.actor,
@@ -4165,9 +4173,8 @@ async function closure(o, p) {
     "Almacén debe confirmar el retorno antes del cierre.",
   );
   const from = d.createdAt;
-  const collections = (
-    await o.query("distCollections", "routeId", d.routeId)
-  ).filter((x) => x.createdAt >= from);
+  const collections = routeCollectionsForDispatch(d, routeDispatchRows,
+    await o.query('distCollections', 'routeId', d.routeId), o.now);
   const expenses = (await o.query("distExpenses", "routeId", d.routeId)).filter(
     (x) => x.createdAt >= from && !x.voided,
   );
@@ -4246,6 +4253,7 @@ async function closure(o, p) {
     status: "closed",
     closedAt: o.now,
     closureId: id,
+    firstClosedAt: d.firstClosedAt || o.now,
   });
   return c;
 }
@@ -6495,6 +6503,7 @@ handlers.reopen = async (o, p) => {
       ...d,
       status: "open",
       closedAt: "",
+      firstClosedAt: d.firstClosedAt || d.closedAt,
       closureId: "",
     });
   }
@@ -6518,7 +6527,15 @@ handlers.rectifyClosureAttribution = async (o, p) => {
     claims: await o.query('distClaims', 'routeId', original.routeId),
   };
   let plan;
-  try { plan = require('./closure-rectification.cjs').planClosureRectification(original, dispatch, sources); }
+  try {
+    const planner = require('./closure-rectification.cjs');
+    plan = Array.isArray(p.preDispatchCollectionIds)
+      ? planner.planPreDispatchCollections(original, dispatch, {
+        collections: sources.collections,
+        dispatches: await o.query('distDispatches', 'routeId', original.routeId),
+      }, p.preDispatchCollectionIds)
+      : planner.planClosureRectification(original, dispatch, sources);
+  }
   catch(error) { check(false, error.message); }
   check(plan.originalHash === p.expectedOriginalHash && plan.sourceHash === p.expectedSourceHash,
     'El cierre o sus fuentes cambiaron desde la revisión. No se aplicó ninguna rectificación.');
