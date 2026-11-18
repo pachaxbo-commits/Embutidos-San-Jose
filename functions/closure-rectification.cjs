@@ -76,3 +76,35 @@ function planClosureRectification(original, dispatch, sources) {
     sourceDocumentIds:[`distDispatches/${dispatch.id}`,...sources.sales.map(s=>`distSales/${s.id}`),...collections.map(c=>`distCollections/${c.id}`),...expenses.map(e=>`distExpenses/${e.id}`),...claims.map(c=>`distClaims/${c.id}`)].sort()};
 }
 module.exports={planClosureRectification,fingerprint};
+
+function planPreDispatchCollections(original, dispatch, sources, ids) {
+  const { routeCollectionsForDispatch } = require('./route-collections.cjs');
+  requireValue(original?.status === 'closed' && original.warehouseClosedBy && dispatch?.status === 'closed'
+    && !original.rectification && !original.rectificationId && !original.preserveFinancialSnapshot
+    && original.dispatchId === dispatch.id && original.routeId === dispatch.routeId
+    && original.dayKey === dispatch.dayKey && original.distributorUid === dispatch.distributorUid
+    && original.closedAt === dispatch.closedAt, 'El cierre original no admite esta rectificación.');
+  const peers = sources.dispatches.filter(row => row.routeId === dispatch.routeId && row.dayKey === dispatch.dayKey);
+  requireValue(peers.length === 1 && peers[0].id === dispatch.id, 'La jornada tiene otros despachos. Se requiere revisión de atribución.');
+  const assigned = routeCollectionsForDispatch(dispatch, peers, sources.collections, original.closedAt);
+  const baseline = sources.collections.filter(row => row.routeId === dispatch.routeId && row.createdAt >= dispatch.createdAt && row.createdAt <= original.closedAt);
+  const amount = (rows, field, method) => round(rows.reduce((total, row) => total + (Number.isFinite(row[field]) ? row[field] : row.method === method ? Number(row.amount || 0) : 0), 0));
+  const additions = assigned.filter(row => row.createdAt < dispatch.createdAt);
+  requireValue(ids.length > 0 && JSON.stringify([...ids].sort()) === JSON.stringify(additions.map(row => row.id).sort()), 'Los IDs de cobro no coinciden con la evidencia anterior al despacho.');
+  requireValue(JSON.stringify(assigned.filter(row => row.createdAt >= dispatch.createdAt).map(row => row.id).sort()) === JSON.stringify(baseline.map(row => row.id).sort()), 'La atribución de los cobros posteriores al inicio no coincide.');
+  requireValue(original.cashCollections === amount(baseline, 'cashAmount', 'cash') && original.qrCollections === amount(baseline, 'qrAmount', 'qr'), 'Los cobros originales no coinciden con el cierre.');
+  requireValue(Number.isFinite(original.physicalCashDeclared) &&
+    original.expectedCash === round(original.cashSales + (original.voidedCashReceipts || 0) + original.cashCollections - original.cashExpenses + (original.claimCash || 0)) &&
+    original.cashDifference === round(original.physicalCashDeclared - original.expectedCash), 'Los totales originales no concilian.');
+  const corrected = { ...original, cashCollections: amount(assigned, 'cashAmount', 'cash'), qrCollections: amount(assigned, 'qrAmount', 'qr') };
+  corrected.expectedCash = round(original.expectedCash + corrected.cashCollections - original.cashCollections);
+  corrected.cashDifference = round(original.physicalCashDeclared - corrected.expectedCash);
+  const sourceDocumentIds = [...ids].sort().map(id => 'distCollections/' + id);
+  const changes = ['cashCollections', 'qrCollections', 'expectedCash', 'cashDifference'].filter(field => original[field] !== corrected[field])
+    .map(field => ({ field, sourceDocumentIds, before: original[field], after: corrected[field] }));
+  requireValue(changes.length > 0, 'Los cobros revisados no cambian el cierre.');
+  return { original, corrected, changes, originalHash: fingerprint(original),
+    sourceHash: fingerprint({ dispatch, peers: sorted(peers), assigned: sorted(assigned) }),
+    includedCollectionIds: assigned.map(row => row.id).sort(), addedCollectionIds: [...ids].sort(), sourceDocumentIds };
+}
+module.exports.planPreDispatchCollections = planPreDispatchCollections;
