@@ -1128,7 +1128,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
             : <div className="grid max-h-[58vh] min-w-0 gap-2 overflow-y-auto pr-1">
               {matchingActiveLotRows.map(({ lot, physical, available, originPending, status, hasFractionalCountQuantity }) => <article key={lot.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-900">Lote {lot.lotCode || 'sin código registrado'}</p><p className={`mt-1 inline-flex max-w-full rounded-full px-2 py-1 text-[10px] font-black ${status === 'Vencido' ? 'bg-rose-100 text-rose-900' : status === 'Disponible' || status.startsWith('Disponible · trazabilidad incompleta') ? 'bg-emerald-100 text-emerald-900' : 'bg-amber-100 text-amber-900'}`}>{status}</p></div>
+                  <div className="min-w-0"><p className="break-words text-sm font-extrabold text-slate-900">Lote {lot.lotCode || 'sin código registrado'}</p>{lot.processingBatchId && <p className="break-words text-xs text-slate-500">Envasado {lot.packagedOn || lot.createdAt?.slice(0, 10)} · Elaboración {lot.processingBatchId.slice(-8)}</p>}<p className={`mt-1 inline-flex max-w-full rounded-full px-2 py-1 text-[10px] font-black ${status === 'Vencido' ? 'bg-rose-100 text-rose-900' : status === 'Disponible' || status.startsWith('Disponible · trazabilidad incompleta') ? 'bg-emerald-100 text-emerald-900' : 'bg-amber-100 text-amber-900'}`}>{status}</p></div>
                   <strong className="shrink-0 text-sm tabular-nums text-slate-900">{formatQty(physical, lotsProduct.unitType)}</strong>
                 </div>
                 <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
@@ -1165,7 +1165,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
               {matchingExhaustedLots.map((lot) => <article key={lot.id} className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
                 <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="break-words text-sm font-extrabold text-slate-800">Lote {lot.lotCode || 'sin código registrado'}</p>
+                    <p className="break-words text-sm font-extrabold text-slate-800">Lote {lot.lotCode || 'sin código registrado'}</p>{lot.processingBatchId && <p className="break-words text-xs text-slate-500">Envasado {lot.packagedOn || lot.createdAt?.slice(0, 10)} · Elaboración {lot.processingBatchId.slice(-8)}</p>}
                     <span className="mt-1 inline-flex max-w-full rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-black text-slate-700">
                       Lote agotado (0 existencias)
                     </span>

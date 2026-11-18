@@ -16,13 +16,15 @@ const lot = {
 const mode = new URLSearchParams(location.search).get('mode')
 const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const isHeavy = mode === 'weight'
+const isContinuation = mode === 'continuation'
 const net = isHeavy ? '16120' : '15083'
 const session = { uid: 'visual-qa', restaurantId: 'sanjose', restaurantName: 'San José QA', role: 'admin', warehouseId: 'central', routeId: null, dayKeys: [], setDayKeys: () => {}, can: () => true } as const
 const data = { products: [{ id: 'bulk', name: 'Tocino granel', unitType: 'kg', active: true }, { id: 'output', name: 'Sachet Tocino', unitType: 'package', active: true }], lots: [{ ...lot, id: 'bulk-lot', productId: 'bulk', unitType: 'kg', processingBatchId: undefined, expiresOn: '2999-01-01', quantities: { central: 20 } }], balances: [{ id: 'central', productId: 'bulk', quantity: 20 }], warehouses: [], stockMovements: [], operations: [], expenses: [] }
+if (isContinuation) data.lots.push({ ...lot, id: 'existing-output', productId: 'output', lotCode: '171126', expiresOn: '2999-01-01', unitType: 'package' })
 if (mode) localStorage.setItem('sanjose_processing_draft_v1:visual-qa', JSON.stringify({
   batchId: 'qa-make', operationId: 'qa-confirm', processType: 'bagging', location: 'central', processingDate: day,
   sourceProductId: 'bulk', sources: [{ lotId: 'bulk-lot', quantityKg: String(Number(net) / 1000) }],
-  destinations: [{ id: 'destination', kind: 'finished', productId: 'output', commercialQuantity: isHeavy ? '92' : '15', netWeightG: net, nominalWeightG: isHeavy ? '140' : '1000', lotCode: 'RESULT-QA', manufacturedOn: day, packagedOn: day, expiresOn: '2999-01-01', weightBasis: 'measured_total', reason: '' }],
+  destinations: [{ id: 'destination', kind: 'finished', productId: 'output', commercialQuantity: isHeavy ? '92' : '15', netWeightG: net, nominalWeightG: isHeavy ? '140' : '1000', lotCode: isContinuation ? '171126' : 'RESULT-QA', manufacturedOn: day, packagedOn: day, expiresOn: '2999-01-01', weightBasis: 'measured_total', reason: '' }],
   materials: [{ id: 'blank', description: '', quantity: '', damaged: '0', costBs: '', expenseId: '' }], costs: [], notes: '',
 }))
 const root = createRoot(document.getElementById('root')!)

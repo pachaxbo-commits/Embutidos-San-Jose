@@ -40,7 +40,7 @@ const seedLot = async (productId, lotId, location, quantity, cost) => {
   await ref.set({ id, restaurantId: 'sanjose', locationKind: location === 'central' ? 'central' : location.startsWith('route__') ? 'route' : 'warehouse', warehouseId: location.startsWith('warehouse__') ? location.slice(11) : 'central', routeId: location.startsWith('route__') ? location.slice(7) : '', productId, unitType: 'kg', quantity: Number(current.data()?.quantity || 0) + quantity })
 }
 const batchPayload = ({ batchId, sourceProductId, sourceLotId, sourceQuantity, inputWeightG, outputProductId, packageCount, outputWeightG, discardWeightG, lotCode }) => ({
-  batchId, processType: 'bagging', sourceProductId, location: 'central', processingDate: '2026-10-28', inputWeightG,
+  batchId, weightExceptionReason: 'Pesaje QA documentado para verificar reparto en gramos y centavos', processType: 'bagging', sourceProductId, location: 'central', processingDate: '2026-10-28', inputWeightG,
   sourceAllocations: [{ lotId: sourceLotId, quantity: sourceQuantity, measuredNetWeightG: inputWeightG }],
   destinations: [
     { id: 'finished', kind: 'finished', productId: outputProductId, commercialQuantity: packageCount, netWeightG: outputWeightG, nominalWeightG: 250, weightBasis: 'documented_average', lotCode, manufacturedOn: '2026-10-28', packagedOn: '2026-10-28', expiresOn: '2027-01-10' },

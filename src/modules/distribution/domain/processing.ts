@@ -265,7 +265,7 @@ export interface ConfirmProcessingBatchInput {
   processingDate: string
   note?: string
   sourceAllocations: Array<{ lotId: string; quantity: number; measuredNetWeightG: number }>
-  destinations: Array<Omit<ProcessingDestination, 'sourceAllocations' | 'approvalStatus'> & { lotCode?: string; qualityConfirmed?: boolean; qualityReason?: string }>
+  destinations: Array<Omit<ProcessingDestination, 'sourceAllocations' | 'approvalStatus'> & { lotCode?: string; continuePhysicalLot?: boolean; qualityConfirmed?: boolean; qualityReason?: string }>
   packagingMaterials?: ProcessingPackagingMaterial[]
   costComponents?: ProcessingCostComponent[]
   otherDestinationsG?: number
