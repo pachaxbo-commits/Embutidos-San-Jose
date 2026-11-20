@@ -551,7 +551,7 @@ class Operation {
         const lot = e.lots.find((row) => row.id === part.lotId);
         check(lot && lot.productId === pid, "El lote no pertenece al producto seleccionado.");
         check(processingCourtesyAllowed(lot), 'El lote derivado de elaboración sigue bloqueado para venta o despacho hasta integrar el seguimiento físico y de costo.');
-        check(allowExpired || (!lot.quarantined && (!lot.expiresOn || lot.expiresOn >= this.today)), "El lote está vencido o en cuarentena.");
+        check(!lot.quarantined && (allowExpired || !lot.expiresOn || lot.expiresOn >= this.today), "El lote está vencido o en cuarentena.");
         check(usable(lot) >= requestedQuantity, lotShortageMessage(lot, requestedQuantity));
         return { lot, quantity: requestedQuantity };
       });
@@ -580,8 +580,7 @@ class Operation {
           usable(l) > 0 &&
           (!lotId || l.id === lotId) &&
           processingCourtesyAllowed(l) &&
-          (allowExpired ||
-            (!l.quarantined && (!l.expiresOn || l.expiresOn >= this.today))),
+          !l.quarantined && (allowExpired || !l.expiresOn || l.expiresOn >= this.today),
       )
       .sort(
         (a, b) =>
@@ -3712,6 +3711,10 @@ async function closure(o, p) {
   const routeClaims = p.mode === 'warehouse'
     ? (await o.query('distClaims', 'routeId', d.routeId)).filter(claim => dispatchSaleIds.has(claim.saleId))
     : [];
+  const routeReplacementMovements = (await Promise.all(routeClaims
+    .filter(claim => claim.kind === 'exchange' && claim.replacement)
+    .map(claim => o.query('distStockMovements', 'refId', claim.id))))
+    .flat().filter(row => row.type === 'exchange' && row.fromLocation === route && !row.reversedAt);
   const derivedClaimQuarantineReceipts = [];
   if (p.mode === "warehouse") {
     o.owns(warehouse);
@@ -3755,7 +3758,35 @@ async function closure(o, p) {
           quarantineTransferMovementIds: movementIds });
         derivedClaimQuarantineReceipts.push(...receiptRows);
       }
-      const expected = e.balances.get(route).quantity;
+      // Traditional claim returns have no processing reservation. Receive them
+      // separately under the same quarantine lot, never as a commercial return.
+      let receivedQuarantine = 0;
+      for (const claim of routeClaims.filter(row => row.productId === pid && !Array.isArray(row.returnedProcessingAllocations))) {
+        const lot = e.lots.find(item => item.id === `${claim.id}__damaged` && item.quarantined);
+        const quantity = Number(lot?.quantities?.[route] || 0);
+        if (!quantity) continue;
+        check(lot && quantity === claim.quantity && !lot.quarantineResolvedAt && !lot.processingBatchId,
+          'La devolución en cuarentena no coincide con el reclamo original.');
+        await o.assertNoActiveReservation(lot, route, 'La devolución tiene reservas que requieren revisión antes de trasladarla.');
+        await o.assertNoActiveReservation(lot, warehouse, 'La devolución tiene reservas en destino que requieren revisión.');
+        const precision = quantityPrecision(e.p);
+        receivedQuarantine = roundAt(receivedQuarantine + quantity, precision);
+        lot.quantities[route] = 0;
+        lot.quantities[warehouse] = roundAt(Number(lot.quantities[warehouse] || 0) + quantity, precision);
+        o.move(e, route, -quantity, precision);
+        o.move(e, warehouse, quantity, precision);
+        // Reopening corrects the commercial receipt, not this completed transfer.
+        o.ledger(pid, quantity, route, warehouse, 'claim_quarantine_transfer', {
+          lotId: lot.id, claimId: claim.id, dispatchId: d.id, quarantined: true,
+        }, precision);
+      }
+      const protectedRouteQuantity = roundAt(e.lots.reduce((sum, lot) => {
+        const held = lot.processingUnavailable?.[route] || {};
+        const reserved = Number(held.courtesy || 0) + Number(held.repackPending || 0) + Number(held.reviewHold || 0);
+        return sum + (lot.quarantined ? Number(lot.quantities?.[route] || 0) : reserved);
+      }, 0), quantityPrecision(e.p));
+      const expected = roundAt(e.balances.get(route).quantity - protectedRouteQuantity, quantityPrecision(e.p));
+      check(expected >= 0, 'El stock protegido de la ruta no concilia con su saldo físico.');
       const returnRow = requested.products?.find((r) => r.productId === pid);
       const previousProduct = previous.products?.find((row) => row.productId === pid);
       const actualRaw = Number(returnRow?.actualReturn);
@@ -3832,18 +3863,20 @@ async function closure(o, p) {
         .reduce((sum, line) => sum + (Number(line.quantity) || 0), 0));
       const courtesySold = quantityRound(productSales.filter((line) => line.saleKind === "courtesy" && line.productId === pid)
         .reduce((sum, line) => sum + (Number(line.quantity) || 0), 0));
-      const signedNormalExpectedReturn = quantityRound(normalLoaded - nominalSold - courtesySold);
+      const replacementQuantity = quantityRound(routeReplacementMovements.filter(row => row.productId === pid).reduce((sum, row) => sum + Number(row.quantity || 0), 0));
+      const signedNormalExpectedReturn = quantityRound(normalLoaded - nominalSold - courtesySold - replacementQuantity);
       const expectedNormalReturn = Math.max(0, signedNormalExpectedReturn);
       // Si las ventas nominales superan la carga normal, esa parte ya fue
       // descontada por los movimientos de venta. No volver a descontarla como
       // dispatch_merma_sale ni permitir un retorno normal negativo.
       const nominalDispatchMermaInSales = quantityRound(Math.min(dispatchMermaSent, Math.max(0, nominalSold - normalLoaded)));
-      const dispatchMermaRemainingAfterNominalSales = quantityRound(Math.max(0, dispatchMermaSent - nominalDispatchMermaInSales));
+      const dispatchMermaUsedForReplacements = quantityRound(Math.min(replacementQuantity, Math.max(0, dispatchMermaSent - nominalDispatchMermaInSales), Math.max(0, -signedNormalExpectedReturn - nominalDispatchMermaInSales)));
+      const dispatchMermaRemainingAfterNominalSales = quantityRound(Math.max(0, dispatchMermaSent - nominalDispatchMermaInSales - dispatchMermaUsedForReplacements));
       const expectedPhysicalRouteBalance = quantityRound(Math.max(0, signedNormalExpectedReturn + dispatchMermaSent));
       const precisionTolerance = precision === 3 ? 0.001 : 0.01;
       const unreturnedDispatchMerma = quantityRound(Math.max(
         0,
-        dispatchMermaSent - nominalDispatchMermaInSales - recoverableMerma - waste,
+        dispatchMermaRemainingAfterNominalSales - recoverableMerma - waste,
       ));
       const embeddedMermaInSalesConfirmed = returnRow?.dispatchMermaEmbeddedInSalesConfirmed === true;
       // Merma adicional solo se concilia con ventas cuando el saldo transaccional
@@ -3858,7 +3891,7 @@ async function closure(o, p) {
         && recoverableMerma + waste <= dispatchMermaSent + precisionTolerance
         && (unreturnedDispatchMerma <= precisionTolerance || embeddedMermaInSalesConfirmed);
       const canSettleAboveNormalSales = !legacySemantics && e.p.unitType === "kg"
-        && dispatchMermaSent > 0 && nominalSold > normalLoaded
+        && dispatchMermaSent > 0 && nominalSold + replacementQuantity > normalLoaded
         && courtesySold === 0 && signedNormalExpectedReturn < 0
         && -signedNormalExpectedReturn <= dispatchMermaSent + precisionTolerance
         && nominalDispatchMermaInSales <= dispatchMermaSent + precisionTolerance
@@ -4046,6 +4079,10 @@ async function closure(o, p) {
       }
       const sellableOverage = legacySemantics ? overage : quantityRound(Math.max(0, actual + recoverableMerma - adjustedExpected));
       if (sellableOverage > 0) {
+        check(protectedRouteQuantity === 0 && receivedQuarantine === 0 && !e.lots.some(lot => lot.quarantined
+          && routeClaims.some(claim => lot.id === `${claim.id}__damaged`)
+          && Number(lot.quantities?.[warehouse] || 0) > 0),
+        'Separa las devoluciones en cuarentena y reservas del retorno antes de registrar un sobrante vendible.');
         const lotId = `${o.id}__surplus_${pid}`;
         e.lots.push({
           id: lotId,
@@ -4099,6 +4136,10 @@ async function closure(o, p) {
           .filter((l) => l.productId === pid)
           .reduce((sum, line) => sum + line.quantity, 0)),
         expectedReturn: adjustedExpected,
+        ...(replacementQuantity ? { replacementQuantity } : {}),
+        ...(receivedQuarantine ? { claimQuarantineReceived: receivedQuarantine } : {}),
+        ...(protectedRouteQuantity ? { protectedRouteQuantity } : {}),
+        ...(dispatchMermaUsedForReplacements ? { dispatchMermaUsedForReplacements } : {}),
         ...(dispatchMermaSent > 0 ? {
           normalExpectedReturn: expectedNormalReturn,
           dispatchMermaSent,
@@ -6362,6 +6403,64 @@ async function refreshCreditStatus(db, root, customerId) {
 }
 module.exports.refreshCreditStatus = refreshCreditStatus;
 
+
+handlers.rectifyQuarantineClosureConsumption = async (o, p) => {
+  o.admin();
+  check(typeof p.reason === 'string' && p.reason.trim().length >= 12 && p.explicitConfirmation === true, 'Confirma y documenta la rectificación física.');
+  const lotId = safeId(p.lotId), movementId = safeId(p.movementId), claimId = safeId(p.claimId);
+  const [lot, movement, claim] = await Promise.all([
+    o.read('distLots', lotId), o.read('distStockMovements', movementId), o.read('distClaims', claimId),
+  ]);
+  check(lot?.quarantined && lot.id === claimId + '__damaged' && !lot.quarantineResolvedAt && !lot.derivedReturn
+    && !lot.processingBatchId && !lot.physicalClosureRectificationId && claim?.productId === lot.productId
+    && ['exchange', 'return'].includes(claim.kind), 'No se verificó una devolución tradicional en cuarentena pendiente.');
+  const sale = await o.read('distSales', claim.saleId);
+  const dispatch = sale?.dispatchId ? await o.read('distDispatches', sale.dispatchId) : null;
+  const closure = dispatch ? await o.read('distClosures', 'closure_' + dispatch.id) : null;
+  const loc = location('route', claim.routeId);
+  check(dispatch?.status === 'closed' && closure?.status === 'closed' && dispatch.routeId === claim.routeId
+    && closure.products?.some(row => row.dispatchMermaSaleMovementId === movementId && row.productId === lot.productId)
+    && movement?.dispatchId === dispatch.id && movement.productId === lot.productId && movement.fromLocation === loc
+    && movement.type === 'dispatch_merma_sale' && !movement.reversedAt && !movement.physicalClosureRectificationId,
+  'No se verificó el movimiento original del cierre.');
+  const entry = await o.loadStock(lot.productId, loc);
+  const precision = quantityPrecision(entry.p);
+  const parts = movement.allocations || [];
+  const protectedParts = parts.filter(row => row.lotId === lot.id);
+  const kept = parts.filter(row => row.lotId !== lot.id);
+  const consumed = roundAt(protectedParts.reduce((sum, row) => sum + Number(row.quantity || 0), 0), precision);
+  const remaining = roundAt(kept.reduce((sum, row) => sum + Number(row.quantity || 0), 0), precision);
+  check(consumed > 0 && consumed === claim.quantity && remaining + consumed > 0
+    && roundAt(remaining + consumed, precision) === movement.quantity && movement.routeDelta === -movement.quantity
+    && protectedParts.every(row => !row.processingAllocation && !row.originReferences)
+    && Object.values(lot.quantities || {}).every(value => Number(value) === 0),
+  'El saldo o las asignaciones cambiaron desde el cierre auditado.');
+  const movements = (await o.query('distStockMovements', 'productId', lot.productId))
+    .filter(row => row.lotId === lot.id || row.allocations?.some(part => part.lotId === lot.id));
+  const receipt = movements.find(row => row.type === 'customer_return' && row.refId === claimId && row.toLocation === loc && row.quantity === consumed);
+  check(receipt && movements.length === 2, 'Existe otro movimiento de cuarentena o falta la recepción original.');
+  const balance = entry.balances.get(loc);
+  check(roundAt(entry.lots.reduce((sum, row) => sum + Number(row.quantities?.[loc] || 0), 0), precision) === balance.quantity,
+    'El balance actual de ruta no coincide con sus lotes.');
+  const expectedHash = sha256({ lot, movement, claim, receipt, balance, closure });
+  check(p.expectedSourceHash === expectedHash, 'El inventario o la evidencia cambió desde la revisión.');
+  const held = entry.lots.find(row => row.id === lot.id);
+  check(held?.quarantined, 'Falta el lote de cuarentena.');
+  await o.assertNoActiveReservation(held, loc, 'La reserva de cuarentena requiere revisión especializada.');
+  const before = { lot: structuredClone(held), movement, balance: structuredClone(balance) };
+  held.quantities[loc] = consumed;
+  held.physicalClosureRectificationId = o.id;
+  o.move(entry, loc, consumed, precision);
+  const corrected = { ...movement, quantity: remaining, routeDelta: remaining ? -remaining : 0, allocations: kept,
+    physicalClosureRectificationId: o.id, physicalClosureRectifiedAt: o.now };
+  // Keep the original cost accounting for this historical correction.
+  o.put('distStockMovements', movement.id, corrected);
+  o.put('distLotHistory', o.id, { id: o.id, ...o.base(), lotId, claimId, movementId, closureId: closure.id,
+    action: 'closure_quarantine_consumption_rectified', reason: p.reason.trim(), expectedSourceHash: expectedHash,
+    restoredQuantity: consumed, location: loc, previous: before, next: { lot: held, movement: corrected, balance } });
+  return { id: o.id, lotId, restoredQuantity: consumed, location: loc, correctedMovementQuantity: remaining };
+};
+
 handlers.reopen = async (o, p) => {
   o.admin();
   check(p.reason?.trim(), "La razón de la reapertura es obligatoria.");
@@ -6421,6 +6520,7 @@ handlers.reopen = async (o, p) => {
           await o.assertNoActiveReservation(lot, warehouse, "No se puede reabrir: el lote recibido tiene una reserva activa; revisar antes de revertir físicamente la recepción.");
           origins.remove(lot, warehouse, part);
           o.removeProcessingAllocation(lot, warehouse, part);
+          check(!lot.quarantined, "La conciliación histórica contiene un lote en cuarentena. Rectifica primero el movimiento físico.");
           origins.restore(lot, route, part);
           o.restoreProcessingAllocation(lot, route, part);
         }
@@ -6435,16 +6535,18 @@ handlers.reopen = async (o, p) => {
         for (const part of allocations) {
           const lot = e.lots.find((item) => item.id === part.lotId);
           check(lot, "No se puede reabrir: falta un lote original de la ruta.");
+          check(!lot.quarantined, "La conciliación histórica contiene un lote en cuarentena. Rectifica primero el movimiento físico.");
           origins.restore(lot, route, part);
           o.restoreProcessingAllocation(lot, route, part);
         }
         o.move(e, route, movement.quantity);
       } else if (movement.type === "dispatch_merma_sale") {
         const allocations = movement.allocations || [];
-        check(allocations.length > 0, "No se puede reabrir: faltan lotes de la merma adicional conciliada con ventas.");
+        check(allocations.length > 0 || (movement.physicalClosureRectificationId && movement.quantity === 0), "No se puede reabrir: faltan lotes de la merma adicional conciliada con ventas.");
         for (const part of allocations) {
           const lot = e.lots.find((item) => item.id === part.lotId);
           check(lot, "No se puede reabrir: falta un lote de la merma adicional conciliada.");
+          check(!lot.quarantined, "La conciliación histórica contiene un lote en cuarentena. Rectifica primero el movimiento físico.");
           origins.restore(lot, route, part);
         }
         o.move(e, route, movement.quantity);
