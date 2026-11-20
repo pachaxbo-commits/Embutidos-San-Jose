@@ -336,6 +336,43 @@ try {
   pass(legacyMovements.filter(row => row.type === 'dispatch_merma_sale' && !row.reversedAt).reduce((sum, row) => sum + row.quantity, 0) === 0.34, 'la venta antigua produce un único movimiento físico confirmado de 0,34 kg')
 
   console.log(`\n${checks} pruebas de merma de despacho/retorno pasaron.`)
+
+  const qaRoute = prefix + '-exchange-quarantine', qaSeller = prefix + '-exchange-seller', qaProduct = prefix + '-exchange-product'
+  await root.collection('members').doc(qaSeller).set({ role: 'distributor', active: true, routeId: qaRoute })
+  await root.collection('distProducts').doc(qaProduct).set({ id: qaProduct, name: 'Viena QA', unitType: 'kg', active: true, referencePrice: 45, productionCost: 20 })
+  const stock = await command(admin, 'intake', { lines: [{ productId: qaProduct, quantity: 10, lotCode: 'VIENA-QA', manufacturedOn: dayKey(new Date()), expiresOn: '2027-12-31', productionCost: 20 }] })
+  const load = await command(warehouse, 'dispatch', { warehouseId: wh, routeId: qaRoute, routeName: 'Ruta cambio QA', distributorUid: qaSeller, distributorName: 'QA cambio',
+    lines: [{ productId: qaProduct, quantity: 2.6, normalQuantity: 1, dispatchMerma: 1.6, allocationsRequested: [{ lotId: stock.id + '__0', quantity: 2.6 }] }] })
+  const originalSale = await command(qaSeller, 'sale', { sourceLocation: 'route', dispatchId: load.id, routeId: qaRoute, routeName: 'Ruta cambio QA', lines: [{ productId: qaProduct, quantity: 1, actualUnitPrice: 45 }], paymentKind: 'cash', cashAmount: 45, qrAmount: 0, creditAmount: 0 })
+  const exchange = await command(qaSeller, 'claim', { saleId: originalSale.id, kind: 'exchange', productId: qaProduct, quantity: 1, replacementProductId: qaProduct, replacementQuantity: 1, method: 'none', reason: 'Producto defectuoso; cambio del mismo valor.' })
+  const quarantineId = exchange.id + '__damaged', closeId = 'closure_' + load.id
+  assert.equal((await read('distLots', quarantineId)).quantities['route__' + qaRoute], 1)
+  const receipt = { mode: 'warehouse', closure: { dispatchId: load.id, products: [{ productId: qaProduct, actualReturn: 0, returnMerma: 0, returnWaste: 0, physicalReturn: 0,
+    dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'Verificado sobrepeso residual en ventas QA' }] } }
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await command(warehouse, 'closure', receipt)
+    const row = (await read('distClosures', closeId)).products[0]
+    const movement = await read('distStockMovements', row.dispatchMermaSaleMovementId)
+    assert.equal(movement.quantity, 0.6)
+    assert.equal(movement.allocations.some(part => part.lotId === quarantineId), false)
+    assert.equal(row.returnWaste, 0)
+    assert.equal(row.shortage, 0)
+    assert.equal(row.overage, 0)
+    const held = await read('distLots', quarantineId)
+    assert.equal(held.quantities.central, 1)
+    assert.equal(held.quarantined, true)
+    await command(admin, 'closure', { mode: 'money', closure: { dispatchId: load.id, physicalCashDeclared: 45 } })
+    const money = await read('distClosures', closeId)
+    assert.equal(money.expectedCash, 45)
+    assert.equal(money.claimCash, 0)
+    if (cycle === 0) {
+      await command(admin, 'reopen', { closureId: closeId, reason: 'Revisión QA del retorno físico' })
+      assert.equal((await read('distLots', quarantineId)).quantities.central, 1)
+    }
+  }
+  await command(admin, 'resolveQuarantine', { lotId: quarantineId, location: 'central', resolution: 'discarded', reason: 'Desecho autorizado del producto en mal estado' })
+  assert.equal((await read('distLots', quarantineId)).quantities.central, 0)
+  console.log('PASS cambio 1×1, cierre y recierre: 1 kg en cuarentena, 0,6 kg en sobrepeso y Bs 45 en caja hasta descarte administrativo')
 } finally {
   await env.cleanup()
   await app.delete()
