@@ -251,6 +251,7 @@ service cloud.firestore {
           || (request.resource.data.type == 'resolveQuarantine' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyQuarantineInputError' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyQuarantineClosureConsumption' && distAdmin(restaurantId))
+          || (request.resource.data.type == 'rectifySaleUsedForExchange' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyClosureAttribution' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyCollectionCustody' && distAdmin(restaurantId))
           || (request.resource.data.type == 'claim' && (distAdmin(restaurantId) || distributorCanClaimSale(restaurantId)))

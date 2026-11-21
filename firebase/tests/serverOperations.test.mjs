@@ -42,7 +42,7 @@ try {
  ok((await read('distBalances',`central__${pid}`)).quantity===16,'ingreso por lotes suma stock físico')
  const intakeMovements=await root.collection('distStockMovements').where('productId','==',pid).get()
  ok(intakeMovements.docs.some(entry=>entry.data().type==='intake'&&entry.data().responsibleRole==='admin'&&entry.data().responsibleName==='QA administración'),'historial de ingreso conserva rol y nombre del usuario')
- await command(admin,'updateLot',{lotId:`${intake.id}__0`,lotCode:'FUTURO-EDITADO',manufacturedOn:date(-9),expiresOn:date(31),productionCost:5,reason:'Corrección QA'})
+ await command(admin,'updateLot',{lotId:`${intake.id}__0`,lotCode:'FUTURO-EDITADO',manufacturedOn:date(-9),expiresOn:date(31),productionCost:5,reason:'Corrección QA',explicitConfirmation:true,evidenceNote:'Se verificó físicamente la etiqueta del lote QA.'})
  ok((await read('distLots',`${intake.id}__0`)).lotCode==='FUTURO-EDITADO'&&!(await root.collection('distLotHistory').where('lotId','==',`${intake.id}__0`).get()).empty,'edición de lote conserva historial anterior y nuevo')
  await command(admin,'adjustment',{warehouseId:'central',line:{productId:pid,quantity:-1},note:'Merma técnica QA'})
  ok((await read('distBalances',`central__${pid}`)).quantity===15,'ajuste negativo descuenta stock y queda auditado')
@@ -238,6 +238,7 @@ ok(portfolioCollection.result.allocations[0].sourceType==='opening_balance'&&por
  ok((await root.collection('distProducts').doc(pid).get()).exists&&(await root.collection('members').doc(support).get()).exists&&(await root.collection('distWarehouses').doc(wh).get()).exists,'entrega limpia conserva productos, usuarios y almacenes')
  const backup=await root.collection('maintenanceBackups').doc(reset.backupId).get()
  ok(backup.data().status==='complete'&&backup.data().documentCount>0,'respaldo restringido queda completo antes de finalizar la limpieza')
+ fs.mkdirSync('../PACHAX_QA_RESULTS/Embutidos-San-Jose',{recursive:true})
  fs.writeFileSync('../PACHAX_QA_RESULTS/Embutidos-San-Jose/server-operations-result.json',JSON.stringify({passed:true,checks,at:new Date().toISOString()},null,2))
  console.log(`${checks} comprobaciones aprobadas`)
 }finally{await env.cleanup()}

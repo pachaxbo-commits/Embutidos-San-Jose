@@ -3709,7 +3709,8 @@ async function closure(o, p) {
   const sales = eligibleSales.map((sale) => sale.effectiveSnapshot ? { ...sale, ...sale.effectiveSnapshot } : sale);
   const dispatchSaleIds = new Set(settlementSales.map(sale => sale.id));
   const routeClaims = p.mode === 'warehouse'
-    ? (await o.query('distClaims', 'routeId', d.routeId)).filter(claim => dispatchSaleIds.has(claim.saleId))
+    ? (await o.query('distClaims', 'routeId', d.routeId)).filter(claim =>
+      dispatchSaleIds.has(claim.saleId) || claim.dispatchId === d.id)
     : [];
   const routeReplacementMovements = (await Promise.all(routeClaims
     .filter(claim => claim.kind === 'exchange' && claim.replacement)
@@ -6652,6 +6653,116 @@ handlers.rectifyClosureAttribution = async (o, p) => {
   o.put('distClosureRectifications', id, record);
   o.put('distClosures', original.id, {...original,rectificationId:id,rectification:record});
   return {id,closureId:original.id,version:1,originalHash:plan.originalHash,sourceHash:plan.sourceHash};
+};
+
+handlers.rectifySaleUsedForExchange = async (o, p) => {
+  o.admin();
+  check(p.explicitConfirmation === true && typeof p.reason === 'string' && p.reason.trim().length >= 12
+    && typeof p.evidence === 'string' && p.evidence.trim().length >= 8, 'Se requiere motivo, evidencia y confirmación explícita.');
+  const [sale, original, claim] = await Promise.all([
+    o.read('distSales', p.erroneousSaleId), o.read('distSales', p.originalSaleId), o.read('distClaims', p.claimId),
+  ]);
+  check(sale && original && claim && sale.id !== original.id, 'Faltan las ventas o el reclamo indicado.');
+  check(!sale.voidedAt && !sale.latestCorrectionId && !sale.pendingConfirmation
+    && !original.voidedAt && !original.latestCorrectionId,
+    'Una venta indicada ya cambió, fue anulada o está pendiente.');
+  check(Number(sale.revision || 0) === Number(p.erroneousSaleRevision)
+    && Number(original.revision || 0) === Number(p.originalSaleRevision)
+    && Number(claim.revision || 0) === Number(p.claimRevision), 'Una venta o el reclamo cambió desde la vista previa.');
+  const saleLine = sale.lines?.length === 1 ? sale.lines[0] : null;
+  const originalLine = original.lines?.length === 1 ? original.lines[0] : null;
+  const replacement = claim.replacement;
+  const saleAllocations = saleLine?.allocations || [];
+  const replacementAllocations = replacement?.allocations || [];
+  const allocationSignature = allocations => canonicalJson(allocations.map(part => ({
+    lotId: part.lotId || '', lotCode: part.lotCode || '', quantity: Number(part.quantity),
+  })).sort((left, right) => `${left.lotId}:${left.lotCode}`.localeCompare(`${right.lotId}:${right.lotCode}`)));
+  check(claim.kind === 'exchange' && claim.saleId === sale.id && claim.customerId === original.customerId
+    && claim.sellerUid === original.sellerUid && claim.routeId === original.routeId
+    && originalLine?.productId === claim.productId && Number(originalLine.quantity) === Number(claim.quantity)
+    && Number(originalLine.subtotal ?? Number(originalLine.actualUnitPrice || 0) * Number(originalLine.quantity)) === Number(claim.returnedValue)
+    && saleLine?.productId === claim.productId && Number(saleLine.quantity) === Number(replacement?.quantity)
+    && Number(replacement?.quantity) === Number(claim.quantity)
+    && Number(claim.returnedValue) === Number(replacement?.total)
+    && Number(sale.total) === Number(replacement?.total)
+    && Number(sale.cashAmount || 0) + Number(sale.qrAmount || 0) + Number(sale.creditAmount || 0) === Number(sale.total)
+    && saleAllocations.length > 0 && replacementAllocations.length > 0
+    && saleAllocations.reduce((sum, part) => sum + Number(part.quantity || 0), 0) === Number(saleLine.quantity)
+    && replacementAllocations.reduce((sum, part) => sum + Number(part.quantity || 0), 0) === Number(replacement.quantity)
+    && allocationSignature(saleAllocations) === allocationSignature(replacementAllocations)
+    && Number(claim.revenueDelta) === 0 && Number(claim.cashIn) === 0 && Number(claim.cashOut) === 0
+    && Number(claim.qrIn) === 0 && Number(claim.qrOut) === 0,
+  'El reclamo ya cambió o no coincide con una venta de reemplazo 1×1 sin cobro.');
+  check(original.customerId === sale.customerId && original.sellerUid === sale.sellerUid && original.routeId === sale.routeId,
+    'La venta original y la venta registrada por error no pertenecen al mismo cliente, vendedor y ruta.');
+  const closure = await o.read('distClosures', `closure_${sale.dispatchId}`);
+  check(closure?.status === 'closed' && closure.warehouseClosedBy && !closure.rectificationId
+    && closure.dayKey === sale.dayKey && Number.isFinite(Number(closure.cashSales))
+    && Number.isFinite(Number(closure.expectedCash)) && Number.isFinite(Number(closure.physicalCashDeclared))
+    && Number.isFinite(Number(closure.cashDifference)), 'El cierre cambió o no contiene una conciliación financiera completa.');
+  const damagedId = `${claim.id}__damaged`, damagedLot = await o.read('distLots', damagedId);
+  const receipt = await o.read('distStockMovements', `${claim.id}__1`);
+  const routeLocation = location('route', sale.routeId);
+  check(damagedLot?.quarantined && Number(damagedLot.quantities?.[routeLocation]) === Number(claim.quantity)
+    && receipt?.type === 'customer_return' && receipt.quarantined && receipt.lotId === damagedId
+    && Number(receipt.quantity) === Number(claim.quantity), 'La devolución física no coincide con la cuarentena auditada.');
+  check(!await o.read('distSaleCorrections', o.id), 'Esta operación ya tiene una rectificación registrada.');
+  const restoredAllocations = await o.restore(saleLine.productId, routeLocation, saleAllocations);
+  const quantity = Number(saleLine.quantity);
+  o.ledger(saleLine.productId, quantity, null, routeLocation, 'sale_correction', {
+    saleId: sale.id, allocations: restoredAllocations, noCashRefund: true,
+    note: 'Venta creada por error para registrar un cambio; nunca cobrada.',
+  });
+  const correctedSale = { ...sale, total: 0, cashAmount: 0, qrAmount: 0, creditAmount: 0, cashReceived: 0,
+    effectiveSnapshot: { lines: [], total: 0, paymentKind: 'cash', cashAmount: 0, qrAmount: 0, creditAmount: 0, saleKind: 'sale' },
+    latestCorrectionId: o.id, editedAt: o.now, editedBy: o.actor, editReason: p.reason.trim(),
+    voidedAt: o.now, voidedBy: o.actor, voidReason: 'Registrada por error; nunca cobrada; rectificación posterior al cierre.',
+    revision: Number(sale.revision || 0) + 1 };
+  const correctedClaim = { ...claim, saleId: original.id, sourceSaleId: original.id, originalSaleId: original.id,
+    dispatchId: claim.dispatchId || sale.dispatchId,
+    sourceAllocations: structuredClone(originalLine.allocations || []), originCorrectionId: o.id,
+    revision: Number(claim.revision || 0) + 1 };
+  const correctedLot = { ...damagedLot, sourceSaleId: original.id,
+    sourceAllocations: structuredClone(originalLine.allocations || []), originCorrectionId: o.id };
+  const correctedReceipt = { ...receipt, sourceSaleId: original.id,
+    sourceAllocations: structuredClone(originalLine.allocations || []), originCorrectionId: o.id };
+  const productDeltas = new Map();
+  for (const line of [saleLine]) productDeltas.set(line.productId, (productDeltas.get(line.productId) || 0) + Number(line.quantity));
+  const products = (closure.products || []).map(row => productDeltas.has(row.productId)
+    ? { ...row, sold: Number(row.sold) - productDeltas.get(row.productId) } : row);
+  check([...productDeltas].every(([productId]) => products.some(row => row.productId === productId
+    && Number.isFinite(Number(row.sold)) && Number(row.sold) >= 0)), 'El detalle de ventas del cierre no concilia.');
+  const cashAmount = Number(sale.cashAmount || 0), qrAmount = Number(sale.qrAmount || 0), creditAmount = Number(sale.creditAmount || 0);
+  check(Number(closure.cashSales) >= cashAmount && Number(closure.qrSales || 0) >= qrAmount
+    && Number(closure.creditGenerated || 0) >= creditAmount && Number(closure.expectedCash) >= cashAmount,
+  'La venta no está incluida en los importes agregados del cierre.');
+  const correctedClosure = { ...closure, cashSales: Number(closure.cashSales) - cashAmount,
+    qrSales: Number(closure.qrSales || 0) - qrAmount,
+    creditGenerated: Number(closure.creditGenerated || 0) - creditAmount,
+    expectedCash: Number(closure.expectedCash) - cashAmount, cashDifference: Number(closure.cashDifference) + cashAmount,
+    products, saleCorrectionIds: [...(closure.saleCorrectionIds || []), o.id] };
+  const audit = { id: o.id, ...o.base(), kind: 'administrative_uncollected_sale',
+    originalSaleId: original.id, erroneousSaleId: sale.id, claimId: claim.id, closureId: closure.id,
+    reason: p.reason.trim(), evidence: p.evidence.trim(), noCashRefund: true,
+    before: { originalSale: structuredClone(original), erroneousSale: structuredClone(sale), claim: structuredClone(claim),
+      damagedLot: structuredClone(damagedLot), returnMovement: structuredClone(receipt), closure: structuredClone(closure) },
+    after: { originalSale: structuredClone(original), erroneousSale: correctedSale, claim: correctedClaim,
+      damagedLot: correctedLot, returnMovement: correctedReceipt, closure: correctedClosure,
+      stock: { productId: saleLine.productId, restoredQuantity: quantity, allocations: restoredAllocations },
+      cashOut: 0, refund: 0 } };
+  o.put('distSaleCorrections', o.id, audit);
+  o.put('distSales', sale.id, correctedSale);
+  o.put('distClaims', claim.id, correctedClaim);
+  o.put('distLots', damagedId, correctedLot);
+  o.put('distStockMovements', receipt.id, correctedReceipt);
+  o.put('distClosures', closure.id, { ...correctedClosure,
+    saleCorrectionAudit: { operationId: o.id, beforeExpectedCash: closure.expectedCash,
+      afterExpectedCash: correctedClosure.expectedCash, beforeDifference: closure.cashDifference,
+      afterDifference: correctedClosure.cashDifference } });
+  return { operationId: o.id, erroneousSaleId: sale.id, originalSaleId: original.id,
+    claimId: claim.id, closureId: closure.id, expectedCash: correctedClosure.expectedCash,
+    physicalCashDeclared: correctedClosure.physicalCashDeclared, cashDifference: correctedClosure.cashDifference,
+    quarantineQuantity: damagedLot.quantities[routeLocation], refund: 0, cashOut: 0 };
 };
 
 handlers.rectifyCollectionCustody = async (o, p) => {
