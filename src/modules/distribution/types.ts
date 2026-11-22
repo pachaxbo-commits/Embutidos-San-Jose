@@ -727,6 +727,7 @@ export interface DistClosureProductRow {
   dispatchMermaSaleMovementId?: string
   /** Cantidad total declarada por el distribuidor; no es necesariamente producto apto. */
   declaredReturn?: number
+  returnDeclarationDifference?: number
   declaredReturnNormal?: number
   /** Declaración separada del distribuidor; ausente significa 0 en históricos. */
   declaredReturnMerma?: number

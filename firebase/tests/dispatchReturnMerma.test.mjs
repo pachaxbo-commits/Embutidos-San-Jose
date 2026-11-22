@@ -144,6 +144,7 @@ try {
   }, 'rejected')
   pass(/Producto merma conciliable QA/.test(unconfirmedStandardMerma.error) && /2\.02 kg/.test(unconfirmedStandardMerma.error), 'rechazo estándar indica producto y cantidad de merma aún sin confirmar')
   pass((await read('distBalances', `route__${settlementRoute}__${settlementProduct}`)).quantity === routeBeforeUnconfirmedReceipt && !(await read('distClosures', settlementClosureId))?.warehouseClosedBy, 'sin confirmación física el rechazo no modifica ruta ni confirma recepción')
+  await root.collection('distClosures').doc(settlementClosureId).set({ declaredReturns: { [settlementProduct]: 4.2 } }, { merge: true })
   const warehouseSettlement = await command(warehouse, 'closure', {
     mode: 'warehouse', closure: { dispatchId: settlementDispatch.id, products: [{ productId: settlementProduct, actualReturn: 4, returnMerma: 0.08, returnWaste: 0, physicalReturn: 4.08, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'Almacén verificó el sobrepeso dentro de las bolsas vendidas.' }] },
     warehouseResponsibleName: 'QA almacén',
@@ -152,6 +153,7 @@ try {
   const settledRow = settledClosure.products.find(row => row.productId === settlementProduct)
   pass(settledRow.expectedReturn === 4.08 && settledRow.shortage === 0 && settledRow.overage === 0, '88 + 2.10; vendió 84; retornó 4 + .08 produce 4.08 esperado sin diferencia')
   pass(settledRow.normalExpectedReturn === 4 && settledRow.dispatchMermaSent === 2.1 && settledRow.dispatchMermaIncludedInSales === 2.02 && settledRow.dispatchMermaEmbeddedInSalesConfirmed === true && settledRow.dispatchMermaEmbeddedInSalesQuantity === 2.02 && settledRow.dispatchMermaEmbeddedInSalesConfirmedBy === warehouse && settledRow.dispatchMermaEmbeddedInSalesReason?.includes('Almacén verificó') && settledRow.dispatchMermaReconciliationStatus === 'included_in_sales', 'el cierre conserva cantidad, responsable, motivo y conciliación confirmada')
+  pass(settledRow.returnDeclarationDifference === -0.12, 'diferencia negativa frente a declaración queda auditada')
   const settlementMovements = await root.collection('distStockMovements').where('dispatchId', '==', settlementDispatch.id).get()
   const mermaSaleMovements = settlementMovements.docs.map(row => row.data()).filter(row => row.type === 'dispatch_merma_sale' && !row.reversedAt)
   pass(mermaSaleMovements.length === 1 && mermaSaleMovements[0].quantity === 2.02 && mermaSaleMovements[0].routeDelta === -2.02 && mermaSaleMovements[0].centralDelta === 0, 'la conciliación comercial descuenta 2.02 kg de ruta una sola vez sin alterar central')
@@ -168,6 +170,12 @@ try {
   pass(reopenedBalances.central === 109.9 && reopenedBalances.route === 6.1, 'reapertura revierte retornos y conciliación a los saldos físicos anteriores')
   await processCommand(db, root.collection('distOperations').doc(reopen.id))
   pass((await read('distBalances', `central__${settlementProduct}`)).quantity === 109.9 && (await read('distBalances', `route__${settlementRoute}__${settlementProduct}`)).quantity === 6.1, 'reintentar reapertura no vuelve a mover stock')
+
+  await root.collection('distClosures').doc(settlementClosureId).set({ declaredReturns: { [settlementProduct]: 4 } }, { merge: true })
+  await command(warehouse, 'closure', { mode: 'warehouse', closure: { dispatchId: settlementDispatch.id, products: [{ productId: settlementProduct, actualReturn: 4.08, returnMerma: 0, returnWaste: 0, physicalReturn: 4.08, dispatchMermaEmbeddedInSalesConfirmed: true, dispatchMermaEmbeddedInSalesReason: 'Almacén verificó el sobrepeso dentro de las bolsas vendidas.' }] } })
+  const reclosedRow = (await read('distClosures', settlementClosureId)).products.find(row => row.productId === settlementProduct)
+  pass(reclosedRow.returnDeclarationDifference === 0.08 && reclosedRow.actualReturn === 4.08 && reclosedRow.returnMerma === 0 && reclosedRow.shortage === 0 && reclosedRow.overage === 0, 'recierre conserva peso apto y diferencia positiva sin merma ni sobrante de inventario')
+  await command(admin, 'closure', { mode: 'closed', closure: { dispatchId: settlementDispatch.id, physicalCashDeclared: 3360 } })
 
   const unfitProduct = `${prefix}-unfit-merma-product`, unfitSeller = `${prefix}-unfit-merma-seller`, unfitRoute = `${prefix}-unfit-merma-route`
   await root.collection('members').doc(unfitSeller).set({ role: 'distributor', active: true, routeId: unfitRoute, displayName: 'QA no apto' })
