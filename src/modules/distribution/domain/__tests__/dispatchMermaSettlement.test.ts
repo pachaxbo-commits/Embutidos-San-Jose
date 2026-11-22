@@ -51,7 +51,7 @@ assertEqual(unfit.expectedPhysicalReturn, 6.1, 'Retorno esperado conserva el rem
 const tooMuchUnfit = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale', 84)], 'p', 4, 0.08, 2.1)
 assertEqual(tooMuchUnfit.eligible, false, 'No apto superior al saldo adicional no se concilia automáticamente')
 
-const mismatch = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale', 84)], 'p', 4.01, 0.08, 0)
+const mismatch = previewDispatchMermaSettlement(dispatch(88, 2.1), [sale('sale', 84)], 'p', 3.99, 0.08, 0)
 assertEqual(mismatch.eligible, false, 'Retorno normal distinto deja la diferencia pendiente')
 
 const luciano = previewDispatchMermaSettlement(dispatch(76, 1.88), [sale('sale-77', 77)], 'p', 0, 0, 0)
@@ -84,3 +84,10 @@ const overPhysicalLoad = previewDispatchMermaSettlement(dispatch(76, 1.88), [sal
 assertEqual(overPhysicalLoad.eligible, false, 'Ventas nominales que superan la carga física total no pueden conciliarse')
 
 console.log('PASS dispatchMermaSettlement.test.ts')
+
+for (const [normal, extra, sold, received, embedded] of [[38, 1.22, 22, 16.52, 0.70], [19, 0.70, 15, 4.10, 0.60]]) {
+  const preview = previewDispatchMermaSettlement(dispatch(normal, extra), [sale('verified', sold)], 'p', received, 0, 0, true)
+  assertEqual(preview.eligible, true, 'Retorno apto respaldado')
+  assertEqual(preview.expectedPhysicalReturn, received, 'Mantiene el peso recibido')
+  assertEqual(preview.additionalMermaIncludedInSales, embedded, 'Concilia únicamente el peso vendido')
+}

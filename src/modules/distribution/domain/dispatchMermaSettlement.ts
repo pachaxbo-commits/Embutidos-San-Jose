@@ -75,7 +75,8 @@ export function previewDispatchMermaSettlement(
     && Math.abs(kg(recoverableMermaReturn) - dispatchMermaSent) <= 0.001)
   const eligibleStandard = Boolean(dispatch && dispatchMermaSent > 0 && (sold > 0 || fullyReturned) && validInputs
     && !aboveNormalCase
-    && Math.abs(kg(actualNormalReturn) - normalExpectedReturn) <= 0.001
+    && kg(actualNormalReturn) >= normalExpectedReturn - 0.001
+    && kg(actualNormalReturn + recoverableMermaReturn + unfitReturn) <= physicalExpectedReturn + 0.001
     && recoverableMermaReturn >= 0 && unfitReturn >= 0
     && recoverableMermaReturn + unfitReturn <= dispatchMermaSent + 0.001)
   const eligible = eligibleStandard || eligibleAboveNormal

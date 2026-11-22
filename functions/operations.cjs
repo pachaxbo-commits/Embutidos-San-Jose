@@ -3877,7 +3877,7 @@ async function closure(o, p) {
       const precisionTolerance = precision === 3 ? 0.001 : 0.01;
       const unreturnedDispatchMerma = quantityRound(Math.max(
         0,
-        dispatchMermaRemainingAfterNominalSales - recoverableMerma - waste,
+        expectedPhysicalRouteBalance - received,
       ));
       const embeddedMermaInSalesConfirmed = returnRow?.dispatchMermaEmbeddedInSalesConfirmed === true;
       // Merma adicional solo se concilia con ventas cuando el saldo transaccional
@@ -3888,8 +3888,9 @@ async function closure(o, p) {
         && dispatchMermaSent > 0 && nominalSold > 0
         && signedNormalExpectedReturn >= 0
         && Math.abs(expected - (expectedNormalReturn + dispatchMermaSent)) <= precisionTolerance
-        && Math.abs(actual - expectedNormalReturn) <= precisionTolerance
+        && actual >= expectedNormalReturn - precisionTolerance
         && recoverableMerma + waste <= dispatchMermaSent + precisionTolerance
+        && received <= expected + precisionTolerance
         && (unreturnedDispatchMerma <= precisionTolerance || embeddedMermaInSalesConfirmed);
       const canSettleAboveNormalSales = !legacySemantics && e.p.unitType === "kg"
         && dispatchMermaSent > 0 && nominalSold + replacementQuantity > normalLoaded
@@ -4158,6 +4159,9 @@ async function closure(o, p) {
           ...(dispatchMermaSaleMovementId ? { dispatchMermaSaleMovementId } : {}),
         } : {}),
         ...(Number.isFinite(Number(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn)) ? { declaredReturn: round((previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn) + (previous.declaredReturnMermas?.[pid] ?? previousProduct?.declaredReturnMerma ?? 0)), declaredReturnNormal: round(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn), declaredReturnMerma: round(previous.declaredReturnMermas?.[pid] ?? previousProduct?.declaredReturnMerma ?? 0) } : {}),
+        ...(Number.isFinite(Number(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn))
+          ? { returnDeclarationDifference: quantityRound(received - Number(previous.declaredReturns?.[pid] ?? previousProduct?.declaredReturnNormal ?? previousProduct?.declaredReturn)
+              - Number(previous.declaredReturnMermas?.[pid] ?? previousProduct?.declaredReturnMerma ?? 0)) } : {}),
         physicalReturn: received,
         originReferences: origins.references(receivedParts),
         originPendingReceived: quantityRound(origins.references(receivedParts).reduce((sum, part) => sum + part.quantity, 0)),
