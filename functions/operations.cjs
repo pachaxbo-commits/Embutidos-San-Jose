@@ -3269,8 +3269,8 @@ async function registerSupplierPurchase(o, p) {
     check(round(Number(line.quantity) * Number(line.unitPrice)) === round(p.amount),
       "El total debe coincidir con kilogramos por precio unitario.");
     check(["cash", "transfer", "credit"].includes(p.paymentMethod), "Selecciona Efectivo, QR / transferencia o A crédito.");
-    check(p.paymentMethod === "credit" ? Number(p.initialPayment || 0) === 0 : round(Number(p.initialPayment)) === round(p.amount),
-      "La compra de ruta se registra pagada completamente o a crédito; los abonos posteriores se registran en Cuentas por pagar.");
+    check(p.paymentMethod === "credit" ? Number(p.initialPayment || 0) === 0 : round(Number(p.initialPayment)) > 0 && round(Number(p.initialPayment)) <= round(p.amount),
+      "El pago inicial debe ser mayor a cero y no superar el total de la compra.");
   } else {
     o.admin();
   }

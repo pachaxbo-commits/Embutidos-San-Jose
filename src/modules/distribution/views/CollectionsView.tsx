@@ -23,14 +23,19 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
   const [exportError, setExportError] = useState('')
   const [selected, setSelected] = useState<DistCollection | null>(null)
   const [receiptFeedback, setReceiptFeedback] = useState('')
-  const summary = useMemo(() => computeMoneySummary([], data.collections, []), [data.collections])
+  const [route, setRoute] = useState('')
+  const routeNames = new Map(data.routes.map(item => [item.id, item.name]))
+  const routeLabel = (id: string) => id === 'administracion' ? 'Administración' : routeNames.get(id) || id || 'Sin ruta registrada'
+  const routes = [...new Set(data.collections.map(item => item.routeId || ''))].sort((a, b) => routeLabel(a).localeCompare(routeLabel(b)))
+  const collections = useMemo(() => data.collections.filter(item => !route || (item.routeId || 'unknown') === route), [data.collections, route])
+  const summary = useMemo(() => computeMoneySummary([], collections, []), [collections])
   const receiptContext = { companyName: data.supportSettings.companyName || session.restaurantName, receiptHeader: data.supportSettings.receiptHeader, receiptFooter: data.supportSettings.receiptFooter, taxId: data.supportSettings.taxId, address: data.supportSettings.address, phone: data.supportSettings.phone, routeName: data.routes.find(route => route.id === session.routeId)?.name || 'Administración', distributorName: session.userName }
   const printReceipt = async (collection: DistCollection) => { setReceiptFeedback(''); const result = await printCollectionReceipt(collection, receiptContext, true); setReceiptFeedback(result.message) }
 
   const exportCollections = async (kind: 'pdf' | 'excel') => {
     setExporting(true); setExportError('')
     try {
-      const sheet = reportSheets(data, session.dayKeys).find(item => item.name === 'Cobros')!
+      const sheet = reportSheets({ ...data, collections }, session.dayKeys).find(item => item.name === 'Cobros')!
       const description = `Cobros del periodo · ${session.dayKeys.join(' al ')}`
       if (kind === 'pdf') await exportPdf([sheet], description, 'SanJose-cobros.pdf')
       else await exportExcel([sheet], description, 'SanJose-cobros.xlsx')
@@ -42,6 +47,7 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
     <Screen title="Cobros" subtitle="Cobranzas registradas en el periodo">
       <div className="grid w-full min-w-0 gap-3">
         <RangePicker dayKeys={session.dayKeys} onChange={session.setDayKeys} />
+        <label className="grid gap-1 text-sm font-semibold">Ruta del cobro<select className="h-11 rounded-xl border border-slate-300 bg-white px-3" value={route} onChange={event => setRoute(event.target.value)}><option value="">Todas las rutas</option>{routes.map(id => <option key={id || "unknown"} value={id || "unknown"}>{routeLabel(id)}</option>)}</select></label>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           <KpiCard label="Cobrado total" value={formatBs(summary.collectionsTotal)} tone="positive" />
           <KpiCard label="Efectivo" value={formatBs(summary.cashCollections)} />
@@ -50,11 +56,11 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
         <div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={exporting} onClick={() => void exportCollections('pdf')}>Descargar PDF</SecondaryButton><SecondaryButton disabled={exporting} onClick={() => void exportCollections('excel')}>Descargar Excel</SecondaryButton></div>
         {exportError && <p role="alert" className="text-xs font-bold text-rose-700">{exportError}</p>}
 
-        {data.collections.length === 0 ? (
+        {collections.length === 0 ? (
           <EmptyBlock title="Sin cobros en el periodo" />
         ) : (
           <div className="grid gap-2">
-            {data.collections.map((collection) => (
+            {collections.map((collection) => (
               <div
                 key={collection.id}
                 className="flex w-full min-w-0 flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3"
@@ -64,7 +70,7 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
                   {collection.pendingConfirmation && <p className="text-xs text-amber-700">Pendiente de confirmación</p>}
                   <CreditProducts saleId={data.receivables.find(r => r.id === collection.receivableId)?.saleId} lines={collection.saleLines?.length ? collection.saleLines : data.receivables.find(r => r.id === collection.receivableId)?.saleLines} />
                   <p className="break-words text-[11px] font-semibold leading-snug text-slate-500">
-                    {new Date(collection.createdAt).toLocaleString('es-BO')} · {collection.collectedByName} ·{' '}
+                    {new Date(collection.createdAt).toLocaleString('es-BO')} · {collection.collectedByName} · {routeLabel(collection.routeId)} ·{' '}
                     {collection.method === 'qr' ? 'QR' : collection.method === 'mixed' ? `Mixto · efectivo ${formatBs(collection.cashAmount || 0)} · QR ${formatBs(collection.qrAmount || 0)}` : 'Efectivo'}
                   </p>
                 </div>

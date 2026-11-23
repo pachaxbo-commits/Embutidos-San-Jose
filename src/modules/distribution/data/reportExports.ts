@@ -88,6 +88,7 @@ export interface ReportSheet {
   headers: string[];
   rows: Cell[][];
   meta?: ReportSheetMeta;
+  pdfColumns?: number[];
 }
 
 interface AutoTableJsPDF extends jsPDF {
@@ -841,6 +842,7 @@ export function reportSheets(
         "Cliente",
         "CI",
         "Responsable",
+        "Ruta del cobro",
         "Método",
         "Efectivo (Bs)",
         "QR (Bs)",
@@ -852,12 +854,13 @@ export function reportSheets(
         currentCustomerDisplayName(c.customerId, c.customerName, customersById),
         c.customerCode || "",
         reportPersonName(c.collectedByName),
+        c.routeId === "administracion" ? "Administración" : data.routes.find(route => route.id === c.routeId)?.name || c.routeId || "Sin ruta registrada",
         reportPaymentLabel(c.method),
         c.cashAmount ?? (c.method === "cash" ? c.amount : 0),
         c.qrAmount ?? (c.method === "qr" ? c.amount : 0),
         c.amount,
         ] as Cell[]),
-        ["TOTAL", "", "", "", "", round2(collections.reduce((n, c) => n + (c.cashAmount ?? (c.method === "cash" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + (c.qrAmount ?? (c.method === "qr" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + c.amount, 0))],
+        ["TOTAL", "", "", "", "", "", round2(collections.reduce((n, c) => n + (c.cashAmount ?? (c.method === "cash" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + (c.qrAmount ?? (c.method === "qr" ? c.amount : 0)), 0)), round2(collections.reduce((n, c) => n + c.amount, 0))],
       ],
     },
     {
@@ -1354,6 +1357,7 @@ export async function exportPdf(
   filename = "SanJose-reportes.pdf",
 ) {
 
+  sheets = sheets.filter(sheet => !sheet.pdfColumns || sheet.rows.length > 0);
   const firstSheet = sheets[0]
   const firstSheetIsWide = Boolean(firstSheet && (firstSheet.headers.length > 8 || firstSheet.id === "credits" || firstSheet.id === "sales" || firstSheet.id === "claims"))
   const pdf = new jsPDF({ orientation: firstSheetIsWide ? "landscape" : "portrait", format: "letter" });
@@ -1812,7 +1816,11 @@ export async function exportPdf(
     });
   };
 
-  const renderGenericTable = (sheet: ReportSheet) => {
+  const renderGenericTable = (source: ReportSheet) => {
+    const sheet = source.pdfColumns ? { ...source, headers: source.pdfColumns.map(i => source.headers[i]), rows: source.rows.map(row => source.pdfColumns!.map(i => row[i])) } : source;
+    const weights = sheet.headers.map(header => /Concepto|Producto|Descripción/.test(header) ? 3.6 : /Fecha|Cantidad|Unidad/.test(header) ? 1 : 1.35);
+    const availableWidth = pdf.internal.pageSize.getWidth() - 28;
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
     drawBrandedPdfHeader(
       pdf,
       sheet.name.toUpperCase(),
@@ -1822,6 +1830,9 @@ export async function exportPdf(
     autoTable(pdf, {
       startY: 33,
       head: [sheet.headers],
+      rowPageBreak: "avoid",
+      showHead: "everyPage",
+      ...(source.pdfColumns ? { styles: { fontSize: 9 }, columnStyles: Object.fromEntries(weights.map((weight, i) => [i, { cellWidth: availableWidth * weight / totalWeight, halign: /Bs|Cantidad/.test(sheet.headers[i]) ? "right" : "left" }])) } : {}),
       body: sheet.rows.map((r) =>
         r.map((v, j) =>
           v === null
@@ -1835,7 +1846,7 @@ export async function exportPdf(
       ),
       theme: "grid",
       headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5 },
-      bodyStyles: { fontSize: 7, cellPadding: 2, overflow: "linebreak" },
+      bodyStyles: { fontSize: source.pdfColumns ? 9 : 7, cellPadding: 2, overflow: "linebreak" },
       alternateRowStyles: { fillColor: [248, 250, 252] },
       didParseCell: (hook: CellHookData) => {
         if (hook.section === "body" && Array.isArray(hook.row.raw) && String(hook.row.raw[0]).toUpperCase().includes("TOTAL")) {
