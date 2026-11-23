@@ -649,6 +649,10 @@ export interface DistSupplier extends DistBaseDoc {
 export interface DistPayable extends DistBaseDoc {
   /** Optional for legacy payables; new rows identify whether the obligation is a raw-material purchase or operating expense. */
   sourceKind?: 'supplier_purchase' | 'operating_expense'
+  updatedAt?: string
+  purchaseCorrectionId?: string
+  responsibleUid?: string
+  responsibleName?: string
   supplierId: string
   supplierName: string
   purchaseExpenseId: string
@@ -675,7 +679,7 @@ export interface DistPayable extends DistBaseDoc {
   voidedBy?: string
   voidedByName?: string
   voidReason?: string
-  history?: Array<{ action: 'payment_voided' | 'purchase_voided'; paymentId?: string; amount?: number; paymentMethod?: 'cash' | 'transfer' | 'other'; reason: string; at: string; by: string; byName: string; affectedExpenseId?: string }>
+  history?: Array<{ action: 'payment_voided' | 'purchase_voided' | 'purchase_rectified'; correctionId?: string; paymentId?: string; amount?: number; paymentMethod?: 'cash' | 'transfer' | 'other'; reason: string; at: string; by: string; byName: string; affectedExpenseId?: string }>
 }
 
 export interface DistSupplierPayment extends DistBaseDoc {

@@ -1753,6 +1753,19 @@ export async function registerSupplierPurchase(input: SupplierPurchaseInput) {
   return submitOperation<{ expense: DistExpense; payable: DistPayable }>('registerSupplierPurchase', input, input.operationId)
 }
 
+export interface SupplierPurchaseCorrection extends Partial<Pick<SupplierPurchaseInput, 'supplierId' | 'description' | 'amount' | 'dayKey' | 'purchaseLines'>> {
+  payableId: string
+  expectedRevision: string
+  reason: string
+  responsibleUid?: string
+  purchaseReceiptType?: SupplierPurchaseInput['purchaseReceiptType'] | ''
+  purchaseReceiptNumber?: string
+}
+
+export function rectifySupplierPurchase(input: SupplierPurchaseCorrection, id: string) {
+  return submitOperation<{ payable: DistPayable; correctionId: string }>('rectifySupplierPurchase', input, id)
+}
+
 let distributorSupplierFunctionsEmulatorConnected = false
 export async function listDistributorPurchaseSuppliers(): Promise<Array<{ id: string; name: string }>> {
   const context = await getFirebaseContext()

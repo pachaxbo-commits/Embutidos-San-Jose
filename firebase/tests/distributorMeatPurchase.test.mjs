@@ -97,6 +97,40 @@ try {
   const stockMovements = await root.collection('distStockMovements').get()
   const lots = await root.collection('distLots').get()
   ok(routePurchases.size === 4 && stockMovements.empty && lots.empty, 'hay un egreso por cada compra de ruta y registrar compra no crea lotes ni movimientos de inventario')
+  const read = async (collection, id) => (await root.collection(collection).doc(id).get()).data()
+  const baseCorrection = { payableId: credit.id, expectedRevision: afterPayment.updatedAt, reason: 'Prueba QA de rectificación de compra' }
+  const line = (quantity) => ({ ...purchase('credit').purchaseLines[0], quantity, total: quantity * 35, netUsableQuantity: quantity })
+  await command(warehouse, 'rectifySupplierPurchase', baseCorrection, 'rejected', prefix + '-rectify-role')
+  await command(admin, 'rectifySupplierPurchase', { ...baseCorrection, purchaseLines: [line(5)] }, 'rejected', prefix + '-rectify-below-paid')
+  const corrected = await command(admin, 'rectifySupplierPurchase', { ...baseCorrection, purchaseLines: [line(19)] }, 'confirmed', prefix + '-rectify-partial')
+  const afterCorrection = await read('distPayables', credit.id)
+  const audit = await read('distPurchaseCorrections', corrected.id)
+  ok(afterCorrection.totalAmount === 665 && afterCorrection.balance === 465 && audit.before.payable.totalAmount === 700 && audit.after.expense.amount === 665, 'rectificación parcial sincroniza compra, deuda y auditoría')
+  ok((await read('distSupplierPayments', prefix + '-credit-partial__payment')).amount === 200, 'abonos históricos no cambian')
+  await processCommand(db, root.collection('distOperations').doc(corrected.id))
+  await command(admin, 'rectifySupplierPurchase', { ...baseCorrection, description: 'Revisión desactualizada' }, 'rejected', prefix + '-rectify-stale')
+  ok((await read('distPayables', credit.id)).balance === 465, 'repetición y revisión vencida no aplican otro cambio')
+  await command(admin, 'rectifySupplierPurchase', { payableId: deposit.id, expectedRevision: settled.updatedAt, reason: baseCorrection.reason, purchaseLines: [line(19)] }, 'rejected', prefix + '-rectify-paid-below')
+  const unpaid = await command(hugo, 'registerSupplierPurchase', purchase('credit'), 'confirmed', prefix + '-unpaid-rectifiable')
+  const unpaidBefore = await read('distPayables', unpaid.id)
+  const unpaidInput = { ...baseCorrection, payableId: unpaid.id, expectedRevision: unpaidBefore.createdAt, purchaseReceiptType: 'invoice', purchaseReceiptNumber: '0009', purchaseLines: [line(17)] }
+  await command(admin, 'rectifySupplierPurchase', unpaidInput, 'confirmed', prefix + '-rectify-unpaid')
+  const unpaidAfter = await read('distPayables', unpaid.id)
+  ok(unpaidAfter.balance === 595 && unpaidAfter.purchaseReceiptNumber === '0009' && unpaidAfter.paidAmount === 0, 'compra impaga rectifica líneas y factura sin crear pago')
+  const race = await Promise.all(['A', 'B'].map(value => {
+    const id = prefix + '-rectify-race-' + value
+    const ref = root.collection('distOperations').doc(id)
+    return ref.set({ id, restaurantId: 'sanjose', createdBy: admin, createdAt: new Date().toISOString(), type: 'rectifySupplierPurchase', status: 'queued', payload: { ...unpaidInput, expectedRevision: unpaidAfter.updatedAt, description: 'Compra de carne ' + value } }).then(async () => {
+      await processCommand(db, ref)
+      return (await ref.get()).data().status
+    })
+  }))
+  ok(race.sort().join(',') === 'confirmed,rejected', 'dos correcciones concurrentes sobre la misma revisión solo aplican una vez')
+  await root.collection('distProcessingBatches').doc(prefix + '-linked-batch').set({ packagingMaterials: [{ expenseId: credit.id }] })
+  await command(admin, 'rectifySupplierPurchase', { ...baseCorrection, expectedRevision: afterCorrection.updatedAt }, 'rejected', prefix + '-rectify-linked')
+  await root.collection('distClosures').doc(prefix + '-closed').set({ status: 'closed', routeId, dayKey: '2026-10-30' })
+  await command(admin, 'rectifySupplierPurchase', { payableId: deposit.id, expectedRevision: settled.updatedAt, reason: baseCorrection.reason }, 'rejected', prefix + '-rectify-closed')
+  ok((await read('distExpenses', deposit.id)).amount === 700, 'caja cerrada e inventario vinculado bloquean cambios directos')
   console.log(`PASS ${checks} comprobaciones totales de compras de distribuidor`)
 } finally {
   await env.clearFirestore()

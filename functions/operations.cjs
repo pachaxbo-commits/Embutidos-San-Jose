@@ -3253,6 +3253,37 @@ async function saveExpenseSupplier(o, p) {
   return supplier;
 }
 
+function normalizeSupplierPurchaseLines(lines) {
+  const allowedUnits = ["kg", "g", "unit", "box", "sack", "liter", "other"];
+  check(Array.isArray(lines) && lines.length > 0 && lines.length <= 50,
+    "Agrega entre 1 y 50 artículos a la compra.");
+  return lines.map((line) => {
+    const description = String(line?.description || "").trim();
+    const quantity = Number(line?.quantity);
+    const unitPrice = round(line?.unitPrice);
+    const wasteQuantity = Number(line?.wasteQuantity || 0);
+    check(description.length > 0 && description.length <= 120, "Cada artículo necesita una descripción.");
+    check(allowedUnits.includes(line?.unit), "Selecciona una unidad válida para cada artículo.");
+    check(Number.isFinite(quantity) && quantity > 0 && Number.isFinite(unitPrice) && unitPrice >= 0,
+      "La cantidad y el precio unitario deben ser válidos.");
+    check(Number.isFinite(wasteQuantity) && wasteQuantity >= 0 && wasteQuantity <= quantity,
+      "La merma física debe estar entre cero y la cantidad comprada.");
+    const unitLabel = String(line?.unitLabel || "").trim();
+    check(line.unit !== "other" || unitLabel.length > 0, "Describe la unidad de medida seleccionada como otra.");
+    const lineTotal = round(quantity * unitPrice);
+    check(Number.isFinite(Number(line?.total)) && round(line.total) === lineTotal,
+      "El total de una línea no coincide con cantidad por precio unitario.");
+    check(Number.isFinite(Number(line?.netUsableQuantity)) && roundAt(line.netUsableQuantity, 3) === roundAt(quantity - wasteQuantity, 3),
+      "La cantidad neta debe ser igual a la cantidad comprada menos la merma.");
+    return {
+      description, quantity: roundAt(quantity, 3), unit: line.unit,
+      ...(line.unit === "other" ? { unitLabel } : {}), unitPrice, total: lineTotal,
+      wasteQuantity: roundAt(wasteQuantity, 3), netUsableQuantity: roundAt(quantity - wasteQuantity, 3),
+      ...(String(line.note || "").trim() ? { note: String(line.note).trim().slice(0, 300) } : {}),
+    };
+  });
+}
+
 async function registerSupplierPurchase(o, p) {
   const isDistributorPurchase = o.member.role === "distributor";
   check(o.member.role === "admin" || isDistributorPurchase, "Solo Administración o Distribuidores pueden registrar compras de proveedor.");
@@ -3279,39 +3310,8 @@ async function registerSupplierPurchase(o, p) {
   const total = round(p.amount);
   const paid = round(p.initialPayment || 0);
   check(Number.isFinite(total) && total > 0, "Revisa el monto de compra.");
-  let purchaseLines;
-  if (p.purchaseLines !== undefined) {
-    const allowedUnits = ["kg", "g", "unit", "box", "sack", "liter", "other"];
-    check(Array.isArray(p.purchaseLines) && p.purchaseLines.length > 0 && p.purchaseLines.length <= 50,
-      "Agrega entre 1 y 50 artículos a la compra.");
-    purchaseLines = p.purchaseLines.map((line) => {
-      const description = String(line?.description || "").trim();
-      const quantity = Number(line?.quantity);
-      const unitPrice = round(line?.unitPrice);
-      const wasteQuantity = Number(line?.wasteQuantity || 0);
-      check(description.length > 0 && description.length <= 120, "Cada artículo necesita una descripción.");
-      check(allowedUnits.includes(line?.unit), "Selecciona una unidad válida para cada artículo.");
-      check(Number.isFinite(quantity) && quantity > 0 && Number.isFinite(unitPrice) && unitPrice >= 0,
-        "La cantidad y el precio unitario deben ser válidos.");
-      check(Number.isFinite(wasteQuantity) && wasteQuantity >= 0 && wasteQuantity <= quantity,
-        "La merma física debe estar entre cero y la cantidad comprada.");
-      const unitLabel = String(line?.unitLabel || "").trim();
-      check(line.unit !== "other" || unitLabel.length > 0, "Describe la unidad de medida seleccionada como otra.");
-      const lineTotal = round(quantity * unitPrice);
-      check(Number.isFinite(Number(line?.total)) && round(line.total) === lineTotal,
-        "El total de una línea no coincide con cantidad por precio unitario.");
-      check(Number.isFinite(Number(line?.netUsableQuantity)) && roundAt(line.netUsableQuantity, 3) === roundAt(quantity - wasteQuantity, 3),
-        "La cantidad neta debe ser igual a la cantidad comprada menos la merma.");
-      return {
-        description, quantity: roundAt(quantity, 3), unit: line.unit,
-        ...(line.unit === "other" ? { unitLabel } : {}), unitPrice, total: lineTotal,
-        wasteQuantity: roundAt(wasteQuantity, 3), netUsableQuantity: roundAt(quantity - wasteQuantity, 3),
-        ...(String(line.note || "").trim() ? { note: String(line.note).trim().slice(0, 300) } : {}),
-      };
-    });
-    check(round(purchaseLines.reduce((sum, line) => sum + line.total, 0)) === total,
-      "El monto de compra debe coincidir con la suma de los artículos.");
-  }
+  const purchaseLines = p.purchaseLines === undefined ? undefined : normalizeSupplierPurchaseLines(p.purchaseLines);
+  if (purchaseLines) check(round(purchaseLines.reduce((sum, line) => sum + line.total, 0)) === total, "El monto de compra debe coincidir con la suma de los artículos.");
   check(Number.isFinite(paid) && paid >= 0 && paid <= total, "El adelanto debe estar entre cero y el total de compra.");
   const receiptType = p.purchaseReceiptType === undefined || p.purchaseReceiptType === "" ? undefined : String(p.purchaseReceiptType);
   check(receiptType === undefined || ["invoice", "receipt", "other"].includes(receiptType), "Selecciona un tipo de comprobante de compra válido.");
@@ -3367,6 +3367,78 @@ async function registerSupplierPurchase(o, p) {
     responsibleUid: o.actor, responsibleName, note: "Pago inicial de la compra",
   });
   return { expense, payable };
+}
+
+
+async function rectifySupplierPurchase(o, p) {
+  o.admin();
+  const fields = ["payableId", "expectedRevision", "reason", "supplierId", "responsibleUid", "dayKey", "description", "purchaseLines", "amount", "purchaseReceiptType", "purchaseReceiptNumber", "paymentMethod"];
+  check(Object.keys(p).every(key => fields.includes(key)), "La rectificación contiene campos que requieren otra operación.");
+
+  const reason = String(p.reason || "").trim();
+  check(reason.length >= 8 && reason.length <= 300, "Describe el motivo de la rectificación (8 a 300 caracteres).");
+  const payable = await o.read("distPayables", safeId(p.payableId));
+  check(payable?.sourceKind === "supplier_purchase" && payable.status !== "voided", "La compra no admite rectificación directa.");
+  check(p.expectedRevision === (payable.updatedAt || payable.createdAt), "La compra o sus pagos cambiaron. Vuelve a abrir la rectificación.");
+  const expense = await o.read("distExpenses", payable.purchaseExpenseId);
+  check(expense?.transactionKind === "supplier_purchase" && !expense.voided, "La compra original no está disponible.");
+  const [payments, batches, movements, lots] = await Promise.all([
+    o.query("distSupplierPayments", "payableId", payable.id),
+    o.all("distProcessingBatches"),
+    o.query("distStockMovements", "refId", expense.id),
+    o.query("distLots", "sourceExpenseId", expense.id),
+  ]);
+  check(!movements.length && !lots.length && !batches.some(batch =>
+    [...(batch.packagingMaterials || []), ...(batch.costComponents || [])].some(item => item.expenseId === expense.id)),
+  "La compra está vinculada a inventario o producción. Concilia primero el impacto físico y de costos mediante una operación compensatoria auditada.");
+  const day = p.dayKey || payable.dayKey;
+  check(validDate(day) && (!payable.dueDayKey || day <= payable.dueDayKey), "Revisa la fecha de compra y el vencimiento.");
+  const closures = await Promise.all([...new Set([day, payable.dayKey])].map(key => o.query("distClosures", "dayKey", key)));
+  const routeClosures = isAdministrationRouteId(expense.routeId) ? [] : await o.query("distClosures", "routeId", expense.routeId);
+  check(!closures.flat().some(row => row.status === "closed" &&
+    (row.routeId === expense.routeId || (isAdministrationRouteId(expense.routeId) && row.closureType === "admin")))
+    && !routeClosures.some(row => row.status === "closed" && row.dayKey >= payable.dayKey && row.closedAt >= expense.createdAt),
+  "La compra pertenece a una caja cerrada. La corrección requiere un asiento compensatorio en un período abierto.");
+  const activePayments = payments.filter(row => !row.voided);
+  const paid = round(activePayments.reduce((sum, row) => sum + row.amount, 0));
+  check(paid === payable.paidAmount, "El saldo pagado no concilia con los abonos registrados.");
+  const supplierId = safeId(p.supplierId || payable.supplierId);
+  const responsibleUid = safeId(p.responsibleUid || expense.registeredByUid);
+  check(!activePayments.length || (supplierId === payable.supplierId && day === payable.dayKey && responsibleUid === expense.registeredByUid),
+    "Proveedor, fecha y responsable de una compra con pagos requieren una reversión auditada.");
+  const supplier = supplierId === payable.supplierId ? { id: supplierId, name: payable.supplierName } : await o.read("distSuppliers", supplierId);
+  const responsible = responsibleUid === expense.registeredByUid
+    ? { displayName: expense.registeredByName }
+    : await o.read("members", responsibleUid);
+  check(supplier && (supplierId === payable.supplierId || supplier.active), "Selecciona un proveedor activo.");
+  check(responsible && (responsibleUid === expense.registeredByUid || (responsible.active && (responsible.routeId || "administracion") === expense.routeId)),
+    "El responsable debe estar activo y pertenecer al origen de la compra.");
+  check(p.paymentMethod === undefined || p.paymentMethod === expense.paymentMethod, "Los pagos existentes se corrigen en el historial de abonos. Registra nuevos pagos por separado.");
+  const purchaseLines = p.purchaseLines === undefined ? expense.purchaseLines : normalizeSupplierPurchaseLines(p.purchaseLines);
+  const total = purchaseLines?.length ? round(purchaseLines.reduce((sum, line) => sum + line.total, 0)) : round(p.amount ?? expense.amount);
+  check(Number.isFinite(total) && total > 0 && total >= paid, "El importe debe ser positivo y cubrir los pagos efectuados.");
+  check(p.amount === undefined || round(p.amount) === total, "El importe no coincide con los artículos.");
+  const description = String(p.description ?? expense.concept).trim();
+  const purchaseReceiptType = p.purchaseReceiptType ?? expense.purchaseReceiptType ?? "";
+  const purchaseReceiptNumber = String(p.purchaseReceiptNumber ?? expense.purchaseReceiptNumber ?? "").trim();
+  check(description && description.length <= 200, "El concepto debe tener entre 1 y 200 caracteres.");
+  check(["", "invoice", "receipt", "other"].includes(purchaseReceiptType) && (!purchaseReceiptNumber || purchaseReceiptType)
+    && purchaseReceiptNumber.length <= 100 && !/[\u0000-\u001f\u007f]/.test(purchaseReceiptNumber), "Revisa el comprobante de compra.");
+  const balance = round(total - paid);
+  const shared = { dayKey: day, supplierId, supplierName: supplier.name, purchaseReceiptType, purchaseReceiptNumber,
+    ...(purchaseLines ? { purchaseLines } : {}), updatedAt: o.now, updatedBy: o.actor, purchaseCorrectionId: o.id };
+  const correctedExpense = { ...expense, ...shared, concept: description, amount: total,
+    registeredByUid: responsibleUid, registeredByName: responsible.displayName || responsibleUid };
+  const correctedPayable = { ...payable, ...shared, description, responsibleUid, responsibleName: correctedExpense.registeredByName,
+    totalAmount: total, paidAmount: paid, balance, status: balance === 0 ? "paid" : paid > 0 ? "partial" : "pending",
+    history: [...(payable.history || []), { action: "purchase_rectified", reason, at: o.now, by: o.actor, byName: o.member.displayName || o.actor, correctionId: o.id }].slice(-100) };
+  const audit = { id: o.id, ...o.base(), payableId: payable.id, expenseId: expense.id, reason,
+    responsibleName: o.member.displayName || o.actor,
+    before: { expense, payable }, after: { expense: correctedExpense, payable: correctedPayable }, paymentIds: activePayments.map(row => row.id) };
+  o.put("distExpenses", expense.id, correctedExpense);
+  o.put("distPayables", payable.id, correctedPayable);
+  o.put("distPurchaseCorrections", o.id, audit);
+  return { payable: correctedPayable, correctionId: audit.id };
 }
 
 async function paySupplierPayable(o, p) {
@@ -4751,7 +4823,7 @@ async function claim(o, p) {
   o.put("distClaims", o.id, c);
   return c;
 }
-Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, deleteExpenseCategory, saveExpenseGroup, deleteExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
+Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, deleteExpenseCategory, saveExpenseGroup, deleteExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, rectifySupplierPurchase, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
 
 function reservationEvent(o, reservation, action, quantity, reason = '') {
   const history = [...(reservation.history || []), { id: `${o.id}__event`, action, quantity, at: o.now, by: o.actor, byName: o.member.displayName || o.actor, reason }];
