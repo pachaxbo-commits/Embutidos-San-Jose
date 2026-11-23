@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowLeft, BadgeCheck, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, Clock3, FileText, History, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BadgeCheck, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, Clock3, Download, FileText, History, Lock, PackageCheck, Printer, Search, Send, Unlock } from 'lucide-react'
 import { Field, NumberInput, Segmented, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { Modal } from '../../../components/ui/Modal'
@@ -10,7 +10,7 @@ import { declareRouteReturn, newOperationId, reopenClosure, saveClosure, setClos
 import { KpiCard, PrimaryButton, SecondaryButton, SectionCard, VarianceBadge, formatBs, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
 import type { DistSale, DistCollection, DistExpense, DistClosure } from '../types'
-import { printClosureTicket, printClosureSheet, shareClosurePdf } from '../data/distributionDocumentPrintService'
+import { downloadClosurePdf, printClosureTicket, printClosureSheet, shareClosurePdf } from '../data/distributionDocumentPrintService'
 import { closureRectificationView } from '../domain/closureRectification'
 import { ClosureRectificationAudit } from './ClosureRectificationAudit'
 import { getProductPresentation } from '../domain/productPresentation'
@@ -925,9 +925,10 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               {session.role === 'admin' && closure.status === 'closed' && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><KpiCard label="Ventas efectivo" value={formatBs(closure.cashSales)} /><KpiCard label="Ventas QR" value={formatBs(closure.qrSales)} /><KpiCard label="Crédito" value={formatBs(closure.creditGenerated)} /><KpiCard label="Cobros efectivo" value={formatBs(closure.cashCollections)} /><KpiCard label="Cobros QR" value={formatBs(closure.qrCollections)} /><KpiCard label="Egresos en efectivo" value={formatBs(closure.cashExpenses)} /><KpiCard label="Efectivo esperado" value={formatBs(closure.expectedCash)} /><KpiCard label="Efectivo declarado" value={formatBs(closure.physicalCashDeclared ?? 0)} /></div>}
               {session.role === 'admin' && hasProductDifference && ['warehouse_done', 'closed'].includes(closure.status) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-900">{closure.varianceReviewedAt ? `Diferencia revisada el ${new Date(closure.varianceReviewedAt).toLocaleString('es-BO')}.` : 'Esta diferencia aparece en pendientes de Administración.'}</p><SecondaryButton disabled={Boolean(reviewingClosureId)} onClick={async () => { setReviewingClosureId(closure.id); setError(null); try { await setClosureVarianceReviewed(closure.id, !closure.varianceReviewedAt) } catch (e) { setError((e as Error).message) } finally { setReviewingClosureId('') } }}>{reviewingClosureId === closure.id ? 'Guardando…' : closure.varianceReviewedAt ? 'Volver a pendientes' : 'Marcar revisada'}</SecondaryButton></div>}
               {session.role === 'admin' && closure.status === 'closed' && <div className="flex flex-wrap items-center justify-between gap-2"><VarianceBadge variance={closure.cashDifference} /><SecondaryButton onClick={() => { setReopenTarget(closure); setReopenReason(''); setReopenPreserveFinancialSnapshot(false); }}><Unlock size={15} /> Reabrir cierre</SecondaryButton></div>}
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton>
                 <SecondaryButton onClick={() => void printClosureSheet(closure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de cierre</SecondaryButton>
+                <SecondaryButton onClick={() => void downloadClosurePdf(closure).catch(pdfError => setError(pdfError.message))}><Download size={15} /> Descargar PDF</SecondaryButton>
                 <SecondaryButton onClick={() => void shareClosurePdf(closure).catch(pdfError => setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
               </div>
             </div>}
@@ -996,6 +997,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-emerald-200">
                 <SecondaryButton onClick={() => void printClosureTicket(existingAdminClosure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton>
                 <SecondaryButton onClick={() => void printClosureSheet(existingAdminClosure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de arqueo</SecondaryButton>
+                <SecondaryButton onClick={() => void downloadClosurePdf(existingAdminClosure).catch(pdfError => setError(pdfError.message))}><Download size={15} /> Descargar PDF</SecondaryButton>
                 <SecondaryButton onClick={() => void shareClosurePdf(existingAdminClosure).catch(pdfError => setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
                 <SecondaryButton onClick={() => { setReopenTarget(existingAdminClosure); setReopenReason(''); setReopenPreserveFinancialSnapshot(false); }}><Unlock size={15} /> Reabrir arqueo</SecondaryButton>
               </div>

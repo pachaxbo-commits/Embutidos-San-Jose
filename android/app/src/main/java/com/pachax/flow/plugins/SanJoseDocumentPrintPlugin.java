@@ -1,6 +1,13 @@
 package com.pachax.flow.plugins;
 
 import android.os.Bundle;
+import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
+import android.util.Base64;
+import androidx.activity.result.ActivityResult;
+import com.getcapacitor.annotation.ActivityCallback;
+import java.io.OutputStream;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
@@ -22,6 +29,40 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "SanJoseDocumentPrint")
 public class SanJoseDocumentPrintPlugin extends Plugin {
+    @PluginMethod
+    public void savePdf(PluginCall call) {
+        String filename = call.getString("filename", "");
+        String data = call.getString("data", "");
+        if (!filename.matches("[a-zA-Z0-9_-]+[.]pdf") || data.isEmpty()) {
+            call.reject("No se recibió un PDF válido para guardar.");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/pdf");
+        intent.putExtra(Intent.EXTRA_TITLE, filename);
+        startActivityForResult(call, intent, "writePdf");
+    }
+
+    @ActivityCallback
+    private void writePdf(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        Intent data = result.getData();
+        Uri uri = data == null ? null : data.getData();
+        if (result.getResultCode() != Activity.RESULT_OK || uri == null) {
+            call.resolve(new JSObject().put("saved", false));
+            return;
+        }
+        try (OutputStream stream = getContext().getContentResolver().openOutputStream(uri, "wt")) {
+            if (stream == null) throw new IllegalStateException("No se pudo abrir el destino");
+            stream.write(Base64.decode(call.getString("data", ""), Base64.DEFAULT));
+        } catch (Exception error) {
+            call.reject("No se pudo guardar el PDF en la ubicación seleccionada.", error);
+            return;
+        }
+        call.resolve(new JSObject().put("saved", true));
+    }
+
     @PluginMethod
     public void printHtml(PluginCall call) {
         String html = call.getString("html", "");

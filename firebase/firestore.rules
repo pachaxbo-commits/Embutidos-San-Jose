@@ -267,7 +267,7 @@ service cloud.firestore {
           || (request.resource.data.type in ['rectifyProcessingCommercialUnit','rectifyProcessingMass'] && distAdmin(restaurantId))
           || (request.resource.data.type in ['reserveProcessingStock','confirmProcessingBatch','recordProcessingReview','recordProcessingEvidence','confirmProcessingRepack'] && (distAdmin(restaurantId) || distWarehouse(restaurantId)))
           || (request.resource.data.type in ['releaseProcessingReservation','deliverReservedCourtesy','reclassifyProcessingCourtesyToFinished','resolveLotQuantity'] && distAdmin(restaurantId))
-          || (request.resource.data.type in ['confirmPhysicalOrigin','rectifyLotIdentity','adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','deleteExpenseCategory','saveExpenseGroup','deleteExpenseGroup','saveExpenseSupplier','paySupplierPayable','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
+          || (request.resource.data.type in ['confirmPhysicalOrigin','rectifyLotIdentity','adjustment','reviewAdjustmentRequest','claim','updateLot','reopen','reviewVariance','deleteExpense','saveExpenseCategory','deleteExpenseCategory','saveExpenseGroup','deleteExpenseGroup','saveExpenseSupplier','paySupplierPayable','rectifySupplierPurchase','voidSupplierPayment','voidSupplierPurchase','classifyExpense','deleteProduct'] && distAdmin(restaurantId)));
       allow update: if isActiveMember(restaurantId) && resource.data.createdBy == request.auth.uid && resource.data.status == 'rejected'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged']) && request.resource.data.acknowledged == true;
       allow delete: if false;
@@ -422,6 +422,11 @@ service cloud.firestore {
       allow read: if distAdmin(restaurantId);
       allow create, update, delete: if false;
     }
+    match /restaurants/{restaurantId}/distPurchaseCorrections/{correctionId} {
+      allow read: if distAdmin(restaurantId);
+      allow write: if false;
+    }
+
     match /restaurants/{restaurantId}/distSupplierPayments/{paymentId} {
       allow read: if distAdmin(restaurantId);
       allow create, update, delete: if false;

@@ -6,7 +6,7 @@ import type { DistClosure, DistDispatch, DistProduct, DistQuote } from '../types
 import { computeLoadedByProduct, round2 } from '../domain/engine'
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
 import { closureRectificationLabel, closureRectificationView } from '../domain/closureRectification'
-import { printHtmlDocument } from '../../../services/printing/documentPrintService'
+import { printHtmlDocument, saveAndroidPdf } from '../../../services/printing/documentPrintService'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
@@ -731,9 +731,31 @@ export async function generateClosurePdf(closure: DistClosure) {
   return doc
 }
 
+function closurePdfFilename(closure: DistClosure) {
+  const seller = closure.distributorName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase()
+  return 'cierre-san-jose-' + (seller || 'vendedor') + '-' + closure.dayKey + '-' + closure.id.replace(/[^a-z0-9_-]/gi, '-') + '.pdf'
+}
+
+export async function downloadClosurePdf(closure: DistClosure): Promise<void> {
+  const doc = await generateClosurePdf(closure)
+  const bytes = new Uint8Array(doc.output('arraybuffer'))
+  const filename = closurePdfFilename(closure)
+  if (Capacitor.isNativePlatform()) {
+    let binary = ''
+    for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192))
+    if (Capacitor.getPlatform() === "android") {
+      await saveAndroidPdf(filename, btoa(binary))
+    } else {
+      await Filesystem.writeFile({ path: filename, data: btoa(binary), directory: Directory.Documents })
+    }
+    return
+  }
+  await saveReport(bytes, filename, 'application/pdf')
+}
+
 export async function shareClosurePdf(closure: DistClosure): Promise<boolean> {
   const doc = await generateClosurePdf(closure)
-  const filename = `cierre-san-jose-${closure.id.slice(-6)}.pdf`
+  const filename = closurePdfFilename(closure)
   const bytes = new Uint8Array(doc.output('arraybuffer'))
 
   if (Capacitor.isNativePlatform()) {

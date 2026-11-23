@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "distClosures",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "routeId", "order": "ASCENDING" },
+        { "fieldPath": "dayKey", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "distProcessingBatches",
       "queryScope": "COLLECTION",
       "fields": [

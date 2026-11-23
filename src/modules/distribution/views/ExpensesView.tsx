@@ -156,6 +156,7 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
       if (!purchaseSuppliers.some(supplier => supplier.id === purchaseSupplierId)) { setError('Selecciona un proveedor activo.'); return }
       if (!(Number(purchaseQuantity) > 0) || !(Number(purchaseUnitPrice) > 0) || !(distributorPurchaseTotal > 0)) { setError('Ingresa kilogramos y precio unitario válidos.'); return }
       if (purchaseReceiptNumber.trim().length > 100) { setError('El número de comprobante debe tener hasta 100 caracteres.'); return }
+      if (purchaseMode === 'partial' && (!(Number(purchasePaidNow) > 0) || Number(purchasePaidNow) >= distributorPurchaseTotal || !['cash', 'transfer'].includes(paymentMethod))) { setError('Indica un adelanto menor al total y selecciona efectivo o transferencia.'); return }
       setAmount(String(distributorPurchaseTotal))
     } else if (adminMaterialPurchase) {
       if (!adminExpenseSuppliers.some(supplier => supplier.id === purchaseSupplierId)) { setError('Selecciona un proveedor activo.'); return }
@@ -187,14 +188,14 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
           supplierId: purchaseSupplierId,
           description: 'Compra de carne',
           amount: distributorPurchaseTotal,
-          initialPayment: paymentMethod === 'credit' ? 0 : distributorPurchaseTotal,
+          initialPayment: purchaseMode === 'partial' ? Number(purchasePaidNow) : paymentMethod === 'credit' ? 0 : distributorPurchaseTotal,
           paymentMethod: paymentMethod === 'credit' ? 'credit' : paymentMethod,
           dayKey,
           ...(purchaseReceiptNumber.trim() ? { purchaseReceiptType: 'receipt' as const, purchaseReceiptNumber: purchaseReceiptNumber.trim() } : {}),
           note: note.trim(),
           purchaseLines: [{ description: 'Carne', quantity: Number(purchaseQuantity), unit: 'kg', unitPrice: Number(purchaseUnitPrice), total: distributorPurchaseTotal, wasteQuantity: 0, netUsableQuantity: Number(purchaseQuantity) }],
         })
-        setFeedback(paymentMethod === 'credit' ? 'Compra registrada; la cuenta por pagar quedó pendiente para Administración.' : 'Compra y salida de ruta registradas correctamente.')
+        setFeedback(paymentMethod === 'credit' || purchaseMode === 'partial' ? 'Compra registrada; la cuenta por pagar quedó pendiente para Administración.' : 'Compra y salida de ruta registradas correctamente.')
         setConfirmOpen(false); resetForm(); return
       }
       if (adminMaterialPurchase) {
@@ -279,7 +280,8 @@ export function ExpensesView({ session, data }: DistributionViewProps) {
           {selectedPreset.economicType === 'production_input' && <p className="rounded-xl bg-emerald-50 p-3 text-xs font-semibold text-emerald-900">Esta compra sí se registra como salida de dinero, pero no se descuenta nuevamente de la ganancia porque su costo se reconoce mediante los productos.</p>}
           {selectedPreset.classificationStatus === 'pending_review' && <p className="rounded-xl bg-amber-50 p-3 text-xs font-semibold text-amber-900">Administración revisará este egreso. Mientras tanto se cuenta de forma conservadora como gasto operativo.</p>}
         </>}
-        {!adminMaterialPurchase && <Field label="Forma de pago" required><Segmented value={paymentMethod} onChange={(value) => setPaymentMethod(value as 'cash' | 'transfer' | 'other' | 'credit')} options={distributorMeatPurchase ? [{value:'cash',label:'Efectivo'},{value:'transfer',label:'QR / transferencia'},{value:'credit',label:'A crédito'}] : session.role === 'admin' ? [{value:'cash',label:'Efectivo'},{value:'transfer',label:'QR / transferencia'},{value:'other',label:'Otro'},{value:'credit',label:'A crédito'}] : [{value:'cash',label:'Efectivo'},{value:'transfer',label:'QR / transferencia'},{value:'other',label:'Otro'}]}/></Field>}
+        {distributorMeatPurchase && paymentMethod !== 'credit' && <><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={purchaseMode === 'partial'} onChange={event => setPurchaseMode(event.target.checked ? 'partial' : '')} /> Registrar un adelanto y dejar saldo pendiente</label>{purchaseMode === 'partial' && <Field label="Pago inicial (Bs)" required><NumberInput min={0.01} step={0.01} value={purchasePaidNow} onChange={event => setPurchasePaidNow(event.target.value)} /></Field>}</>}
+        {!adminMaterialPurchase && <Field label="Forma de pago" required><Segmented value={paymentMethod} onChange={(value) => { setPaymentMethod(value as 'cash' | 'transfer' | 'other' | 'credit'); if (distributorMeatPurchase && value === 'credit') setPurchaseMode('') }} options={distributorMeatPurchase ? [{value:'cash',label:'Efectivo'},{value:'transfer',label:'QR / transferencia'},{value:'credit',label:'A crédito'}] : session.role === 'admin' ? [{value:'cash',label:'Efectivo'},{value:'transfer',label:'QR / transferencia'},{value:'other',label:'Otro'},{value:'credit',label:'A crédito'}] : [{value:'cash',label:'Efectivo'},{value:'transfer',label:'QR / transferencia'},{value:'other',label:'Otro'}]}/></Field>}
         {session.role === 'admin' && !adminMaterialPurchase && paymentMethod === 'credit' && <>
           <Field label="Proveedor o acreedor" required><select value={purchaseSupplierId} onChange={event => setPurchaseSupplierId(event.target.value)} className="h-11 w-full rounded-xl border-2 border-slate-200 bg-white px-3"><option value="">Seleccionar proveedor o acreedor</option>{adminExpenseSuppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></Field>
           <div className="grid gap-3 sm:grid-cols-2"><Field label="Vencimiento (opcional)"><TextInput type="date" min={dayKey} value={purchaseDueDayKey} onChange={event => setPurchaseDueDayKey(event.target.value)}/></Field><Field label="Tipo de comprobante"><select value={purchaseReceiptType} onChange={event => setPurchaseReceiptType(event.target.value as typeof purchaseReceiptType)} className="h-11 w-full rounded-xl border-2 border-slate-200 bg-white px-3"><option value="">Sin comprobante</option><option value="invoice">Factura</option><option value="receipt">Recibo</option><option value="other">Otro</option></select></Field></div>

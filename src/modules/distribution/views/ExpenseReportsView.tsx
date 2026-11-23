@@ -175,6 +175,8 @@ export function ExpenseReportsView(props: DistributionViewProps) {
     [payableScope, start, end],
   )
 
+  const outstandingPayables = visiblePayables.filter(row => ['pending', 'partial'].includes(row.status) && Math.round(row.balance * 100) > 0)
+
   const visiblePayments = useMemo(
     () =>
       payments.filter((row) => {
@@ -344,83 +346,75 @@ export function ExpenseReportsView(props: DistributionViewProps) {
 
   const period = describeRange(start && end ? [start, end] : start ? [start] : [])
 
+  const meatSummary = useMemo(() => {
+    const rows = new Map<string, { supplier: string; type: string; kg: number; amount: number }>()
+    for (const expense of visibleExpenses) {
+      if (expense.voided || expense.pendingConfirmation || expense.transactionKind === 'supplier_payment') continue
+      const type = expense.categoryName?.trim() || ''
+      if (!/^carne(?:s)?(?:\s|$)/i.test(type)) continue
+      const supplier = expense.supplierName || 'Sin proveedor'
+      const key = (expense.supplierId || supplier) + ':' + type
+      for (const item of expense.purchaseLines || []) {
+        if (item.unit !== 'kg') continue
+        const row = rows.get(key) || { supplier, type, kg: 0, amount: 0 }
+        row.kg += item.quantity
+        row.amount += item.total
+        rows.set(key, row)
+      }
+    }
+    const details = [...rows.values()].sort((a, b) => a.supplier.localeCompare(b.supplier) || a.type.localeCompare(b.type))
+    const suppliers = new Map<string, { supplier: string; type: string; kg: number; amount: number }>()
+    for (const detail of details) {
+      const subtotal = suppliers.get(detail.supplier) || { supplier: detail.supplier, type: 'Subtotal proveedor', kg: 0, amount: 0 }
+      subtotal.kg += detail.kg
+      subtotal.amount += detail.amount
+      suppliers.set(detail.supplier, subtotal)
+    }
+    const total = details.reduce((sum, row) => ({ ...sum, kg: sum.kg + row.kg, amount: sum.amount + row.amount }), { supplier: 'TOTAL', type: 'Período', kg: 0, amount: 0 })
+    return [...details, ...suppliers.values(), total]
+  }, [visibleExpenses])
+  const purchaseSubtotals = useMemo(() => {
+    const subtotals = new Map<string, { name: string; amount: number; count: number }>()
+    for (const expense of visibleExpenses) {
+      if (expense.transactionKind !== 'supplier_purchase' && !expense.purchaseLines?.length) continue
+      const name = expense.supplierName || 'Sin proveedor'
+      const key = expense.supplierId || name
+      const subtotal = subtotals.get(key) || { name, amount: 0, count: 0 }
+      subtotal.count++
+      subtotal.amount = round2(subtotal.amount + expense.amount)
+      subtotals.set(key, subtotal)
+    }
+    return [...subtotals.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [visibleExpenses])
+  const accountsByExpense = useMemo(() => new Map(payables.map(row => [row.purchaseExpenseId, row])), [payables])
+  const expensePaymentStatus = (row: DistExpense) => {
+    if (row.voided) return 'Anulado'
+    switch (accountsByExpense.get(row.id)?.status) {
+      case 'pending': return 'Pendiente'
+      case 'partial': return 'Pago parcial'
+      case 'paid': return 'Pagado'
+      default: return 'Registrado'
+    }
+  }
   const sheets = (): ReportSheet[] => {
     const selectedSupplierName =
       supplier === 'all' ? 'Todos los proveedores' : filteredSuppliers.find(([id]) => id === supplier)?.[1] || supplier
 
-    const detailHeaders = [
-      'Fecha',
-      'Grupo',
-      'Categoría',
-      'Concepto / Producto',
-      'Cantidad',
-      'Unidad',
-      'Precio unitario (Bs)',
-      'Importe línea (Bs)',
-      'Total operación (Bs)',
-      'Pago registrado',
-      'Efectivo pagado (Bs)',
-      'QR / transferencia pagado (Bs)',
-      'Otro pagado (Bs)',
-      'Origen',
-      'Responsable',
-      'Proveedor',
-      'Tipo comprobante compra',
-      'N.º comprobante compra',
-    ]
-
-    const detailRows: (string | number | null)[][] = []
-    for (const row of visibleExpenses) {
-      if (row.purchaseLines && row.purchaseLines.length > 0) {
-        for (const line of row.purchaseLines) {
-          detailRows.push([
-            row.dayKey,
-            row.groupName || row.group || 'Histórico',
-            row.categoryName || 'Histórico',
-            `${row.concept} — ${line.description || 'Línea de compra'}`,
-            Number(line.quantity),
-            line.unitLabel || line.unit || '',
-            Number(line.unitPrice || 0),
-            Number(line.total || 0),
-            Number(row.amount),
-            moneyMethod(row.paymentMethod),
-            expenseCashPaidAmount(row),
-            expenseTransferPaidAmount(row),
-            expenseOtherPaidAmount(row),
-            row.routeName,
-            row.registeredByName,
-            row.supplierName || '',
-            row.purchaseReceiptType || '',
-            row.purchaseReceiptNumber || '',
-          ])
-        }
-      } else {
-        detailRows.push([
-          row.dayKey,
-          row.groupName || row.group || 'Histórico',
-          row.categoryName || 'Histórico',
-          row.concept,
-          null,
-          '',
-          null,
-          Number(row.amount),
-          Number(row.amount),
-          moneyMethod(row.paymentMethod),
-          expenseCashPaidAmount(row),
-          expenseTransferPaidAmount(row),
-          expenseOtherPaidAmount(row),
-          row.routeName,
-          row.registeredByName,
-          row.supplierName || '',
-          row.purchaseReceiptType || '',
-          row.purchaseReceiptNumber || '',
-        ])
-      }
-    }
-
+    const detailHeaders = ['Fecha', 'Grupo', 'Categoría', 'Proveedor', 'Concepto', 'Importe (Bs)', 'Pago', 'Estado', 'Comprobante', 'Responsable', 'Origen', 'ID operación', 'Concepto original', 'Efectivo (Bs)', 'Transferencia (Bs)', 'Otro (Bs)', 'Observación']
+    const detailRows = visibleExpenses.map(row => [
+      row.dayKey, row.groupName || row.group || 'Histórico', row.categoryName || 'Histórico', row.supplierName || '',
+      row.purchaseLines?.length ? 'Compra · ' + row.purchaseLines.length + ' artículos' : row.concept,
+      row.amount, moneyMethod(row.paymentMethod), expensePaymentStatus(row),
+      [row.purchaseReceiptType, row.purchaseReceiptNumber || row.id.slice(-8)].filter(Boolean).join(' '), row.registeredByName, row.routeName, row.id, row.concept,
+      expenseCashPaidAmount(row), expenseTransferPaidAmount(row), expenseOtherPaidAmount(row), row.note || '',
+    ])
+    const itemRows = visibleExpenses.flatMap(row => (row.purchaseLines || []).map((line, index) => [
+      row.dayKey, row.supplierName || '', row.purchaseReceiptNumber || row.id.slice(-8), index + 1, line.description, line.quantity,
+      line.unitLabel || line.unit, line.unitPrice, line.total, row.id, line.wasteQuantity, line.netUsableQuantity, line.note || '',
+    ]))
     return [
       {
-        name: 'Resumen',
+        name: 'Resumen de egresos',
         headers: ['Concepto', 'Monto (Bs)'],
         rows: [
           ['EMBUTIDOS SAN JOSÉ · REPORTE DE EGRESOS', period],
@@ -512,6 +506,13 @@ export function ExpenseReportsView(props: DistributionViewProps) {
         name: 'Detalle de egresos',
         headers: detailHeaders,
         rows: detailRows,
+        pdfColumns: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+      },
+      {
+        name: 'Productos por compra',
+        headers: ['Fecha', 'Proveedor', 'Comprobante', 'Línea', 'Producto', 'Cantidad', 'Unidad', 'Precio (Bs)', 'Importe (Bs)', 'ID operación', 'Merma', 'Cantidad neta', 'Observación'],
+        rows: itemRows,
+        pdfColumns: [0, 1, 2, 4, 5, 6, 7, 8],
       },
       {
         name: 'Cuentas por pagar',
@@ -528,11 +529,13 @@ export function ExpenseReportsView(props: DistributionViewProps) {
           'Saldo (Bs)',
           'Estado',
           'Vence',
+          'Descripción original',
         ],
-        rows: visiblePayables.map((row) => [
+        pdfColumns: [0, 1, 2, 6, 7, 8, 9, 10, 11],
+        rows: outstandingPayables.map((row) => [
           row.dayKey,
           row.supplierName,
-          row.description,
+          row.purchaseLines?.length ? 'Compra · ' + row.purchaseLines.length + ' artículos' : row.description,
           row.groupName,
           row.categoryName,
           row.purchaseReceiptType || '',
@@ -542,6 +545,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
           row.balance,
           row.status,
           row.dueDayKey || '',
+          row.description,
         ]),
       },
       {
@@ -566,6 +570,16 @@ export function ExpenseReportsView(props: DistributionViewProps) {
           row.responsibleName,
           row.payableId,
         ]),
+      },
+      {
+        name: 'Subtotales de compras',
+        headers: ['Proveedor', 'Compras', 'Importe (Bs)'],
+        rows: purchaseSubtotals.map(row => [row.name, row.count, row.amount]),
+      },
+      {
+        name: 'Carne comprada por proveedor',
+        headers: ['Proveedor', 'Clasificación', 'Cantidad (kg)', 'Importe (Bs)', 'Promedio (Bs/kg)'],
+        rows: meatSummary.map(row => [row.supplier, row.type, Number(row.kg.toFixed(3)), round2(row.amount), row.kg > 0 ? round2(row.amount / row.kg) : null]),
       },
     ]
   }
@@ -598,15 +612,18 @@ export function ExpenseReportsView(props: DistributionViewProps) {
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
 
-      const printSheets = sheets().map(
+      const printSheets = sheets().filter(sheet => sheet.rows.length).map(sheet => {
+        const columns = sheet.pdfColumns || sheet.headers.map((_, index) => index)
+        return { ...sheet, headers: columns.map(index => sheet.headers[index]), rows: sheet.rows.map(row => columns.map(index => row[index])) }
+      }).map(
         (sheet) => `<section><h2>${htmlValue(sheet.name)}</h2><table><thead><tr>${sheet.headers
           .map((h) => `<th>${htmlValue(h)}</th>`)
           .join('')}</tr></thead><tbody>${sheet.rows
-          .map((r) => `<tr>${r.map((c) => `<td>${htmlValue(c)}</td>`).join('')}</tr>`)
+          .map((r) => `<tr>${r.map((c, index) => `<td class="${/Bs|Cantidad/.test(sheet.headers[index]) ? "number" : /Concepto|Producto|Descripción/.test(sheet.headers[index]) ? "description" : ""}">${htmlValue(typeof c === "number" && sheet.headers[index].includes("Bs") ? formatBs(c) : c)}</td>`).join('')}</tr>`)
           .join('')}</tbody></table></section>`,
       )
       await printHtmlDocument(
-        `<html><meta charset="utf-8"><title>Reporte de egresos</title><style>body{font-family:sans-serif;padding:20px}table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ccc;padding:6px;font-size:11px}th{background:#f4f4f4}h2{font-size:14px;margin-top:20px}</style><body><h1>EMBUTIDOS SAN JOSÉ · REPORTE DE EGRESOS</h1>${printSheets.join(
+        `<html><meta charset="utf-8"><title>Reporte de egresos</title><style>@page{size:letter landscape;margin:12mm}body{font-family:sans-serif}table{width:100%;border-collapse:collapse;margin:10px 0;table-layout:auto}th,td{border:1px solid #ccc;padding:6px;font-size:11px;vertical-align:top}th{background:#f4f4f4;text-align:left}h2{font-size:14px;margin-top:20px;break-after:avoid}thead{display:table-header-group}tr{break-inside:avoid}.description{width:29%;overflow-wrap:break-word}.number{text-align:right;white-space:nowrap}</style><body><h1>EMBUTIDOS SAN JOSÉ · REPORTE DE EGRESOS</h1>${printSheets.join(
           '',
         )}</body></html>`,
         'Reporte de egresos',
@@ -873,12 +890,12 @@ export function ExpenseReportsView(props: DistributionViewProps) {
                                 >
                                   <div>
                                     <strong>
-                                      {row.dayKey} · {row.concept}
+                                      {row.dayKey} · {row.supplierName ? row.supplierName + ' · ' : ''}{row.purchaseLines?.length ? (row.purchaseReceiptNumber || 'Compra') : row.concept}
                                     </strong>
                                     <p>
-                                      {row.routeName} · {row.registeredByName} · {moneyMethod(row.paymentMethod)}
+                                      {row.routeName} · {row.registeredByName} · {moneyMethod(row.paymentMethod)} · {expensePaymentStatus(row)}
                                     </p>
-                                    {row.supplierName && (
+                                    {row.supplierName && !row.purchaseLines?.length && (
                                       <p className="font-semibold text-slate-700">
                                         Proveedor: {row.supplierName}
                                         {row.transactionKind === 'supplier_purchase'
@@ -888,7 +905,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
                                     )}
                                     {row.purchaseLines && row.purchaseLines.length > 0 && (
                                       <div className="mt-2 grid gap-1 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-[11px]">
-                                        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 border-b border-slate-200 pb-1 font-bold text-slate-600">
+                                        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-2 border-b border-slate-200 pb-1 font-bold text-slate-600">
                                           <span>Producto / Insumo</span>
                                           <span className="text-right">Cantidad</span>
                                           <span className="text-right">P. Unit.</span>
@@ -897,19 +914,19 @@ export function ExpenseReportsView(props: DistributionViewProps) {
                                         {row.purchaseLines.map((line, idx) => (
                                           <div
                                             key={idx}
-                                            className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 py-0.5 text-slate-800"
+                                            className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 py-0.5 text-slate-800"
                                           >
-                                            <span className="truncate font-medium">
+                                            <span className="min-w-0 break-words font-medium">
                                               {line.description || 'Sin descripción'}
                                             </span>
                                             <span className="text-right tabular-nums">
                                               {line.quantity} {line.unitLabel || line.unit || ''}
                                             </span>
                                             <span className="text-right tabular-nums">
-                                              Bs {Number(line.unitPrice || 0).toFixed(2)}
+                                              {formatBs(line.unitPrice)}
                                             </span>
                                             <span className="text-right font-semibold tabular-nums">
-                                              Bs {Number(line.total || 0).toFixed(2)}
+                                              {formatBs(line.total)}
                                             </span>
                                           </div>
                                         ))}
@@ -928,11 +945,13 @@ export function ExpenseReportsView(props: DistributionViewProps) {
             </div>
           )}
 
-          {visiblePayables.length > 0 && (
+          {purchaseSubtotals.length > 0 && <section className="grid gap-2"><h3 className="font-black">Subtotales de compras por proveedor</h3>{purchaseSubtotals.map(row => <p className="text-sm" key={row.name}>{row.name} · {row.count} compras · <strong>{formatBs(row.amount)}</strong></p>)}</section>}
+          <section className="grid gap-2"><h3 className="font-black">Carne comprada en el período</h3><p className="text-xs text-slate-600">Líneas en kg con categoría de carne, excluidas compras anuladas.</p>{meatSummary.map((row, index) => <p className="text-sm" key={index}>{row.supplier} · {row.type} · <strong>{row.kg.toLocaleString("es-BO", { maximumFractionDigits: 3 })} kg</strong> · {formatBs(row.amount)}{row.kg > 0 && <> · {formatBs(row.amount / row.kg)}/kg</>}</p>)}</section>
+          {outstandingPayables.length > 0 && (
             <section>
               <h3 className="mb-2 font-black">Cuentas por pagar en el período de compra</h3>
               <div className="grid gap-2">
-                {visiblePayables.map((row) => (
+                {outstandingPayables.map((row) => (
                   <article
                     key={row.id}
                     className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm sm:grid-cols-[1fr_auto]"

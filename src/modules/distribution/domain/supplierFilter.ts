@@ -36,13 +36,13 @@ export function matchesSupplierFilter(
 
 export function filterSupplierPayables(
   payables: readonly DistPayable[],
-  statusFilter: DistPayable['status'] | 'all',
+  statusFilter: DistPayable['status'] | 'all' | 'outstanding',
   supplierFilter: string,
   options: readonly SupplierFilterOption[],
 ): DistPayable[] {
   return payables.filter(
     (row) =>
-      (statusFilter === 'all' || row.status === statusFilter) &&
+      (statusFilter === 'outstanding' ? (row.status === 'pending' || row.status === 'partial') && Math.round(row.balance * 100) > 0 : statusFilter === 'all' || row.status === statusFilter) &&
       matchesSupplierFilter(supplierFilter, row.supplierId, row.supplierName, options),
   )
 }
