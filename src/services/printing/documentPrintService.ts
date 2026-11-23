@@ -1,10 +1,15 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
 interface SanJoseDocumentPrintPlugin {
+  savePdf(options: { filename: string; data: string }): Promise<{ saved: boolean }>
   printHtml(options: { html: string; jobName: string }): Promise<{ opened: boolean }>
 }
 
 const NativeDocumentPrint = registerPlugin<SanJoseDocumentPrintPlugin>('SanJoseDocumentPrint')
+
+export function saveAndroidPdf(filename: string, data: string) {
+  return NativeDocumentPrint.savePdf({ filename, data })
+}
 
 async function brandLogoDataUrl(): Promise<string> {
   try {

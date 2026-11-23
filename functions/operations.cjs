@@ -3382,23 +3382,35 @@ async function rectifySupplierPurchase(o, p) {
   check(p.expectedRevision === (payable.updatedAt || payable.createdAt), "La compra o sus pagos cambiaron. Vuelve a abrir la rectificación.");
   const expense = await o.read("distExpenses", payable.purchaseExpenseId);
   check(expense?.transactionKind === "supplier_purchase" && !expense.voided, "La compra original no está disponible.");
-  const [payments, batches, movements, lots] = await Promise.all([
-    o.query("distSupplierPayments", "payableId", payable.id),
-    o.all("distProcessingBatches"),
-    o.query("distStockMovements", "refId", expense.id),
-    o.query("distLots", "sourceExpenseId", expense.id),
-  ]);
-  check(!movements.length && !lots.length && !batches.some(batch =>
-    [...(batch.packagingMaterials || []), ...(batch.costComponents || [])].some(item => item.expenseId === expense.id)),
-  "La compra está vinculada a inventario o producción. Concilia primero el impacto físico y de costos mediante una operación compensatoria auditada.");
+  const collection = name => o.root.collection(name);
+  const read = query => o.tx.get(query);
   const day = p.dayKey || payable.dayKey;
   check(validDate(day) && (!payable.dueDayKey || day <= payable.dueDayKey), "Revisa la fecha de compra y el vencimiento.");
-  const closures = await Promise.all([...new Set([day, payable.dayKey])].map(key => o.query("distClosures", "dayKey", key)));
-  const routeClosures = isAdministrationRouteId(expense.routeId) ? [] : await o.query("distClosures", "routeId", expense.routeId);
-  check(!closures.flat().some(row => row.status === "closed" &&
-    (row.routeId === expense.routeId || (isAdministrationRouteId(expense.routeId) && row.closureType === "admin")))
-    && !routeClosures.some(row => row.status === "closed" && row.dayKey >= payable.dayKey && row.closedAt >= expense.createdAt),
-  "La compra pertenece a una caja cerrada. La corrección requiere un asiento compensatorio en un período abierto.");
+  const days = [...new Set([day, payable.dayKey])];
+  const [paymentDocs, batches, movements, lots, dayClosures, routeClosures] = await Promise.all([
+    read(collection("distSupplierPayments").where("payableId", "==", payable.id).select("amount", "voided").limit(251)),
+    read(collection("distProcessingBatches").select("packagingMaterials", "costComponents").limit(251)),
+    read(collection("distStockMovements").where("refId", "==", expense.id).select().limit(1)),
+    read(collection("distLots").where("sourceExpenseId", "==", expense.id).select().limit(1)),
+    Promise.all(days.map(key => read(collection("distClosures").where("dayKey", "==", key).select("status", "routeId", "closureType").limit(101)))),
+    isAdministrationRouteId(expense.routeId) ? null : read(collection("distClosures").where("routeId", "==", expense.routeId)
+      .where("dayKey", ">=", payable.dayKey).select("status", "closedAt").limit(101)),
+  ]);
+  const linkedBatch = batches.docs.find(doc => {
+    const batch = doc.data();
+    return [...(batch.packagingMaterials || []), ...(batch.costComponents || [])].some(item => item.expenseId === expense.id);
+  });
+  check(movements.empty && lots.empty && !linkedBatch,
+    `Compra ${expense.id} vinculada a inventario (${linkedBatch?.id || movements.docs[0]?.id || lots.docs[0]?.id}). Registra una compensación auditada de inventario y costos.`);
+  const closed = dayClosures.flatMap(result => result.docs).find(doc => {
+    const row = doc.data();
+    return row.status === "closed" && (row.routeId === expense.routeId || (isAdministrationRouteId(expense.routeId) && row.closureType === "admin"));
+  }) || routeClosures?.docs.find(doc => doc.get("status") === "closed" && doc.get("closedAt") >= expense.createdAt);
+  check(!closed, `La compra ${expense.id} está vinculada al cierre ${closed?.id}. Registra un asiento compensatorio auditado en un período abierto.`);
+  check(batches.size <= 250 && paymentDocs.size <= 250 && dayClosures.every(result => result.size <= 100)
+    && (!routeClosures || routeClosures.size <= 100),
+  "El historial supera el límite de verificación automática. Solicita revisión contable de la compra, sus abonos y sus vínculos antes de corregirla.");
+  const payments = paymentDocs.docs.map(doc => ({ ...doc.data(), id: doc.id }));
   const activePayments = payments.filter(row => !row.voided);
   const paid = round(activePayments.reduce((sum, row) => sum + row.amount, 0));
   check(paid === payable.paidAmount, "El saldo pagado no concilia con los abonos registrados.");

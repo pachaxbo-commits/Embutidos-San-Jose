@@ -25,3 +25,9 @@ No requiere backfill ni migración destructiva. Los documentos de rectificación
 ## Safari iOS
 
 La prueba de Safari iOS requiere acceso a un dispositivo o Mac con simulador. Si la descarga no guarda el archivo, puede usarse la acción independiente Compartir PDF cuando Safari admita compartir archivos. La alternativa comprobada es descargar el mismo cierre en Chrome o Edge de escritorio. No se certifica Safari a partir de WebKit de escritorio ni de una simple emulación de pantalla.
+
+## Límites de verificación y Android
+
+La rectificación consulta como máximo 251 abonos de la propia obligación y 251 lotes de producción históricos con campos proyectados, 101 cierres por consulta y un vínculo por cada colección de inventario. Una compra con más de 250 abonos, más de 250 lotes de producción históricos o más de 100 cierres candidatos requiere revisión contable. No se autoriza la escritura si la búsqueda quedó incompleta. El límite de producción es global al restaurante mientras los registros históricos no tengan índice inverso; ampliar el flujo sin ese bloqueo requiere un índice con cobertura verificada.
+
+Antes de habilitar la función desplegar y esperar el estado listo del índice compuesto de cierres (ruta y fecha). Después publicar función y reglas, y por último el frontend. No se requiere cambiar datos. Para la app Android se requiere compilar y distribuir un APK que incluya el método nativo savePdf. El selector de archivos del sistema permite elegir Descargas u otra carpeta visible. Compartir PDF se mantiene como acción independiente. El flujo web no requiere APK.

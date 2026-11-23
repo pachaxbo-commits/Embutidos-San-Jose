@@ -6,7 +6,7 @@ import type { DistClosure, DistDispatch, DistProduct, DistQuote } from '../types
 import { computeLoadedByProduct, round2 } from '../domain/engine'
 import { closureReopenEvents, closureReturnSummary } from '../domain/closureAudit'
 import { closureRectificationLabel, closureRectificationView } from '../domain/closureRectification'
-import { printHtmlDocument } from '../../../services/printing/documentPrintService'
+import { printHtmlDocument, saveAndroidPdf } from '../../../services/printing/documentPrintService'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
@@ -743,7 +743,11 @@ export async function downloadClosurePdf(closure: DistClosure): Promise<void> {
   if (Capacitor.isNativePlatform()) {
     let binary = ''
     for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192))
-    await Filesystem.writeFile({ path: filename, data: btoa(binary), directory: Directory.Documents })
+    if (Capacitor.getPlatform() === "android") {
+      await saveAndroidPdf(filename, btoa(binary))
+    } else {
+      await Filesystem.writeFile({ path: filename, data: btoa(binary), directory: Directory.Documents })
+    }
     return
   }
   await saveReport(bytes, filename, 'application/pdf')

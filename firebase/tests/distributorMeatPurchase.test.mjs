@@ -98,6 +98,12 @@ try {
   const lots = await root.collection('distLots').get()
   ok(routePurchases.size === 4 && stockMovements.empty && lots.empty, 'hay un egreso por cada compra de ruta y registrar compra no crea lotes ni movimientos de inventario')
   const read = async (collection, id) => (await root.collection(collection).doc(id).get()).data()
+  const unrelated = db.batch()
+  for (let index = 0; index < 200; index++) {
+    unrelated.set(root.collection('distLots').doc(prefix + '-unrelated-lot-' + index), { sourceExpenseId: 'unrelated', quantity: 1 })
+    unrelated.set(root.collection('distSupplierPayments').doc(prefix + '-unrelated-payment-' + index), { payableId: 'unrelated', amount: 100 })
+  }
+  await unrelated.commit()
   const baseCorrection = { payableId: credit.id, expectedRevision: afterPayment.updatedAt, reason: 'Prueba QA de rectificación de compra' }
   const line = (quantity) => ({ ...purchase('credit').purchaseLines[0], quantity, total: quantity * 35, netUsableQuantity: quantity })
   await command(warehouse, 'rectifySupplierPurchase', baseCorrection, 'rejected', prefix + '-rectify-role')
@@ -131,6 +137,16 @@ try {
   await root.collection('distClosures').doc(prefix + '-closed').set({ status: 'closed', routeId, dayKey: '2026-10-30' })
   await command(admin, 'rectifySupplierPurchase', { payableId: deposit.id, expectedRevision: settled.updatedAt, reason: baseCorrection.reason }, 'rejected', prefix + '-rectify-closed')
   ok((await read('distExpenses', deposit.id)).amount === 700, 'caja cerrada e inventario vinculado bloquean cambios directos')
+  await root.collection('distClosures').doc(prefix + '-closed').delete()
+  const bulk = db.batch()
+  for (let index = 0; index < 260; index++) {
+    bulk.set(root.collection('distProcessingBatches').doc(prefix + '-historical-' + index), { packagingMaterials: [], costComponents: [] })
+  }
+  await bulk.commit()
+  const current = await read('distPayables', unpaid.id)
+  const start = performance.now()
+  const overflow = await command(admin, 'rectifySupplierPurchase', { ...unpaidInput, expectedRevision: current.updatedAt }, 'rejected', prefix + '-rectify-budget')
+  ok(/límite de verificación/.test(overflow.error) && (await read('distPayables', unpaid.id)).updatedAt === current.updatedAt, 'el historial por encima del presupuesto se rechaza sin escrituras (' + Math.round(performance.now() - start) + ' ms)')
   console.log(`PASS ${checks} comprobaciones totales de compras de distribuidor`)
 } finally {
   await env.clearFirestore()
