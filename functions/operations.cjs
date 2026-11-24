@@ -3382,24 +3382,24 @@ async function rectifySupplierPurchase(o, p) {
   check(p.expectedRevision === (payable.updatedAt || payable.createdAt), "La compra o sus pagos cambiaron. Vuelve a abrir la rectificación.");
   const expense = await o.read("distExpenses", payable.purchaseExpenseId);
   check(expense?.transactionKind === "supplier_purchase" && !expense.voided, "La compra original no está disponible.");
+  const dependencyIndex = await o.read("distControl", "supplierPurchaseDependencyIndex");
+  check(dependencyIndex?.status === "ready" && dependencyIndex?.schemaVersion === 1,
+    "La verificación histórica de inventario aún no está completa. No se modificó la compra; solicita revisión contable o espera la migración segura de dependencias.");
   const collection = name => o.root.collection(name);
   const read = query => o.tx.get(query);
   const day = p.dayKey || payable.dayKey;
   check(validDate(day) && (!payable.dueDayKey || day <= payable.dueDayKey), "Revisa la fecha de compra y el vencimiento.");
   const days = [...new Set([day, payable.dayKey])];
-  const [paymentDocs, batches, movements, lots, dayClosures, routeClosures] = await Promise.all([
+  const [paymentDocs, linkedBatches, movements, lots, dayClosures, routeClosures] = await Promise.all([
     read(collection("distSupplierPayments").where("payableId", "==", payable.id).select("amount", "voided").limit(251)),
-    read(collection("distProcessingBatches").select("packagingMaterials", "costComponents").limit(251)),
+    read(collection("distProcessingBatches").where("sourceExpenseIds", "array-contains", expense.id).select().limit(1)),
     read(collection("distStockMovements").where("refId", "==", expense.id).select().limit(1)),
     read(collection("distLots").where("sourceExpenseId", "==", expense.id).select().limit(1)),
     Promise.all(days.map(key => read(collection("distClosures").where("dayKey", "==", key).select("status", "routeId", "closureType").limit(101)))),
     isAdministrationRouteId(expense.routeId) ? null : read(collection("distClosures").where("routeId", "==", expense.routeId)
       .where("dayKey", ">=", payable.dayKey).select("status", "closedAt").limit(101)),
   ]);
-  const linkedBatch = batches.docs.find(doc => {
-    const batch = doc.data();
-    return [...(batch.packagingMaterials || []), ...(batch.costComponents || [])].some(item => item.expenseId === expense.id);
-  });
+  const linkedBatch = linkedBatches.docs[0];
   check(movements.empty && lots.empty && !linkedBatch,
     `Compra ${expense.id} vinculada a inventario (${linkedBatch?.id || movements.docs[0]?.id || lots.docs[0]?.id}). Registra una compensación auditada de inventario y costos.`);
   const closed = dayClosures.flatMap(result => result.docs).find(doc => {
@@ -3407,7 +3407,7 @@ async function rectifySupplierPurchase(o, p) {
     return row.status === "closed" && (row.routeId === expense.routeId || (isAdministrationRouteId(expense.routeId) && row.closureType === "admin"));
   }) || routeClosures?.docs.find(doc => doc.get("status") === "closed" && doc.get("closedAt") >= expense.createdAt);
   check(!closed, `La compra ${expense.id} está vinculada al cierre ${closed?.id}. Registra un asiento compensatorio auditado en un período abierto.`);
-  check(batches.size <= 250 && paymentDocs.size <= 250 && dayClosures.every(result => result.size <= 100)
+  check(paymentDocs.size <= 250 && dayClosures.every(result => result.size <= 100)
     && (!routeClosures || routeClosures.size <= 100),
   "El historial supera el límite de verificación automática. Solicita revisión contable de la compra, sus abonos y sus vínculos antes de corregirla.");
   const payments = paymentDocs.docs.map(doc => ({ ...doc.data(), id: doc.id }));
@@ -5862,7 +5862,9 @@ handlers.confirmProcessingBatch = async (o, p) => {
     id: batchId, operationId: o.id, restaurantId: 'sanjose', branchId: 'main', schemaVersion: 1, payloadHash, status: 'confirmed',
     processType: p.processType, processingDate: p.processingDate, note: String(p.note || '').trim().slice(0, 500), sourceProductId: sourceProduct.id, sourceProductName: sourceProduct.name, sourceUnitType: sourceProduct.unitType, sourceLocation: loc,
     sourceAllocations: sourceCostRows, inputWeightG, destinations: destinations.map((item, index) => ({ ...item, costCents: destinationCosts[index], sourceLotIds: [...new Set(destinationSourceAllocations[index].map(row => row.sourceLotId))], sourceAllocations: destinationSourceAllocations[index], sourceAllocationBasis: 'batch_blend_accounting_allocation' })),
-    packagingMaterials: materialRows, costComponents: componentRows, sourceCostCents,
+    packagingMaterials: materialRows, costComponents: componentRows,
+    sourceExpenseIds: [...new Set([...materialRows.map(item => item.expenseId), ...componentRows.map(item => item.expenseId)].filter(Boolean))],
+    sourceCostCents,
     auxiliaryCostsCapitalized: false, costPolicy: 'Solo se redistribuyó el costo histórico conocido del inventario de origen; empaques y egresos asociados son informativos y no se capitalizan.',
     responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, createdAt: o.now, dayKey: o.today, confirmedAt: o.now, confirmedBy: o.actor,
     auditEventIds, movementIds, reservationIds, reversal: { status: 'clear', dependencyIds: [] }, result,
