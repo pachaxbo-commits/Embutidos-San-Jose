@@ -42,7 +42,7 @@ export function SupplierPayablesView({ data, readOnly }: DistributionViewProps &
   const [initialPayment, setInitialPayment] = useState('')
   const [purchaseMode, setPurchaseMode] = useState<'' | 'cash' | 'credit' | 'partial'>('')
   const [paymentMethod, setPaymentMethod] = useState<'cash'|'transfer'|'other'>('cash')
-  const [statusFilter, setStatusFilter] = useState<'outstanding'|'paid'|'pending'|'partial'|'voided'>('outstanding')
+  const [statusFilter, setStatusFilter] = useState<'all'|'outstanding'|'paid'|'pending'|'partial'|'voided'>('outstanding')
   const [payableSupplierFilter, setPayableSupplierFilter] = useState('all')
   const [dayKey, setDayKey] = useState(new Date().toLocaleDateString('en-CA', { timeZone: 'America/La_Paz' }))
   const [dueDayKey, setDueDayKey] = useState('')
@@ -137,7 +137,7 @@ export function SupplierPayablesView({ data, readOnly }: DistributionViewProps &
     {loading&&<p role="status" className="rounded-xl bg-slate-50 p-3 text-sm">Cargando cuentas de proveedor…</p>}{error&&<p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800">{error}</p>}{feedback&&<p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{feedback}</p>}
     <p className="-mt-2 text-[11px] text-slate-500">Deuda pendiente y pagado se calculan sobre las cuentas visibles con los filtros actuales. Proveedores activos muestra el total general del directorio.</p>
     <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-      <Field label="Mostrar compras y cuentas"><select value={statusFilter} onChange={event=>setStatusFilter(event.target.value as typeof statusFilter)} className="h-11 w-full rounded-xl border-2 border-slate-200 bg-white px-3"><option value="outstanding">Con saldo pendiente</option><option value="paid">Historial de pagadas</option><option value="pending">Pendientes</option><option value="partial">Parciales</option><option value="voided">Anuladas</option></select></Field>
+      <Field label="Mostrar compras y cuentas"><select value={statusFilter} onChange={event=>setStatusFilter(event.target.value as typeof statusFilter)} className="h-11 w-full rounded-xl border-2 border-slate-200 bg-white px-3"><option value="all">Todas</option><option value="outstanding">Con saldo pendiente</option><option value="paid">Pagadas</option><option value="pending">Pendientes</option><option value="partial">Parciales</option><option value="voided">Anuladas</option></select></Field>
       <Field label="Proveedor"><select value={payableSupplierFilter} onChange={event=>setPayableSupplierFilter(event.target.value)} className="h-11 w-full rounded-xl border-2 border-slate-200 bg-white px-3"><option value="all">Todos los proveedores</option>{supplierFilterOptions.map(([id, name])=><option key={id} value={id}>{name}</option>)}</select></Field>
     </div>
     <Field label="Responsable de la compra"><select value={buyer} onChange={event => setBuyer(event.target.value)} className="h-11 w-full rounded-xl border-2 border-slate-200 bg-white px-3"><option value="">Todos los responsables</option>{[...purchaseBuyers].map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></Field>
