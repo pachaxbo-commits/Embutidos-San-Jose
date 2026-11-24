@@ -34,7 +34,9 @@ const payable = (id: string, supplierId: string | undefined, supplierName: strin
 
 const rows = [
   payable('A-pending', 'supplier-A', supplierA.name, 'pending', 100, 0, 100),
+  payable('A-partial', 'supplier-A', supplierA.name, 'partial', 100, 40, 60),
   payable('A-paid', 'supplier-A', supplierA.name, 'paid', 50, 50, 0),
+  payable('A-voided', 'supplier-A', supplierA.name, 'voided', 75, 0, 75),
   payable('B-pending', 'supplier-B', 'OTRO PROVEEDOR', 'pending', 200, 0, 200),
   payable('legacy', undefined, 'Proveedor Histórico', 'pending', 25, 0, 25),
   payable('inactive-history', supplierInactive.id, supplierInactive.name, 'pending', 30, 0, 30),
@@ -49,12 +51,17 @@ assert.deepEqual(filterSupplierPayables(rows, 'pending', 'all', options).map((ro
 ])
 assert.deepEqual(filterSupplierPayables(rows, 'pending', 'supplier-A', options).map((row) => row.id), ['A-pending'])
 assert.deepEqual(filterSupplierPayables(rows, 'paid', 'supplier-A', options).map((row) => row.id), ['A-paid'])
+assert.deepEqual(filterSupplierPayables(rows, 'partial', 'supplier-A', options).map((row) => row.id), ['A-partial'])
+assert.deepEqual(filterSupplierPayables(rows, 'outstanding', 'supplier-A', options).map((row) => row.id), ['A-pending', 'A-partial'])
+assert.deepEqual(filterSupplierPayables(rows, 'all', 'supplier-A', options).map((row) => row.id), ['A-pending', 'A-partial', 'A-paid', 'A-voided'])
 assert.deepEqual(filterSupplierPayables(rows, 'paid', 'supplier-B', options), [])
 assert.deepEqual(filterSupplierPayables(rows, 'pending', 'name:Proveedor Histórico', options).map((row) => row.id), ['legacy'])
 assert.deepEqual(filterSupplierPayables(rows, 'pending', 'supplier-old', options).map((row) => row.id), ['inactive-history'])
 assert.equal(matchesSupplierFilter('supplier-A', undefined, 'LA CABAÑITA', options), true)
 
 assert.deepEqual(supplierPayablesTotals(filterSupplierPayables(rows, 'pending', 'all', options)), { pending: 355, paid: 0 })
-assert.deepEqual(supplierPayablesTotals(filterSupplierPayables(rows, 'all', 'supplier-A', options)), { pending: 100, paid: 50 })
+assert.deepEqual(supplierPayablesTotals(filterSupplierPayables(rows, 'outstanding', 'supplier-A', options)), { pending: 160, paid: 40 })
+assert.deepEqual(supplierPayablesTotals(filterSupplierPayables(rows, 'paid', 'supplier-A', options)), { pending: 0, paid: 50 })
+assert.deepEqual(supplierPayablesTotals(filterSupplierPayables(rows, 'all', 'supplier-A', options)), { pending: 160, paid: 90 })
 
 console.log('✓ Filtro de proveedor combina estado, respeta proveedores inactivos e históricos y calcula totales visibles.')

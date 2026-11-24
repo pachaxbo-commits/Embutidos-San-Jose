@@ -736,7 +736,7 @@ function closurePdfFilename(closure: DistClosure) {
   return 'cierre-san-jose-' + (seller || 'vendedor') + '-' + closure.dayKey + '-' + closure.id.replace(/[^a-z0-9_-]/gi, '-') + '.pdf'
 }
 
-export async function downloadClosurePdf(closure: DistClosure): Promise<void> {
+export async function downloadClosurePdf(closure: DistClosure): Promise<'downloaded' | 'share-fallback'> {
   const doc = await generateClosurePdf(closure)
   const bytes = new Uint8Array(doc.output('arraybuffer'))
   const filename = closurePdfFilename(closure)
@@ -744,13 +744,18 @@ export async function downloadClosurePdf(closure: DistClosure): Promise<void> {
     let binary = ''
     for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192))
     if (Capacitor.getPlatform() === "android") {
+      if (!Capacitor.isPluginAvailable('SanJoseDocumentPrint')) {
+        await shareClosurePdf(closure)
+        return 'share-fallback'
+      }
       await saveAndroidPdf(filename, btoa(binary))
     } else {
       await Filesystem.writeFile({ path: filename, data: btoa(binary), directory: Directory.Documents })
     }
-    return
+    return 'downloaded'
   }
   await saveReport(bytes, filename, 'application/pdf')
+  return 'downloaded'
 }
 
 export async function shareClosurePdf(closure: DistClosure): Promise<boolean> {
