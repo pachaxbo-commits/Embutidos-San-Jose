@@ -8,6 +8,9 @@ interface SanJoseDocumentPrintPlugin {
 const NativeDocumentPrint = registerPlugin<SanJoseDocumentPrintPlugin>('SanJoseDocumentPrint')
 
 export function saveAndroidPdf(filename: string, data: string) {
+  if (!Capacitor.isPluginAvailable('SanJoseDocumentPrint')) {
+    throw new Error('La descarga directa de PDF requiere actualizar la aplicación. Usa Compartir PDF para guardar este documento.')
+  }
   return NativeDocumentPrint.savePdf({ filename, data })
 }
 

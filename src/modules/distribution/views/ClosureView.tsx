@@ -103,6 +103,11 @@ export function ClosureView({ session, data }: DistributionViewProps) {
   const [confirmingDeclaration, setConfirmingDeclaration] = useState(false)
   const [confirmingWarehouseReception, setConfirmingWarehouseReception] = useState(false)
   const [confirmingClosure, setConfirmingClosure] = useState(false)
+  const handleClosurePdfDownload = async (closure: DistClosure) => {
+    setError(null)
+    const result = await downloadClosurePdf(closure)
+    if (result === 'share-fallback') setError('Esta versión de la aplicación no permite guardar el PDF directamente. Se abrió Compartir para que elijas Guardar.')
+  }
   const [reopenTarget, setReopenTarget] = useState<DistClosure | null>(null)
   const [reopenReason, setReopenReason] = useState('')
   const [reopenPreserveFinancialSnapshot, setReopenPreserveFinancialSnapshot] = useState(false)
@@ -928,7 +933,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <SecondaryButton onClick={() => void printClosureTicket(closure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket de cierre</SecondaryButton>
                 <SecondaryButton onClick={() => void printClosureSheet(closure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de cierre</SecondaryButton>
-                <SecondaryButton onClick={() => void downloadClosurePdf(closure).catch(pdfError => setError(pdfError.message))}><Download size={15} /> Descargar PDF</SecondaryButton>
+                <SecondaryButton onClick={() => void handleClosurePdfDownload(closure).catch(pdfError => setError(pdfError.message))}><Download size={15} /> Descargar PDF</SecondaryButton>
                 <SecondaryButton onClick={() => void shareClosurePdf(closure).catch(pdfError => setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
               </div>
             </div>}
@@ -997,7 +1002,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-emerald-200">
                 <SecondaryButton onClick={() => void printClosureTicket(existingAdminClosure).catch(printError => setError(printError.message))}><Printer size={15} /> Ticket</SecondaryButton>
                 <SecondaryButton onClick={() => void printClosureSheet(existingAdminClosure).catch(printError => setError(printError.message))}><FileText size={15} /> Hoja de arqueo</SecondaryButton>
-                <SecondaryButton onClick={() => void downloadClosurePdf(existingAdminClosure).catch(pdfError => setError(pdfError.message))}><Download size={15} /> Descargar PDF</SecondaryButton>
+                <SecondaryButton onClick={() => void handleClosurePdfDownload(existingAdminClosure).catch(pdfError => setError(pdfError.message))}><Download size={15} /> Descargar PDF</SecondaryButton>
                 <SecondaryButton onClick={() => void shareClosurePdf(existingAdminClosure).catch(pdfError => setError(pdfError.message))}><Send size={15} /> Compartir PDF</SecondaryButton>
                 <SecondaryButton onClick={() => { setReopenTarget(existingAdminClosure); setReopenReason(''); setReopenPreserveFinancialSnapshot(false); }}><Unlock size={15} /> Reabrir arqueo</SecondaryButton>
               </div>
