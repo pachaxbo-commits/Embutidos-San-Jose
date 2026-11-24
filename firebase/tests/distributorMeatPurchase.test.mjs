@@ -39,6 +39,7 @@ try {
   await root.collection('members').doc(hugo).set({ role: 'distributor', active: true, routeId, displayName: 'Hugo QA' })
   await root.collection('members').doc(warehouse).set({ role: 'warehouse', active: true, warehouseId: 'central' })
   await root.collection('distRoutes').doc(routeId).set({ id: routeId, name: 'Ruta Hugo QA', active: true })
+  await root.collection('distControl').doc('supplierPurchaseDependencyIndex').set({ status: 'ready', schemaVersion: 1 })
   const supplierId = `${prefix}-supplier`
   const inactiveSupplierId = `${prefix}-inactive`
   await command(admin, 'saveExpenseSupplier', { supplierId, name: 'Proveedor Carnes QA', legalName: 'Datos fiscales privados QA', nit: '00112233', address: 'Dirección privada', active: true })
@@ -106,6 +107,10 @@ try {
   await unrelated.commit()
   const baseCorrection = { payableId: credit.id, expectedRevision: afterPayment.updatedAt, reason: 'Prueba QA de rectificación de compra' }
   const line = (quantity) => ({ ...purchase('credit').purchaseLines[0], quantity, total: quantity * 35, netUsableQuantity: quantity })
+  await root.collection('distControl').doc('supplierPurchaseDependencyIndex').set({ status: 'backfilling', schemaVersion: 1 })
+  const blockedDuringBackfill = await command(admin, 'rectifySupplierPurchase', baseCorrection, 'rejected', prefix + '-rectify-backfill-gate')
+  ok(/verificación histórica/.test(blockedDuringBackfill.error) && (await read('distPayables', credit.id)).updatedAt === afterPayment.updatedAt, 'la rectificación queda bloqueada sin escrituras mientras el índice histórico no esté READY')
+  await root.collection('distControl').doc('supplierPurchaseDependencyIndex').set({ status: 'ready', schemaVersion: 1 })
   await command(warehouse, 'rectifySupplierPurchase', baseCorrection, 'rejected', prefix + '-rectify-role')
   await command(admin, 'rectifySupplierPurchase', { ...baseCorrection, purchaseLines: [line(5)] }, 'rejected', prefix + '-rectify-below-paid')
   const corrected = await command(admin, 'rectifySupplierPurchase', { ...baseCorrection, purchaseLines: [line(19)] }, 'confirmed', prefix + '-rectify-partial')
@@ -132,7 +137,7 @@ try {
     })
   }))
   ok(race.sort().join(',') === 'confirmed,rejected', 'dos correcciones concurrentes sobre la misma revisión solo aplican una vez')
-  await root.collection('distProcessingBatches').doc(prefix + '-linked-batch').set({ packagingMaterials: [{ expenseId: credit.id }] })
+  await root.collection('distProcessingBatches').doc(prefix + '-linked-batch').set({ packagingMaterials: [{ expenseId: credit.id }], sourceExpenseIds: [credit.id] })
   const inventoryBlocked = await command(admin, 'rectifySupplierPurchase', { ...baseCorrection, expectedRevision: afterCorrection.updatedAt }, 'rejected', prefix + '-rectify-linked')
   ok(inventoryBlocked.error.includes(credit.id) && inventoryBlocked.error.includes('inventario') && inventoryBlocked.error.includes('compensación auditada'), 'el bloqueo de inventario identifica la compra y la compensación requerida')
   await root.collection('distClosures').doc(prefix + '-closed').set({ status: 'closed', routeId, dayKey: '2026-10-30' })
@@ -147,8 +152,9 @@ try {
   await bulk.commit()
   const current = await read('distPayables', unpaid.id)
   const start = performance.now()
-  const overflow = await command(admin, 'rectifySupplierPurchase', { ...unpaidInput, expectedRevision: current.updatedAt }, 'rejected', prefix + '-rectify-budget')
-  ok(/límite de verificación/.test(overflow.error) && (await read('distPayables', unpaid.id)).updatedAt === current.updatedAt, 'el historial por encima del presupuesto se rechaza sin escrituras (' + Math.round(performance.now() - start) + ' ms)')
+  const overflow = await command(admin, 'rectifySupplierPurchase', { ...unpaidInput, expectedRevision: current.updatedAt }, 'confirmed', prefix + '-rectify-budget')
+  ok((await read('distPayables', unpaid.id)).balance === 595 && overflow.status === 'confirmed', 'más de 250 lotes no relacionados no bloquean la rectificación indexada (' + Math.round(performance.now() - start) + ' ms)')
+  const currentAfterBulk = await read('distPayables', unpaid.id)
 
   const batchCleanup = db.batch()
   for (let index = 0; index < 260; index++) batchCleanup.delete(root.collection('distProcessingBatches').doc(prefix + '-historical-' + index))
@@ -156,8 +162,8 @@ try {
   const paymentOverflowBatch = db.batch()
   for (let index = 0; index < 251; index++) paymentOverflowBatch.set(root.collection('distSupplierPayments').doc(prefix + '-history-payment-' + index), { payableId: unpaid.id, amount: 1, voided: true })
   await paymentOverflowBatch.commit()
-  const paymentOverflow = await command(admin, 'rectifySupplierPurchase', { ...unpaidInput, expectedRevision: current.updatedAt }, 'rejected', prefix + '-rectify-payment-budget')
-  ok(/Solicita revisión contable/.test(paymentOverflow.error) && (await read('distPayables', unpaid.id)).updatedAt === current.updatedAt, 'más de 250 abonos se bloquean con revisión contable y sin escrituras parciales')
+  const paymentOverflow = await command(admin, 'rectifySupplierPurchase', { ...unpaidInput, expectedRevision: currentAfterBulk.updatedAt }, 'rejected', prefix + '-rectify-payment-budget')
+  ok(/Solicita revisión contable/.test(paymentOverflow.error) && (await read('distPayables', unpaid.id)).updatedAt === currentAfterBulk.updatedAt, 'más de 250 abonos se bloquean con revisión contable y sin escrituras parciales')
 
   const paymentCleanup = db.batch()
   for (let index = 0; index < 251; index++) paymentCleanup.delete(root.collection('distSupplierPayments').doc(prefix + '-history-payment-' + index))
@@ -165,8 +171,8 @@ try {
   const closureOverflowBatch = db.batch()
   for (let index = 0; index < 101; index++) closureOverflowBatch.set(root.collection('distClosures').doc(prefix + '-route-closure-' + index), { status: 'open', routeId, dayKey: '2026-10-31' })
   await closureOverflowBatch.commit()
-  const closureOverflow = await command(admin, 'rectifySupplierPurchase', { ...unpaidInput, expectedRevision: current.updatedAt }, 'rejected', prefix + '-rectify-closure-budget')
-  ok(/Solicita revisión contable/.test(closureOverflow.error) && (await read('distPayables', unpaid.id)).updatedAt === current.updatedAt, 'más de 100 cierres candidatos se bloquean con revisión contable y sin escrituras parciales')
+  const closureOverflow = await command(admin, 'rectifySupplierPurchase', { ...unpaidInput, expectedRevision: currentAfterBulk.updatedAt }, 'rejected', prefix + '-rectify-closure-budget')
+  ok(/Solicita revisión contable/.test(closureOverflow.error) && (await read('distPayables', unpaid.id)).updatedAt === currentAfterBulk.updatedAt, 'más de 100 cierres candidatos se bloquean con revisión contable y sin escrituras parciales')
   console.log(`PASS ${checks} comprobaciones totales de compras de distribuidor`)
 } finally {
   await env.clearFirestore()
