@@ -216,16 +216,19 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
 
 
   const editDraft = (update: (current: Draft) => Draft) => {
-    if (submitState === 'unknown' || submitState === 'sending') return
+    if (submitLock.current || submitState === 'unknown' || submitState === 'sending') return
     setError(''); setMessage('')
     setDraft(current => {
       const next = update(current)
+      if (next.sources !== current.sources) {
+        next.destinations = next.destinations.map(item => ({ ...item, continuePhysicalLot: false }))
+      }
       return submitState === 'rejected' ? { ...next, operationId: randomId('processing_operation') } : next
     })
     if (submitState === 'rejected' || submitState === 'confirmed') setSubmitState('idle')
   }
   const setSourceProduct = (productId: string) => {
-    editDraft(current => ({ ...current, sourceProductId: productId, sources: [] }))
+    editDraft(current => ({ ...current, sourceProductId: productId, sources: [], destinations: [freshDestination(today)], materials: [], costs: [], weightExceptionReason: '' }))
     setIsSourceProductModalOpen(false)
   }
   const startNewElaboration = () => {
@@ -347,7 +350,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
     try {
       const state = await getProcessingOperationState(draft.operationId)
       if (state.status === 'confirmed') { finishConfirmed(); return }
-      if (state.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(state.error); setMessage('El servidor rechazó esta elaboración. Corrige el borrador y vuelve a validarlo; se conservarán sus datos.') ; return }
+      if (state.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(state.error); if (state.error.includes('[CONTINUE_LOT:')) setStep(1); setMessage('El servidor rechazó esta elaboración. Corrige el borrador y vuelve a validarlo; se conservarán sus datos.') ; return }
       if (state.status === 'queued') { setSubmitState('unknown'); setMessage('La operación sigue en cola. No generes otra operación ni cambies el borrador; vuelve a comprobar más tarde.') ; return }
       setSubmitState('idle'); setDraft(current => ({ ...current, operationPending: false })); setMessage('El servidor no encuentra la operación. Puedes reenviar el mismo borrador con el mismo identificador.')
     } catch (reason) { setSubmitState('unknown'); setError(`No se pudo consultar el estado: ${(reason as Error).message}`); setMessage('Respuesta desconocida. Se conserva el mismo identificador para comprobar de nuevo.') }
@@ -372,7 +375,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
         const status = await getProcessingOperationState(draft.operationId)
         if (status.status === 'confirmed') { finishConfirmed(); return }
         if (status.status === 'queued') { setSubmitState('unknown'); setMessage('Pendiente de comprobación. No vuelvas a registrarla; consulta el estado con el mismo identificador.'); setError(errorMessage); return }
-        if (status.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(status.error); setMessage('El servidor rechazó la operación sin confirmarla. Puedes corregir el borrador.') ; return }
+        if (status.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(status.error); if (status.error.includes('[CONTINUE_LOT:')) setStep(1); setMessage('El servidor rechazó la operación sin confirmarla. Puedes corregir el borrador.') ; return }
         setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(errorMessage); setMessage('No hay una operación guardada. El borrador y su identificador se conservan.')
       } catch {
         setSubmitState('unknown'); setError(errorMessage); setMessage('No se conoce el resultado. Conservamos el identificador; primero comprueba el estado antes de reintentar.')
@@ -532,8 +535,8 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
 
       {step === 0 && <SectionCard title="Paso 1 · Producto de origen y lotes">
         <div className="space-y-3">
-          {canAdmin ? <Field label="Almacén de origen" required><SelectInput value={draft.location} onChange={event => editDraft(current => ({ ...current, location: event.target.value, sourceProductId: '', sources: [] }))}>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field> : <div className="rounded-xl bg-slate-50 p-3 text-sm"><b>Almacén asignado:</b> {data.warehouses.find(item => item.id === fixedLocation)?.name || (fixedLocation === 'central' ? 'Almacén central' : fixedLocation)}</div>}
-          <Field label="Tipo de elaboración"><SelectInput value={draft.processType} onChange={event => editDraft(current => ({ ...current, processType: event.target.value as Draft['processType'] }))}><option value="bagging">Sacheteado y embolsado</option><option value="portioning">Porcionado</option></SelectInput><p className="mt-1 text-xs text-slate-500">Este flujo transforma producto a granel. El reemplazo de bolsas de producto terminado y la liberación de pendientes requieren procedimientos separados.</p></Field>
+          {canAdmin ? <Field label="Almacén de origen" required><SelectInput value={draft.location} onChange={event => editDraft(current => ({ ...current, location: event.target.value, sourceProductId: '', sources: [], destinations: [freshDestination(today)], materials: [], costs: [], weightExceptionReason: '' }))}>{locationOptions.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</SelectInput></Field> : <div className="rounded-xl bg-slate-50 p-3 text-sm"><b>Almacén asignado:</b> {data.warehouses.find(item => item.id === fixedLocation)?.name || (fixedLocation === 'central' ? 'Almacén central' : fixedLocation)}</div>}
+          <Field label="Tipo de elaboración"><SelectInput value={draft.processType} onChange={event => editDraft(current => ({ ...current, processType: event.target.value as Draft['processType'], destinations: current.destinations.map(item => ({ ...item, continuePhysicalLot: false })) }))}><option value="bagging">Sacheteado y embolsado</option><option value="portioning">Porcionado</option></SelectInput><p className="mt-1 text-xs text-slate-500">Este flujo transforma producto a granel. El reemplazo de bolsas de producto terminado y la liberación de pendientes requieren procedimientos separados.</p></Field>
           <Field label="Producto a granel · unidad kg" required hint="Solo aparecen SKU con lotes elegibles. El servidor vuelve a comprobar stock, lote y vencimiento al confirmar.">
             <ChoiceButton
               dataProcessingAnchor="source-product"
@@ -588,7 +591,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
               <div data-processing-anchor={destination.kind === 'discard' ? 'discard' : 'net-weight'}><Field label="Peso neto real medido (g)" required><NumberInput min="1" step="1" value={destination.netWeightG} onChange={event => updateDestination(destination.id, { netWeightG: event.target.value })} placeholder="Ej. 9000" /></Field><ProcessingContextHelp topic={destination.kind === 'discard' ? 'discard' : 'netWeight'} /></div>
               {destination.kind !== 'discard' && <div data-processing-anchor="nominal-weight"><Field label="Peso nominal (g, informativo)"><NumberInput min="1" step="1" value={destination.nominalWeightG} onChange={event => updateDestination(destination.id, { nominalWeightG: event.target.value })} placeholder="Ej. 250" /></Field><ProcessingContextHelp topic="nominalWeight" /></div>}
               {destination.kind !== 'discard' && <Field label="Código de lote físico" required><TextInput data-processing-anchor="lot-code" maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value })} placeholder="Código de lote" /></Field>}
-              {draft.processType === 'bagging' && destination.kind === 'finished' && data.lots.some(lot => lot.productId === destination.productId && lot.lotCode?.trim().toUpperCase() === destination.lotCode.trim().toUpperCase()) && <label className="flex min-w-0 items-start gap-2 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs"><input type="checkbox" checked={Boolean(destination.continuePhysicalLot)} onChange={event => updateDestination(destination.id, { continuePhysicalLot: event.target.checked })} /><span>Este código ya existe. Confirma que esta elaboración continúa el mismo lote físico. Se conservarán peso, costo y trazabilidad por elaboración.</span></label>}
+              {destination.kind === 'finished' && destination.productId && destination.lotCode.trim() && (destination.continuePhysicalLot || error.includes(`[CONTINUE_LOT:${destination.id}]`) || data.lots.some(lot => lot.productId === destination.productId && lot.lotCode?.trim().toUpperCase() === destination.lotCode.trim().toUpperCase())) && <label className="flex min-w-0 items-start gap-2 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs"><input type="checkbox" checked={Boolean(destination.continuePhysicalLot)} onChange={event => updateDestination(destination.id, { continuePhysicalLot: event.target.checked })} /><span>Este lote ya existe para este producto. ¿Desea agregar esta producción al mismo lote? Se conservarán peso, costo y trazabilidad por elaboración.</span></label>}
               {destination.kind !== 'discard' && <Field label="Fecha de elaboración" required><TextInput data-processing-anchor="manufactured-date" type="date" max={today} value={destination.manufacturedOn} onChange={event => updateDestination(destination.id, { manufacturedOn: event.target.value })} /></Field>}
               {destination.kind !== 'discard' && <Field label="Fecha de embolsado" required><TextInput data-processing-anchor="packaged-date" type="date" max={today} value={destination.packagedOn} onChange={event => updateDestination(destination.id, { packagedOn: event.target.value })} /></Field>}
               {destination.kind !== 'discard' && <div data-processing-anchor="expiry-date"><Field label="Vencimiento" required hint="San José define el vencimiento de la presentación terminada; puede ser posterior al lote de granel, pero no anterior al embolsado."><TextInput type="date" value={destination.expiresOn} onChange={event => updateDestination(destination.id, { expiresOn: event.target.value })} /></Field><ProcessingContextHelp topic="expiry" /></div>}

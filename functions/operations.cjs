@@ -5773,7 +5773,7 @@ handlers.confirmProcessingBatch = async (o, p) => {
     check(!targetEntry.lots.some(lot => lot.legacy || lot.synthetic || /^legacy_|ANTERIOR SIN FECHAS/i.test(`${lot.id} ${lot.lotCode || ''}`)), `El SKU ${target.name} tiene saldo histórico sin lotes conciliados; no se creó inventario derivado.`);
     const lotId = `processing_${sha256(`${batchId}:${destination.id}`).slice(0, 40)}`;
     const sameCode = targetEntry.lots.filter(lot => String(lot.lotCode || '').trim().toUpperCase() === destination.lotCode.toUpperCase());
-    if (p.processType !== 'bagging' || destination.kind !== 'finished') {
+    if (destination.kind !== 'finished') {
       check(!sameCode.some(lot => lot.manufacturedOn === destination.manufacturedOn), `Ya existe el lote ${destination.lotCode} para ${target.name}.`);
     } else if (sameCode.length || destination.continuePhysicalLot) {
       check(sameCode.length > 0, 'El lote que intentas continuar ya no existe. Revisa el código.');
@@ -5782,13 +5782,16 @@ handlers.confirmProcessingBatch = async (o, p) => {
         check(previous.processingBatchId && previous.processingBatchId !== batchId && previous.processingDestinationKind === 'finished'
           && !previous.derivedReturn && !previous.processingRepackId && !previous.legacy && !previous.quarantined
           && previous.unitType === target.unitType, 'El código pertenece a un lote que no es compatible con una continuación de sacheteado.');
+        const previousBatch = await o.read('distProcessingBatches', previous.processingBatchId);
+        check(previousBatch?.processType === p.processType && previousBatch.sourceProductId === sourceProduct.id,
+          'El tipo de elaboración o el producto de origen no coincide con el lote físico existente.');
         check(previous.lotCode === sameCode[0].lotCode, 'El código tiene variantes históricas. Revisa la identificación antes de continuar.');
         check(previous.manufacturedOn === destination.manufacturedOn, 'La fecha de elaboración no coincide con el lote físico existente.');
         check(previous.expiresOn === destination.expiresOn, 'El vencimiento no coincide con el lote físico existente.');
         const previousOriginIds = [...new Set(previous.processingSourceLotIds || [])].sort();
         check(originIds.length > 0 && JSON.stringify(previousOriginIds) === JSON.stringify(originIds), 'Los lotes fuente no coinciden con el origen del lote físico existente.');
       }
-      check(destination.continuePhysicalLot, 'El código ya existe. Confirma que esta producción continúa el mismo lote físico.');
+      check(destination.continuePhysicalLot, `El código ya existe. Confirma que esta producción continúa el mismo lote físico. [CONTINUE_LOT:${destination.id}]`);
       destination.lotCode = sameCode[0].lotCode;
     }
     check(!await o.read('distLots', lotId), `El identificador de lote derivado ${lotId} ya existe.`);

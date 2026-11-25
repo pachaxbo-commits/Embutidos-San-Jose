@@ -378,6 +378,21 @@ try {
   assert.equal(returned.length, 2)
   assert.equal(returned.reduce((sum, row) => sum + row.assignedWeightG, 0), sold.reduce((sum, row) => sum + row.processingAllocation.physicalWeightG, 0))
   assert.equal(returned.reduce((sum, row) => sum + row.costCents, 0), sold.reduce((sum, row) => sum + row.processingAllocation.costCents, 0))
+  const portion = (suffix, confirmed = false) => {
+    const payload = continuationPayload(prefix + suffix, 1000, 1, confirmed)
+    payload.processType = 'portioning'
+    payload.destinations[0].lotCode = '241126'
+    return payload
+  }
+  await run(ids.admin, 'confirmProcessingBatch', portion('-portion-first'))
+  const portionRetry = portion('-portion-second')
+  const rejectedPortion = await run(ids.admin, 'confirmProcessingBatch', portionRetry, undefined, 'rejected')
+  assert.match(rejectedPortion.error, /CONTINUE_LOT:finished/)
+  assert.ok(!(await root.collection('distProcessingBatches').doc(portionRetry.batchId).get()).exists)
+  portionRetry.destinations[0].continuePhysicalLot = true
+  await run(ids.admin, 'confirmProcessingBatch', portionRetry)
+  assert.equal((await run(ids.admin, 'confirmProcessingBatch', portionRetry)).result.duplicate, true)
+  assert.equal((await read('distLots', continuationLot)).quantities.central, 10.9)
   console.log('PASS continuación de lote: 17 paquetes, lotes internos independientes, 17180 g, 8590 centavos, conflicto y reintento seguros')
 } finally {
   await env.cleanup()
