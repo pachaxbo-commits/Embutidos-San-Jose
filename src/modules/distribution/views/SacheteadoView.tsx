@@ -35,7 +35,7 @@ function activeMaterials(rows: MaterialDraft[] = []): MaterialDraft[] {
 type CostDraft = { id: string; kind: ProcessingCostComponent['kind']; amountBs: string; expenseId: string; sourceReference: string }
 type Draft = {
   batchId: string; operationId: string; processType: ConfirmProcessingBatchInput['processType']; location: string; sourceProductId: string;
-  processingDate: string; sources: SourceRow[]; destinations: DestinationDraft[]; materials: MaterialDraft[]; costs: CostDraft[]; notes: string; weightExceptionReason?: string; operationPending?: boolean
+  processingDate: string; sources: SourceRow[]; destinations: DestinationDraft[]; materials: MaterialDraft[]; costs: CostDraft[]; notes: string; weightExceptionReason?: string; operationPending?: boolean; recoveryVersion?: 2
 }
 type SubmitState = 'idle' | 'sending' | 'unknown' | 'rejected' | 'confirmed'
 type Tab = 'new' | 'reservations' | 'review' | 'repack' | 'history'
@@ -52,7 +52,7 @@ const DRAFT_PREFIX = 'sanjose_processing_draft_v1'
 const randomId = (prefix: string) => newOperationId(prefix).replace(/[^A-Za-z0-9_-]/g, '_')
 const todayKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const freshDestination = (today: string): DestinationDraft => ({ id: randomId('destination'), kind: 'finished', productId: '', commercialQuantity: '', netWeightG: '', nominalWeightG: '', lotCode: '', manufacturedOn: today, packagedOn: today, expiresOn: '', weightBasis: 'measured_total', reason: '', qualityConfirmed: false, qualityReason: '' })
-const freshDraft = (location: string, today: string): Draft => ({ batchId: randomId('processing_batch'), operationId: randomId('processing_operation'), processType: 'bagging', location, sourceProductId: '', processingDate: today, sources: [], destinations: [freshDestination(today)], materials: [], costs: [], notes: '' })
+const freshDraft = (location: string, today: string): Draft => ({ recoveryVersion: 2, batchId: randomId('processing_batch'), operationId: randomId('processing_operation'), processType: 'bagging', location, sourceProductId: '', processingDate: today, sources: [], destinations: [freshDestination(today)], materials: [], costs: [], notes: '' })
 const draftKey = (uid: string) => `${DRAFT_PREFIX}:${uid}`
 function readDraft(uid: string, location: string, today: string, preserveSavedLocation = false): Draft {
   try {
@@ -60,7 +60,7 @@ function readDraft(uid: string, location: string, today: string, preserveSavedLo
     if (!raw) return freshDraft(location, today)
     const parsed = JSON.parse(raw) as Draft
     if (!parsed.batchId || !parsed.operationId || !Array.isArray(parsed.sources) || !Array.isArray(parsed.destinations)) return freshDraft(location, today)
-    return { ...freshDraft(location, today), ...parsed, materials: activeMaterials(parsed.materials), processType: normalizeProcessingUiType(parsed.processType), location: preserveSavedLocation && typeof parsed.location === 'string' ? parsed.location : location }
+    return { ...freshDraft(location, today), ...parsed, recoveryVersion: 2, operationPending: parsed.recoveryVersion !== 2 || parsed.operationPending, destinations: parsed.recoveryVersion === 2 ? parsed.destinations : parsed.destinations.map(item => ({ ...item, continuePhysicalLot: false })), materials: activeMaterials(parsed.materials), processType: normalizeProcessingUiType(parsed.processType), location: preserveSavedLocation && typeof parsed.location === 'string' ? parsed.location : location }
   } catch { return freshDraft(location, today) }
 }
 function persistDraft(uid: string, draft: Draft): boolean {
@@ -223,7 +223,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       if (next.sources !== current.sources) {
         next.destinations = next.destinations.map(item => ({ ...item, continuePhysicalLot: false }))
       }
-      return submitState === 'rejected' ? { ...next, operationId: randomId('processing_operation') } : next
+      return next
     })
     if (submitState === 'rejected' || submitState === 'confirmed') setSubmitState('idle')
   }
@@ -375,15 +375,34 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
     setError('')
     void loadProcessingBatchPage(session.role === 'warehouse' ? locationKey : undefined, null, 20, historyDateRange).then(page => setHistory(page.rows)).catch(() => undefined)
   }
+  const recoverRejected = () => {
+    setDraft(current => ({
+      ...current, operationPending: false, operationId: randomId('processing_operation'),
+      batchId: randomId('processing_batch'),
+      destinations: current.destinations.map(item => ({ ...item, continuePhysicalLot: false })),
+    }))
+    setSubmitState('rejected')
+  }
   const checkOperation = async () => {
+    if (submitLock.current) return
+    submitLock.current = true
     setError(''); setMessage('Consultando el estado definitivo en el servidor…')
     try {
       const state = await getProcessingOperationState(draft.operationId)
-      if (state.status === 'confirmed') { finishConfirmed(); return }
-      if (state.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(state.error); if (state.error.includes('[CONTINUE_LOT:')) revealProcessingField('continuation-' + state.error.split('[CONTINUE_LOT:')[1].split(']')[0]); setMessage('El servidor rechazó esta elaboración. Corrige el borrador y vuelve a validarlo; se conservarán sus datos.') ; return }
+      if (state.status === 'confirmed') {
+        setConfirmedBatch({ batchId: state.batchId || draft.batchId, operationId: draft.operationId })
+        setSubmitState('confirmed')
+        setMessage('El servidor ya confirmó la operación vinculada a este identificador. Revisa la elaboración en Historial antes de iniciar otra. El borrador permanece en este dispositivo.')
+        return
+      }
+      if (state.status === 'rejected') {
+        recoverRejected()
+        setMessage('El intento anterior fue rechazado. Conservamos el borrador para que revises sus datos y confirmes nuevamente.')
+        return
+      }
       if (state.status === 'queued') { setSubmitState('unknown'); setMessage('La operación sigue en cola. No generes otra operación ni cambies el borrador; vuelve a comprobar más tarde.') ; return }
       setSubmitState('idle'); setDraft(current => ({ ...current, operationPending: false })); setMessage('El servidor no encuentra la operación. Puedes reenviar el mismo borrador con el mismo identificador.')
-    } catch (reason) { setSubmitState('unknown'); setError(`No se pudo consultar el estado: ${(reason as Error).message}`); setMessage('Respuesta desconocida. Se conserva el mismo identificador para comprobar de nuevo.') }
+    } catch (reason) { setSubmitState('unknown'); setError(`No se pudo consultar el estado: ${(reason as Error).message}`); setMessage('Respuesta desconocida. Se conserva el mismo identificador para comprobar de nuevo.') } finally { submitLock.current = false }
   }
   const submit = async () => {
     if (submitLock.current || submitState === 'sending' || submitState === 'unknown') return
@@ -405,7 +424,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
         const status = await getProcessingOperationState(draft.operationId)
         if (status.status === 'confirmed') { finishConfirmed(); return }
         if (status.status === 'queued') { setSubmitState('unknown'); setMessage('Pendiente de comprobación. No vuelvas a registrarla; consulta el estado con el mismo identificador.'); setError(errorMessage); return }
-        if (status.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(status.error); if (status.error.includes('[CONTINUE_LOT:')) revealProcessingField('continuation-' + status.error.split('[CONTINUE_LOT:')[1].split(']')[0]); setMessage('El servidor rechazó la operación sin confirmarla. Puedes corregir el borrador.') ; return }
+        if (status.status === 'rejected') { recoverRejected(); setError(status.error); if (status.error.includes('[CONTINUE_LOT:')) revealProcessingField('continuation-' + status.error.split('[CONTINUE_LOT:')[1].split(']')[0]); setMessage('El servidor rechazó la operación sin confirmarla. Puedes corregir el borrador.') ; return }
         setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(errorMessage); setMessage('No hay una operación guardada. El borrador y su identificador se conservan.')
       } catch {
         setSubmitState('unknown'); setError(errorMessage); setMessage('No se conoce el resultado. Conservamos el identificador; primero comprueba el estado antes de reintentar.')
@@ -540,7 +559,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
                 Identificador: <span className="font-mono font-bold text-slate-900">{confirmedBatch?.batchId || draft.batchId}</span>
               </p>
               <p className="mx-auto max-w-md text-xs text-slate-500">
-                El producto terminado quedó registrado y bloqueado para venta y despacho hasta su revisión y liberación comercial por parte de Administración.
+                {message}
               </p>
             </div>
             <div className="mx-auto flex max-w-sm flex-col gap-2 pt-2 sm:flex-row">
@@ -561,6 +580,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
 
           {message && <div role="status" className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">{message}</div>}
           {error && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900"><AlertTriangle className="mt-0.5 shrink-0" size={17} /><span className="min-w-0 flex-1">{error.replace(/\s*\[CONTINUE_LOT:[^\]]+\]/, '')}</span>{error.includes('[CONTINUE_LOT:') ? <button type="button" onClick={() => revealProcessingField('continuation-' + error.split('[CONTINUE_LOT:')[1].split(']')[0])}>Ver campo</button> : getErrorAnchor(error) && <button type="button" className="min-h-10 rounded-lg border border-rose-300 bg-white px-3 text-xs font-extrabold" onClick={() => { const target = getErrorAnchor(error)!; setStep(target.formStep); requestAnimationFrame(() => { const element = document.querySelector<HTMLElement>(`[data-processing-anchor="${target.anchor}"]`); element?.scrollIntoView({ behavior: 'smooth', block: 'center' }); element?.classList.add('ring-4', 'ring-amber-400', 'ring-offset-2'); window.setTimeout(() => element?.classList.remove('ring-4', 'ring-amber-400', 'ring-offset-2'), 2400) }) }}>Ver campo</button>}</div>}
+          {submitState === 'rejected' && <SecondaryButton onClick={() => { if (window.confirm('¿Reemplazar este borrador rechazado por una elaboración vacía?')) startNewElaboration() }}>Iniciar otra elaboración</SecondaryButton>}
           {submitState === 'unknown' && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Resultado pendiente de comprobación.</b> El borrador no se puede editar ni enviar con un ID distinto.<div className="mt-2"><PrimaryButton onClick={() => void checkOperation()}><RefreshCw size={16} />Comprobar estado</PrimaryButton></div></div>}
 
       {step === 0 && <SectionCard title="Paso 1 · Producto de origen y lotes">

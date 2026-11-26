@@ -276,17 +276,18 @@ export async function loadProcessingQualityAuthorizationFor(beneficiaryUid: stri
 export type ProcessingOperationState =
   | { status: 'missing' }
   | { status: 'queued'; createdAt?: string }
-  | { status: 'confirmed'; result: unknown }
+  | { status: 'confirmed'; result: unknown; batchId?: string }
   | { status: 'rejected'; error: string }
 
 /** Lee estado desde servidor, no del cache local, antes de reintentar una respuesta desconocida. */
 export async function getProcessingOperationState(operationId: string, expectedType: 'confirmProcessingBatch' | 'recordProcessingReview' | 'confirmProcessingRepack' = 'confirmProcessingBatch'): Promise<ProcessingOperationState> {
   const context = await getContext()
   const snapshot = await getDocFromServer(docRef(context, 'distOperations', operationId))
+  if (snapshot.metadata.hasPendingWrites) return { status: 'queued' }
   if (!snapshot.exists()) return { status: 'missing' }
   const data = snapshot.data()
   if (data.type !== expectedType) throw new Error('El identificador corresponde a otra operación.')
-  if (data.status === 'confirmed') return { status: 'confirmed', result: data.result }
+  if (data.status === 'confirmed') return { status: 'confirmed', result: data.result, batchId: data.payload?.batchId }
   if (data.status === 'rejected') return { status: 'rejected', error: String(data.error || 'El servidor rechazó la operación.') }
   return { status: 'queued', ...(typeof data.createdAt === 'string' ? { createdAt: data.createdAt } : {}) }
 }
