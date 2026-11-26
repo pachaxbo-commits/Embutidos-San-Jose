@@ -86,6 +86,36 @@ try {
   const dispatchId = dispatched.id, closureId = `closure_${dispatchId}`
   const activeReceipt = await command(sellerUid, 'collection', { customerId, amount: 18, method: 'qr', cashAmount: 0, qrAmount: 18 })
   assert.equal((await read('distCollections', activeReceipt.id)).dispatchId, dispatchId)
+  const supplierId = `${prefix}-supplier`
+  await rootDoc.collection('distSuppliers').doc(supplierId).set({ name: 'Frial QA', active: true })
+  const today = dayKey(new Date())
+  const purchase = await command(sellerUid, 'registerSupplierPurchase', {
+    supplierId, description: 'Carne', amount: 504, initialPayment: 0, paymentMethod: 'credit',
+    dayKey: today, purchaseLines: [{ description: 'Carne', quantity: 14, unit: 'kg', unitPrice: 36, total: 504, wasteQuantity: 0, netUsableQuantity: 14 }],
+  })
+  const payableId = purchase.id
+  const payment = { payableId, amount: 504, paymentMethod: 'cash', dayKey: today, dispatchId }
+  await command(sellerUid, 'paySupplierPayable', { ...payment, amount: 505 }, 'rejected')
+  await command(sellerUid, 'paySupplierPayable', payment, 'rejected')
+  await rootDoc.collection('members').doc(`${sellerUid}-other`).set({ role: 'distributor', active: true, routeId })
+  await command(`${sellerUid}-other`, 'paySupplierPayable', { ...payment, amount: 50 }, 'rejected')
+  const adminPayment = await command(adminUid, 'paySupplierPayable', { ...payment, dispatchId: '', amount: 304 })
+  assert.equal((await read('distExpenses', `${adminPayment.id}__payment`)).routeId, 'administracion')
+  assert.equal((await read('distPayables', payableId)).balance, 200)
+  const driverPayment = await command(sellerUid, 'paySupplierPayable', { ...payment, amount: 100 })
+  const driverRef = rootDoc.collection('distOperations').doc(driverPayment.id)
+  await processCommand(db, driverRef)
+  assert.equal((await read('distPayables', payableId)).balance, 100)
+  const remainingPayments = await Promise.allSettled([
+    command(adminUid, 'paySupplierPayable', { ...payment, amount: 100 }),
+    command(adminUid, 'paySupplierPayable', { ...payment, amount: 100 }),
+  ])
+  assert.equal(remainingPayments.filter(x => x.status === 'fulfilled').length, 1)
+  assert.equal((await read('distPayables', payableId)).balance, 0)
+  const paid = await rootDoc.collection('distSupplierPayments').where('payableId', '==', payableId).get()
+  assert.equal(paid.size, 3)
+  assert.equal(paid.docs.filter(doc => doc.data().dispatchId === dispatchId).length, 2)
+
   await render('distributor', [dispatchId], null)
 
   // La declaración real escribe un documento parcial y NO mueve inventario.
@@ -128,6 +158,15 @@ try {
   assert.equal((await read('distClosures', closureId)).status, 'closed')
   assert.equal((await read('distClosures', closureId)).cashCollections, 252)
   assert.equal((await read('distClosures', closureId)).qrCollections, 18)
+  assert.equal((await read('distClosures', closureId)).cashExpenses, 200)
+  assert.equal((await read('distClosures', closureId)).expectedCash, 52)
+  const unpaid = await command(sellerUid, 'registerSupplierPurchase', {
+    supplierId, description: 'Carne', amount: 36, initialPayment: 0, paymentMethod: 'credit',
+    dayKey: today, purchaseLines: [{ description: 'Carne', quantity: 1, unit: 'kg', unitPrice: 36, total: 36, wasteQuantity: 0, netUsableQuantity: 1 }],
+  })
+  const closedAttempt = await command(sellerUid, 'paySupplierPayable', { ...payment, payableId: unpaid.id, amount: 1 }, 'rejected')
+  assert.match(closedAttempt.error, /caja activa/)
+  assert.equal((await read('distPayables', unpaid.id)).balance, 36)
   assert.equal((await read('distDispatches', dispatchId)).status, 'closed')
   await render('admin', [dispatchId], closureId)
   await command(adminUid, 'closure', { mode: 'money', closure: { dispatchId, status: 'closed', physicalCashDeclared: 0 } }, 'rejected')

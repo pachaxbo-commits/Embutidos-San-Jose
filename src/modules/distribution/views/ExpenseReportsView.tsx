@@ -1,3 +1,4 @@
+import { listRestaurantMembers } from '../../../lib/firebase'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Download, FileSpreadsheet, FileText, Printer } from 'lucide-react'
 import { Field } from '../../../components/ui/Form'
@@ -56,6 +57,18 @@ const moneyMethod = (value?: string) =>
 
 export function ExpenseReportsView(props: DistributionViewProps) {
   void props
+  const [workerNames, setWorkerNames] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    let active = true
+    void listRestaurantMembers().then(rows => {
+      if (active) setWorkerNames(new Map(rows.map(row => [row.uid, row.displayName])))
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [])
+  const workerName = (uid: string, saved?: string) => {
+    const name = workerNames.get(uid) || saved
+    return name && name !== uid && !/^[A-Za-z0-9]{28}$/.test(name) ? name : 'Usuario no identificado'
+  }
   const [rangeMode, setRangeMode] = useState<RangeMode>('today')
   const [from, setFrom] = useState(dayOffset(0))
   const [to, setTo] = useState(dayOffset(0))
@@ -164,7 +177,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
         if (group !== 'all' && row.groupId !== group) return false
         if (category !== 'all' && row.categoryId !== category) return false
         if (origin !== 'all' && row.routeId !== origin) return false
-        if (responsible !== 'all' && row.createdBy !== responsible) return false
+        if (responsible !== 'all' && (row.responsibleUid || row.createdBy) !== responsible) return false
         return true
       }),
     [payables, state, supplier, group, category, origin, responsible, matchesSupplier],
@@ -405,7 +418,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
       row.dayKey, row.groupName || row.group || 'Histórico', row.categoryName || 'Histórico', row.supplierName || '',
       row.purchaseLines?.length ? 'Compra · ' + row.purchaseLines.length + ' artículos' : row.concept,
       row.amount, moneyMethod(row.paymentMethod), expensePaymentStatus(row),
-      [row.purchaseReceiptType, row.purchaseReceiptNumber || row.id.slice(-8)].filter(Boolean).join(' '), row.registeredByName, row.routeName, row.id, row.concept,
+      [row.purchaseReceiptType, row.purchaseReceiptNumber || row.id.slice(-8)].filter(Boolean).join(' '), workerName(row.registeredByUid, row.registeredByName), row.routeName, row.id, row.concept,
       expenseCashPaidAmount(row), expenseTransferPaidAmount(row), expenseOtherPaidAmount(row), row.note || '',
     ])
     const itemRows = visibleExpenses.flatMap(row => (row.purchaseLines || []).map((line, index) => [
@@ -567,7 +580,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
           moneyMethod(row.paymentMethod),
           row.voided ? 'Anulado' : 'Vigente',
           row.voidReason || '',
-          row.responsibleName,
+          workerName(row.responsibleUid, row.responsibleName),
           row.payableId,
         ]),
       },
@@ -653,7 +666,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
     ...expenses.map((row) => [row.registeredByUid, row.registeredByName] as [string, string]),
     ...payments.map((row) => [row.responsibleUid, row.responsibleName] as [string, string]),
   ]
-  const filteredResponsibles = [...new Map(responsiblePairs).entries()]
+  const filteredResponsibles = [...new Map(responsiblePairs.map(([id, name]) => [id, workerName(id, name)] as const)).entries()].filter(([id]) => id)
 
   const originPairs: Array<[string, string]> = [
     ...expenses.map((row) => [row.routeId, row.routeName] as [string, string]),
@@ -893,7 +906,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
                                       {row.dayKey} · {row.supplierName ? row.supplierName + ' · ' : ''}{row.purchaseLines?.length ? (row.purchaseReceiptNumber || 'Compra') : row.concept}
                                     </strong>
                                     <p>
-                                      {row.routeName} · {row.registeredByName} · {moneyMethod(row.paymentMethod)} · {expensePaymentStatus(row)}
+                                      {row.routeName} · {workerName(row.registeredByUid, row.registeredByName)} · {moneyMethod(row.paymentMethod)} · {expensePaymentStatus(row)}
                                     </p>
                                     {row.supplierName && !row.purchaseLines?.length && (
                                       <p className="font-semibold text-slate-700">
@@ -984,7 +997,7 @@ export function ExpenseReportsView(props: DistributionViewProps) {
                     className="flex justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm"
                   >
                     <span>
-                      {row.dayKey} · {row.supplierName} · {moneyMethod(row.paymentMethod)} · {row.responsibleName}
+                      {row.dayKey} · {row.supplierName} · {moneyMethod(row.paymentMethod)} · {workerName(row.responsibleUid, row.responsibleName)}
                       {row.voided ? ` · ANULADO: ${row.voidReason || 'sin motivo'}` : ''}
                     </span>
                     <strong>{formatBs(row.amount)}</strong>

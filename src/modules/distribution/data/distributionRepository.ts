@@ -280,7 +280,7 @@ export type ProcessingOperationState =
   | { status: 'rejected'; error: string }
 
 /** Lee estado desde servidor, no del cache local, antes de reintentar una respuesta desconocida. */
-export async function getProcessingOperationState(operationId: string, expectedType: 'confirmProcessingBatch' | 'recordProcessingReview' | 'confirmProcessingRepack' = 'confirmProcessingBatch'): Promise<ProcessingOperationState> {
+export async function getProcessingOperationState(operationId: string, expectedType: 'confirmProcessingBatch' | 'recordProcessingReview' | 'confirmProcessingRepack' | 'paySupplierPayable' = 'confirmProcessingBatch'): Promise<ProcessingOperationState> {
   const context = await getContext()
   const snapshot = await getDocFromServer(docRef(context, 'distOperations', operationId))
   if (snapshot.metadata.hasPendingWrites) return { status: 'queued' }
@@ -1768,7 +1768,7 @@ export function rectifySupplierPurchase(input: SupplierPurchaseCorrection, id: s
 }
 
 let distributorSupplierFunctionsEmulatorConnected = false
-export async function listDistributorPurchaseSuppliers(): Promise<Array<{ id: string; name: string }>> {
+async function supplierCallable<Result>(name: string): Promise<Result> {
   const context = await getFirebaseContext()
   if (!context) throw new Error('Firebase no está configurado.')
   const { connectFunctionsEmulator, getFunctions, httpsCallable } = await import('firebase/functions')
@@ -1777,11 +1777,19 @@ export async function listDistributorPurchaseSuppliers(): Promise<Array<{ id: st
     connectFunctionsEmulator(functions, getFirebaseEmulatorHost(), 5001)
     distributorSupplierFunctionsEmulatorConnected = true
   }
-  const call = httpsCallable<void, Array<{ id: string; name: string }>>(functions, 'listDistributorPurchaseSuppliers')
+  const call = httpsCallable<void, Result>(functions, name)
   return (await call()).data
 }
 
-export async function paySupplierPayable(input: { payableId: string; amount: number; paymentMethod: 'cash' | 'transfer' | 'other'; dayKey: string; note?: string }, operationId = newOperationId('supplier-payment')) {
+export function listDistributorPurchaseSuppliers() {
+  return supplierCallable<Array<{ id: string; name: string }>>('listDistributorPurchaseSuppliers')
+}
+
+export function listOwnSupplierPayables() {
+  return supplierCallable<{ payables: DistPayable[]; payments: DistSupplierPayment[] }>('listOwnSupplierPayables')
+}
+
+export async function paySupplierPayable(input: { payableId: string; dispatchId?: string; amount: number; paymentMethod: 'cash' | 'transfer' | 'other'; dayKey: string; note?: string }, operationId = newOperationId('supplier-payment')) {
   return submitOperation<{ payment: DistSupplierPayment; payable: DistPayable }>('paySupplierPayable', input, operationId)
 }
 

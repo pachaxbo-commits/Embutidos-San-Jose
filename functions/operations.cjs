@@ -3453,8 +3453,12 @@ async function rectifySupplierPurchase(o, p) {
   return { payable: correctedPayable, correctionId: audit.id };
 }
 
+function expenseBelongsToDispatch(expense, dispatch) {
+  return !expense.voided && (expense.dispatchId ? expense.dispatchId === dispatch.id : expense.createdAt >= dispatch.createdAt);
+}
+
 async function paySupplierPayable(o, p) {
-  o.admin();
+  check(["admin", "distributor"].includes(o.member.role), "No autorizado para abonar.");
   const payable = await o.read("distPayables", safeId(p.payableId));
   check(payable && payable.status !== "voided", "La cuenta por pagar no está disponible.");
   const amount = round(p.amount);
@@ -3462,22 +3466,69 @@ async function paySupplierPayable(o, p) {
   check(["cash", "transfer", "other"].includes(p.paymentMethod), "Selecciona la forma de pago.");
   check(validDate(p.dayKey), "La fecha del pago no es válida.");
   check(amount <= payable.balance, "El pago supera el saldo pendiente.");
+  const buyerUid = payable.responsibleUid || payable.createdBy;
+  const routePayment = Boolean(p.dispatchId);
+  if (o.member.role === "distributor") {
+    check(buyerUid === o.actor && payable.sourceKind === "supplier_purchase" && routePayment,
+      "Solo puedes abonar tus compras desde tu caja activa.");
+  }
+  const dispatch = routePayment ? await o.read("distDispatches", safeId(p.dispatchId)) : null;
+  if (routePayment) {
+    check(dispatch?.status === "open" && dispatch.distributorUid === buyerUid &&
+      payable.sourceKind === "supplier_purchase", "Selecciona la caja activa del responsable de la compra.");
+    const driver = await o.read("members", buyerUid);
+    check(driver?.active === true && driver.role === "distributor" && driver.routeId === dispatch.routeId,
+      "El chofer no está autorizado para esta caja.");
+    check(p.paymentMethod === "cash" && p.dayKey === o.today, "La caja de ruta admite efectivo del día actual.");
+    const closing = await o.read("distClosures", `closure_${dispatch.id}`);
+    check(!closing?.warehouseClosedBy && !closing?.closedAt && !closing?.preserveFinancialSnapshot,
+      "La caja ya está cerrada o en proceso de cierre.");
+    const [sales, collections, expenses, claims, dispatches] = await Promise.all([
+      o.query("distSales", "dispatchId", dispatch.id),
+      o.query("distCollections", "routeId", dispatch.routeId),
+      o.query("distExpenses", "routeId", dispatch.routeId),
+      o.query("distClaims", "routeId", dispatch.routeId),
+      o.query("distDispatches", "routeId", dispatch.routeId),
+    ]);
+    const cashSales = sales.filter(sale => !sale.voidedAt && !sale.pendingConfirmation &&
+      sale.saleKind !== "courtesy" && isSaleForDispatch(sale, dispatch.routeId))
+      .reduce((sum, sale) => sum + Number((sale.effectiveSnapshot || sale).cashAmount || 0), 0);
+    const cashCollections = routeCollectionsForDispatch(dispatch, dispatches, collections, o.now)
+      .reduce((sum, row) => sum + (row.cashAmount ?? (row.method === "cash" ? row.amount : 0)), 0);
+    const cashExpenses = expenses.filter(row => expenseBelongsToDispatch(row, dispatch))
+      .reduce((sum, row) => sum + (row.cashPaidAmount ?? ((row.paymentMethod || "cash") === "cash" ? row.amount : 0)), 0);
+    const claimCash = settledClaimCash(claims.filter(row => row.createdAt >= dispatch.createdAt && !row.isDerivedSaleVoid));
+    check(amount <= round(cashSales + cashCollections - cashExpenses + claimCash),
+      "Efectivo insuficiente en la caja activa.");
+  } else {
+    const closures = await o.query("distClosures", "dayKey", p.dayKey);
+    check(!closures.some(row => row.status === "closed" && (row.closureType === "admin" || isAdministrationRouteId(row.routeId))),
+      "La caja de Administración está cerrada para esa fecha.");
+  }
+  const funding = {
+    routeId: dispatch?.routeId || "administracion",
+    routeName: dispatch?.routeName || (dispatch ? "Ruta" : "Administración"),
+    ...(dispatch ? { dispatchId: dispatch.id, cashCustodianUid: dispatch.distributorUid } : {}),
+    purchaseResponsibleUid: buyerUid,
+    recordedByUid: o.actor,
+    recordedByName: o.member.displayName || "Usuario no identificado",
+  };
   const nextBalance = round(payable.balance - amount);
   const nextPaid = round(payable.paidAmount + amount);
   const paymentId = `${o.id}__payment`;
   const payment = {
     id: paymentId, ...o.base(), payableId: payable.id, supplierId: payable.supplierId, supplierName: payable.supplierName,
-    amount, paymentMethod: p.paymentMethod, dayKey: p.dayKey, routeId: "administracion", routeName: "Administración",
+    amount, paymentMethod: p.paymentMethod, dayKey: p.dayKey, ...funding,
     responsibleUid: o.actor, responsibleName: o.member.displayName || o.actor, note: String(p.note || "").trim(),
   };
   const expense = {
     id: paymentId, ...o.base(), dayKey: p.dayKey, operationId: o.id, transactionKind: "supplier_payment",
     group: payable.groupId, groupName: payable.groupName, categoryId: payable.categoryId, categoryName: payable.categoryName,
-    economicType: payable.economicType || "production_input", affectsOperatingResult: payable.affectsOperatingResult === true, classificationStatus: "reviewed", classificationSource: "admin_review",
+    economicType: payable.economicType || "production_input", affectsOperatingResult: false, classificationStatus: "reviewed", classificationSource: "admin_review",
     concept: `Pago a proveedor: ${payable.supplierName}`, amount, paymentMethod: p.paymentMethod,
     cashPaidAmount: p.paymentMethod === "cash" ? amount : 0, transferPaidAmount: p.paymentMethod === "transfer" ? amount : 0, otherPaidAmount: p.paymentMethod === "other" ? amount : 0,
     payableId: payable.id, supplierId: payable.supplierId, supplierName: payable.supplierName,
-    routeId: "administracion", routeName: "Administración", registeredByUid: o.actor, registeredByName: o.member.displayName || o.actor, note: String(p.note || "").trim(),
+    ...funding, registeredByUid: dispatch?.distributorUid || o.actor, registeredByName: dispatch?.distributorName || funding.recordedByName, note: String(p.note || "").trim(),
   };
   const updatedPayable = { ...payable, paidAmount: nextPaid, balance: nextBalance, status: nextBalance === 0 ? "paid" : "partial", updatedAt: o.now, updatedBy: o.actor };
   o.put("distSupplierPayments", paymentId, payment);
@@ -3492,6 +3543,12 @@ async function voidSupplierPayment(o, p) {
   check(reason.length > 0 && reason.length <= 300, "Indica el motivo de la corrección del pago.");
   const payment = await o.read("distSupplierPayments", safeId(p.paymentId));
   check(payment && !payment.voided, "El pago ya fue corregido o anulado.");
+  if (payment.dispatchId) {
+    const dispatch = await o.read("distDispatches", payment.dispatchId);
+    const closing = await o.read("distClosures", `closure_${payment.dispatchId}`);
+    check(dispatch?.status === "open" && !closing?.warehouseClosedBy && !closing?.closedAt,
+      "El abono pertenece a una caja cerrada. Requiere rectificación contable.");
+  }
   const payable = await o.read("distPayables", safeId(payment.payableId));
   check(payable && payable.status !== "voided", "La cuenta por pagar no está disponible.");
   const amount = round(payment.amount);
@@ -4306,7 +4363,7 @@ async function closure(o, p) {
   const collections = routeCollectionsForDispatch(d, routeDispatchRows,
     await o.query('distCollections', 'routeId', d.routeId), o.now);
   const expenses = (await o.query("distExpenses", "routeId", d.routeId)).filter(
-    (x) => x.createdAt >= from && !x.voided,
+    (x) => expenseBelongsToDispatch(x, d),
   );
   const claims = (await o.query("distClaims", "routeId", d.routeId)).filter(
     (x) => x.createdAt >= from,

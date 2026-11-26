@@ -557,6 +557,7 @@ export interface DistCollection extends DistBaseDoc {
 }
 
 export interface DistExpense extends DistBaseDoc {
+  dispatchId?: string
   voided?: boolean
   voidedAt?: string
   voidedBy?: string
@@ -683,6 +684,9 @@ export interface DistPayable extends DistBaseDoc {
 }
 
 export interface DistSupplierPayment extends DistBaseDoc {
+  dispatchId?: string
+  recordedByUid?: string
+  recordedByName?: string
   payableId: string
   supplierId: string
   supplierName: string

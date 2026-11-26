@@ -48,6 +48,29 @@ exports.listDistributorPurchaseSuppliers = onCall(
   },
 );
 
+exports.listOwnSupplierPayables = onCall(
+  { region: "us-central1", memory: "256MiB", maxInstances: 3, invoker: "public" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Inicia sesión.");
+    const tenant = getFirestore().doc("restaurants/sanjose");
+    const member = (await tenant.collection("members").doc(uid).get()).data();
+    if (member?.active !== true || member.role !== "distributor")
+      throw new HttpsError("permission-denied", "Acceso reservado al chofer.");
+    const payables = tenant.collection("distPayables");
+    const snapshots = await Promise.all(["createdBy", "responsibleUid"].map(field => payables.where(field, "==", uid).get()));
+    const rows = [...new Map(snapshots.flatMap(snapshot => snapshot.docs.map(doc => [doc.id, { ...doc.data(), id: doc.id }]))).values()]
+      .filter(row => (row.responsibleUid || row.createdBy) === uid && row.sourceKind === "supplier_purchase");
+    const payments = [];
+    for (let offset = 0; offset < rows.length; offset += 30) {
+      const ids = rows.slice(offset, offset + 30).map(row => row.id);
+      const snapshot = await tenant.collection("distSupplierPayments").where("payableId", "in", ids).get();
+      payments.push(...snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
+    }
+    return { payables: rows, payments };
+  },
+);
+
 exports.manageProcessingQualityAuthorization = onCall(
   { region: "us-central1", memory: "256MiB", maxInstances: 1, invoker: "public" },
   async (request) => {

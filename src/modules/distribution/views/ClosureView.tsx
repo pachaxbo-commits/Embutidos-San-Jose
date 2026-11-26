@@ -302,7 +302,7 @@ export function ClosureView({ session, data }: DistributionViewProps) {
     const stop = [stopClosedDispatches]
     if (session.role !== 'warehouse') {
       stop.push(subscribeCollections(days, dispatchRoute, rows => { setCollectionsSnapshot({ dispatchId: dispatchKey, rows: rows.filter(c => c.createdAt >= dispatchCreated || (c.dayKey || toDayKey(new Date(c.createdAt))) === dispatchDay) }); mark('collections') }, fail, ownerUid))
-      stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.createdAt >= dispatchCreated || (e.dayKey || toDayKey(new Date(e.createdAt))) === dispatchDay) }); mark('expenses') }, fail, ownerUid))
+      stop.push(subscribeExpenses(days, dispatchRoute, rows => { setExpensesSnapshot({ dispatchId: dispatchKey, rows: rows.filter(e => e.dispatchId ? e.dispatchId === dispatchKey : e.createdAt >= dispatchCreated || (e.dayKey || toDayKey(new Date(e.createdAt))) === dispatchDay) }); mark('expenses') }, fail, ownerUid))
     }
     return () => { stopSales(); stop.forEach(fn => fn()) }
   }, [dispatchKey, dispatchDay, dispatchRoute, dispatchCreated, session.role, session.uid, dispatchCandidateKey, data.openDispatches, data.closures])
@@ -1459,6 +1459,8 @@ export function ClosureView({ session, data }: DistributionViewProps) {
             <KpiCard label="Cobros efectivo" value={formatBs(money.cashCollections)} />
             <KpiCard label="Cobros QR" value={formatBs(money.qrCollections)} />
             <KpiCard label="Egresos en efectivo" value={formatBs(money.cashExpenses)} tone="danger" />
+            {routeExpenses.filter(row => row.transactionKind === 'supplier_payment' && !row.voided).map(row =>
+              <p key={row.id} className="text-sm">{row.concept} · {formatBs(row.cashPaidAmount || 0)}</p>)}
           </div>
 
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
