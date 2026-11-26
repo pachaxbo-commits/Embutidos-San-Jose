@@ -5786,8 +5786,8 @@ handlers.confirmProcessingBatch = async (o, p) => {
         check(previousBatch?.processType === p.processType && previousBatch.sourceProductId === sourceProduct.id,
           'El tipo de elaboración o el producto de origen no coincide con el lote físico existente.');
         check(previous.lotCode === sameCode[0].lotCode, 'El código tiene variantes históricas. Revisa la identificación antes de continuar.');
-        check(previous.manufacturedOn === destination.manufacturedOn, 'La fecha de elaboración no coincide con el lote físico existente.');
-        check(previous.expiresOn === destination.expiresOn, 'El vencimiento no coincide con el lote físico existente.');
+        check(previous.manufacturedOn === destination.manufacturedOn, `La fecha de elaboración no coincide con el lote físico existente. Lote ${previous.lotCode}: registrada ${previous.manufacturedOn}; ingresada ${destination.manufacturedOn}. Verifica la etiqueta. [CONTINUE_LOT:${destination.id}]`);
+        check(previous.expiresOn === destination.expiresOn, `El vencimiento no coincide con el lote físico existente. Lote ${previous.lotCode}: registrado ${previous.expiresOn}; ingresado ${destination.expiresOn}. Verifica la etiqueta. [CONTINUE_LOT:${destination.id}]`);
         const previousOriginIds = [...new Set(previous.processingSourceLotIds || [])].sort();
         check(originIds.length > 0 && JSON.stringify(previousOriginIds) === JSON.stringify(originIds), 'Los lotes fuente no coinciden con el origen del lote físico existente.');
       }

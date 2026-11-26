@@ -393,6 +393,11 @@ try {
   await run(ids.admin, 'confirmProcessingBatch', portionRetry)
   assert.equal((await run(ids.admin, 'confirmProcessingBatch', portionRetry)).result.duplicate, true)
   assert.equal((await read('distLots', continuationLot)).quantities.central, 10.9)
+  const wrongDate = portion('-portion-wrong-date', true)
+  wrongDate.destinations[0].manufacturedOn = '2026-11-15'
+  const wrongDateResult = await run(ids.admin, 'confirmProcessingBatch', wrongDate, undefined, 'rejected')
+  assert.match(wrongDateResult.error, /registrada 2026-11-16; ingresada 2026-11-15/)
+  assert.equal((await read('distLots', continuationLot)).quantities.central, 10.9)
   console.log('PASS continuación de lote: 17 paquetes, lotes internos independientes, 17180 g, 8590 centavos, conflicto y reintento seguros')
 } finally {
   await env.cleanup()

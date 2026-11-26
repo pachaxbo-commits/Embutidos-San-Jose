@@ -241,12 +241,36 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
   }
   const addSource = (lot: DistLot) => editDraft(current => current.sources.some(source => source.lotId === lot.id) ? current : ({ ...current, sources: [...current.sources, { lotId: lot.id, quantityKg: '' }] }))
   const removeSource = (lotId: string) => editDraft(current => ({ ...current, sources: current.sources.filter(source => source.lotId !== lotId) }))
-  const updateDestination = (destinationId: string, patch: Partial<DestinationDraft>) => editDraft(current => ({ ...current, destinations: current.destinations.map(item => item.id === destinationId ? { ...item, continuePhysicalLot: false, ...patch } : item) }))
+  const updateDestination = (destinationId: string, patch: Partial<DestinationDraft>) => editDraft(current => ({ ...current, destinations: current.destinations.map(item => item.id === destinationId ? { ...item, continuePhysicalLot: ['productId', 'lotCode', 'kind', 'manufacturedOn', 'expiresOn'].some(key => key in patch) ? false : item.continuePhysicalLot, ...patch } : item) }))
   const assignMassDifference = (kind: ProcessingDestinationKind) => {
     if (!(massDifferenceG > 0)) return
     const destination = { ...freshDestination(today), kind, netWeightG: String(massDifferenceG), productId: '', commercialQuantity: '', reason: '' }
     editDraft(current => ({ ...current, destinations: [...current.destinations, destination] }))
     setShowDifferenceAssignment(false)
+  }
+
+  const continuation = (destination: DestinationDraft) => {
+    const code = destination.lotCode.trim().toUpperCase()
+    if (destination.kind !== 'finished' || !destination.productId || !code) return null
+    const matches = data.lots.filter(lot => lot.productId === destination.productId && lot.lotCode?.trim().toUpperCase() === code)
+    const lot = matches[0]
+    if (!lot) return null
+    const origins = (item: DistLot) => [...new Set(item.processingSourceLotIds || [])].sort()
+    const originKey = JSON.stringify(origins(lot))
+    const conflict = matches.some(item => item.manufacturedOn !== lot.manufacturedOn || item.expiresOn !== lot.expiresOn
+      || item.lotCode !== lot.lotCode || JSON.stringify(origins(item)) !== originKey)
+    const incompatible = matches.some(item => !item.processingBatchId || item.processingDestinationKind !== 'finished'
+      || item.legacy || item.quarantined || item.processingRepackId || !item.manufacturedOn || !item.expiresOn)
+    const missingOrigin = !origins(lot).length || origins(lot).some(id => !draft.sources.some(source => source.lotId === id))
+    const problem = conflict ? 'Los registros internos del código tienen fechas, identificación u orígenes distintos.'
+      : incompatible ? 'El código pertenece a un registro que no admite continuación.'
+      : missingOrigin ? 'Los lotes fuente seleccionados no incluyen todo el origen registrado del lote físico.' : ''
+    return { lot, matches, problem }
+  }
+
+  const revealProcessingField = (id: string) => {
+    setStep(1)
+    requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'center' }))
   }
 
   const validateAndBuildPayload = (): ConfirmProcessingBatchInput => {
@@ -277,6 +301,12 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       if (!Number.isFinite(quantity) || quantity <= 0 || (target.unitType !== 'kg' && !Number.isSafeInteger(quantity))) throw new Error(`La cantidad comercial de ${target.name} no es válida para su presentación.`)
       if (target.unitType === 'kg' && Math.abs(quantity * 1000 - Number(destination.netWeightG)) > 0.000001) throw new Error(`Para ${target.name}, los kg comerciales deben coincidir con el peso neto medido.`)
       if (destination.nominalWeightG.trim() && !gramsInput(destination.nominalWeightG)) throw new Error(`El peso nominal informativo de ${target.name} debe ser un entero positivo en gramos.`)
+      const existing = continuation(destination)
+      if (existing && (existing.problem || !destination.continuePhysicalLot
+        || destination.manufacturedOn !== existing.lot.manufacturedOn || destination.expiresOn !== existing.lot.expiresOn)) {
+        revealProcessingField(`continuation-${destination.id}`)
+        throw new Error(existing.problem || 'Verifica la etiqueta y confirma los datos registrados del lote físico en Producción.')
+      }
       if (!destination.lotCode.trim() || !destination.manufacturedOn || !destination.packagedOn || !destination.expiresOn) throw new Error(`Completa código de lote, elaboración, embolsado y vencimiento de ${target.name}.`)
       if (destination.manufacturedOn > today || destination.packagedOn > today || destination.manufacturedOn > destination.packagedOn || destination.expiresOn < destination.packagedOn) throw new Error(`Revisa las fechas del lote derivado de ${target.name}.`)
       if (destination.kind === 'courtesy' && (!canAdmin || !destination.qualityConfirmed || destination.qualityReason.trim().length < 3)) throw new Error('La cortesía exige confirmación de aptitud y motivo de Administración; Almacén puede conservar el borrador.')
@@ -350,7 +380,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
     try {
       const state = await getProcessingOperationState(draft.operationId)
       if (state.status === 'confirmed') { finishConfirmed(); return }
-      if (state.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(state.error); if (state.error.includes('[CONTINUE_LOT:')) setStep(1); setMessage('El servidor rechazó esta elaboración. Corrige el borrador y vuelve a validarlo; se conservarán sus datos.') ; return }
+      if (state.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(state.error); if (state.error.includes('[CONTINUE_LOT:')) revealProcessingField('continuation-' + state.error.split('[CONTINUE_LOT:')[1].split(']')[0]); setMessage('El servidor rechazó esta elaboración. Corrige el borrador y vuelve a validarlo; se conservarán sus datos.') ; return }
       if (state.status === 'queued') { setSubmitState('unknown'); setMessage('La operación sigue en cola. No generes otra operación ni cambies el borrador; vuelve a comprobar más tarde.') ; return }
       setSubmitState('idle'); setDraft(current => ({ ...current, operationPending: false })); setMessage('El servidor no encuentra la operación. Puedes reenviar el mismo borrador con el mismo identificador.')
     } catch (reason) { setSubmitState('unknown'); setError(`No se pudo consultar el estado: ${(reason as Error).message}`); setMessage('Respuesta desconocida. Se conserva el mismo identificador para comprobar de nuevo.') }
@@ -375,7 +405,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
         const status = await getProcessingOperationState(draft.operationId)
         if (status.status === 'confirmed') { finishConfirmed(); return }
         if (status.status === 'queued') { setSubmitState('unknown'); setMessage('Pendiente de comprobación. No vuelvas a registrarla; consulta el estado con el mismo identificador.'); setError(errorMessage); return }
-        if (status.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(status.error); if (status.error.includes('[CONTINUE_LOT:')) setStep(1); setMessage('El servidor rechazó la operación sin confirmarla. Puedes corregir el borrador.') ; return }
+        if (status.status === 'rejected') { setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(status.error); if (status.error.includes('[CONTINUE_LOT:')) revealProcessingField('continuation-' + status.error.split('[CONTINUE_LOT:')[1].split(']')[0]); setMessage('El servidor rechazó la operación sin confirmarla. Puedes corregir el borrador.') ; return }
         setSubmitState('rejected'); setDraft(current => ({ ...current, operationPending: false })); setError(errorMessage); setMessage('No hay una operación guardada. El borrador y su identificador se conservan.')
       } catch {
         setSubmitState('unknown'); setError(errorMessage); setMessage('No se conoce el resultado. Conservamos el identificador; primero comprueba el estado antes de reintentar.')
@@ -530,7 +560,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
           </div>
 
           {message && <div role="status" className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">{message}</div>}
-          {error && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900"><AlertTriangle className="mt-0.5 shrink-0" size={17} /><span className="min-w-0 flex-1">{error}</span>{getErrorAnchor(error) && <button type="button" className="min-h-10 rounded-lg border border-rose-300 bg-white px-3 text-xs font-extrabold" onClick={() => { const target = getErrorAnchor(error)!; setStep(target.formStep); requestAnimationFrame(() => { const element = document.querySelector<HTMLElement>(`[data-processing-anchor="${target.anchor}"]`); element?.scrollIntoView({ behavior: 'smooth', block: 'center' }); element?.classList.add('ring-4', 'ring-amber-400', 'ring-offset-2'); window.setTimeout(() => element?.classList.remove('ring-4', 'ring-amber-400', 'ring-offset-2'), 2400) }) }}>Ver campo</button>}</div>}
+          {error && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900"><AlertTriangle className="mt-0.5 shrink-0" size={17} /><span className="min-w-0 flex-1">{error.replace(/\s*\[CONTINUE_LOT:[^\]]+\]/, '')}</span>{error.includes('[CONTINUE_LOT:') ? <button type="button" onClick={() => revealProcessingField('continuation-' + error.split('[CONTINUE_LOT:')[1].split(']')[0])}>Ver campo</button> : getErrorAnchor(error) && <button type="button" className="min-h-10 rounded-lg border border-rose-300 bg-white px-3 text-xs font-extrabold" onClick={() => { const target = getErrorAnchor(error)!; setStep(target.formStep); requestAnimationFrame(() => { const element = document.querySelector<HTMLElement>(`[data-processing-anchor="${target.anchor}"]`); element?.scrollIntoView({ behavior: 'smooth', block: 'center' }); element?.classList.add('ring-4', 'ring-amber-400', 'ring-offset-2'); window.setTimeout(() => element?.classList.remove('ring-4', 'ring-amber-400', 'ring-offset-2'), 2400) }) }}>Ver campo</button>}</div>}
           {submitState === 'unknown' && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><b>Resultado pendiente de comprobación.</b> El borrador no se puede editar ni enviar con un ID distinto.<div className="mt-2"><PrimaryButton onClick={() => void checkOperation()}><RefreshCw size={16} />Comprobar estado</PrimaryButton></div></div>}
 
       {step === 0 && <SectionCard title="Paso 1 · Producto de origen y lotes">
@@ -568,6 +598,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
         <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs text-sky-950"><b>Peso nominal:</b> peso comercial declarado de un paquete. El sistema calcula el total nominal multiplicándolo por la cantidad. <b>Peso neto real:</b> total medido del alimento terminado, sin plástico. El sobrepeso sobre el nominal se informa como merma no cobrada, pero queda dentro del producto y de su costo; no se agrega otra vez como destino físico.</div>
         <div className="space-y-3">{draft.destinations.map((destination, index) => {
           const target = destinationsProducts.find(product => product.id === destination.productId)
+          const existing = continuation(destination)
           return <article key={destination.id} className="min-w-0 rounded-2xl border border-slate-200 p-3">
             <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-extrabold">Destino {index + 1}</h3>{draft.destinations.length > 1 && <button type="button" aria-label="Quitar destino" onClick={() => editDraft(current => ({ ...current, destinations: current.destinations.filter(row => row.id !== destination.id) }))} className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-rose-700"><Trash2 size={16} /></button>}</div>
             <div className="grid min-w-0 gap-3 sm:grid-cols-2">
@@ -590,11 +621,22 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
               </div>}
               <div data-processing-anchor={destination.kind === 'discard' ? 'discard' : 'net-weight'}><Field label="Peso neto real medido (g)" required><NumberInput min="1" step="1" value={destination.netWeightG} onChange={event => updateDestination(destination.id, { netWeightG: event.target.value })} placeholder="Ej. 9000" /></Field><ProcessingContextHelp topic={destination.kind === 'discard' ? 'discard' : 'netWeight'} /></div>
               {destination.kind !== 'discard' && <div data-processing-anchor="nominal-weight"><Field label="Peso nominal (g, informativo)"><NumberInput min="1" step="1" value={destination.nominalWeightG} onChange={event => updateDestination(destination.id, { nominalWeightG: event.target.value })} placeholder="Ej. 250" /></Field><ProcessingContextHelp topic="nominalWeight" /></div>}
-              {destination.kind !== 'discard' && <Field label="Código de lote físico" required><TextInput data-processing-anchor="lot-code" maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value })} placeholder="Código de lote" /></Field>}
-              {destination.kind === 'finished' && destination.productId && destination.lotCode.trim() && (destination.continuePhysicalLot || error.includes(`[CONTINUE_LOT:${destination.id}]`) || data.lots.some(lot => lot.productId === destination.productId && lot.lotCode?.trim().toUpperCase() === destination.lotCode.trim().toUpperCase())) && <label className="flex min-w-0 items-start gap-2 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs"><input type="checkbox" checked={Boolean(destination.continuePhysicalLot)} onChange={event => updateDestination(destination.id, { continuePhysicalLot: event.target.checked })} /><span>Este lote ya existe para este producto. ¿Desea agregar esta producción al mismo lote? Se conservarán peso, costo y trazabilidad por elaboración.</span></label>}
-              {destination.kind !== 'discard' && <Field label="Fecha de elaboración" required><TextInput data-processing-anchor="manufactured-date" type="date" max={today} value={destination.manufacturedOn} onChange={event => updateDestination(destination.id, { manufacturedOn: event.target.value })} /></Field>}
+              {destination.kind !== 'discard' && <Field label="Código de lote físico" required><TextInput id={`continuation-${destination.id}`} data-processing-anchor="lot-code" maxLength={80} value={destination.lotCode} onChange={event => updateDestination(destination.id, { lotCode: event.target.value, ...(destination.continuePhysicalLot ? { manufacturedOn: today, expiresOn: '' } : {}) })} placeholder="Código de lote" /></Field>}
+              {existing && <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs">
+                <p>El lote {existing.lot.lotCode} ya existe para este producto. Verifica la etiqueta antes de continuar.</p>
+                {existing.matches.map(lot => <p key={lot.id}>Registrado: elaboración {lot.manufacturedOn} · vencimiento {lot.expiresOn}{lot.packagedOn ? ` · embolsado anterior ${lot.packagedOn}` : ''}</p>)}
+                {existing.problem && <p role="alert">{existing.problem} Revisa la etiqueta y el origen o solicita una rectificación autorizada.</p>}
+                {!existing.problem && <label className="mt-2 flex items-start gap-2">
+                  <input type="checkbox" checked={Boolean(destination.continuePhysicalLot)} onChange={event => updateDestination(destination.id,
+                    event.target.checked ? { continuePhysicalLot: true, manufacturedOn: existing.lot.manufacturedOn, expiresOn: existing.lot.expiresOn }
+                      : { continuePhysicalLot: false, manufacturedOn: today, expiresOn: '' })} />
+                  <span>Confirmo que es el mismo lote físico y que la etiqueta coincide con las fechas registradas.</span>
+                </label>}
+              </div>}
+              {!existing && error.includes(`[CONTINUE_LOT:${destination.id}]`) && <p role="alert">El servidor encontró este lote. Recarga los datos y revisa su etiqueta antes de continuar.</p>}
+              {destination.kind !== 'discard' && <Field label="Fecha de elaboración" required><TextInput data-processing-anchor="manufactured-date" type="date" max={today} readOnly={Boolean(destination.continuePhysicalLot && existing)} value={destination.manufacturedOn} onChange={event => updateDestination(destination.id, { manufacturedOn: event.target.value })} />{existing && destination.manufacturedOn && destination.manufacturedOn !== existing.lot.manufacturedOn && <span className="block text-xs text-amber-900">Elaboración registrada: {existing.lot.manufacturedOn}. Ingresada: {destination.manufacturedOn}. Coteja la etiqueta antes de confirmar.</span>}</Field>}
               {destination.kind !== 'discard' && <Field label="Fecha de embolsado" required><TextInput data-processing-anchor="packaged-date" type="date" max={today} value={destination.packagedOn} onChange={event => updateDestination(destination.id, { packagedOn: event.target.value })} /></Field>}
-              {destination.kind !== 'discard' && <div data-processing-anchor="expiry-date"><Field label="Vencimiento" required hint="San José define el vencimiento de la presentación terminada; puede ser posterior al lote de granel, pero no anterior al embolsado."><TextInput type="date" value={destination.expiresOn} onChange={event => updateDestination(destination.id, { expiresOn: event.target.value })} /></Field><ProcessingContextHelp topic="expiry" /></div>}
+              {destination.kind !== 'discard' && <div data-processing-anchor="expiry-date"><Field label="Vencimiento" required hint="San José define el vencimiento de la presentación terminada; puede ser posterior al lote de granel, pero no anterior al embolsado."><TextInput type="date" readOnly={Boolean(destination.continuePhysicalLot && existing)} value={destination.expiresOn} onChange={event => updateDestination(destination.id, { expiresOn: event.target.value })} />{existing && destination.expiresOn && destination.expiresOn !== existing.lot.expiresOn && <span className="block text-xs text-amber-900">Vencimiento registrada: {existing.lot.expiresOn}. Ingresada: {destination.expiresOn}. Coteja la etiqueta antes de confirmar.</span>}</Field><ProcessingContextHelp topic="expiry" /></div>}
               {target && target.unitType !== 'kg' && <div data-processing-anchor="weight-basis"><Field label="Base del peso real" required><SelectInput value={destination.weightBasis} onChange={event => updateDestination(destination.id, { weightBasis: event.target.value as ProcessingWeightBasis })}><option value="measured_total">Peso total medido</option><option value="documented_average">Promedio documentado</option></SelectInput></Field><ProcessingContextHelp topic="weightBasis" /></div>}
               {destination.kind === 'finished' && (() => {
                 const summary = calculateNominalWeightSummary(Number(destination.commercialQuantity.replace(',', '.')), gramsInput(destination.nominalWeightG) || 0, gramsInput(destination.netWeightG) || 0)
@@ -712,7 +754,7 @@ export function SacheteadoView({ session, data, reservationTarget = null, onRese
       selectedValue={destinationPickerIndex !== null ? draft.destinations[destinationPickerIndex]?.productId : undefined}
       onSelect={value => {
         if (destinationPickerIndex !== null && draft.destinations[destinationPickerIndex]) {
-          updateDestination(draft.destinations[destinationPickerIndex].id, { productId: value, commercialQuantity: '' })
+          updateDestination(draft.destinations[destinationPickerIndex].id, { productId: value, commercialQuantity: '', lotCode: '', manufacturedOn: today, expiresOn: '' })
         }
       }}
       searchable
