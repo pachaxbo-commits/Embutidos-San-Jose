@@ -1,6 +1,8 @@
+import { newOperationId, rectifyCollectionPayment } from '../data/distributionRepository'
+import { RejectedOperationError } from '../data/operationQueue'
 import { CreditProducts } from './CreditProducts'
 import { RangePicker } from './RangePicker'
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { useState } from 'react'
 import { Printer, Share2 } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
@@ -19,6 +21,39 @@ import { printCollectionReceipt, printLargeCollectionReceipt, shareCollectionRec
  */
 export function CollectionsView({ session, data }: DistributionViewProps) {
   const customersById = useMemo(() => new Map(data.customers.map(customer => [customer.id, customer])), [data.customers])
+  const [correction, setCorrection] = useState<DistCollection | null>(null)
+  const [cash, setCash] = useState('')
+  const [reason, setReason] = useState('')
+  const [correctionError, setCorrectionError] = useState('')
+  const [correctionBusy, setCorrectionBusy] = useState(false)
+  const correctionLock = useRef(false)
+  const correctionId = useRef('')
+  const cashBefore = correction?.cashAmount ?? (correction?.method === 'cash' ? correction.amount : 0)
+  const newCash = Number(cash)
+  const canSaveCorrection = Boolean(correction && cash.trim() && Number.isFinite(newCash) && newCash >= 0 &&
+    newCash <= correction.amount && Number(newCash.toFixed(2)) === newCash && newCash !== cashBefore && reason.trim().length >= 10)
+  const closeCorrection = () => {
+    if (correctionLock.current) return
+    if (!correction || (cashBefore === newCash && !reason.trim()) || window.confirm('¿Cerrar sin guardar la corrección?')) setCorrection(null)
+  }
+  const saveCorrection = async () => {
+    if (!correction || !canSaveCorrection || correctionLock.current) return
+    correctionLock.current = true
+    setCorrectionBusy(true)
+    setCorrectionError('')
+    try {
+      await rectifyCollectionPayment({ collectionId: correction.id, revision: correction.paymentCorrectedAt || correction.createdAt,
+        cash: newCash, reason: reason.trim() }, correctionId.current)
+      setCorrection(null)
+      setReceiptFeedback('Forma de pago corregida.')
+    } catch (failure) {
+      if (failure instanceof RejectedOperationError) correctionId.current = newOperationId('collection-payment')
+      setCorrectionError((failure as Error).message)
+    } finally {
+      correctionLock.current = false
+      setCorrectionBusy(false)
+    }
+  }
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
   const [selected, setSelected] = useState<DistCollection | null>(null)
@@ -77,12 +112,35 @@ export function CollectionsView({ session, data }: DistributionViewProps) {
                 <span className="shrink-0 text-sm font-black tabular-nums text-emerald-600">
                   {formatBs(collection.amount)}
                 </span>
+                {session.role === 'admin' && !collection.pendingConfirmation && <SecondaryButton onClick={() => {
+                  correctionId.current = newOperationId('collection-payment')
+                  setCorrection(collection)
+                  setCash(String(collection.cashAmount ?? (collection.method === 'cash' ? collection.amount : 0)))
+                  setReason(''); setCorrectionError(''); setReceiptFeedback('')
+                }}>Corregir forma de pago</SecondaryButton>}
                 <button type="button" onClick={() => { setSelected(collection); setReceiptFeedback('') }} className="ml-auto shrink-0 rounded-xl border border-slate-200 px-3 py-2 text-[11px] font-extrabold text-slate-700">Ver comprobante</button>
               </div>
             ))}
           </div>
         )}
       </div>
+      {!selected && receiptFeedback && <p role="status">{receiptFeedback}</p>}
+      <Modal isOpen={Boolean(correction)} onClose={closeCorrection} title="Corregir forma de pago"
+        footer={<SecondaryButton disabled={!canSaveCorrection || correctionBusy} onClick={() => void saveCorrection()}>{correctionBusy ? 'Guardando…' : 'Confirmar corrección'}</SecondaryButton>}>
+        {correction && <div className="grid gap-2 text-sm">
+          <p>{correction.customerName} · {correction.dayKey} · {correction.collectedByName}</p>
+          <p>Caja de {routeLabel(correction.routeId)} · Total {formatBs(correction.amount)}</p>
+          <p>Registrado: efectivo {formatBs(cashBefore)} · QR / transferencia {formatBs(correction.amount - cashBefore)}</p>
+          <label>Efectivo (Bs) <input type="number" min={0} max={correction.amount} step="0.01" value={cash} onChange={e => setCash(e.target.value)} /></label>
+          <div className="flex gap-2">
+            <SecondaryButton onClick={() => setCash(String(correction.amount))}>Todo en efectivo</SecondaryButton>
+            <SecondaryButton onClick={() => setCash('0')}>Todo en QR / transferencia</SecondaryButton>
+          </div>
+          {cash.trim() && newCash >= 0 && newCash <= correction.amount && <p>Nuevo QR / transferencia {formatBs(correction.amount - newCash)} · Cambio en efectivo esperado {formatBs(newCash - cashBefore)}</p>}
+          <label>Motivo obligatorio <textarea minLength={10} maxLength={300} value={reason} onChange={e => setReason(e.target.value)} /></label>
+          {correctionError && <p role="alert">{correctionError}</p>}
+        </div>}
+      </Modal>
       <Modal isOpen={Boolean(selected)} onClose={() => setSelected(null)} title="Comprobante de cobro" subtitle={selected ? `COB-${selected.id.slice(-6).toUpperCase()} · ${selected.customerName}` : ''}>
         {selected && <div className="grid gap-3"><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">Monto recibido</p><p className="text-2xl font-black text-[var(--primary)]">{formatBs(selected.amount)}</p><p className="mt-2 text-xs font-semibold text-slate-600">{selected.portfolioBalanceBefore === undefined || selected.portfolioBalanceAfter === undefined ? 'Saldo histórico no disponible' : `Saldo antes: ${formatBs(selected.portfolioBalanceBefore)} · Saldo restante: ${formatBs(selected.portfolioBalanceAfter)}`}</p></div><div className="grid grid-cols-2 gap-2"><SecondaryButton onClick={() => void printReceipt(selected)}><Printer size={16} /> Imprimir ticket</SecondaryButton><SecondaryButton onClick={() => void shareCollectionReceipt(selected, receiptContext).then(shared => setReceiptFeedback(shared ? 'Opciones para compartir abiertas.' : 'Envío cancelado.')).catch(error => setReceiptFeedback((error as Error).message))}><Share2 size={16} /> Compartir</SecondaryButton></div><SecondaryButton full onClick={() => void printLargeCollectionReceipt(selected, receiptContext).catch(error => setReceiptFeedback((error as Error).message))}><Printer size={16} /> Imprimir hoja / PDF</SecondaryButton>{receiptFeedback && <p className="text-center text-xs font-bold text-slate-600">{receiptFeedback}</p>}</div>}
       </Modal>

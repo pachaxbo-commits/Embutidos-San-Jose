@@ -302,21 +302,8 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   )
 
   const operatingFinancials = useMemo(() => {
-    const commercialSales = sales
-      .filter((s) => !s.voidedAt && !s.pendingConfirmation && s.saleKind !== 'courtesy')
-      .map((s) => s.effectiveSnapshot ? { ...s, ...s.effectiveSnapshot } : s)
-    const lines = commercialSales.flatMap((s) => s.lines)
-    const revenue = round2(
-      commercialSales.reduce((n, s) => n + s.total, 0) + claims.reduce((n, c) => n + c.revenueDelta, 0),
-    )
-    const costKnown =
-      lines.every((l) => typeof l.costTotal === 'number') &&
-      claims.every((c) => typeof c.additionalCost === 'number')
-    const cost = round2(
-      lines.reduce((n, l) => n + (l.costTotal || 0), 0) + claims.reduce((n, c) => n + (c.additionalCost || 0), 0),
-    )
-    const grossMargin = costKnown ? round2(revenue - cost) : null
-    const spent = round2(expenses.reduce((n, e) => n + e.amount, 0))
+    const { salesBs: revenue, costBs: cost, profitBs: grossMargin, costKnown } = productProfitReport.totals
+    const spent = productProfitReport.operationalTotals.spent
 
     const losses = data.movements
       .filter((m) => !m.reversedAt)
@@ -326,7 +313,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
     const lossCostKnown = losses.every(row => typeof row.lossCost === 'number' && Number.isFinite(row.lossCost))
     const operatingProfit =
-      costKnown && lossCostKnown && !sellerFilter ? round2(revenue - cost - spent - lossCost) : null
+      costKnown && lossCostKnown && !sellerFilter ? round2((grossMargin ?? 0) - spent - lossCost) : null
 
     return {
       revenue,
@@ -339,7 +326,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       losses,
       operatingProfit,
     }
-  }, [sales, claims, expenses, data.movements, session.dayKeys, routeFilter, sellerFilter])
+  }, [productProfitReport, data.movements, session.dayKeys, routeFilter, sellerFilter])
 
   const lossDriverName = (row: DistributionViewProps['data']['movements'][number]) =>
     (row.dispatchId ? data.closures.find(closure => closure.dispatchId === row.dispatchId)?.distributorName : undefined)
@@ -671,7 +658,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                       <span className="text-[10px] font-bold uppercase text-slate-400">2. Costo producción</span>
                       <p className="mt-1 text-sm font-black text-rose-700">
-                        {operatingFinancials.costKnown ? `- ${formatBs(operatingFinancials.cost)}` : 'Incompleto'}
+                        {operatingFinancials.cost !== null ? `- ${formatBs(operatingFinancials.cost)}` : 'Incompleto'}
                       </p>
                       <span className="text-[10px] text-slate-500">De lo vendido/reemplazos</span>
                     </div>

@@ -535,6 +535,8 @@ export interface DistReceivableAdjustment extends DistBaseDoc {
 }
 
 export interface DistCollection extends DistBaseDoc {
+  paymentCorrectedAt?: string
+  paymentCorrectionId?: string
   saleLines?: DistSaleLine[]
   customerCode?: string
   operationId: string

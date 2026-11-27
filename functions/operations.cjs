@@ -6956,6 +6956,55 @@ handlers.rectifySaleUsedForExchange = async (o, p) => {
     quarantineQuantity: damagedLot.quantities[routeLocation], refund: 0, cashOut: 0 };
 };
 
+handlers.rectifyCollectionPayment = async (o, p) => {
+  o.admin();
+  const reason = typeof p.reason === "string" ? p.reason.trim() : "";
+  check(reason.length >= 10 && reason.length <= 300, "Describe el motivo de la corrección (10 a 300 caracteres).");
+  const row = await o.read("distCollections", safeId(p.collectionId));
+  check(row && !row.voided && !row.voidedAt && !row.pendingConfirmation, "El cobro no está disponible.");
+  const revision = row.paymentCorrectedAt || row.createdAt;
+  check(p.revision === revision, "El cobro cambió. Ábrelo de nuevo.");
+  check(Number.isFinite(p.cash) && p.cash >= 0 && round(p.cash) === p.cash && p.cash <= round(row.amount),
+    "El efectivo debe estar entre cero y el importe del cobro, con dos decimales.");
+  const cash = p.cash;
+  const qr = round(row.amount - cash);
+  const oldCash = row.cashAmount ?? (row.method === "cash" ? row.amount : 0);
+  const oldQr = row.qrAmount ?? (row.method === "qr" ? row.amount : 0);
+  check(round(oldCash + oldQr) === round(row.amount), "El desglose anterior requiere conciliación.");
+  if (cash === oldCash && qr === oldQr) return { unchanged: true };
+  const verifications = await o.query("distQrVerifications", "sourceId", row.id);
+  check(!verifications.length && !row.qrVerifiedAt && !row.qrEvidenceId,
+    "El cobro tiene comprobantes o conciliaciones QR. Solicita revisión bancaria antes de corregirlo.");
+  let closureId;
+  if (isAdministrationRouteId(row.routeId)) {
+    const closures = await o.query("distClosures", "dayKey", row.dayKey);
+    check(!closures.some(item => item.status === "closed" && (item.closureType === "admin" || isAdministrationRouteId(item.routeId))),
+      "La caja de Administración ya cerró. Solicita una rectificación auditada del cierre.");
+    check(o.today === row.dayKey, "El cobro pertenece a otra jornada. Solicita revisión de caja.");
+  } else {
+    check(row.dispatchId, "El cobro histórico no tiene despacho explícito. Solicita revisión de su caja antes de corregirlo.");
+    const dispatch = await o.read("distDispatches", row.dispatchId);
+    closureId = `closure_${row.dispatchId}`;
+    const closure = await o.read("distClosures", closureId);
+    check(dispatch?.status === "open" && !dispatch.closedAt && !closure?.warehouseClosedBy &&
+      !closure?.closedAt && !closure?.preserveFinancialSnapshot,
+      "La caja de ruta está cerrada o en proceso de cierre. Solicita una rectificación auditada del cierre.");
+    check(dispatch.routeId === row.routeId && dispatch.distributorUid === row.collectedByUid && dispatch.dayKey === row.dayKey,
+      "El despacho no coincide con la caja del cobro. Solicita revisión.");
+  }
+  const method = cash > 0 && qr > 0 ? "mixed" : qr > 0 ? "qr" : "cash";
+  const corrected = { ...row, method, cashAmount: cash, qrAmount: qr, paymentCorrectedAt: o.now, paymentCorrectionId: o.id };
+  o.put("distCollections", row.id, corrected);
+  o.put("distCollectionCustodyRectifications", o.id, {
+    ...o.base(), id: o.id, kind: "payment_method", collectionId: row.id, reason,
+    createdByName: o.member.displayName || "Administración", routeId: row.routeId,
+    ...(closureId ? { closureId } : {}),
+    before: { method: row.method, cashAmount: oldCash, qrAmount: oldQr },
+    after: { method, cashAmount: cash, qrAmount: qr },
+  });
+  return { collectionId: row.id, correctionId: o.id };
+};
+
 handlers.rectifyCollectionCustody = async (o, p) => {
   o.admin();
   check(typeof p.reason === 'string' && p.reason.trim().length >= 10, 'Escribe el motivo de la rectificación.');

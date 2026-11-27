@@ -253,7 +253,7 @@ service cloud.firestore {
           || (request.resource.data.type == 'rectifyQuarantineClosureConsumption' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifySaleUsedForExchange' && distAdmin(restaurantId))
           || (request.resource.data.type == 'rectifyClosureAttribution' && distAdmin(restaurantId))
-          || (request.resource.data.type == 'rectifyCollectionCustody' && distAdmin(restaurantId))
+          || (request.resource.data.type in ['rectifyCollectionCustody','rectifyCollectionPayment'] && distAdmin(restaurantId))
           || (request.resource.data.type == 'claim' && (distAdmin(restaurantId) || distributorCanClaimSale(restaurantId)))
           || (request.resource.data.type in ['quoteCreate','quoteUpdate','quoteCancel','quoteDelete'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))
           || (request.resource.data.type in ['editSale','voidSale'] && (distAdmin(restaurantId) || distDistributor(restaurantId)))

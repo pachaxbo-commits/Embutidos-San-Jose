@@ -2164,3 +2164,7 @@ export async function loadFullLotTraceability(params: {
     routes: params.routes,
   })
 }
+
+export function rectifyCollectionPayment(input: { collectionId: string; revision: string; cash: number; reason: string }, id: string) {
+  return submitOperation<{ correctionId?: string }>('rectifyCollectionPayment', input, id)
+}
