@@ -103,7 +103,7 @@ function htmlForResult(result: ReturnType<typeof computeOperatingResult>, period
   const amount = (value: number | null) => value === null ? 'No disponible: falta costo histórico' : formatBs(value)
   const rows = mode === 'easy'
     ? result.details.filter((item) => item.key !== 'netSales' && item.key !== 'result').map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.key === 'quarantineDisposition' ? result.pendingQuarantineCostBs === null ? 'Costo no disponible' : formatBs(result.pendingQuarantineCostBs) : amount(item.amount))}</td></tr>`).join('')
-    : classicRowsForResult(result).map((row) => `<tr class="${row.kind}"><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.amount === null ? '' : amount(row.amount))}</td></tr>`).join('')
+    : classicRowsForResult(result).map((row) => `<tr class="${row.kind}"><td>${escapeHtml(row.label)}</td><td>${escapeHtml(row.kind === 'heading' ? '' : amount(row.amount))}</td></tr>`).join('')
   const hasPendingDisposition = result.pendingQuarantineDispositionCount > 0
   const status = !result.costsKnown ? 'Incompleto' : result.pendingEconomicDecisionCount > 0 || hasPendingDisposition ? 'Resultado provisional' : 'Resultado calculado'
   const pending = [
@@ -230,12 +230,20 @@ export function OperatingResultView({ session, data }: DistributionViewProps) {
       </section> : <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 p-4"><p className="text-xs font-bold text-slate-500">EMBUTIDOS SAN JOSÉ · {period}</p><h2 className="text-xl font-black">Resultado del negocio</h2></div>
         <div className="overflow-x-auto"><table className="w-full min-w-[520px] border-collapse text-sm"><thead className="bg-slate-100 text-left text-xs uppercase text-slate-600"><tr><th className="p-3">Concepto</th><th className="p-3 text-right">Monto (Bs)</th></tr></thead><tbody>
-          {classicRowsForResult(result).map((row, index) => <tr key={`${row.label}-${index}`} className={`border-t border-slate-100 ${row.kind === 'heading' ? 'bg-slate-100 font-black' : row.kind === 'subtotal' ? 'bg-slate-50 font-extrabold' : row.kind === 'total' ? 'bg-rose-50 text-base font-black' : ''}`}><td className="p-3">{row.detailKey ? <button type="button" className="w-full text-left underline decoration-dotted underline-offset-2" onClick={() => openDetail(row.detailKey!)}>{row.label}</button> : row.label}</td><td className={`p-3 text-right font-bold ${row.kind === 'total' ? 'text-[var(--primary)]' : ''}`}>{amount(row.amount)}</td></tr>)}
+          {classicRowsForResult(result).map((row, index) => <tr key={`${row.label}-${index}`} className={`border-t border-slate-100 ${row.kind === 'heading' ? 'bg-slate-100 font-black' : row.kind === 'subtotal' ? 'bg-slate-50 font-extrabold' : row.kind === 'total' ? 'bg-rose-50 text-base font-black' : ''}`}><td className="p-3">{row.detailKey ? <button type="button" className="w-full text-left underline decoration-dotted underline-offset-2" onClick={() => openDetail(row.detailKey!)}>{row.label}</button> : row.label}</td><td className={`p-3 text-right font-bold ${row.kind === 'total' ? 'text-[var(--primary)]' : ''}`}>{row.kind === 'heading' ? '' : amount(row.amount)}</td></tr>)}
         </tbody></table></div>
         <p className="p-4 text-xs text-slate-500">Solo aparecen categorías con movimientos en este período. El costo de producción vendido ya está incluido en el costo histórico de las ventas.</p>
       </section>}
       {data.expenses.length === 0 && <EmptyBlock title="Sin egresos en el período" description="Los demás bloques se calculan con las ventas, costos, cambios, devoluciones y movimientos registrados." />}
     </div>
+    {result.costOfSales === null && <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-950">
+      <p>Costo de lo vendido incompleto. El margen y el resultado requieren costos históricos.</p>
+      <button type="button" className="mt-1 font-bold underline" onClick={() => {
+        const detail = result.details.find(entry => entry.key === 'costOfSales')
+        if (detail) setSelectedDetail({ ...detail, label: 'Costos históricos pendientes',
+          rows: detail.rows.filter(row => row.costo === 'Costo histórico no registrado') })
+      }}>Ver costos pendientes</button>
+    </div>}
     <Modal isOpen={Boolean(selectedDetail)} onClose={() => setSelectedDetail(null)} title={selectedDetail?.label || 'Detalle'} subtitle="Registros incluidos en esta cifra">
       {!selectedDetail?.rows.length ? <EmptyBlock title="Sin movimientos en este período" /> : <div className="grid max-h-[65vh] gap-2 overflow-y-auto">{selectedDetail.rows.map((row, index) => <article key={index} className="rounded-xl border border-slate-200 p-3">{Object.entries(row).map(([label, value]) => <p key={label} className="flex justify-between gap-3 text-xs"><span className="text-slate-500">{label}</span><strong className="text-right">{typeof value === 'number' && label === 'monto' ? formatBs(value) : String(value)}</strong></p>)}</article>)}</div>}
       {selectedDetail?.explanation && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-900">{selectedDetail.explanation}</p>}

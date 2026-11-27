@@ -148,7 +148,7 @@ export function computeOperatingResult(
     { key: 'grossSales', label: 'Ventas brutas', amount: grossSales, rows: saleRows },
     { key: 'adjustments', label: 'Cambios y devoluciones', amount: adjustments, rows: claimRows },
     { key: 'netSales', label: 'Ventas netas', amount: netSales, rows: [...saleRows, ...claimRows] },
-    { key: 'costOfSales', label: 'Costo de lo vendido', amount: costOfSales, rows: report.allLineDetails.map((line) => ({ fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, costo: line.costBs ?? 'Costo histórico no registrado' })) },
+    { key: 'costOfSales', label: 'Costo de lo vendido', amount: costOfSales, rows: report.allLineDetails.map((line) => ({ fecha: line.dayKey, producto: line.productName, cantidad: line.quantity, venta: line.saleId, responsable: line.sellerName, ruta: line.routeName, costo: line.costBs ?? 'Costo histórico no registrado' })) },
     { key: 'grossMargin', label: 'Margen bruto', amount: grossMargin, rows: report.items.map((item) => ({ producto: item.productName, ventas: item.salesBs, costo: item.costBs ?? 'No registrado', margen: item.profitBs ?? 'No disponible' })) },
     ...[...new Map(expenseRows.filter((row) => row.economicType === 'operating_expense').map((row) => [row.group, row.groupLabel])).entries()].map(([group, label]) => ({ key: group, label, amount: expenseTotals[group] || 0, rows: expenseRowsFor(group) })),
     { key: 'production_input', label: 'Compras de materia prima', amount: productionInputTotal, rows: expenseRowsFor('production_input'), explanation: 'Salida de dinero no descontada nuevamente porque su costo se reconoce en los productos.' },

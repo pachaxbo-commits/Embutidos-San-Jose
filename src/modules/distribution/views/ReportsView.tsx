@@ -66,6 +66,10 @@ const MAIN_CATEGORIES: { value: MainCategory; label: string }[] = [
 ]
 
 export function ReportsView({ session, data }: DistributionViewProps) {
+  const [lossDetailsOpen, setLossDetailsOpen] = useState(false)
+  const [lossProduct, setLossProduct] = useState('')
+  const [lossType, setLossType] = useState('')
+  const [lossDriver, setLossDriver] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
   const [mainCategory, setMainCategory] = useState<MainCategory>('resumen')
@@ -320,8 +324,9 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
       .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'return_waste_unassigned' || m.type === 'courtesy' || m.type === 'processing_discard' || (m.type === 'adjustment' && m.centralDelta < 0))
     const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
+    const lossCostKnown = losses.every(row => typeof row.lossCost === 'number' && Number.isFinite(row.lossCost))
     const operatingProfit =
-      costKnown && !sellerFilter ? round2(revenue - cost - spent - lossCost) : null
+      costKnown && lossCostKnown && !sellerFilter ? round2(revenue - cost - spent - lossCost) : null
 
     return {
       revenue,
@@ -330,10 +335,52 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       grossMargin,
       spent,
       lossCost,
+      lossCostKnown,
+      losses,
       operatingProfit,
     }
   }, [sales, claims, expenses, data.movements, session.dayKeys, routeFilter, sellerFilter])
 
+  const lossDriverName = (row: DistributionViewProps['data']['movements'][number]) =>
+    (row.dispatchId ? data.closures.find(closure => closure.dispatchId === row.dispatchId)?.distributorName : undefined)
+    || row.responsibleName || 'Sin responsable'
+  const lossLabels: Record<string, string> = {
+    shortage: 'Faltante', return_waste: 'Merma de retorno', return_waste_unassigned: 'Merma de retorno sin asignar',
+    courtesy: 'Cortesía', processing_discard: 'Descarte de elaboración', adjustment: 'Ajuste negativo',
+  }
+  const matchingLosses = operatingFinancials.losses.filter(row =>
+    (!lossProduct || row.productName === lossProduct) && (!lossType || row.type === lossType) && (!lossDriver || lossDriverName(row) === lossDriver))
+  const lossHeaders = ['Fecha', 'Ruta', 'Responsable', 'Producto', 'Tipo', 'Cantidad', 'Unidad', 'Costo unit. (Bs)', 'Valor (Bs)', 'Referencia', 'Motivo']
+  const lossRows = matchingLosses.map(row => [
+    row.dayKey || toDayKey(row.createdAt),
+    data.routes.find(route => route.id === row.routeId)?.name || 'Sin ruta identificada',
+    lossDriverName(row),
+    row.productName, lossLabels[row.type] || row.type, row.quantity, row.unitType,
+    row.lossCost != null && row.quantity > 0 ? round2(row.lossCost / row.quantity) : 'Sin costo',
+    row.lossCost ?? 'Sin costo', row.dispatchId || row.refId || 'Sin referencia', row.note || '',
+  ])
+  const visibleLossTotal = round2(matchingLosses.reduce((sum, row) => sum + (row.lossCost ?? 0), 0))
+  const lossSubtotals = [1, 3, 4].flatMap(column => {
+    const subtotals = new Map<string, { known: number; missing: number }>()
+    for (const row of lossRows) {
+      const label = String(row[column])
+      const current = subtotals.get(label) || { known: 0, missing: 0 }
+      if (typeof row[8] === 'number') current.known += row[8]
+      else current.missing++
+      subtotals.set(label, current)
+    }
+    return [...subtotals].map(([label, totals]) => [lossHeaders[column], label, round2(totals.known), totals.missing])
+  })
+  const downloadLosses = async (kind: 'pdf' | 'xlsx') => {
+    const sheets = [
+      { name: 'Mermas auditadas', headers: lossHeaders, rows: lossRows },
+      { name: 'Resumen', headers: ['Concepto', 'Valor (Bs)'], rows: [['Subtotal con costo registrado', visibleLossTotal]] },
+      { name: 'Subtotales', headers: ['Agrupación', 'Nombre', 'Costo conocido (Bs)', 'Sin costo'], rows: lossSubtotals },
+    ]
+    try {
+      await (kind === 'pdf' ? exportPdf : exportExcel)(sheets, 'Mermas auditadas', `SanJose-mermas-auditadas.${kind}`)
+    } catch (error) { setExportError((error as Error).message) }
+  }
   const [creditSearchTerm, setCreditSearchTerm] = useState('')
   const [expandedCreditCustomerId, setExpandedCreditCustomerId] = useState<string | null>(null)
 
@@ -646,9 +693,11 @@ export function ReportsView({ session, data }: DistributionViewProps) {
                     <div className="col-span-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:col-span-1">
                       <span className="text-[10px] font-bold uppercase text-slate-400">4. Mermas auditadas</span>
                       <p className="mt-1 text-sm font-black text-rose-700">
-                        {operatingFinancials.costKnown ? `- ${formatBs(operatingFinancials.lossCost)}` : '-'}
+                        {formatBs(operatingFinancials.lossCost)}{!operatingFinancials.lossCostKnown && ' (parcial)'}
                       </p>
-                      <span className="text-[10px] text-slate-500">Faltantes, mermas de retorno y cortesías</span>
+                      <button type="button" className="text-xs font-bold underline" onClick={() => {
+                        setLossProduct(''); setLossType(''); setLossDriver(''); setLossDetailsOpen(true)
+                      }}>Ver detalle</button>
                     </div>
                   </div>
 
@@ -1886,6 +1935,36 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         onSelect={setSellerFilter}
       />
 
+      <Modal isOpen={lossDetailsOpen} onClose={() => setLossDetailsOpen(false)} title="Mermas auditadas">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Field label="Producto"><select value={lossProduct} onChange={e => setLossProduct(e.target.value)}>
+            <option value="">Todos</option>
+            {[...new Set(operatingFinancials.losses.map(row => row.productName))].sort().map(name => <option key={name}>{name}</option>)}
+          </select></Field>
+          <Field label="Tipo de movimiento"><select value={lossType} onChange={e => setLossType(e.target.value)}>
+            <option value="">Todos</option>
+            {[...new Set(operatingFinancials.losses.map(row => row.type))].sort().map(type => <option key={type} value={type}>{lossLabels[type] || type}</option>)}
+          </select></Field>
+        </div>
+        <Field label="Responsable"><select value={lossDriver} onChange={e => setLossDriver(e.target.value)}>
+          <option value="">Todos</option>
+          {[...new Set(operatingFinancials.losses.map(lossDriverName))].sort().map(name => <option key={name}>{name}</option>)}
+        </select></Field>
+        <details className="my-2"><summary>Subtotales por ruta, producto y tipo</summary>
+          {lossSubtotals.map(([group, name, amount, missing]) => <p key={`${group}-${name}`}>{group} · {name} · {formatBs(Number(amount))} · {missing} sin costo</p>)}
+        </details>
+        <p className="my-2 font-bold">Subtotal con costo registrado {formatBs(visibleLossTotal)}</p>
+        <p>{matchingLosses.filter(row => row.lossCost == null).length} movimientos sin costo registrado</p>
+        <div className="my-2 flex gap-3">
+          <button type="button" onClick={() => void downloadLosses('pdf')}>Descargar PDF</button>
+          <button type="button" onClick={() => void downloadLosses('xlsx')}>Descargar Excel</button>
+        </div>
+        {exportError && <p role="alert">{exportError}</p>}
+        <div className="max-h-[55vh] overflow-auto">
+          <table className="min-w-full text-left text-xs"><thead><tr>{lossHeaders.map(label => <th className="p-2" key={label}>{label}</th>)}</tr></thead>
+          <tbody>{lossRows.map((row, index) => <tr className="border-t" key={matchingLosses[index].id}>{row.map((cell, col) => <td key={col} className="p-2">{cell}</td>)}</tr>)}</tbody></table>
+        </div>
+      </Modal>
       <Modal
         isOpen={Boolean(selectedSale)}
         onClose={() => {
