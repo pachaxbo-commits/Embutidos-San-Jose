@@ -183,6 +183,45 @@ button {
   scrollbar-width: none;  /* Firefox */
 }
 
+/* Scroll principal de Nuevo despacho. El control personalizado también funciona en scrollbars overlay de Windows/Chromium. */
+.modal-scrollbar-dispatch {
+  scrollbar-width: none;
+}
+.modal-scrollbar-dispatch::-webkit-scrollbar {
+  display: none;
+}
+.dispatch-scrollbar-track {
+  width: 14px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  cursor: pointer;
+  touch-action: none;
+}
+.dispatch-scrollbar-track:hover {
+  background: #cbd5e1;
+}
+.dispatch-scrollbar-thumb {
+  min-height: 40px;
+  border: 2px solid #e2e8f0;
+  background: #991b1b;
+  cursor: grab;
+}
+.dispatch-scrollbar-track:hover .dispatch-scrollbar-thumb {
+  border-width: 1px;
+  background: #7f1d1d;
+}
+.dispatch-scrollbar-track:active .dispatch-scrollbar-thumb {
+  cursor: grabbing;
+}
+@media (max-width: 640px) {
+  .modal-scrollbar-dispatch { padding-right: 1rem; scrollbar-width: thin; }
+  .modal-scrollbar-dispatch::-webkit-scrollbar { display: initial; width: 5px; height: 5px; }
+  .dispatch-scrollbar-track { display: none; }
+}
+@media (min-width: 641px) {
+  .dispatch-scrollbar-track { display: block; }
+}
+
 @keyframes brand-float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-5px); }

@@ -32,7 +32,12 @@ runSync(process.execPath, [resolve('firebase/tests/seedDispatchPickerUi.mjs')])
 const env = {
   ...process.env,
   VITE_USE_FIREBASE_EMULATOR: 'true',
+  VITE_FIREBASE_API_KEY: 'fake-api-key',
+  VITE_FIREBASE_AUTH_DOMAIN: 'demo-pachax-audit.firebaseapp.com',
   VITE_FIREBASE_PROJECT_ID: 'demo-pachax-audit',
+  VITE_FIREBASE_STORAGE_BUCKET: 'demo-pachax-audit.appspot.com',
+  VITE_FIREBASE_MESSAGING_SENDER_ID: '123456789',
+  VITE_FIREBASE_APP_ID: '1:123456789:web:dispatch-draft-qa',
 }
 const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', '5180', '--strictPort'], {
   stdio: 'inherit',
@@ -42,7 +47,11 @@ const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', 
 
 try {
   await waitForVite('http://127.0.0.1:5180', vite)
-  runSync(process.execPath, [resolve('scripts/test-dispatch-picker-ui.cjs')], { env })
+  if (!process.argv.includes('--draft-only')) runSync(process.execPath, [resolve('scripts/test-dispatch-picker-ui.cjs')], { env })
+  if (!process.argv.includes('--edge-only')) runSync(process.execPath, [resolve('scripts/test-dispatch-draft-protection.cjs')], { env })
+  if (!process.argv.includes('--chrome-only')) runSync(process.execPath, [resolve('scripts/test-dispatch-draft-protection.cjs')], {
+    env: { ...env, PLAYWRIGHT_EXECUTABLE_PATH: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', DISPATCH_DRAFT_VISUAL_ONLY: 'true' },
+  })
 } finally {
   vite.kill()
   await Promise.race([

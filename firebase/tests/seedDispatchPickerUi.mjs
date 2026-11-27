@@ -49,14 +49,15 @@ try {
           productId: product.id,
           productName: product.name,
           unitType: 'package',
-          quantity: 100,
+          quantity: 200,
           restaurantId: 'sanjose',
           updatedAt: new Date().toISOString(),
         }),
       ])
     }))
     await Promise.all(products
-      .map(product => setDoc(doc(db, 'restaurants/sanjose/distLots', `qa-lot-${product.id}`), {
+      .flatMap(product => [
+        setDoc(doc(db, 'restaurants/sanjose/distLots', `qa-lot-${product.id}`), {
         id: `qa-lot-${product.id}`,
         productId: product.id,
         productName: product.name,
@@ -68,7 +69,21 @@ try {
         restaurantId: 'sanjose',
         createdAt: '2026-10-01T00:00:00.000Z',
         createdBy: 'dispatch-picker-test',
-      })))
+        }),
+        setDoc(doc(db, 'restaurants/sanjose/distLots', `qa-lot-b-${product.id}`), {
+          id: `qa-lot-b-${product.id}`,
+          productId: product.id,
+          productName: product.name,
+          lotCode: `QA-B-${product.name.replaceAll(' ', '-').toUpperCase()}`,
+          unitType: 'package',
+          manufacturedOn: '2026-10-02',
+          expiresOn: '2026-12-02',
+          quantities: { central: 100 },
+          restaurantId: 'sanjose',
+          createdAt: '2026-10-02T00:00:00.000Z',
+          createdBy: 'dispatch-picker-test',
+        }),
+      ]))
     await setDoc(doc(db, 'restaurants/sanjose/distLots', 'qa-lot-viena-3kg'), {
       id: 'qa-lot-viena-3kg',
       productId: 'gra-viena',
@@ -80,6 +95,19 @@ try {
       quantities: { central: 3 },
       restaurantId: 'sanjose',
       createdAt: '2026-10-01T00:00:00.000Z',
+      createdBy: 'dispatch-picker-test',
+    })
+    await setDoc(doc(db, 'restaurants/sanjose/distLots', 'qa-lot-viena-100kg'), {
+      id: 'qa-lot-viena-100kg',
+      productId: 'gra-viena',
+      productName: 'Salchicha tipo Viena',
+      lotCode: 'VIENA-TEST-100KG',
+      unitType: 'kg',
+      manufacturedOn: '2026-10-02',
+      expiresOn: '2026-12-02',
+      quantities: { central: 100 },
+      restaurantId: 'sanjose',
+      createdAt: '2026-10-02T00:00:00.000Z',
       createdBy: 'dispatch-picker-test',
     })
   })

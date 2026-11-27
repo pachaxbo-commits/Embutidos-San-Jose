@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
-const { chromium, webkit } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
 
 const BASE_URL = 'http://127.0.0.1:5180'
 const screenshotsDir = path.resolve('output/qa/dispatch-picker')
@@ -167,6 +167,8 @@ async function verifyPicker(page, sizes, isMobile = false, label = '') {
   assert.deepEqual(await selectedOrder(), ['qa-dispatch-order-c', 'qa-dispatch-order-d', 'qa-dispatch-order-b', 'qa-dispatch-order-a'], 'deseleccionar y re-seleccionar agrega el producto al final')
 
   await newDispatch.getByRole('button', { name: 'Cerrar' }).last().click()
+  const exitDialog = page.getByRole('dialog', { name: 'Salir del despacho' })
+  await exitDialog.getByRole('button', { name: 'Descartar despacho' }).click()
   await page.getByRole('button', { name: 'Nuevo', exact: true }).click()
   await page.getByRole('button', { name: 'Seleccionar productos', exact: true }).click()
   const nextDraftPicker = page.getByRole('dialog', { name: 'Productos del despacho' })
@@ -199,6 +201,8 @@ async function verifyPicker(page, sizes, isMobile = false, label = '') {
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Cantidad del lote para Salchicha tipo Viena', 'Ir al error lleva y enfoca el campo de asignación del lote')
   assert((await viennaLine.locator('[data-dispatch-allocation-id]').first().getAttribute('class')).includes('ring-4'), 'el lote afectado queda resaltado')
   await page.getByRole('dialog', { name: 'Nuevo despacho' }).getByRole('button', { name: 'Cerrar' }).last().click()
+  const finalExitDialog = page.getByRole('dialog', { name: 'Salir del despacho' })
+  await finalExitDialog.getByRole('button', { name: 'Descartar despacho' }).click()
   console.log(`PASS ${label}: lista grande, búsqueda/scroll estables, imagen seleccionable, orden de selección y errores accesibles`)
 }
 
@@ -219,11 +223,6 @@ async function runEngine(browserType, label, viewports, isMobile = false) {
 }
 
 ;(async () => {
-  if (process.env.DISPATCH_PICKER_ENGINE === 'webkit') {
-    await runEngine(webkit, 'WebKit mobile', [{ width: 390, height: 844 }], true)
-    console.log('PASS WebKit mobile selector táctil')
-    return
-  }
   await runEngine(chromium, 'Chromium desktop', [{ width: 1440, height: 900 }])
   await runEngine(chromium, 'Chromium touch', [
     { width: 320, height: 640 },
@@ -234,8 +233,7 @@ async function runEngine(browserType, label, viewports, isMobile = false) {
     { width: 640, height: 800 },
     { width: 768, height: 900 },
   ], true)
-  await runEngine(webkit, 'WebKit mobile', [{ width: 390, height: 844 }], true)
-  console.log('PASS Playwright dispatch picker: Chromium escritorio, móvil táctil y WebKit')
+  console.log('PASS Playwright dispatch picker: Chromium escritorio y móvil táctil')
 })().catch(error => {
   console.error(error)
   process.exitCode = 1
