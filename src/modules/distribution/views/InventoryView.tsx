@@ -3,6 +3,7 @@ import { LotsAndHistory } from './LotsAndHistory'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Compass, FileSpreadsheet, FileText, GripVertical, History, Layers, ListTree, MoreVertical, PackagePlus, Printer, RotateCcw, Save, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
+import { useUnsavedChangesGuard } from '../../../hooks/useUnsavedChangesGuard'
 import { Field, NumberInput, Segmented, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
@@ -693,6 +694,27 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
     setIntakeNote('')
     setError(null)
   }
+
+  const hasUnsavedIntakeChanges = Boolean(intakeProduct && (
+    Number(intakeQuantity) !== 0 || intakeNote.trim() || lotCode.trim()
+    || manufacturedOn || expiresOn || adjustLotId
+  ))
+  const closeIntake = () => setIntakeProduct(null)
+  const intakeCloseGuard = useUnsavedChangesGuard({
+    hasUnsavedChanges: hasUnsavedIntakeChanges,
+    isBusy: isSubmitting,
+    onClose: closeIntake,
+    onDiscard: () => {
+      operation.current = null
+      setIntakeQuantity('0')
+      setIntakeNote('')
+      setLotCode('')
+      setManufacturedOn('')
+      setExpiresOn('')
+      setAdjustLotId('')
+      setError(null)
+    },
+  })
 
   const openLotReservation = async (lotId: string, purpose?: 'courtesy' | 'repack_pending' | 'review_hold') => {
     if (reservationLookup) return
@@ -1454,7 +1476,7 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
       </Modal>
       <Modal
         isOpen={Boolean(intakeProduct)}
-        onClose={() => setIntakeProduct(null)}
+        onClose={intakeCloseGuard.requestClose}
         title={intakeMode === 'intake' ? 'Ingreso a almacen' : session.role === 'warehouse' ? 'Solicitar baja de stock' : 'Ajuste de almacen'}
         subtitle={intakeProduct?.name}
         footer={
@@ -1486,6 +1508,15 @@ export function InventoryView({ session, data, onOpenReservation, onOpenProcessi
           {error && <p role="alert" className="text-xs font-bold text-rose-700">{error}</p>}
           {error && intakeMode === 'adjustment' && adjustLotId && (() => { const lot = data.lots.find(item => item.id === adjustLotId); const held = lot?.processingUnavailable?.[lotLocation]; return lot && Number(held?.courtesy || 0) + Number(held?.repackPending || 0) + Number(held?.reviewHold || 0) > 0 ? <button type="button" disabled={reservationLookup === lot.id} onClick={() => void openLotReservation(lot.id)} className="min-h-11 rounded-xl border border-amber-300 bg-amber-50 px-3 text-xs font-extrabold text-amber-950">{reservationLookup === lot.id ? 'Buscando reserva…' : 'Ver reserva que bloquea el ajuste'}</button> : null })()}
         </div>
+      </Modal>
+      <Modal
+        isOpen={intakeCloseGuard.isPromptOpen}
+        onClose={intakeCloseGuard.continueEditing}
+        title="Salir del movimiento"
+        size="sm"
+        footer={<div className="grid gap-2"><SecondaryButton full onClick={intakeCloseGuard.continueEditing}>Continuar editando</SecondaryButton><button type="button" onClick={intakeCloseGuard.discardAndClose} className="min-h-11 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-extrabold text-rose-800 hover:bg-rose-100">Descartar cambios</button></div>}
+      >
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Tienes información del movimiento de inventario sin guardar. Si sales ahora, podrías perder los datos ingresados.</p>
       </Modal>
       <ChoiceModal
         isOpen={choice === 'warehouse'}

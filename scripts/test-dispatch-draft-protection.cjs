@@ -137,6 +137,21 @@ async function run() {
 
   try {
     await login(page)
+    if (process.env.DISPATCH_DRAFT_VISUAL_ONLY !== 'true') {
+      await page.getByRole('button', { name: 'Inventario', exact: true }).click()
+      const qaProduct = page.locator('div.flex.w-full.min-w-0.items-start.justify-between.gap-2').filter({ hasText: 'QA extra 00' })
+      await qaProduct.getByRole('button', { name: 'Ingreso', exact: true }).click()
+      let intake = page.getByRole('dialog', { name: 'Ingreso a almacen' })
+      await intake.getByRole('spinbutton').fill('1')
+      await intake.locator('header').getByRole('button', { name: 'Cerrar' }).click()
+      let intakeExit = page.getByRole('dialog', { name: 'Salir del movimiento' })
+      await intakeExit.getByRole('button', { name: 'Continuar editando' }).click()
+      assert.equal(await intake.getByRole('spinbutton').inputValue(), '1', 'la protección reutilizable conserva la cantidad del formulario de ingreso')
+      await intake.locator('header').getByRole('button', { name: 'Cerrar' }).click()
+      intakeExit = page.getByRole('dialog', { name: 'Salir del movimiento' })
+      await intakeExit.getByRole('button', { name: 'Descartar cambios' }).click()
+      await openDispatches(page)
+    }
     await page.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix)).forEach(key => localStorage.removeItem(key)), storageKeyPrefix)
 
     await page.getByRole('button', { name: 'Nuevo', exact: true }).click()
