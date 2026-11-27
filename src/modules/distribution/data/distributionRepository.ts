@@ -1763,6 +1763,10 @@ export interface SupplierPurchaseCorrection extends Partial<Pick<SupplierPurchas
   purchaseReceiptNumber?: string
 }
 
+export function rectifyPurchaseWaste(input: { payableId: string; revision: string; index: number; waste: number; reason: string }, id: string) {
+  return submitOperation<{ correctionId?: string }>('rectifyPurchaseWaste', input, id)
+}
+
 export function rectifySupplierPurchase(input: SupplierPurchaseCorrection, id: string) {
   return submitOperation<{ payable: DistPayable; correctionId: string }>('rectifySupplierPurchase', input, id)
 }

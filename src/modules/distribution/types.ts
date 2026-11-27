@@ -597,6 +597,7 @@ export interface DistExpense extends DistBaseDoc {
 export type PurchaseUnit = 'kg' | 'g' | 'unit' | 'box' | 'sack' | 'liter' | 'other'
 
 export interface SupplierPurchaseLine {
+  wasteRecordedAt?: string
   description: string
   quantity: number
   unit: PurchaseUnit

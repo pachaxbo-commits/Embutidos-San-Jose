@@ -1,3 +1,4 @@
+import { PurchaseWasteReport } from './PurchaseWasteReport'
 import { listRestaurantMembers } from '../../../lib/firebase'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Download, FileSpreadsheet, FileText, Printer } from 'lucide-react'
@@ -56,6 +57,17 @@ const moneyMethod = (value?: string) =>
     : 'Otro'
 
 export function ExpenseReportsView(props: DistributionViewProps) {
+  const [showWaste, setShowWaste] = useState(false)
+  return <div className="grid gap-3">
+    <div className="flex flex-wrap gap-2">
+      <button type="button" aria-pressed={!showWaste} className="rounded-xl border px-3 py-2" onClick={() => setShowWaste(false)}>Reportes de egresos</button>
+      <button type="button" aria-pressed={showWaste} className="rounded-xl border px-3 py-2" onClick={() => setShowWaste(true)}>Mermas de compras de carne</button>
+    </div>
+    {showWaste ? <PurchaseWasteReport /> : <GeneralExpenseReportsView {...props} />}
+  </div>
+}
+
+function GeneralExpenseReportsView(props: DistributionViewProps) {
   void props
   const [workerNames, setWorkerNames] = useState<Map<string, string>>(new Map())
   useEffect(() => {

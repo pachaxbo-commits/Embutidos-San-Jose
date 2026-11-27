@@ -3370,6 +3370,49 @@ async function registerSupplierPurchase(o, p) {
 }
 
 
+async function rectifyPurchaseWaste(o, p) {
+  o.admin();
+  check(Object.keys(p).every(key => ["payableId", "revision", "index", "waste", "reason"].includes(key)),
+    "La corrección solo admite la merma y su motivo.");
+  const reason = typeof p.reason === "string" ? p.reason.trim() : "";
+  check(reason.length > 0 && reason.length <= 300, "Indica el motivo de la merma (hasta 300 caracteres).");
+  const payable = await o.read("distPayables", safeId(p.payableId));
+  check(payable?.sourceKind === "supplier_purchase" && payable.status !== "voided", "Compra no disponible.");
+  check(p.revision === (payable.updatedAt || payable.createdAt), "La compra cambió. Vuelve a abrirla.");
+  const expense = await o.read("distExpenses", payable.purchaseExpenseId);
+  check(expense?.transactionKind === "supplier_purchase" && !expense.voided, "Compra no disponible.");
+  const before = expense.purchaseLines?.[p.index];
+  check(Number.isInteger(p.index) && p.index >= 0 && before?.unit === "kg"
+    && /\b(carnes?|res|cerdo|pollo|vacuno|tocino)\b/i.test(`${expense.categoryName || ""} ${before.description || ""}`),
+    "Selecciona una línea de carne registrada en kg.");
+  check(JSON.stringify(expense.purchaseLines) === JSON.stringify(payable.purchaseLines) ||
+    require("node:util").isDeepStrictEqual(expense.purchaseLines, payable.purchaseLines),
+    "Los detalles de la compra y la obligación difieren. Solicita revisión contable.");
+  check(Number.isFinite(p.waste) && p.waste >= 0 && p.waste <= before.quantity && roundAt(p.waste, 3) === p.waste,
+    "Ingresa una merma entre cero y la cantidad comprada, con hasta tres decimales.");
+  const read = (name, field) => o.tx.get(o.root.collection(name).where(field, "==", expense.id).select().limit(1));
+  const [lots, movements, operations, batches] = await Promise.all([
+    read("distLots", "sourceExpenseId"), read("distStockMovements", "refId"), read("distStockMovements", "operationId"),
+    o.tx.get(o.root.collection("distProcessingBatches").select("packagingMaterials", "costComponents").limit(251)),
+  ]);
+  check(lots.empty && movements.empty && operations.empty && !batches.docs.some(doc => {
+    const batch = doc.data();
+    return [...(batch.packagingMaterials || []), ...(batch.costComponents || [])].some(row => row.expenseId === expense.id);
+  }), "La compra está vinculada a existencias o producción. Solicita un ajuste auditado de inventario y costos.");
+  check(batches.size <= 250, "No se pudo verificar todo el historial de producción. Solicita una revisión de sus vínculos.");
+  if ((before.wasteQuantity || 0) === p.waste && before.note === reason) return { unchanged: true };
+  const after = { ...before, wasteQuantity: p.waste, netUsableQuantity: roundAt(before.quantity - p.waste, 3),
+    note: reason, wasteRecordedAt: o.now };
+  const purchaseLines = expense.purchaseLines.map((line, index) => index === p.index ? after : line);
+  const update = { purchaseLines, updatedAt: o.now, updatedBy: o.actor };
+  o.put("distExpenses", expense.id, { ...expense, ...update });
+  o.put("distPayables", payable.id, { ...payable, ...update });
+  o.put("distPurchaseCorrections", o.id, { ...o.base(), id: o.id, action: "purchase_waste_rectified",
+    payableId: payable.id, expenseId: expense.id, lineIndex: p.index, before, after, reason,
+    stockImpact: 0, cashImpact: 0, accountingCostImpact: 0 });
+  return { correctionId: o.id };
+}
+
 async function rectifySupplierPurchase(o, p) {
   o.admin();
   const fields = ["payableId", "expectedRevision", "reason", "supplierId", "responsibleUid", "dayKey", "description", "purchaseLines", "amount", "purchaseReceiptType", "purchaseReceiptNumber", "paymentMethod"];
@@ -3392,21 +3435,21 @@ async function rectifySupplierPurchase(o, p) {
     read(collection("distProcessingBatches").select("packagingMaterials", "costComponents").limit(251)),
     read(collection("distStockMovements").where("refId", "==", expense.id).select().limit(1)),
     read(collection("distLots").where("sourceExpenseId", "==", expense.id).select().limit(1)),
-    Promise.all(days.map(key => read(collection("distClosures").where("dayKey", "==", key).select("status", "routeId", "closureType").limit(101)))),
+    Promise.all(days.map(key => read(collection("distClosures").where("dayKey", "==", key).select("status", "routeId", "closureType", "dayKey").limit(101)))),
     isAdministrationRouteId(expense.routeId) ? null : read(collection("distClosures").where("routeId", "==", expense.routeId)
-      .where("dayKey", ">=", payable.dayKey).select("status", "closedAt").limit(101)),
+      .where("dayKey", ">=", payable.dayKey).select("status", "closedAt", "dayKey").limit(101)),
   ]);
   const linkedBatch = batches.docs.find(doc => {
     const batch = doc.data();
     return [...(batch.packagingMaterials || []), ...(batch.costComponents || [])].some(item => item.expenseId === expense.id);
   });
   check(movements.empty && lots.empty && !linkedBatch,
-    `Compra ${expense.id} vinculada a inventario (${linkedBatch?.id || movements.docs[0]?.id || lots.docs[0]?.id}). Registra una compensación auditada de inventario y costos.`);
+    "La compra está vinculada a inventario o producción. Solicita una compensación auditada de existencias y costos.");
   const closed = dayClosures.flatMap(result => result.docs).find(doc => {
     const row = doc.data();
     return row.status === "closed" && (row.routeId === expense.routeId || (isAdministrationRouteId(expense.routeId) && row.closureType === "admin"));
   }) || routeClosures?.docs.find(doc => doc.get("status") === "closed" && doc.get("closedAt") >= expense.createdAt);
-  check(!closed, `La compra ${expense.id} está vinculada al cierre ${closed?.id}. Registra un asiento compensatorio auditado en un período abierto.`);
+  check(!closed, `La compra está vinculada al cierre de ${expense.routeName || "la ruta"} del ${closed?.get("dayKey") || payable.dayKey}. Para mermas usa «Registrar o corregir merma». Para cambios financieros solicita una compensación auditada.`);
   check(batches.size <= 250 && paymentDocs.size <= 250 && dayClosures.every(result => result.size <= 100)
     && (!routeClosures || routeClosures.size <= 100),
   "El historial supera el límite de verificación automática. Solicita revisión contable de la compra, sus abonos y sus vínculos antes de corregirla.");
@@ -4892,7 +4935,7 @@ async function claim(o, p) {
   o.put("distClaims", o.id, c);
   return c;
 }
-Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, deleteExpenseCategory, saveExpenseGroup, deleteExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, rectifySupplierPurchase, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
+Object.assign(handlers, { adjustment, adjustmentRequest, reviewAdjustmentRequest, expense, deleteExpense, saveExpenseCategory, deleteExpenseCategory, saveExpenseGroup, deleteExpenseGroup, saveExpenseSupplier, registerSupplierPurchase, rectifySupplierPurchase, rectifyPurchaseWaste, paySupplierPayable, voidSupplierPayment, voidSupplierPurchase, classifyExpense, deleteProduct, closure, claim });
 
 function reservationEvent(o, reservation, action, quantity, reason = '') {
   const history = [...(reservation.history || []), { id: `${o.id}__event`, action, quantity, at: o.now, by: o.actor, byName: o.member.displayName || o.actor, reason }];
