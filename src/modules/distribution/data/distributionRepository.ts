@@ -292,6 +292,19 @@ export async function getProcessingOperationState(operationId: string, expectedT
   return { status: 'queued', ...(typeof data.createdAt === 'string' ? { createdAt: data.createdAt } : {}) }
 }
 
+/** Consulta desde el servidor antes de reintentar una confirmación de despacho con resultado incierto. */
+export async function getDispatchOperationState(operationId: string): Promise<ProcessingOperationState> {
+  const context = await getContext()
+  const snapshot = await getDocFromServer(docRef(context, 'distOperations', operationId))
+  if (snapshot.metadata.hasPendingWrites) return { status: 'queued' }
+  if (!snapshot.exists()) return { status: 'missing' }
+  const data = snapshot.data()
+  if (data.type !== 'dispatch') throw new Error('El identificador del borrador corresponde a otra operación.')
+  if (data.status === 'confirmed') return { status: 'confirmed', result: data.result }
+  if (data.status === 'rejected') return { status: 'rejected', error: String(data.error || 'El servidor rechazó la operación.') }
+  return { status: 'queued', ...(typeof data.createdAt === 'string' ? { createdAt: data.createdAt } : {}) }
+}
+
 /** Entrada oficial al backend; nunca modifica lotes ni balances desde el cliente. */
 export async function confirmProcessingBatch(input: ConfirmProcessingBatchInput, operationId: string): Promise<unknown> {
   return submitOperation('confirmProcessingBatch', input, operationId)

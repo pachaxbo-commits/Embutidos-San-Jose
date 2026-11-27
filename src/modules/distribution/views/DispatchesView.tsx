@@ -1,12 +1,13 @@
 import { allocatePhysicalQuantity, roundQuantityForUnit } from '../domain/physicalQuantity'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { AlertTriangle, ArrowDown, ArrowDownRight, ArrowUp, ArrowUpRight, Check, Copy, Download, FileText, GripVertical, Mail, MessageCircle, Minus, PackagePlus, Pencil, Plus, Printer, RotateCcw, Save, Search, Send, Trash2, Truck, Undo2, X } from 'lucide-react'
 import { Modal } from '../../../components/ui/Modal'
+import { useUnsavedChangesGuard } from '../../../hooks/useUnsavedChangesGuard'
 import { Field, NumberInput, Segmented, SelectInput, TextArea, TextInput } from '../../../components/ui/Form'
 import { ChoiceButton, ChoiceModal } from '../../../components/ui/ChoiceModal'
 import { EmptyBlock, Screen } from '../../../components/ui/Screen'
 import { computeLoadedByProduct, validateStockAvailability } from '../domain/engine'
-import { addDispatchLoad, confirmDispatch, correctDispatch, newOperationId, resetDispatchProductOrder, saveDispatchProductOrder, subscribeClosedDispatches, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
+import { addDispatchLoad, confirmDispatch, correctDispatch, getDispatchOperationState, newOperationId, resetDispatchProductOrder, saveDispatchProductOrder, subscribeClosedDispatches, warehouseBalanceId, type DispatchCorrectionChange } from '../data/distributionRepository'
 import { useTenantMembers } from '../state/useTenantMembers'
 import { PrimaryButton, SecondaryButton, SectionCard, formatQty } from './shared'
 import type { DistributionViewProps } from './DistributionApp'
@@ -36,6 +37,27 @@ interface DraftLine {
   warehouseLossReason?: string
   warehouseLossConfirmed?: boolean
   allocations: Array<{ id: string; lotId: string; quantity: string }>
+}
+
+interface PersistedDispatchDraft {
+  version: 1
+  warehouseId: string
+  routeId: string
+  distributorUid: string
+  observation: string
+  warehouseResponsibleName: string
+  draftLines: DraftLine[]
+  operationId: string
+  updatedAt: string
+}
+
+const isPersistedDispatchDraft = (value: unknown): value is PersistedDispatchDraft => {
+  if (!value || typeof value !== 'object') return false
+  const draft = value as Partial<PersistedDispatchDraft>
+  return draft.version === 1 && typeof draft.warehouseId === 'string'
+    && typeof draft.routeId === 'string' && typeof draft.distributorUid === 'string'
+    && typeof draft.observation === 'string' && typeof draft.warehouseResponsibleName === 'string'
+    && typeof draft.operationId === 'string' && Array.isArray(draft.draftLines)
 }
 
 function WarehouseLossConfirmation({ lines }: { lines: DistDispatchLine[] }) {
@@ -72,6 +94,10 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [observation, setObservation] = useState('')
   const [warehouseResponsibleName, setWarehouseResponsibleName] = useState(() => localStorage.getItem('sanjose_warehouse_responsible') || session.userName)
   const [draftLines, setDraftLines] = useState<DraftLine[]>([])
+  const [dispatchOperationId, setDispatchOperationId] = useState(() => newOperationId('disp'))
+  const [draftRecovery, setDraftRecovery] = useState<PersistedDispatchDraft | null>(null)
+  const [draftRecoveryNotice, setDraftRecoveryNotice] = useState<string | null>(null)
+  const [replaceDraftConfirmOpen, setReplaceDraftConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [confirmingLoadType, setConfirmingLoadType] = useState<'dispatch' | 'addition' | null>(null)
@@ -94,6 +120,106 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
   const [sharingDispatch, setSharingDispatch] = useState<DistDispatch | null>(null)
   const [isEmailView, setIsEmailView] = useState(false)
   const [copiedText, setCopiedText] = useState(false)
+
+  const draftStorageKey = `sanjose_dispatch_draft_v1:${encodeURIComponent(session.restaurantId)}:${encodeURIComponent(session.uid)}:new-dispatch`
+  const hasDispatchDraftContent = Boolean(routeId || distributorUid || observation.trim() || draftLines.length
+    || warehouseResponsibleName !== (localStorage.getItem('sanjose_warehouse_responsible') || session.userName)
+    || warehouseId !== (session.warehouseId || 'central'))
+
+  const saveDispatchDraft = useCallback(() => {
+    if (!hasDispatchDraftContent) return
+    const snapshot: PersistedDispatchDraft = {
+      version: 1, warehouseId, routeId, distributorUid, observation,
+      warehouseResponsibleName, draftLines, operationId: dispatchOperationId,
+      updatedAt: new Date().toISOString(),
+    }
+    try { localStorage.setItem(draftStorageKey, JSON.stringify(snapshot)) } catch { /* el formulario sigue disponible si el navegador bloquea almacenamiento */ }
+  }, [hasDispatchDraftContent, warehouseId, routeId, distributorUid, observation, warehouseResponsibleName, draftLines, dispatchOperationId, draftStorageKey])
+
+  useEffect(() => {
+    if (!isNewOpen || draftRecovery || !hasDispatchDraftContent) return
+    saveDispatchDraft()
+  }, [isNewOpen, draftRecovery, draftStorageKey, warehouseId, routeId, distributorUid, observation, warehouseResponsibleName, draftLines, dispatchOperationId, hasDispatchDraftContent, saveDispatchDraft])
+
+  const closeNewDispatch = () => {
+    setIsNewOpen(false)
+    setConfirmingLoadType(null)
+    setShowDispatchValidationDetails(false)
+  }
+
+  const unsavedChangesGuard = useUnsavedChangesGuard({
+    hasUnsavedChanges: hasDispatchDraftContent,
+    isBusy: isSubmitting,
+    onClose: closeNewDispatch,
+    onSaveDraft: saveDispatchDraft,
+    onDiscard: () => {
+      try { localStorage.removeItem(draftStorageKey) } catch { /* ignorar */ }
+      resetDraft()
+      setDispatchOperationId(newOperationId('disp'))
+      setDraftRecovery(null)
+    },
+  })
+
+  const startNewDispatch = () => {
+    try {
+      const stored = localStorage.getItem(draftStorageKey)
+      const parsed = stored ? JSON.parse(stored) as unknown : null
+      if (isPersistedDispatchDraft(parsed)) {
+        setDraftRecovery(parsed)
+        setDraftRecoveryNotice(null)
+        setIsNewOpen(true)
+        return
+      }
+    } catch { /* un borrador inválido no bloquea crear uno nuevo */ }
+    resetDraft()
+    setDispatchOperationId(newOperationId('disp'))
+    setShowDispatchValidationDetails(false)
+    setDraftRecovery(null)
+    setIsNewOpen(true)
+  }
+
+  const continueSavedDraft = async () => {
+    if (!draftRecovery) return
+    setIsSubmitting(true)
+    let recoveredOperationId = draftRecovery.operationId
+    try {
+      const previousState = await getDispatchOperationState(draftRecovery.operationId)
+      if (previousState.status === 'confirmed') {
+        try { localStorage.removeItem(draftStorageKey) } catch { /* ignorar */ }
+        setDraftRecoveryNotice('Este despacho ya figura confirmado en el servidor. Se quitó el borrador para evitar registrarlo otra vez.')
+        return
+      }
+      if (previousState.status === 'queued') {
+        setDraftRecoveryNotice('La confirmación de este despacho sigue pendiente en el servidor. Espera a que termine antes de volver a registrarlo.')
+        return
+      }
+      if (previousState.status === 'rejected') recoveredOperationId = newOperationId('disp')
+    } catch (statusError) {
+      setDraftRecoveryNotice(`No se pudo consultar el estado del despacho. El borrador sigue guardado y no se registrará otra operación hasta verificarlo. ${(statusError as Error).message}`)
+      return
+    } finally {
+      setIsSubmitting(false)
+    }
+    setWarehouseId(draftRecovery.warehouseId)
+    setRouteId(draftRecovery.routeId)
+    setDistributorUid(draftRecovery.distributorUid)
+    setObservation(draftRecovery.observation)
+    setWarehouseResponsibleName(draftRecovery.warehouseResponsibleName)
+    setDraftLines(draftRecovery.draftLines)
+    setDispatchOperationId(recoveredOperationId)
+    setError(null)
+    setDraftRecoveryNotice(null)
+    setDraftRecovery(null)
+  }
+
+  const discardSavedDraftAndStartNew = () => {
+    try { localStorage.removeItem(draftStorageKey) } catch { /* ignorar almacenamiento no disponible */ }
+    setDraftRecovery(null)
+    setDraftRecoveryNotice(null)
+    setReplaceDraftConfirmOpen(false)
+    resetDraft()
+    setDispatchOperationId(newOperationId('disp'))
+  }
 
   const [correctionTarget, setCorrectionTarget] = useState<DistDispatch | null>(null)
   const [initialDrafts, setInitialDrafts] = useState<Record<string, number>>({})
@@ -592,7 +718,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           <span className="min-w-0">{draftValidationErrors.length > 0 && <>{draftValidationErrors.length} {draftValidationErrors.length === 1 ? 'error que debes corregir' : 'errores que debes corregir'}</>}{draftValidationErrors.length > 0 && incompleteProductCount > 0 && ' · '}{incompleteProductCount > 0 && <>{incompleteProductCount} {incompleteProductCount === 1 ? 'producto pendiente' : 'productos pendientes'} de completar</>}</span>
           <span className="shrink-0 underline">{showDispatchValidationDetails ? 'Ocultar detalles' : 'Ver detalles'}</span>
         </button>
-        {showDispatchValidationDetails && <div className="mt-2 max-h-[26dvh] overflow-y-auto overscroll-contain rounded-lg bg-white/80 p-2">
+        {showDispatchValidationDetails && <div className="mt-2 rounded-lg bg-white/80 p-2">
           {draftValidationErrors.length > 0 && <><h3 className="text-[11px] font-black text-rose-900">Errores que debes corregir</h3><ul className="mt-1 grid gap-2">{draftValidationErrors.map(issue => <li key={issue.key} className="flex min-w-0 items-start justify-between gap-2 border-t border-rose-100 pt-2 first:border-t-0 first:pt-0"><span className="min-w-0 break-words text-[11px] font-semibold leading-snug text-rose-900">{issue.message}</span><button type="button" onClick={() => goToDispatchIssue(issue)} className="min-h-9 shrink-0 rounded-lg bg-white px-2 text-[10px] font-extrabold text-rose-800 ring-1 ring-rose-200">Ir al campo</button></li>)}</ul></>}
           {draftValidationIncomplete.length > 0 && <><h3 className={`${draftValidationErrors.length ? 'mt-3 border-t border-amber-200 pt-2' : ''} text-[11px] font-black text-amber-900`}>Pendientes de completar</h3><ul className="mt-1 grid gap-2">{draftValidationIncomplete.map(issue => <li key={issue.key} className="flex min-w-0 items-start justify-between gap-2 border-t border-amber-100 pt-2 first:border-t-0 first:pt-0"><span className="min-w-0 break-words text-[11px] font-semibold leading-snug text-amber-950">{issue.message}</span><button type="button" onClick={() => goToDispatchIssue(issue)} className="min-h-9 shrink-0 rounded-lg bg-white px-2 text-[10px] font-extrabold text-amber-900 ring-1 ring-amber-200">Ir al campo</button></li>)}</ul></>}
         </div>}
@@ -699,6 +825,35 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
     if (isSubmitting) return
     setError(null)
 
+    let operationIdForSubmit = dispatchOperationId
+    if (confirmed) {
+      setIsSubmitting(true)
+      try {
+        const previousState = await getDispatchOperationState(operationIdForSubmit)
+        if (previousState.status === 'confirmed') {
+          try { localStorage.removeItem(draftStorageKey) } catch { /* ignorar */ }
+          setIsNewOpen(false)
+          setConfirmingLoadType(null)
+          resetDraft()
+          setDispatchOperationId(newOperationId('disp'))
+          return
+        }
+        if (previousState.status === 'queued') {
+          setError('La confirmación sigue pendiente en el servidor. No vuelvas a registrar el despacho; espera la sincronización y revisa su estado.')
+          return
+        }
+        if (previousState.status === 'rejected') {
+          operationIdForSubmit = newOperationId('disp')
+          setDispatchOperationId(operationIdForSubmit)
+        }
+      } catch (statusError) {
+        setError(`No se pudo consultar el estado previo del despacho. El borrador sigue guardado; revisa tu conexión e inténtalo de nuevo. ${(statusError as Error).message}`)
+        return
+      } finally {
+        setIsSubmitting(false)
+      }
+    }
+
     const lines = buildLines()
     if (!selectedDistributor?.routeId || routeMismatch) { setError('Selecciona un distribuidor y su ruta asignada.'); return }
     if (data.openDispatches.some(d => d.routeId === routeId)) { setError('La ruta ya tiene un despacho abierto. Usa Aumentar.'); return }
@@ -739,12 +894,14 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         lines,
         observation,
         warehouseResponsibleName: warehouseResponsibleName.trim(),
-        operationId: newOperationId('disp'),
+        operationId: operationIdForSubmit,
       })
       localStorage.setItem('sanjose_warehouse_responsible', warehouseResponsibleName.trim())
+      try { localStorage.removeItem(draftStorageKey) } catch { /* ignorar */ }
       setIsNewOpen(false)
       setConfirmingLoadType(null)
       resetDraft()
+      setDispatchOperationId(newOperationId('disp'))
     } catch (submitError) {
       setError((submitError as Error).message || 'No se pudo confirmar el despacho.')
     } finally {
@@ -881,7 +1038,7 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
         canDispatch || canManageProductOrder ? (
           <div className="flex flex-wrap justify-end gap-2">
             {canManageProductOrder && <SecondaryButton disabled={data.dispatchProductOrderLoading} onClick={openProductOrder}><GripVertical size={16} /> Organizar productos</SecondaryButton>}
-            {canDispatch && <PrimaryButton onClick={() => { resetDraft(); setShowDispatchValidationDetails(false); setIsNewOpen(true) }}><Truck size={16} /> Nuevo</PrimaryButton>}
+            {canDispatch && <PrimaryButton onClick={startNewDispatch}><Truck size={16} /> Nuevo</PrimaryButton>}
           </div>
         ) : undefined
       }
@@ -1195,13 +1352,15 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
 
       <Modal
         isOpen={isNewOpen}
-        onClose={() => { setIsNewOpen(false); setConfirmingLoadType(null); setShowDispatchValidationDetails(false) }}
+        onClose={unsavedChangesGuard.requestClose}
         title={confirmingLoadType === 'dispatch' ? 'Confirmar carga física' : 'Nuevo despacho'}
         subtitle="Descuenta almacen central y carga la ruta"
         size="lg"
-        footer={confirmingLoadType === 'dispatch' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Guardando…' : 'Confirmar despacho'}</PrimaryButton></div></div> : renderContinueFooter(() => { void submitDispatch() })}
+        closeOnBackdrop={false}
+        scrollbar="dispatch"
+        footer={draftRecoveryNotice ? <PrimaryButton full onClick={() => { setIsNewOpen(false); setDraftRecovery(null); setDraftRecoveryNotice(null) }}>Cerrar</PrimaryButton> : draftRecovery ? <div className="grid gap-2 sm:grid-cols-2"><SecondaryButton full onClick={() => setReplaceDraftConfirmOpen(true)}>Iniciar uno nuevo</SecondaryButton><PrimaryButton full disabled={isSubmitting} onClick={() => void continueSavedDraft()}>{isSubmitting ? 'Consultando estado…' : 'Continuar despacho pendiente'}</PrimaryButton></div> : confirmingLoadType === 'dispatch' ? <div className="grid w-full gap-2"><WarehouseLossConfirmation lines={buildLines()} /><div className="grid grid-cols-2 gap-2"><SecondaryButton disabled={isSubmitting} onClick={() => setConfirmingLoadType(null)}>Volver</SecondaryButton><PrimaryButton disabled={isSubmitting} onClick={() => void submitDispatch(true)}>{isSubmitting ? 'Consultando estado…' : 'Confirmar despacho'}</PrimaryButton></div></div> : renderContinueFooter(() => { void submitDispatch() })}
       >
-        {confirmingLoadType === 'dispatch' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p><p className="text-sm font-bold text-slate-700">{selectedDistributor?.displayName || 'Distribuidor'} · {data.routes.find(route => route.id === routeId)?.name || 'Ruta'}</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : <div className="grid gap-3">
+        {draftRecoveryNotice ? <section className="grid gap-3" aria-label="Estado del despacho"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">{draftRecoveryNotice}</p></section> : draftRecovery ? <section className="grid gap-3" aria-label="Borrador pendiente"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Hay un despacho pendiente guardado el {new Date(draftRecovery.updatedAt).toLocaleString('es-BO')}. Puedes continuar donde lo dejaste o iniciar uno nuevo.</p><p className="text-sm text-slate-700"><b>{draftRecovery.draftLines.length}</b> productos · {data.routes.find(route => route.id === draftRecovery.routeId)?.name || 'Ruta sin seleccionar'} · {draftRecovery.distributorUid ? distributors.find(member => member.uid === draftRecovery.distributorUid)?.displayName || 'Distribuidor guardado' : 'Distribuidor pendiente'}</p><p className="text-xs text-slate-600">Iniciar uno nuevo eliminará el borrador pendiente de este usuario y almacén.</p></section> : confirmingLoadType === 'dispatch' ? <div className="grid gap-3"><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Confirma las cantidades que físicamente saldrán del almacén. La merma adicional viaja dentro de las bolsas; no es una pérdida real del almacén.</p>{error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-bold text-rose-800">{error}</p>}<p className="text-sm font-bold text-slate-700">{selectedDistributor?.displayName || 'Distribuidor'} · {data.routes.find(route => route.id === routeId)?.name || 'Ruta'}</p>{buildLines().map(line => <article key={line.productId} className="grid gap-1 rounded-xl border border-slate-200 bg-white p-3 text-sm"><strong className="break-words">{line.productName}</strong><p>Normal: <b>{formatQty(line.normalQuantity || 0, line.unitType)}</b></p>{line.dispatchMerma ? <p>Merma adicional dentro de las bolsas: <b>{formatQty(line.dispatchMerma, line.unitType)}</b></p> : null}<p className="font-black text-emerald-800">Total físico que sale: {formatQty(line.quantity, line.unitType)}</p></article>)}</div> : <div className="grid gap-3">
           <Field label="Almacen de origen"><ChoiceButton disabled={session.role === 'warehouse'} placeholder="Selecciona almacén" label={warehouseId === 'central' ? 'Almacén central' : data.warehouses.find(w => w.id === warehouseId)?.name} onClick={() => setIsWarehousePickerOpen(true)} /></Field>
           <Field label="Distribuidor" required hint="Al elegirlo se toma su ruta asignada.">
             <ChoiceButton placeholder="Selecciona distribuidor" label={selectedDistributor?.displayName} description={selectedDistributor?.routeId ? data.routes.find(route => route.id === selectedDistributor.routeId)?.name ?? 'Ruta de registro anterior' : undefined} onClick={() => setIsDistributorPickerOpen(true)} />
@@ -1288,6 +1447,10 @@ export function DispatchesView({ session, data }: DistributionViewProps) {
           {confirmProductOrderReset && <div role="alert" className="grid gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><strong>¿Restablecer el orden predeterminado?</strong><span>Se quitará el orden personalizado compartido y volverá el orden inicial por categoría y nombre.</span><div className="flex flex-wrap justify-end gap-2"><SecondaryButton disabled={isSavingProductOrder} onClick={() => setConfirmProductOrderReset(false)}>Seguir organizando</SecondaryButton><PrimaryButton disabled={isSavingProductOrder || data.dispatchProductOrderLoading} onClick={() => void handleResetProductOrder()}>{isSavingProductOrder ? 'Restableciendo…' : 'Sí, restablecer orden'}</PrimaryButton></div></div>}
         </div>
       </Modal>
+
+      <Modal isOpen={replaceDraftConfirmOpen} onClose={() => setReplaceDraftConfirmOpen(false)} title="Reemplazar despacho pendiente" size="md" footer={<div className="grid gap-2"><SecondaryButton full onClick={() => setReplaceDraftConfirmOpen(false)}>Conservar el borrador</SecondaryButton><button type="button" onClick={discardSavedDraftAndStartNew} className="min-h-11 rounded-xl bg-rose-700 px-4 py-2 text-sm font-extrabold text-white hover:bg-rose-800">Descartar borrador e iniciar uno nuevo</button></div>}><p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-950">Esta acción eliminará el borrador pendiente guardado para este usuario y empresa. ¿Deseas descartarlo expresamente?</p></Modal>
+
+      <Modal isOpen={unsavedChangesGuard.isPromptOpen} onClose={unsavedChangesGuard.continueEditing} title="Salir del despacho" size="md" footer={<div className="grid gap-2"><SecondaryButton full onClick={unsavedChangesGuard.continueEditing}>Continuar editando</SecondaryButton><SecondaryButton full onClick={unsavedChangesGuard.saveDraftAndClose}>Guardar borrador y salir</SecondaryButton><button type="button" onClick={unsavedChangesGuard.discardAndClose} className="min-h-11 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-extrabold text-rose-800 hover:bg-rose-100">Descartar despacho</button></div>}><p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-950">Tienes información del despacho sin guardar. Si sales ahora, podrías perder los datos registrados.</p></Modal>
 
       <ChoiceModal isOpen={isWarehousePickerOpen} onClose={() => setIsWarehousePickerOpen(false)} title="Almacén de origen" options={[{ value: 'central', label: 'Almacén central' }, ...data.warehouses.filter(w => w.active).map(w => ({ value: w.id, label: w.name }))]} selectedValue={warehouseId} onSelect={value => { setWarehouseId(value); setDraftLines([]) }} />
       <ChoiceModal isOpen={isDistributorPickerOpen} onClose={() => setIsDistributorPickerOpen(false)} title="Selecciona distribuidor" subtitle="La ruta se asignará automáticamente" searchable options={distributors.map(member => ({ value: member.uid, label: member.displayName, description: member.routeId ? data.routes.find(route => route.id === member.routeId)?.name ?? 'Ruta de registro anterior' : 'Sin ruta asignada', disabled: !member.routeId }))} selectedValue={distributorUid} onSelect={selectDistributor} />
