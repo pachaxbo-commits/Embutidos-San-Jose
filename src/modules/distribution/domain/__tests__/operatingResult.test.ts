@@ -175,3 +175,9 @@ equal(voidedSaleResult.costOfSales, 0, 'costo histórico de venta anulada no per
 equal(computeMoneySummary([sale({ voidedAt: '2026-10-10T13:00:00Z' })], [], []).salesTotal, 0, 'venta anulada tampoco afecta el resumen de caja')
 
 console.log('PASS operating result: ventas, crédito, claims, egresos, pérdidas, cortesías, costos desconocidos, filtros y compatibilidad de caja')
+
+const classifiedAdjustments = computeOperatingResult([], [], [], [
+  movement({ id: 'duplicate-intake', type: 'adjustment', centralDelta: -156, lossCost: 5714.28 }),
+  movement({ id: 'actual-loss', type: 'adjustment', centralDelta: -1, lossClassification: 'confirmed_physical_loss', lossCost: 35 }),
+], ['2026-10-10'])
+equal(classifiedAdjustments.losses, 35, 'solo los ajustes clasificados como pérdida física se deducen')

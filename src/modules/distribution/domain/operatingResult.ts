@@ -1,3 +1,4 @@
+import { isAuditedPhysicalLoss } from './physicalLoss.ts'
 import type { DistClaim, DistExpense, DistRoute, DistSale, DistStockMovement } from '../types.ts'
 import { matchesRoute, round2, toDayKey } from './engine.ts'
 import { computeProductProfitReport, type ProductProfitReport } from './productProfit.ts'
@@ -84,10 +85,7 @@ export function computeOperatingResult(
       economicType,
     }
   })
-  const losses = scopedMovements.filter((movement) =>
-    movement.type === 'shortage' || movement.type === 'return_waste' || movement.type === 'return_waste_unassigned' || movement.type === 'dispatch_waste' || movement.type === 'processing_discard' ||
-    (movement.type === 'adjustment' && movement.centralDelta < 0),
-  )
+  const losses = scopedMovements.filter(isAuditedPhysicalLoss)
   const lossCostsKnown = losses.every((movement) => typeof movement.lossCost === 'number' && Number.isFinite(movement.lossCost))
   const lossCost = lossCostsKnown ? round2(losses.reduce((sum, movement) => sum + (movement.lossCost || 0), 0)) : null
   const courtesies = scopedSales.filter((sale) => sale.saleKind === 'courtesy' || sale.effectiveSnapshot?.saleKind === 'courtesy')

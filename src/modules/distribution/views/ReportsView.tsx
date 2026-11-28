@@ -1,3 +1,4 @@
+import { isAuditedPhysicalLoss } from '../domain/physicalLoss'
 import {
   exportExcel,
   exportPdf,
@@ -305,11 +306,20 @@ export function ReportsView({ session, data }: DistributionViewProps) {
     const { salesBs: revenue, costBs: cost, profitBs: grossMargin, costKnown } = productProfitReport.totals
     const spent = productProfitReport.operationalTotals.spent
 
+    const dispatchOwners = new Map(data.closures.filter(row => row.dispatchId)
+      .map(row => [row.dispatchId, row.distributorUid]))
+    const saleOwners = new Map(data.sales.map(row => [row.id, row.sellerUid]))
     const losses = data.movements
       .filter((m) => !m.reversedAt)
       .filter((m) => session.dayKeys.includes(m.dayKey || toDayKey(m.createdAt)))
       .filter((m) => !routeFilter || matchesRoute(m.routeId, routeFilter))
-      .filter((m) => m.type === 'shortage' || m.type === 'return_waste' || m.type === 'return_waste_unassigned' || m.type === 'courtesy' || m.type === 'processing_discard' || (m.type === 'adjustment' && m.centralDelta < 0))
+      .filter((m) => isAuditedPhysicalLoss(m) || (m.type === 'courtesy' && !m.pendingConfirmation))
+      .filter((movement) => {
+        if (!sellerFilter) return true
+        const saleOwner = saleOwners.get(movement.saleId || movement.refId || '')
+        const dispatchOwner = movement.dispatchId ? dispatchOwners.get(movement.dispatchId) : undefined
+        return (saleOwner || dispatchOwner) === sellerFilter
+      })
     const lossCost = round2(losses.reduce((n, l) => n + (l.lossCost || 0), 0))
     const lossCostKnown = losses.every(row => typeof row.lossCost === 'number' && Number.isFinite(row.lossCost))
     const operatingProfit =
@@ -326,7 +336,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
       losses,
       operatingProfit,
     }
-  }, [productProfitReport, data.movements, session.dayKeys, routeFilter, sellerFilter])
+  }, [productProfitReport, data.movements, data.closures, data.sales, session.dayKeys, routeFilter, sellerFilter])
 
   const lossDriverName = (row: DistributionViewProps['data']['movements'][number]) =>
     (row.dispatchId ? data.closures.find(closure => closure.dispatchId === row.dispatchId)?.distributorName : undefined)
@@ -361,11 +371,14 @@ export function ReportsView({ session, data }: DistributionViewProps) {
   const downloadLosses = async (kind: 'pdf' | 'xlsx') => {
     const sheets = [
       { name: 'Mermas auditadas', headers: lossHeaders, rows: lossRows },
-      { name: 'Resumen', headers: ['Concepto', 'Valor (Bs)'], rows: [['Subtotal con costo registrado', visibleLossTotal]] },
+      { name: 'Total de mermas auditadas', headers: ['Concepto', 'Valor (Bs)'], rows: [['Subtotal con costo registrado', visibleLossTotal]] },
       { name: 'Subtotales', headers: ['Agrupación', 'Nombre', 'Costo conocido (Bs)', 'Sin costo'], rows: lossSubtotals },
     ]
     try {
-      await (kind === 'pdf' ? exportPdf : exportExcel)(sheets, 'Mermas auditadas', `SanJose-mermas-auditadas.${kind}`)
+      const scope = [describeRange(session.dayKeys), routeFilter && data.routes.find(route => route.id === routeFilter)?.name,
+        sellerFilter && allSellers.find(row => row.sellerUid === sellerFilter)?.sellerName,
+        lossProduct, lossType && lossLabels[lossType], lossDriver].filter(Boolean).join(' · ')
+      await (kind === 'pdf' ? exportPdf : exportExcel)(sheets, scope, `SanJose-mermas-auditadas.${kind}`)
     } catch (error) { setExportError((error as Error).message) }
   }
   const [creditSearchTerm, setCreditSearchTerm] = useState('')
@@ -1940,6 +1953,7 @@ export function ReportsView({ session, data }: DistributionViewProps) {
         <details className="my-2"><summary>Subtotales por ruta, producto y tipo</summary>
           {lossSubtotals.map(([group, name, amount, missing]) => <p key={`${group}-${name}`}>{group} · {name} · {formatBs(Number(amount))} · {missing} sin costo</p>)}
         </details>
+        <p className="mt-2 text-xs text-slate-600">Los ajustes de inventario se incluyen cuando están clasificados como pérdida física.</p>
         <p className="my-2 font-bold">Subtotal con costo registrado {formatBs(visibleLossTotal)}</p>
         <p>{matchingLosses.filter(row => row.lossCost == null).length} movimientos sin costo registrado</p>
         <div className="my-2 flex gap-3">
